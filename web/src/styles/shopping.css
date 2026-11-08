@@ -2042,6 +2042,23 @@
   }
 }
 
+/* Details sheet: a custom item object's names (it/en/da) and icon. */
+.bring-names {
+  gap: 8px;
+  padding: 12px;
+}
+
+.bring-names .bring-qty,
+.bring-names .bring-qty:first-child {
+  flex: 0 0 auto;
+}
+
+.bring-hint {
+  margin: 0;
+  color: var(--b-text-2);
+  font-size: 12px;
+}
+
 /* Bundled item illustrations (docs/design/item-icons.md): the image takes the emoji's place and
    size, so 1.32em is the 58 px icon area in a tile (44 px font). */
 .item-art {

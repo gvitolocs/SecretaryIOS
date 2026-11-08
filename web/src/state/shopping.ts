@@ -31,13 +31,19 @@ import {
 } from "../lib/shoppingCatalog";
 import { translate } from "../lib/shoppingI18n";
 import {
+  addObjectId,
+  addRowId,
+  addText as addOpText,
   applyOps,
   DEFAULT_LIST_ID,
+  displayName,
   isActive,
   opTarget,
   rebaseOps,
+  rowObjectId,
   sameRow,
   type ApplyContext,
+  type CustomObject,
   type ListState,
   type ListTheme,
   type Op,
@@ -89,6 +95,8 @@ interface ShoppingState {
   online: boolean;
   pending: number;
   catalog: Catalog;
+  /** The owner's custom item objects (searchable next to the catalog). */
+  customObjects: CustomObject[];
   grouped: boolean;
   /** Item-name language picked in the menu; null = itemLang() guesses it. */
   itemLangPref: Lang | null;
@@ -131,6 +139,7 @@ function initialState(): ShoppingState {
     online: true,
     pending: 0,
     catalog: EMPTY_CATALOG,
+    customObjects: [],
     grouped: readString("local", GROUPED_KEY) === "1",
     itemLangPref: loadItemLang(),
     sectionOrder: loadSectionOrder(),
@@ -146,7 +155,20 @@ const [savingListId, setSavingListId] = createSignal<string | null>(null);
 const [deletingListId, setDeletingListId] = createSignal<string | null>(null);
 export { shop, syncing, refreshing, creatingList, savingListId, deletingListId };
 
-/** Search index for the catalog in the UI language (rebuilt only when either changes). */
+/** A custom object as a search entry next to the catalog items. */
+function customAsCatalogItem(o: CustomObject, lang: Lang): CatalogItem {
+  const name = o.names[lang] ?? o.names.it ?? o.names.en ?? o.names.da ?? o.id;
+  return {
+    id: o.id,
+    name,
+    names: { ...o.names },
+    aliases: [...o.aliases],
+    section: o.section,
+    icon: o.icon ?? DEFAULT_ICON,
+    custom: true,
+  };
+}
+
 /**
  * The language the list's items are written in: the menu's choice, else the language most of
  * the list's catalog rows are named in (an Italian household list stays Italian under an
@@ -158,7 +180,8 @@ export const itemLang = createRoot(() =>
     const byId = new Map(shop.catalog.items.map((c) => [c.id, c]));
     const votes = new Map<Lang, number>();
     for (const row of shop.items) {
-      const cat = row.catalogId ? byId.get(row.catalogId) : undefined;
+      const id = row.objectId ?? row.catalogId;
+      const cat = id ? byId.get(id) : undefined;
       if (!cat) continue;
       const name = fold(row.name);
       for (const l of LANGS) {
@@ -174,7 +197,19 @@ export const itemLang = createRoot(() =>
   }),
 );
 
-export const catalogIndex = createRoot(() => createMemo(() => buildIndex(shop.catalog, itemLang())));
+/**
+ * Search index in the list's item language: the catalog plus the owner's custom objects (rebuilt only
+ * when the catalog, the objects or the language change).
+ */
+export const catalogIndex = createRoot(() =>
+  createMemo(() => {
+    const lang = itemLang();
+    return buildIndex(
+      { ...shop.catalog, items: [...shop.catalog.items, ...shop.customObjects.map((o) => customAsCatalogItem(o, lang))] },
+      lang,
+    );
+  }),
+);
 
 /** Catalog sections in the current list's store-walk order; sections it hasn't placed keep catalog order, after. */
 export const orderedSections = createRoot(() =>
@@ -211,13 +246,43 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function catalogHint(catalogId: string) {
-  const item = catalogIndex().byId.get(catalogId);
-  return item ? { name: catalogName(item, itemLang()), section: item.section, icon: item.icon } : undefined;
+function catalogHint(objectId: string) {
+  const item = catalogIndex().byId.get(objectId);
+  return item
+    ? {
+        name: catalogName(item, itemLang()),
+        names: item.names,
+        kind: item.custom ? ("custom" as const) : ("catalog" as const),
+        section: item.section,
+        icon: item.icon,
+      }
+    : undefined;
 }
 
 function ctxFor(listId: string): ApplyContext {
-  return { listId, now: nowIso(), by: "web", newId: uuid, catalog: catalogHint };
+  return {
+    listId,
+    now: nowIso(),
+    by: "web",
+    newId: uuid,
+    catalog: catalogHint,
+    resolve: (text) => exactMatch(catalogIndex(), text)?.id,
+    lang: shop.lang,
+  };
+}
+
+/** Remember custom objects seen on rows or listed by the server (newest version wins). */
+function mergeObjects(objects: readonly CustomObject[] | undefined): void {
+  if (!objects?.length) return;
+  const byId = new Map(shop.customObjects.map((o) => [o.id, o]));
+  let changed = false;
+  for (const o of objects) {
+    const known = byId.get(o.id);
+    if (known && JSON.stringify(known) === JSON.stringify(o)) continue;
+    byId.set(o.id, o);
+    changed = true;
+  }
+  if (changed) setShop("customObjects", [...byId.values()]);
 }
 
 function pendingFor(listId: string): Op[] {
@@ -232,7 +297,11 @@ function sortItems(items: ShopItem[]): ShopItem[] {
 function refreshView(): void {
   const listId = shop.currentListId;
   const base = server.get(listId);
-  const items = applyOps(base?.items ?? [], pendingFor(listId), ctxFor(listId)).items.filter(isActive);
+  const lang = shop.lang;
+  const items = applyOps(base?.items ?? [], pendingFor(listId), ctxFor(listId))
+    .items.filter(isActive)
+    // Every view shows the object's name in the UI language.
+    .map((i) => ({ ...i, name: displayName(i, lang) }));
   batch(() => {
     setShop("items", reconcile(sortItems(items), { key: "id" }));
     setShop("revision", base?.revision ?? 0);
@@ -275,7 +344,9 @@ function storeServerState(listId: string, state: ListState): void {
   const known = server.get(listId);
   // A GET that raced a newer ops response must not roll the list back.
   if (known && state.revision < known.revision) return;
-  server.set(listId, { ...state, items: state.items.filter(isActive) });
+  mergeObjects(state.objects);
+  const { objects: _objects, ...rest } = state;
+  server.set(listId, { ...rest, items: state.items.filter(isActive) });
 }
 
 /**
@@ -286,16 +357,21 @@ function remapIds(listId: string, sent: Op[], items: ShopItem[]): void {
   const ids = new Set(items.map((i) => i.id));
   const remap = new Map<string, string>();
   for (const op of sent) {
-    if (op.type !== "add" || !op.itemId || ids.has(op.itemId)) continue;
-    const match = items.find((i) => isActive(i) && sameRow(i, op.catalogId, op.name));
-    if (match) remap.set(op.itemId, match.id);
+    if (op.type !== "add") continue;
+    const rowId = addRowId(op);
+    if (!rowId || ids.has(rowId)) continue;
+    const match = items.find((i) => isActive(i) && sameRow(i, addObjectId(op), addOpText(op)));
+    if (match) remap.set(rowId, match.id);
   }
   if (remap.size === 0) return;
   outbox = outbox.map((e) => {
     if (e.listId !== listId) return e;
     const target = opTarget(e.op);
     const to = target ? remap.get(target) : undefined;
-    return to ? { ...e, op: { ...e.op, itemId: to } as Op } : e;
+    if (!to) return e;
+    // An add's row id lives in rowId (old outboxes: itemId); other ops name the row in itemId.
+    if (e.op.type === "add") return { ...e, op: { ...e.op, rowId: to, ...(e.op.rowId ? {} : { itemId: undefined }) } as Op };
+    return { ...e, op: { ...e.op, itemId: to } as Op };
   });
 }
 
@@ -313,20 +389,20 @@ export async function flushOutbox(): Promise<void> {
       try {
         let base = server.get(listId);
         if (!base) {
-          base = await shoppingApi.listState(listId);
+          base = await shoppingApi.listState(listId, shop.lang);
           if (gen !== generation) return;
           storeServerState(listId, base);
         }
-        const res = await shoppingApi.postOps(listId, base.revision, sent);
+        const res = await shoppingApi.postOps(listId, base.revision, sent, shop.lang);
         if (gen !== generation) return;
         markLucinaOnline();
         const done = new Set(sent.map((o) => o.opId));
         outbox = outbox.filter((e) => !done.has(e.op.opId));
         if (res.items) {
           remapIds(listId, sent, res.items);
-          storeServerState(listId, { list: base.list, revision: res.revision, items: res.items });
+          storeServerState(listId, { list: base.list, revision: res.revision, items: res.items, objects: res.objects });
         } else {
-          storeServerState(listId, await shoppingApi.listState(listId));
+          storeServerState(listId, await shoppingApi.listState(listId, shop.lang));
         }
         retryDelay = RETRY_MIN_MS;
         setShop("online", true);
@@ -336,9 +412,10 @@ export async function flushOutbox(): Promise<void> {
         if (err.status === 409) {
           const n = (conflicts.get(listId) ?? 0) + 1;
           conflicts.set(listId, n);
-          const fresh = await shoppingApi.listState(listId);
+          const fresh = await shoppingApi.listState(listId, shop.lang);
           if (gen !== generation) return;
-          server.set(listId, { ...fresh, items: fresh.items.filter(isActive) });
+          mergeObjects(fresh.objects);
+          server.set(listId, { list: fresh.list, revision: fresh.revision, items: fresh.items.filter(isActive) });
           if (n > MAX_CONFLICT_RETRIES) {
             // Give up on this batch rather than loop: the fresh state wins.
             outbox = outbox.filter((e) => e.listId !== listId);
@@ -400,7 +477,7 @@ export async function loadList(listId = shop.currentListId): Promise<void> {
   if (listId === shop.currentListId) setRefreshing(true);
   lastFetchAt = Date.now();
   try {
-    const state = await shoppingApi.listState(listId);
+    const state = await shoppingApi.listState(listId, shop.lang);
     if (gen !== generation || fetchSeq.get(listId) !== mine) return;
     markLucinaOnline();
     storeServerState(listId, state);
@@ -446,6 +523,18 @@ export async function loadCatalog(lang = shop.lang): Promise<void> {
   }
 }
 
+/** The owner's custom item objects, for search. */
+export async function loadCustomObjects(): Promise<void> {
+  const gen = generation;
+  try {
+    const objects = await shoppingApi.customItems();
+    if (gen !== generation) return;
+    mergeObjects(objects);
+  } catch {
+    // Search still has the catalog and the objects seen on lists.
+  }
+}
+
 /** Start everything (idempotent): cached state, outbox replay, fresh data. */
 export function initShopping(): void {
   if (!booted) {
@@ -460,6 +549,7 @@ export function initShopping(): void {
     refreshView();
   }
   void loadCatalog();
+  void loadCustomObjects();
   void loadLists();
   void loadList();
   void flushOutbox();
@@ -497,7 +587,11 @@ createRoot(() =>
         const lang = initialLang();
         if (shop.lang === lang) return;
         setShop("lang", lang);
-        if (booted) void loadCatalog(lang);
+        refreshView();
+        if (booted) {
+          void loadCatalog(lang);
+          void loadList();
+        }
       },
       { defer: true },
     ),
@@ -536,26 +630,41 @@ export function dismissShoppingError(): void {
 
 // ---------- Item helpers ----------
 
-/** The catalog item behind a row: its catalog id, else its name resolved like the server does. */
-function rowCatalogItem(item: Pick<ShopItem, "catalogId" | "name">): CatalogItem | undefined {
-  if (item.catalogId) return catalogIndex().byId.get(item.catalogId);
+type RowRef = Pick<ShopItem, "catalogId" | "name"> & Partial<Pick<ShopItem, "objectId">>;
+
+/** The search entry behind a row (catalog item or custom object): its object id, else its name resolved like the server does. */
+function rowCatalogItem(item: RowRef): CatalogItem | undefined {
+  const id = item.objectId ?? item.catalogId;
+  if (id) return catalogIndex().byId.get(id);
   return resolveByName(catalogIndex(), item.name)?.item;
 }
 
-export function itemIcon(item: Pick<ShopItem, "icon" | "catalogId" | "name">): string | null {
+/** Key of a row for matching catalog tiles and search results (`itemKey`). */
+export function rowKeyId(item: Pick<ShopItem, "objectId" | "catalogId">): string | null {
+  return rowObjectId(item);
+}
+
+export function itemIcon(item: Pick<ShopItem, "icon"> & RowRef): string | null {
   if (item.icon) return item.icon;
   const cat = rowCatalogItem(item);
   if (cat) return cat.icon;
   return item.catalogId ? DEFAULT_ICON : null;
 }
 
-export function itemSection(item: Pick<ShopItem, "section" | "catalogId" | "name">): string {
+export function itemSection(item: Pick<ShopItem, "section"> & RowRef): string {
   if (item.section) return item.section;
   return rowCatalogItem(item)?.section ?? OTHER_SECTION;
 }
 
-function findActive(catalogId: string | null, name: string): ShopItem | undefined {
-  return shop.items.find((i) => sameRow(i, catalogId, name));
+function findActive(objectId: string | null, name: string): ShopItem | undefined {
+  return shop.items.find((i) => sameRow(i, objectId, name));
+}
+
+/** The add op for a known object; legacy fields keep servers from before item objects working. */
+function addOpFor(cat: CatalogItem, name: string, rowId: string): OpInput {
+  return cat.custom
+    ? { type: "add", itemId: cat.id, rowId, name }
+    : { type: "add", itemId: cat.id, rowId, catalogId: cat.id, name };
 }
 
 // ---------- Undo ----------
@@ -600,26 +709,30 @@ export function tapItem(id: string): void {
   }
 }
 
-/** Tap on a catalog search result. Returns the row id it ended up on. */
+/** Tap on a catalog (or custom object) search result. Returns the row id it ended up on. */
 export function addCatalogItem(cat: CatalogItem, spec?: string): string {
   const name = catalogName(cat, itemLang());
   const existing = findActive(cat.id, name);
   if (existing) {
     if (existing.status === "needed" && spec === undefined) return existing.id;
     const wasRecent = existing.status === "recent";
-    enqueue(shop.currentListId, [{ type: "add", itemId: existing.id, catalogId: cat.id, name, ...(spec !== undefined ? { spec } : {}) }]);
+    enqueue(shop.currentListId, [{ ...addOpFor(cat, name, existing.id), ...(spec !== undefined ? { spec } : {}) } as OpInput]);
     if (wasRecent) offerUndo(t("addedToast", { name }), [{ type: "purchase", itemId: existing.id }]);
     return existing.id;
   }
-  const itemId = uuid();
+  const rowId = uuid();
   enqueue(shop.currentListId, [
-    { type: "add", itemId, catalogId: cat.id, name, section: cat.section, ...(spec ? { spec } : {}) },
+    { ...addOpFor(cat, name, rowId), section: cat.section, ...(spec ? { spec } : {}) } as OpInput,
   ]);
-  offerUndo(t("addedToast", { name }), [{ type: "remove", itemId }]);
-  return itemId;
+  offerUndo(t("addedToast", { name }), [{ type: "remove", itemId: rowId }]);
+  return rowId;
 }
 
-/** Free text from the search bar: a catalog item when it matches exactly, else a custom item. */
+/**
+ * Free text from the search bar: a known object (catalog or custom, any
+ * language) when it matches exactly, else new text the server turns into a
+ * custom object with names in every language.
+ */
 export function addText(text: string, spec?: string): string | null {
   const name = text.trim().slice(0, 200);
   if (!name) return null;
@@ -634,33 +747,56 @@ export function addText(text: string, spec?: string): string | null {
     } else if (existing.status === "recent") tapItem(existing.id);
     return existing.id;
   }
-  const itemId = uuid();
-  enqueue(shop.currentListId, [{ type: "add", itemId, name, ...(spec ? { spec } : {}) }]);
-  offerUndo(t("addedToast", { name }), [{ type: "remove", itemId }]);
-  return itemId;
+  const rowId = uuid();
+  enqueue(shop.currentListId, [{ type: "add", rowId, text: name, name, ...(spec ? { spec } : {}) }]);
+  offerUndo(t("addedToast", { name }), [{ type: "remove", itemId: rowId }]);
+  return rowId;
 }
 
 export interface ItemPatch {
   name?: string;
+  /** A custom object's names (any of it, en, da). */
+  names?: Partial<Record<Lang, string>>;
+  /** A custom object's icon (one emoji; "" clears it). */
+  icon?: string;
   spec?: string;
   quantity?: number | null;
   unit?: string | null;
   section?: string | null;
 }
 
-/** Edits from the details sheet; only changed fields become ops. */
+/**
+ * Edits from the details sheet; only changed fields become ops. A custom
+ * object's names, section and icon are object edits (`edit_item`, shown on
+ * every list); a catalog row keeps per-row `rename` and `set_section`.
+ */
 export function editItem(id: string, patch: ItemPatch): void {
   const item = shop.items.find((i) => i.id === id);
   if (!item) return;
   const ops: OpInput[] = [];
-  if (patch.name !== undefined && patch.name.trim() && patch.name.trim() !== item.name) {
+  const custom = item.kind === "custom" && item.objectId ? item.objectId : null;
+  if (custom) {
+    const names: Partial<Record<string, string>> = {};
+    for (const [lang, value] of Object.entries(patch.names ?? {})) {
+      const clean = value?.trim();
+      if (clean && clean !== item.names[lang]) names[lang] = clean;
+    }
+    if (patch.name !== undefined && patch.name.trim() && patch.name.trim() !== item.name && !names[shop.lang]) {
+      names[shop.lang] = patch.name.trim();
+    }
+    const edit: OpInput = { type: "edit_item", itemId: custom };
+    if (Object.keys(names).length) edit.names = names;
+    if (patch.section !== undefined && patch.section !== null && patch.section !== itemSection(item)) edit.section = patch.section;
+    if (patch.icon !== undefined && patch.icon.trim() !== (item.icon ?? "")) edit.icon = patch.icon.trim();
+    if (edit.names || edit.section !== undefined || edit.icon !== undefined) ops.push(edit);
+  } else if (patch.name !== undefined && patch.name.trim() && patch.name.trim() !== item.name) {
     ops.push({ type: "rename", itemId: id, name: patch.name.trim() });
   }
   if (patch.spec !== undefined && patch.spec.trim() !== item.spec) ops.push({ type: "set_spec", itemId: id, spec: patch.spec.trim() });
   const qty = patch.quantity === undefined ? item.quantity : patch.quantity;
   const unit = patch.unit === undefined ? item.unit : patch.unit || null;
   if (qty !== item.quantity || unit !== item.unit) ops.push({ type: "set_quantity", itemId: id, quantity: qty, unit });
-  if (patch.section !== undefined && patch.section !== itemSection(item)) {
+  if (!custom && patch.section !== undefined && patch.section !== itemSection(item)) {
     ops.push({ type: "set_section", itemId: id, section: patch.section });
   }
   if (ops.length) enqueue(shop.currentListId, ops);
@@ -673,10 +809,12 @@ export function deleteItem(id: string): void {
   const newId = uuid();
   enqueue(shop.currentListId, [{ type: "remove", itemId: id }]);
   // A removed row never comes back, so undo re-adds it as a new row.
+  const objectId = rowObjectId(snapshot);
   offerUndo(t("deletedToast", { name: snapshot.name }), [
     {
       type: "add",
-      itemId: newId,
+      rowId: newId,
+      ...(objectId ? { itemId: objectId } : { text: snapshot.typedName || snapshot.name }),
       ...(snapshot.catalogId ? { catalogId: snapshot.catalogId } : {}),
       name: snapshot.name,
       spec: snapshot.spec,

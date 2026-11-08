@@ -3,7 +3,7 @@ import { catalogName, exactMatch, fold, itemKey, searchCatalog, type CatalogItem
 import { SPEC_CHIPS } from "../../lib/shoppingI18n";
 import type { ShopItem } from "../../lib/shoppingOps";
 import { joinSpec, parseQuery } from "../../lib/shoppingQuery";
-import { addCatalogItem, addText, catalogIndex, itemIcon, itemLang, shop, t, tapItem } from "../../state/shopping";
+import { addCatalogItem, addText, catalogIndex, itemIcon, itemLang, rowKeyId, shop, t, tapItem } from "../../state/shopping";
 import { Tile } from "./Tile";
 
 /** The search field's state, shared by the field (in the header) and the suggestion grid (in the board). */
@@ -168,7 +168,7 @@ export function SearchField(props: { search: ShopSearch; act: (fn: () => void) =
 export function SearchResults(props: { search: ShopSearch; act: (fn: () => void) => void; id: string }) {
   const s = props.search;
   const m = s.matches;
-  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(i.catalogId, i.name), i])));
+  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(rowKeyId(i), i.name), i])));
   const rowFor = (cat: CatalogItem): ShopItem | undefined => rowByKey().get(itemKey(cat.id, catalogName(cat, itemLang())));
 
   /** Runs an add with the values read now, after clearing the search (so the list shows again and the tile pops in). */

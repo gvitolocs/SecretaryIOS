@@ -245,8 +245,11 @@ async fn agenda(State(st): State<AppState>, QueryArgs(q): QueryArgs<AgendaQuery>
     Ok((status, Json(data)))
 }
 
-async fn shopping(State(st): State<AppState>) -> ApiResult {
-    forward(&st, Call::shopping()).await
+async fn shopping(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<crate::shopping::LangQuery>,
+) -> ApiResult {
+    forward(&st, Call::shopping().with_lang(q.lang.as_deref())?).await
 }
 
 /// `GET /v1/grocery/deals/map`: Lucina's deals map around home, plus the
