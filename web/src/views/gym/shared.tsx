@@ -1,10 +1,12 @@
-import { useLocation } from "@solidjs/router";
+import { useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import type { Exercise, ExerciseKind, GymView, SetKind, WorkoutSet } from "../../api/gym";
+import type { Exercise, ExerciseKind, GymCommand, GymView, SetKind, WorkoutSet } from "../../api/gym";
 import { formatDistance, formatDuration } from "../../lib/units";
-import { dismissGymError, elapsedNow, gym, refreshGym, restRemainingNow, tickClock } from "../../state/gym";
+import { ErrorState, LoadingState, Page, PageHeader, PrimaryAction, SectionNav, useWide } from "../../components/page";
+import { dismissGymError, elapsedNow, gym, refreshGym, restRemainingNow, runGym, tickClock } from "../../state/gym";
 import "../../styles/gym.css";
-import { gt, type GymKey } from "./strings";
+import { GearIcon, PlayIcon } from "./icons";
+import { gt, gymLocale, type GymKey } from "./strings";
 
 // Shared pieces for the Gym screens. Everything computed (volume, records,
 // labels, rest time) comes from the server view; these helpers only format.
@@ -86,7 +88,7 @@ type GymTab = "training" | "journal" | "progress" | "settings";
 
 function currentTab(pathname: string, search: string): GymTab | null {
   const path = pathname.replace(/\/+$/, "") || "/";
-  if (path === "/gym") return isSettingsSearch(search) ? "settings" : "training";
+  if (path === "/gym" || path === "/training") return isSettingsSearch(search) ? "settings" : "training";
   if (path.startsWith("/gym/history")) return "journal";
   if (path.startsWith("/gym/progress")) return "progress";
   return null;
@@ -196,15 +198,165 @@ export function useGymClock() {
   return { restRemaining, duration };
 }
 
+/** Overview · Journal · Progress · settings: the Gym sections in the page header. */
+export function GymSectionNav() {
+  const location = useLocation();
+  const tab = createMemo(() => currentTab(location.pathname, location.search));
+  return (
+    <SectionNav
+      label={gt("sections")}
+      items={[
+        { href: "/gym", label: gt("tabOverview"), current: tab() === "training" },
+        { href: JOURNAL_HREF, label: gt("tabJournal"), current: tab() === "journal" },
+        { href: "/gym/progress", label: gt("tabProgress"), current: tab() === "progress" },
+        { href: SETTINGS_HREF, label: gt("tabSettings"), current: tab() === "settings", icon: <GearIcon /> },
+      ]}
+    />
+  );
+}
+
+/**
+ * Start (or repeat) a workout and open it; `starting` is true while the
+ * command runs, so a double click starts one workout.
+ */
+export function useStartWorkout() {
+  const navigate = useNavigate();
+  const [starting, setStarting] = createSignal(false);
+  async function start(command: GymCommand) {
+    if (starting()) return;
+    setStarting(true);
+    try {
+      const res = await runGym(command);
+      if (res?.ok) navigate("/gym/workout");
+    } finally {
+      setStarting(false);
+    }
+  }
+  return { starting, start };
+}
+
+/**
+ * The desktop header of every Gym section: Training, today's date, the
+ * sections and the one accent button (start a workout, or continue the one in
+ * progress). It stays put while the sections switch the content below it.
+ */
+function GymDeskHeader() {
+  const { starting, start } = useStartWorkout();
+  const [now, setNow] = createSignal(Date.now());
+  onMount(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    onCleanup(() => clearInterval(timer));
+  });
+  const today = () =>
+    new Intl.DateTimeFormat(gymLocale(), { weekday: "long", day: "numeric", month: "long" }).format(new Date(now()));
+
+  return (
+    <PageHeader
+      title={gt("tabTraining")}
+      context={today()}
+      nav={<GymSectionNav />}
+      action={
+        <Show when={gym.view}>
+          {(view) => (
+            <Show
+              when={view().state.active}
+              fallback={
+                <PrimaryAction
+                  icon={<PlayIcon />}
+                  disabled={starting()}
+                  onClick={() => void start({ type: "start_workout", title: gt("defaultWorkoutTitle") })}
+                >
+                  {gt("startWorkout")}
+                </PrimaryAction>
+              }
+            >
+              <PrimaryAction href="/gym/workout" icon={<PlayIcon />}>
+                {gt("continueWorkout")}
+              </PrimaryAction>
+            </Show>
+          )}
+        </Show>
+      }
+    />
+  );
+}
+
 /**
  * Page frame for every Gym route: loads the view, refreshes it on focus,
- * and renders the shared loading / error / notice states inside the
- * Lucina Gym theme (src/styles/gym.css).
+ * and renders the shared loading / error / notice states. On a page at least
+ * WIDE_MIN_PX wide it is the page system's frame (components/page) with the
+ * Gym header row; on a phone the Lucina Gym theme with the tab bar
+ * (src/styles/gym.css).
  */
 export function GymPage(props: {
   subnav?: boolean;
-  children: (view: () => GymView) => JSX.Element;
+  /** Force the desktop frame (tests); otherwise the page measures its own width. */
+  wide?: boolean;
+  /** Told whenever the page switches between its phone and desktop layouts. */
+  onWide?: (wide: boolean) => void;
+  children: (view: () => GymView, wide: () => boolean) => JSX.Element;
 }) {
+  const measured = useWide();
+  const wide = () => props.wide ?? measured.wide();
+  createEffect(() => props.onWide?.(wide()));
+
+  const body = () => (
+    <>
+      <Show when={gym.actionError}>
+        {(msg) => (
+          <div class={wide() ? "pg-notice" : "notice"} role="alert">
+            <span>{msg()}</span>
+            <button type="button" class="banner-close" onClick={dismissGymError} aria-label={gt("dismiss")}>
+              ×
+            </button>
+          </div>
+        )}
+      </Show>
+      <Show
+        when={gym.loaded ? gym.view : null}
+        fallback={
+          <Show
+            when={gym.loadError}
+            fallback={
+              <Show when={wide()} fallback={<p class="muted center" role="status">{gt("loading")}</p>}>
+                <LoadingState label={gt("loading")} />
+              </Show>
+            }
+          >
+            {(msg) => (
+              <Show
+                when={wide()}
+                fallback={
+                  <div class="empty" role="alert">
+                    <p class="empty-title">{msg()}</p>
+                    <button type="button" class="btn" onClick={() => void refreshGym()}>
+                      {gt("tryAgain")}
+                    </button>
+                  </div>
+                }
+              >
+                <ErrorState message={msg()} retryLabel={gt("tryAgain")} onRetry={() => void refreshGym()} />
+              </Show>
+            )}
+          </Show>
+        }
+      >
+        {(view) => (
+          <>
+            <Show when={gym.loadError}>
+              {(msg) => (
+                <p class={wide() ? "pg-context" : "muted small"} role="status">
+                  {gt("staleCopy", { message: msg() })}
+                </p>
+              )}
+            </Show>
+            {props.children(view, wide)}
+          </>
+        )}
+      </Show>
+    </>
+  );
+
   onMount(() => {
     refreshGymIfStale(5_000);
     const onFocus = () => refreshGymIfStale(2_000);
@@ -220,60 +372,29 @@ export function GymPage(props: {
   });
 
   return (
-    <div class="gym-page gym-theme">
-      <div class="gym-inner">
-        <Show when={props.subnav !== false}>
-          <GymSubNav />
-        </Show>
-        <Show when={gym.actionError}>
-          {(msg) => (
-            <div class="notice" role="alert">
-              <span>{msg()}</span>
-              <button type="button" class="banner-close" onClick={dismissGymError} aria-label={gt("dismiss")}>
-                ×
-              </button>
-            </div>
-          )}
-        </Show>
-        <Show
-          when={gym.loaded ? gym.view : null}
-          fallback={
-            <Show
-              when={gym.loadError}
-              fallback={
-                <p class="muted center" role="status">
-                  {gt("loading")}
-                </p>
-              }
-            >
-              {(msg) => (
-                <div class="empty" role="alert">
-                  <p class="empty-title">{msg()}</p>
-                  <button type="button" class="btn" onClick={() => void refreshGym()}>
-                    {gt("tryAgain")}
-                  </button>
-                </div>
-              )}
+    <div class="gym-page gym-theme" classList={{ "gym-page--wide": wide() }} ref={measured.track}>
+      <Show
+        when={wide()}
+        fallback={
+          <div class="gym-inner">
+            <Show when={props.subnav !== false}>
+              <GymSubNav />
             </Show>
-          }
-        >
-          {(view) => (
-            <>
-              <Show when={gym.loadError}>
-                {(msg) => (
-                  <p class="muted small" role="status">
-                    {gt("staleCopy", { message: msg() })}
-                  </p>
-                )}
-              </Show>
-              {props.children(view)}
-            </>
-          )}
-        </Show>
-      </div>
+            {body()}
+          </div>
+        }
+      >
+        <Page class="gym-desk">
+          <GymDeskHeader />
+          {body()}
+        </Page>
+      </Show>
     </div>
   );
 }
+
+// The desktop switch is the page system's (components/page/useWide.ts).
+export { useWide, WIDE_MIN_PX } from "../../components/page";
 
 /**
  * Two-step destructive button: the first click arms it, the second runs

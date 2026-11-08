@@ -22,6 +22,18 @@
 //   K6 send_telegram: Telegram is sent at most once per revision across retries.
 //   K7 note_base: a memo keeps its first note name over any sequence of later titles, so
 //      it has one note in the vault (lemma over all sequences).
+//   K8 pick_event (2026-10-26, the calendar event a recording belongs to): overlap_ms is the
+//      exact shared time of two intervals (clamped, never negative, never longer than either);
+//      the pick is eligible (timed, half the recording or 10 minutes of it), no eligible event
+//      is better (location match, then overlap, then the shorter, then the earlier), it beats
+//      every earlier eligible event (of equals the first wins), and None means none is eligible.
+//      `better` is a strict order (asymmetric, transitive).
+//   K9 may_auto_link: the worker never replaces the owner's choice of event ("none" included).
+//   K10 title_from_event: the linked event names the memo unless the owner named it.
+//   K11 diarize_memo: speaker labels are made only when a diarizer is available, the
+//      transcript has none and no attempt was made on this transcript; a labelled transcript
+//      is never relabelled and a failing diarizer is not retried on the same transcript
+//      (lemma: at most one attempt per transcript).
 //
 // Bug found while writing this (fixed in lucina-rs with the kernel): a reprocess with the
 // GPU busy replaced a Whisper transcript with the iPhone's (K1 failed on `existing`).
@@ -283,6 +295,302 @@ pub proof fn lemma_one_note_from_scratch(titles: Seq<u64>)
     lemma_one_note(titles[0], titles.subrange(1, titles.len() as int));
     let rest = names_after(Some(titles[0]), titles.subrange(1, titles.len() as int));
     assert(names_after(None, titles) =~= seq![titles[0]].add(rest));
+}
+
+// ---------------------------------------------------------------- K8
+
+pub open spec fn spec_overlap(a0: i64, a1: i64, b0: i64, b1: i64) -> int {
+    if a1 <= a0 || b1 <= b0 {
+        0
+    } else {
+        let lo: int = if a0 > b0 { a0 as int } else { b0 as int };
+        let hi: int = if a1 < b1 { a1 as int } else { b1 as int };
+        if hi <= lo {
+            0
+        } else if hi - lo > i64::MAX as int {
+            i64::MAX as int
+        } else {
+            hi - lo
+        }
+    }
+}
+
+pub fn overlap_ms(a0: i64, a1: i64, b0: i64, b1: i64) -> (r: i64)
+    ensures
+        r as int == spec_overlap(a0, a1, b0, b1),
+        r >= 0,
+        r as int <= (if a1 > a0 { a1 as int - a0 as int } else { 0 }),
+        r as int <= (if b1 > b0 { b1 as int - b0 as int } else { 0 }),
+        r as int == spec_overlap(b0, b1, a0, a1),
+{
+    if a1 <= a0 || b1 <= b0 {
+        return 0;
+    }
+    let lo = if a0 > b0 { a0 } else { b0 };
+    let hi = if a1 < b1 { a1 } else { b1 };
+    if hi <= lo {
+        return 0;
+    }
+    let d = hi as i128 - lo as i128;
+    if d > i64::MAX as i128 {
+        i64::MAX
+    } else {
+        d as i64
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Structural)]
+pub struct Cand {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub all_day: bool,
+    pub loc_match: bool,
+}
+
+pub open spec fn spec_eligible(rec_len: int, overlap: int, all_day: bool) -> bool {
+    !all_day && overlap > 0 && (2 * overlap >= rec_len || overlap >= 600_000)
+}
+
+pub fn eligible(rec_len: i128, overlap: i64, all_day: bool) -> (r: bool)
+    ensures
+        r == spec_eligible(rec_len as int, overlap as int, all_day),
+{
+    !all_day && overlap > 0 && (2 * (overlap as i128) >= rec_len || overlap >= 600_000)
+}
+
+pub open spec fn spec_better(c: Cand, co: int, p: Cand, po: int) -> bool {
+    if c.loc_match != p.loc_match {
+        c.loc_match
+    } else if co != po {
+        co > po
+    } else if (c.end_ms as int - c.start_ms as int) != (p.end_ms as int - p.start_ms as int) {
+        (c.end_ms as int - c.start_ms as int) < (p.end_ms as int - p.start_ms as int)
+    } else {
+        c.start_ms < p.start_ms
+    }
+}
+
+pub fn better(c: Cand, c_overlap: i64, p: Cand, p_overlap: i64) -> (r: bool)
+    ensures
+        r == spec_better(c, c_overlap as int, p, p_overlap as int),
+{
+    if c.loc_match != p.loc_match {
+        return c.loc_match;
+    }
+    if c_overlap != p_overlap {
+        return c_overlap > p_overlap;
+    }
+    let dc = c.end_ms as i128 - c.start_ms as i128;
+    let dp = p.end_ms as i128 - p.start_ms as i128;
+    if dc != dp {
+        return dc < dp;
+    }
+    c.start_ms < p.start_ms
+}
+
+/// `better` is a strict order: never both ways, transitive, and an event not better than
+/// `p` is beaten by whatever beats `p`.
+pub proof fn lemma_better_order(a: Cand, ao: int, b: Cand, bo: int, c: Cand, co: int)
+    ensures
+        spec_better(a, ao, b, bo) ==> !spec_better(b, bo, a, ao),
+        !spec_better(a, ao, a, ao),
+        spec_better(a, ao, b, bo) && spec_better(b, bo, c, co) ==> spec_better(a, ao, c, co),
+        spec_better(a, ao, b, bo) && !spec_better(c, co, b, bo) ==> spec_better(a, ao, c, co),
+{
+}
+
+pub open spec fn rec_len(rec0: i64, rec1: i64) -> int {
+    if (rec1 as int - rec0 as int) < 1 {
+        1
+    } else {
+        rec1 as int - rec0 as int
+    }
+}
+
+pub open spec fn ov_of(rec0: i64, rec1: i64, c: Cand) -> int {
+    spec_overlap(rec0, rec1, c.start_ms, c.end_ms)
+}
+
+pub open spec fn elig(rec0: i64, rec1: i64, c: Cand) -> bool {
+    spec_eligible(rec_len(rec0, rec1), ov_of(rec0, rec1, c), c.all_day)
+}
+
+pub open spec fn beats(rec0: i64, rec1: i64, c: Cand, p: Cand) -> bool {
+    spec_better(c, ov_of(rec0, rec1, c), p, ov_of(rec0, rec1, p))
+}
+
+pub fn pick_event(rec0: i64, rec1: i64, cands: &[Cand]) -> (r: Option<usize>)
+    ensures
+        r.is_none() ==> forall|j: int| 0 <= j < cands@.len() ==> !elig(rec0, rec1, #[trigger] cands@[j]),
+        r.is_some() ==> {
+            let b = r.unwrap() as int;
+            &&& 0 <= b < cands@.len()
+            &&& elig(rec0, rec1, cands@[b])
+            &&& forall|j: int|
+                0 <= j < cands@.len() && j != b && elig(rec0, rec1, #[trigger] cands@[j]) ==> !beats(
+                    rec0,
+                    rec1,
+                    cands@[j],
+                    cands@[b],
+                )
+            &&& forall|j: int|
+                0 <= j < b && elig(rec0, rec1, #[trigger] cands@[j]) ==> beats(rec0, rec1, cands@[b], cands@[j])
+        },
+{
+    let span = rec1 as i128 - rec0 as i128;
+    let len = if span < 1 { 1 } else { span };
+    let mut best: Option<usize> = None;
+    let mut best_overlap: i64 = 0;
+    let mut i = 0;
+    while i < cands.len()
+        invariant
+            0 <= i <= cands@.len(),
+            len as int == rec_len(rec0, rec1),
+            best.is_none() ==> forall|j: int| 0 <= j < i ==> !elig(rec0, rec1, #[trigger] cands@[j]),
+            best.is_some() ==> {
+                let b = best.unwrap() as int;
+                &&& 0 <= b < i
+                &&& elig(rec0, rec1, cands@[b])
+                &&& best_overlap as int == ov_of(rec0, rec1, cands@[b])
+                &&& forall|j: int|
+                    0 <= j < b && elig(rec0, rec1, #[trigger] cands@[j]) ==> beats(rec0, rec1, cands@[b], cands@[j])
+                &&& forall|j: int|
+                    b < j < i && elig(rec0, rec1, #[trigger] cands@[j]) ==> !beats(rec0, rec1, cands@[j], cands@[b])
+            },
+        decreases cands@.len() - i,
+    {
+        let c = cands[i];
+        let o = overlap_ms(rec0, rec1, c.start_ms, c.end_ms);
+        if eligible(len, o, c.all_day) {
+            let take = match best {
+                None => true,
+                Some(b) => better(c, o, cands[b], best_overlap),
+            };
+            if take {
+                proof {
+                    if best.is_some() {
+                        let ob = best.unwrap() as int;
+                        assert forall|j: int| 0 <= j < i && elig(rec0, rec1, #[trigger] cands@[j]) implies beats(
+                            rec0,
+                            rec1,
+                            cands@[i as int],
+                            cands@[j],
+                        ) by {
+                            let oc = ov_of(rec0, rec1, cands@[i as int]);
+                            let oo = ov_of(rec0, rec1, cands@[ob]);
+                            let oj = ov_of(rec0, rec1, cands@[j]);
+                            lemma_better_order(cands@[i as int], oc, cands@[ob], oo, cands@[j], oj);
+                        }
+                    }
+                }
+                best = Some(i);
+                best_overlap = o;
+            }
+        }
+        i += 1;
+    }
+    proof {
+        if best.is_some() {
+            let b = best.unwrap() as int;
+            assert forall|j: int|
+                0 <= j < cands@.len() && j != b && elig(rec0, rec1, #[trigger] cands@[j]) implies !beats(
+                rec0,
+                rec1,
+                cands@[j],
+                cands@[b],
+            ) by {
+                let ob = ov_of(rec0, rec1, cands@[b]);
+                let oj = ov_of(rec0, rec1, cands@[j]);
+                lemma_better_order(cands@[b], ob, cands@[j], oj, cands@[j], oj);
+            }
+        }
+    }
+    best
+}
+
+// ---------------------------------------------------------------- K9, K10
+
+#[derive(PartialEq, Eq, Clone, Copy, Structural)]
+pub enum LinkSource {
+    None,
+    Auto,
+    Owner,
+}
+
+pub fn may_auto_link(source: LinkSource) -> (r: bool)
+    ensures
+        r <==> source != LinkSource::Owner,
+{
+    !matches!(source, LinkSource::Owner)
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Structural)]
+pub enum TitleSource {
+    Auto,
+    Lucina,
+    Event,
+    Owner,
+}
+
+pub fn title_from_event(source: TitleSource) -> (r: bool)
+    ensures
+        r <==> source != TitleSource::Owner,
+{
+    !matches!(source, TitleSource::Owner)
+}
+
+// ---------------------------------------------------------------- K11
+
+pub open spec fn spec_diarize_memo(available: bool, labelled: bool, attempted: bool) -> bool {
+    available && !labelled && !attempted
+}
+
+pub fn diarize_memo(available: bool, labelled: bool, attempted: bool) -> (r: bool)
+    ensures
+        r == spec_diarize_memo(available, labelled, attempted),
+        labelled ==> !r,
+        attempted ==> !r,
+{
+    available && !labelled && !attempted
+}
+
+/// Attempts over runs on one transcript, with the diarizer's availability at each run; each
+/// attempt records `diarized_at` (attempted) whatever its outcome.
+pub open spec fn attempts(attempted: bool, labelled: bool, avail: Seq<bool>) -> nat
+    decreases avail.len(),
+{
+    if avail.len() == 0 {
+        0
+    } else if spec_diarize_memo(avail[0], labelled, attempted) {
+        1 + attempts(true, labelled, avail.subrange(1, avail.len() as int))
+    } else {
+        attempts(attempted, labelled, avail.subrange(1, avail.len() as int))
+    }
+}
+
+proof fn lemma_attempted_stops(labelled: bool, avail: Seq<bool>)
+    ensures
+        attempts(true, labelled, avail) == 0,
+    decreases avail.len(),
+{
+    if avail.len() > 0 {
+        lemma_attempted_stops(labelled, avail.subrange(1, avail.len() as int));
+    }
+}
+
+/// At most one diarization per transcript, however many runs, restarts and outages.
+pub proof fn lemma_diarize_once_per_transcript(attempted: bool, labelled: bool, avail: Seq<bool>)
+    ensures
+        attempts(attempted, labelled, avail) <= 1,
+    decreases avail.len(),
+{
+    if avail.len() > 0 {
+        if spec_diarize_memo(avail[0], labelled, attempted) {
+            lemma_attempted_stops(labelled, avail.subrange(1, avail.len() as int));
+        } else {
+            lemma_diarize_once_per_transcript(attempted, labelled, avail.subrange(1, avail.len() as int));
+        }
+    }
 }
 
 fn main() {

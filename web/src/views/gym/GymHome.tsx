@@ -3,9 +3,11 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import type { GymCommand, GymView, Routine, Workout } from "../../api/gym";
 import { formatDate } from "../../lib/units";
 import { runGym } from "../../state/gym";
+import WeightView from "../Weight";
 import { ArrowUpRightIcon, CalendarIcon, PlayIcon, PlusCircleIcon, SparkleIcon } from "./icons";
 import RoutineBuilder from "./RoutineBuilder";
-import { SettingsBody } from "./Settings";
+import TrainingDesk from "./TrainingDesk";
+import { SettingsBody, SettingsDesk } from "./Settings";
 import { ConfirmButton, exerciseById, Eyebrow, GymPage, isSettingsSearch, Metric, setsText, useGymClock } from "./shared";
 import { gt } from "./strings";
 
@@ -119,6 +121,103 @@ function TrainingBody(props: { view: GymView }) {
     }
   }
 
+  // The pieces, placed one under the other on a phone and in a header, a main
+  // column and a rail on a desktop-wide page.
+  const week = () => (
+    <section class="gym-week" aria-label={gt("thisWeek")}>
+      <div class="gym-week-head">
+        <div>
+          <Eyebrow>{gt("thisWeek")}</Eyebrow>
+          <p class="gym-week-count">
+            {gt("weekCount", { done: summary().weekly_workouts, goal: summary().weekly_goal })}
+          </p>
+        </div>
+        <span class="gym-week-icon">
+          <CalendarIcon />
+        </span>
+      </div>
+      <progress
+        class="weekly-bar"
+        max={goal()}
+        value={Math.min(summary().weekly_workouts, goal())}
+        aria-label={gt("weekProgress")}
+      />
+    </section>
+  );
+
+  const startButton = (extra: string) => (
+    <button
+      type="button"
+      class={`btn btn--primary gym-primary gym-start ${extra}`}
+      disabled={starting()}
+      onClick={() => void start({ type: "start_workout", title: gt("defaultWorkoutTitle") })}
+    >
+      <PlayIcon /> {gt("startEmpty")}
+    </button>
+  );
+
+  const routines = () => (
+    <section class="gym-section">
+      <div class="gym-section-head">
+        <h2 class="section-title">{gt("yourRoutines")}</h2>
+        <button
+          type="button"
+          class="icon-btn gym-add"
+          ref={createButton}
+          aria-label={gt("createRoutine")}
+          onClick={() => setBuilding(true)}
+        >
+          <PlusCircleIcon />
+        </button>
+      </div>
+      <Show
+        when={props.view.state.routines.length > 0}
+        fallback={<p class="muted small">{gt("routinesEmpty")}</p>}
+      >
+        <ul class="gym-list">
+          <For each={props.view.state.routines}>
+            {(routine) => (
+              <RoutineCard
+                view={props.view}
+                routine={routine}
+                starting={starting() || Boolean(props.view.state.active)}
+                onStart={(r) => start({ type: "start_workout", title: r.name, routine_id: r.id })}
+              />
+            )}
+          </For>
+        </ul>
+      </Show>
+    </section>
+  );
+
+  const repeat = () => (
+    <Show when={!props.view.state.active && recent().length > 0}>
+      <section class="gym-section">
+        <h2 class="section-title">{gt("repeatTitle")}</h2>
+        <ul class="gym-list">
+          <For each={recent()}>
+            {(workout) => (
+              <RepeatCard
+                view={props.view}
+                workout={workout}
+                starting={starting()}
+                onRepeat={(w) => start({ type: "repeat_workout", workout_id: w.id })}
+              />
+            )}
+          </For>
+        </ul>
+      </section>
+    </Show>
+  );
+
+  const metrics = () => (
+    <section class="gym-metrics" aria-label={gt("totals")}>
+      <Metric value={summary().workouts} label={gt("sessions")} />
+      <Metric value={summary().completed_sets} label={gt("setsLogged")} />
+      <Metric value={summary().volume} label={gt("totalVolume")} />
+    </section>
+  );
+
   return (
     <>
       <header class="gym-hero">
@@ -135,97 +234,15 @@ function TrainingBody(props: { view: GymView }) {
         </h1>
       </header>
 
-      <section class="gym-week" aria-label={gt("thisWeek")}>
-        <div class="gym-week-head">
-          <div>
-            <Eyebrow>{gt("thisWeek")}</Eyebrow>
-            <p class="gym-week-count">
-              {gt("weekCount", { done: summary().weekly_workouts, goal: summary().weekly_goal })}
-            </p>
-          </div>
-          <span class="gym-week-icon">
-            <CalendarIcon />
-          </span>
-        </div>
-        <progress
-          class="weekly-bar"
-          max={goal()}
-          value={Math.min(summary().weekly_workouts, goal())}
-          aria-label={gt("weekProgress")}
-        />
-      </section>
+      {week()}
 
-      <Show
-        when={props.view.state.active}
-        fallback={
-          <button
-            type="button"
-            class="btn btn--primary btn--block gym-primary gym-start"
-            disabled={starting()}
-            onClick={() => void start({ type: "start_workout", title: gt("defaultWorkoutTitle") })}
-          >
-            <PlayIcon /> {gt("startEmpty")}
-          </button>
-        }
-      >
+      <Show when={props.view.state.active} fallback={startButton("btn--block")}>
         {(active) => <ActiveCard view={props.view} workout={active()} />}
       </Show>
 
-      <section class="gym-section">
-        <div class="gym-section-head">
-          <h2 class="section-title">{gt("yourRoutines")}</h2>
-          <button
-            type="button"
-            class="icon-btn gym-add"
-            ref={createButton}
-            aria-label={gt("createRoutine")}
-            onClick={() => setBuilding(true)}
-          >
-            <PlusCircleIcon />
-          </button>
-        </div>
-        <Show
-          when={props.view.state.routines.length > 0}
-          fallback={<p class="muted small">{gt("routinesEmpty")}</p>}
-        >
-          <ul class="gym-list">
-            <For each={props.view.state.routines}>
-              {(routine) => (
-                <RoutineCard
-                  view={props.view}
-                  routine={routine}
-                  starting={starting() || Boolean(props.view.state.active)}
-                  onStart={(r) => start({ type: "start_workout", title: r.name, routine_id: r.id })}
-                />
-              )}
-            </For>
-          </ul>
-        </Show>
-      </section>
-
-      <Show when={!props.view.state.active && recent().length > 0}>
-        <section class="gym-section">
-          <h2 class="section-title">{gt("repeatTitle")}</h2>
-          <ul class="gym-list">
-            <For each={recent()}>
-              {(workout) => (
-                <RepeatCard
-                  view={props.view}
-                  workout={workout}
-                  starting={starting()}
-                  onRepeat={(w) => start({ type: "repeat_workout", workout_id: w.id })}
-                />
-              )}
-            </For>
-          </ul>
-        </section>
-      </Show>
-
-      <section class="gym-metrics" aria-label={gt("totals")}>
-        <Metric value={summary().workouts} label={gt("sessions")} />
-        <Metric value={summary().completed_sets} label={gt("setsLogged")} />
-        <Metric value={summary().volume} label={gt("totalVolume")} />
-      </section>
+      {routines()}
+      {repeat()}
+      {metrics()}
 
       <p class="gym-footer">{gt("footer")}</p>
 
@@ -240,16 +257,38 @@ function TrainingBody(props: { view: GymView }) {
   );
 }
 
-export default function GymHome() {
+const weightRail = () => <WeightView compact />;
+
+/**
+ * On a desktop-wide page (on /gym and /training alike) the Training overview is
+ * gym/TrainingDesk.tsx, with the weight in its rail, and Settings is the
+ * desktop SettingsDesk; GymPage gives both the shared header row.
+ * `weightAbove`: the Training page's phone layout, the weight above the Gym;
+ * /gym on a phone shows the Gym alone.
+ */
+export default function GymHome(props: { weightAbove?: boolean } = {}) {
   const location = useLocation();
   const settings = createMemo(() => isSettingsSearch(location.search));
+  const [wide, setWide] = createSignal(false);
   return (
-    <GymPage>
-      {(view) => (
-        <Show when={settings()} fallback={<TrainingBody view={view()} />}>
-          <SettingsBody view={view()} />
-        </Show>
-      )}
-    </GymPage>
+    <>
+      <Show when={!wide() && props.weightAbove}>{weightRail()}</Show>
+      <GymPage onWide={setWide}>
+        {(view, desk) => (
+          <Show
+            when={settings()}
+            fallback={
+              <Show when={desk()} fallback={<TrainingBody view={view()} />}>
+                <TrainingDesk view={view()} />
+              </Show>
+            }
+          >
+            <Show when={desk()} fallback={<SettingsBody view={view()} />}>
+              <SettingsDesk view={view()} />
+            </Show>
+          </Show>
+        )}
+      </GymPage>
+    </>
   );
 }

@@ -5,13 +5,20 @@
 //! `secretary-core`), forwarding with the server-held Lucina token, error
 //! mapping and static file serving. It owns no product logic.
 
+pub mod agents;
+pub mod approvals;
 pub mod assets;
+pub mod au;
+pub mod callers;
 pub mod auth;
 pub mod avatar;
 pub mod calendar;
 pub mod calls;
 pub mod cli;
+pub mod computer;
+pub mod desk;
 pub mod config;
+pub mod debug_events;
 pub mod device;
 pub mod devices;
 pub mod engines;
@@ -19,24 +26,41 @@ pub mod error;
 pub mod google;
 pub mod health;
 pub mod insights;
+pub mod keep_import;
 pub mod library;
 pub mod links;
 pub mod models;
+pub mod notebooks;
 pub mod notes;
 pub mod notify;
+pub mod flaws;
+pub mod ops;
+pub mod reach;
 pub mod owner;
+pub mod owner_secrets;
 pub mod proactive;
+pub mod qr_login;
 pub mod ratelimit;
 pub mod routes;
 pub mod secrets;
 pub mod service;
 pub mod sessions;
 pub mod shopping;
+pub mod system_health;
+pub mod system_overview;
 pub mod tasks;
 pub mod timeline;
 pub mod todoist;
 pub mod tts;
 pub mod upstream;
+pub mod voice;
+pub mod voice_filler;
+pub mod voice_learn;
+pub mod voice_pipe;
+pub mod voice_split;
+pub mod voice_telemetry;
+pub mod voice_vad;
+pub mod voice_ws;
 pub mod web;
 
 use std::net::SocketAddr;
@@ -79,29 +103,41 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self
 /// Push), and `manifest-src 'self'` the web app manifest.
 ///
 /// Plus `base-uri 'none'`. Same directives as the standalone `/lucina/`
-/// page in `deploy/Caddyfile.p1`.
+/// page in `deploy/Caddyfile.p1`, with embedded font data also admitted (below).
 ///
-/// The deals map loads the Maps JavaScript API, which per Google's allowlist
-/// CSP guide (developers.google.com/maps/documentation/javascript/
-/// content-security-policy, "Allowlist CSP" example) additionally needs:
-/// - `script-src`: given the API is loaded by a script tag, the domains with
-///   `'unsafe-eval'` (and `https://*.ggpht.com` legacy fallback);
-/// - `img-src`: the hillshade tiles, place icons and marker art come from
-///   `googleapis.com`, `gstatic.com`, `google.com`, `googleusercontent.com`;
-/// - `frame-src *.google.com`: the in-map Knowledge/ Street View frames;
-/// - `connect-src`: tile and autocomplete calls to the same domains;
-/// - `font-src` / `style-src` `fonts.gstatic.com` / `fonts.googleapis.com`
-///   (keep `'self' 'unsafe-inline'` for the app's own styles).
-pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' blob: https://*.googleapis.com https://*.gstatic.com *.google.com https://*.ggpht.com *.googleusercontent.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com *.google.com *.googleusercontent.com; connect-src 'self' blob: data: https://*.googleapis.com *.google.com https://*.gstatic.com; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; frame-src *.google.com; base-uri 'none'";
+/// The in-app maps are Google Maps (Maps JavaScript API, with the
+/// referrer-restricted browser key from `/v1/maps/config`): its script, tiles,
+/// map data and Roboto font come from `*.googleapis.com`, `*.gstatic.com`,
+/// `*.google.com` and `*.googleusercontent.com` (Google's documented allowlist,
+/// without `'unsafe-eval'`); those are the only third-party origins.
+/// `font-src data:` admits fonts inlined into the app's own CSS. The one other
+/// origin is Lucina's own home-network
+/// door to the live view (`https://lan.getsecretary.tech:9443`, lucina-server
+/// `lan.rs`): the computer page probes it (`connect-src`), frames the viewer
+/// from it (`frame-src`) and opens the LucinaDesk stream on it (`wss:`) when the
+/// owner is at home.
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://*.googleapis.com https://*.gstatic.com https://*.google.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443 wss://lan.getsecretary.tech:9443 https://*.googleapis.com https://*.gstatic.com https://*.google.com; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
+    /// `/v1/agents/*` (`None` without a Lucina token).
+    pub agents: Option<agents::Agents>,
+    /// `/v1/notebooks/*` (`None` without a Lucina token).
+    pub notebooks: Option<notebooks::Notebooks>,
     pub devices: DeviceAuth,
     pub sessions: SessionAuth,
     pub limiter: RateLimiter,
     pub login_limiter: RateLimiter,
+    /// QR sign-in requests waiting for a phone (`/v1/session/qr*`).
+    pub qr_logins: qr_login::QrLogins,
+    /// QR image and poll requests per client IP.
+    pub qr_limiter: RateLimiter,
     /// `POST /v1/device/events` (instead of `limiter`).
     pub device_limiter: RateLimiter,
+    /// `GET /v1/auth/owner` (forward_auth of the owner-only plugins).
+    pub owner_limiter: RateLimiter,
+    /// `GET /v1/auth/media` (forward_auth of `/v1/media`).
+    pub media_limiter: RateLimiter,
     /// Recently forwarded device event ids (dedup).
     pub event_ids: device::SeenIds,
     pub health: HealthCache,
@@ -126,6 +162,14 @@ pub struct Inner {
     /// Client-side Google Maps keys (`GET /v1/grocery/deals/map`).
     pub maps: config::MapsKeys,
     pub tts: tts::Tts,
+    /// `POST /v1/voice`: rate limit and one turn at a time per device.
+    pub voice: voice::Voice,
+    /// Cached filler phrases spoken on a slow turn's `ack` (protocol section 6).
+    pub fillers: voice_filler::Fillers,
+    /// The Gemini fallback's "Vocabulary:" line from Voice Learn (60 s cache, fails open).
+    pub voice_vocab: voice_learn::VocabCache,
+    /// LucinaVoice device telemetry and turn spans (`voice/` in the data dir).
+    pub voice_log: voice_telemetry::Store,
     /// Open `/v1/timeline/stream` responses.
     pub streams: timeline::StreamSlots,
     /// Flipped to `true` on shutdown; open streams end when it is.
@@ -138,6 +182,16 @@ pub struct Inner {
     pub proactive: Arc<proactive::FeedbackStore>,
     /// Tasks engine (`tasks.json`) and the Todoist client.
     pub tasks: Arc<tasks::TasksHub>,
+    /// Host health snapshots and their state changes (`system-health.json`).
+    pub system_health: Arc<system_health::HealthStore>,
+    /// The last `GET /v1/system/overview` (30 s).
+    pub system_overview: system_overview::Cache,
+    /// Signs the owner grants of "Add secret" (`secret-grant.key`).
+    pub grant_signer: owner_secrets::GrantSigner,
+    /// Owner approvals: requests, grants, audit (`/v1/approvals*`).
+    pub approvals: Arc<approvals::Approvals>,
+    /// Debug event log of the owner's apps (`debug-events.jsonl`).
+    pub debug_events: Arc<debug_events::Store>,
 }
 
 #[derive(Clone)]
@@ -160,13 +214,27 @@ impl AppState {
             Some(u) => Some(upstream::Upstream::new(u, cfg.upstream_timeout)?),
             None => None,
         };
+        let agents = match &cfg.lucina_token {
+            Some(t) => Some(agents::Agents::new(&cfg.lucina_url, t, cfg.agents.clone())?),
+            None => None,
+        };
+        let notebooks = match &cfg.lucina_token {
+            Some(t) => Some(notebooks::Notebooks::new(&cfg.lucina_url, t, cfg.agents.mcp_devices.clone())?),
+            None => None,
+        };
         Ok(Self(Arc::new(Inner {
             lucina,
+            agents,
+            notebooks,
             devices: DeviceAuth::new(DeviceStore::new(&cfg.data_dir)),
             sessions: SessionAuth::new(SessionStore::new(&cfg.data_dir)),
             limiter: RateLimiter::new(cfg.rate_limit_per_minute),
             login_limiter: RateLimiter::new(cfg.login_rate_per_minute),
+            qr_logins: qr_login::QrLogins::new(cfg.qr_login_ttl, &cfg.public_url),
+            qr_limiter: RateLimiter::new(qr_login::POLLS_PER_MINUTE),
             device_limiter: RateLimiter::new(cfg.device_events_per_minute),
+            owner_limiter: RateLimiter::new(cfg.owner_auth_per_minute),
+            media_limiter: RateLimiter::new(cfg.media_auth_per_minute),
             event_ids: device::SeenIds::new(device::SEEN_IDS),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
             upstream,
@@ -183,12 +251,24 @@ impl AppState {
             catalog_dir: cfg.catalog_dir.clone(),
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
+            voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
+            fillers: voice_filler::Fillers::new(),
+            voice_vocab: voice_learn::VocabCache::new(),
+            voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
             links: links::Hub::open(cfg)?,
             proactive: Arc::new(proactive::FeedbackStore::new(&cfg.data_dir)),
             tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
+            system_health: system_health::store(&cfg.data_dir),
+            system_overview: tokio::sync::Mutex::new(None),
+            grant_signer: owner_secrets::GrantSigner::new(&cfg.data_dir),
+            approvals: Arc::new(approvals::Approvals::open(
+                &cfg.data_dir,
+                cfg.approvals.clone(),
+            )?),
+            debug_events: Arc::new(debug_events::Store::new(&cfg.data_dir)),
         })))
     }
 
@@ -254,8 +334,10 @@ pub fn app(state: AppState) -> Router {
     let mut protected = routes::protected()
         .merge(engines::routes())
         .merge(auth::account_routes())
+        .merge(qr_login::routes())
         .merge(assets::routes())
         .merge(tts::routes())
+        .merge(voice::routes())
         .merge(calls::routes())
         .merge(timeline::routes())
         .merge(shopping::routes())
@@ -263,7 +345,17 @@ pub fn app(state: AppState) -> Router {
         .merge(notify::routes::routes())
         .merge(proactive::routes())
         .merge(links::routes())
-        .merge(todoist::routes());
+        .merge(todoist::routes())
+        .merge(system_health::routes())
+        .merge(system_overview::routes())
+        .merge(computer::routes())
+        .merge(ops::routes())
+        .merge(flaws::routes())
+        .merge(reach::routes())
+        .merge(au::routes())
+        .merge(callers::routes())
+        .merge(desk::routes())
+        .merge(owner_secrets::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -273,6 +365,13 @@ pub fn app(state: AppState) -> Router {
     ));
 
     let calendar = calendar::routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_device_or_service,
+    ));
+
+    let approvals = approvals::routes(state.clone());
+
+    let debug_events = debug_events::routes().route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_device_or_service,
     ));
@@ -289,15 +388,24 @@ pub fn app(state: AppState) -> Router {
         .merge(tasks::routes(state.clone()))
         .merge(calendar)
         .merge(device_events)
+        .merge(debug_events)
         .merge(auth::session_routes())
+        .merge(auth::owner_routes())
+        .merge(qr_login::public_routes())
+        .merge(approvals)
         .merge(protected)
+        .merge(computer::view_routes())
+        .merge(desk::ws_routes())
         .merge(insights::routes(state.clone()))
         .merge(avatar::routes(state.clone()))
         .merge(notify::routes::service_routes(state.clone()))
         .merge(proactive::service_routes(state.clone()))
+        .merge(system_health::service_routes(state.clone()))
         .merge(notes::routes(state.clone()))
         .merge(library::routes(state.clone()))
         .merge(models::routes(state.clone()))
+        .merge(agents::routes())
+        .merge(notebooks::routes())
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
@@ -346,12 +454,18 @@ pub async fn shutdown_signal() {
 }
 
 /// Serve `router` on `listener` with peer addresses available to handlers
-/// (the login rate limit needs them).
+/// (the login rate limit needs them). Accepted sockets get TCP_NODELAY: the
+/// computer live view's and LucinaDesk's WebSockets carry small messages (acks,
+/// input) that Nagle plus delayed ACKs would hold for ~40 ms each.
 pub async fn serve_on(
     listener: tokio::net::TcpListener,
     router: Router,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    use axum::serve::ListenerExt as _;
+    let listener = listener.tap_io(|tcp| {
+        let _ = tcp.set_nodelay(true);
+    });
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -386,6 +500,9 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
         "secretary-server listening"
     );
     notify::spawn_workers(&state);
+    approvals::spawn_sweeper(&state);
+    voice_telemetry::spawn_flusher(&state);
+    voice_filler::spawn_prewarm(&state);
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }

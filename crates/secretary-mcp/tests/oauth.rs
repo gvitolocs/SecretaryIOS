@@ -155,7 +155,10 @@ async fn discovery_metadata() {
             v["authorization_servers"],
             json!(["https://getsecretary.tech"])
         );
-        assert_eq!(v["scopes_supported"], json!(["read", "chat", "write"]));
+        assert_eq!(
+            v["scopes_supported"],
+            json!(["read", "chat", "write", "computer", "agents", "notebooks", "photos"])
+        );
     }
     let v: Value = h
         .http
@@ -253,7 +256,7 @@ async fn full_flow_register_login_token_call_refresh() {
     assert!(access.starts_with("mcpa_") && refresh.starts_with("mcpr_"));
 
     // call a tool with the access token: Lucina sees "chatgpt"
-    assert_eq!(h.tool_names(&access).await.len(), 30);
+    assert_eq!(h.tool_names(&access).await.len(), 55);
     let (err, text) = h
         .call(&access, "ask_lucina", json!({"message": "ciao"}))
         .await;
@@ -324,7 +327,7 @@ async fn full_flow_register_login_token_call_refresh() {
     assert_eq!(s, 200, "{tok3}");
     assert_eq!(tok3["scope"], "read");
     let access3 = tok3["access_token"].as_str().unwrap().to_owned();
-    assert_eq!(h.tool_names(&access3).await.len(), 19);
+    assert_eq!(h.tool_names(&access3).await.len(), 32);
     // replaying an old refresh token revokes the whole grant
     let (s, v) = token(
         &h,
@@ -685,4 +688,63 @@ async fn client_id_metadata_document() {
     .await;
     assert_eq!(s, 400);
     assert!(loc.is_none() && body.contains("not allowed"), "{body}");
+}
+
+#[tokio::test]
+async fn agents_scope_is_never_implied() {
+    let h = start().await;
+    let client_id = public_client(&h).await;
+    let ch = challenge(VERIFIER);
+    let page = |scope: Option<&'static str>| {
+        let mut p = vec![
+            ("response_type", "code"),
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", REDIRECT),
+            ("code_challenge", ch.as_str()),
+            ("code_challenge_method", "S256"),
+            ("resource", RESOURCE),
+        ];
+        if let Some(s) = scope {
+            p.push(("scope", s));
+        }
+        p
+    };
+    // Asked for: offered, but not ticked.
+    let (s, html, _) = authorize(&h, &page(Some("read agents"))).await;
+    assert_eq!(s, 200, "{html}");
+    assert!(html.contains("name=\"scope_agents\" value=\"1\">"), "{html}");
+    assert!(html.contains("name=\"scope_read\" value=\"1\" checked>"), "{html}");
+    // Not asked for: not offered at all.
+    let (_, html, _) = authorize(&h, &page(None)).await;
+    assert!(!html.contains("scope_agents") && html.contains("scope_computer"), "{html}");
+    // The owner ticks it: the grant has it and the tools appear.
+    let (_, html, _) = authorize(&h, &page(Some("read agents"))).await;
+    let rid = request_id(&html);
+    let (s, body, loc) = submit(
+        &h,
+        &[
+            ("request_id", rid.as_str()),
+            ("email", OWNER_EMAIL),
+            ("password", OWNER_PASSWORD),
+            ("decision", "approve"),
+            ("scope_read", "1"),
+            ("scope_agents", "1"),
+        ],
+    )
+    .await;
+    assert_eq!(s, 303, "{body}");
+    let code = query_param(&loc.unwrap(), "code").unwrap();
+    let (_, tok) = token(
+        &h,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &client_id),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(tok["scope"], "read agents");
+    let names = h.tool_names(tok["access_token"].as_str().unwrap()).await;
+    assert!(names.contains(&"agent_run".into()) && !names.contains(&"note_save".into()));
 }

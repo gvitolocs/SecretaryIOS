@@ -112,10 +112,11 @@ Request, either:
 `200`:
 
 ```json
-{ "authenticated": true, "deviceName": "web" }
+{ "authenticated": true, "deviceId": "dev_…", "deviceName": "web" }
 ```
 
-(`deviceName` is `"web"` for a password login, else the token's device
+(`deviceId` is the authenticated device id, or null when unauthenticated.
+`deviceName` is `"web"` for a password login, else the token's device
 name.) Password logins hang off one server-side device named `web`;
 revoking it (`token revoke`) ends every password-login browser session.
 
@@ -180,15 +181,59 @@ no_owner_account`.
 ### `GET /v1/session`
 
 Never 401. With a valid cookie or Bearer token:
-`{"authenticated": true, "deviceName": "…"}`; otherwise
-`{"authenticated": false, "deviceName": null}`.
+`{"authenticated": true, "deviceId": "dev_…", "deviceName": "…"}`; otherwise
+`{"authenticated": false, "deviceId": null, "deviceName": null}`.
 
 ### `DELETE /v1/session`
 
 Logs out: deletes the session and clears the cookie
 (`Set-Cookie: sec_session=; …; Max-Age=0`). With a cookie it needs
 `X-Secretary-CSRF: 1` (else `403 csrf`). `200`
-`{"authenticated": false, "deviceName": null}`.
+`{"authenticated": false, "deviceId": null, "deviceName": null}`.
+
+### `GET|HEAD /v1/auth/owner` (forward_auth for the owner-only plugins)
+
+The target of p1 Caddy's `forward_auth` for `/v1/instagram`, `/v1/pixiv` and
+`/v1/nclient`. It answers with no body:
+
+| Status | When |
+|---|---|
+| `204` | A device session: Bearer `sec_…` token or the `sec_session` cookie. |
+| `401 unauthorized` | No or bad credentials, or a revoked device. |
+| `403 owner_only` | Lucina's service token (`svc_…`). She reaches the plugin services on loopback with their own gateway secret. |
+| `429 rate_limited` | More than `SECRETARY_OWNER_AUTH_PER_MINUTE` (default 600) checks a minute from one device. |
+
+It has its own per-device bucket, so one plugin call (Caddy asks once per API
+call, never for signed `/s/*` media) does not use up the 60 requests a minute
+the app's own routes share. No CSRF check here: Caddy turns the subrequest into
+a GET and gates the real method (`X-Secretary-CSRF: 1` for cookie writes).
+
+### QR sign-in (`/v1/session/qr*`)
+
+A signed-out client shows a QR code (or a 6-digit code) and polls; a device
+that is already signed in approves it. No password is typed. Requests live 120 s
+in the server's memory and are collected once.
+
+| Route | Auth | |
+|---|---|---|
+| `POST /v1/session/qr` | none | Optional body `{"device": {"name": "…"}}`. `200` `{code, shortCode, pollToken, approveUrl, expiresIn}`. Counts as a login attempt of the client IP. |
+| `GET /v1/session/qr/image?c=<code>` | none | The QR of `approveUrl` (SVG). |
+| `GET /v1/session/qr/poll?t=<pollToken>` | none | `{status: "pending" \| "approved" \| "denied" \| "expired"}`. |
+| `GET /v1/session/qr/info?c=<code or shortCode>` | device | For the approve screen: `{kind: "browser" \| "device", deviceName?, ip, userAgent, createdAt, expiresIn}`. |
+| `POST /v1/session/qr/approve {code, approve}` | device | `{status: "approved" \| "denied"}`; `409 qr_already_decided`, `404 qr_not_found`. |
+
+- **Browser** (no body, or no `device`): the poll that sees `approved` sets the
+  `sec_session` cookie and answers `{status: "approved", authenticated: true,
+  deviceId, deviceName}`.
+- **Headless device** (the LucinaVoice speaker, say): send
+  `{"device": {"name": "LucinaVoice"}}`, 1–40 printable characters
+  (else `400 bad_request`; a body that is not JSON is `400 invalid_json`).
+  `info` then says `kind: "device"` and the name, so the approver knows what
+  they are pairing. The poll that sees `approved` registers a device exactly
+  like `POST /v1/auth/device` and answers `{status: "approved", token:
+  "sec_…", deviceId, deviceName}` with **no cookie**. The token is shown once;
+  store it and send it as `Authorization: Bearer`. If the response is lost the
+  device exists but its token is gone: revoke it and pair again.
 
 ## Health
 
@@ -222,7 +267,9 @@ answered with an error).
 | `message` | Required, 1–12000 characters (12100 with a Lucina MCP prefix), not blank, no control characters except newline/tab. For longer documents, save a [note](#notes). |
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
-| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
+| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). `voice` is **refused here** (`400 bad_request`, like any unknown value): it is the shared "Lucina Voice" thread, and only the server's own voice pipeline sends it. |
+| `device`, `deviceName` | Optional device stamps. The server always overwrites these from the authenticated identity; client values are ignored. |
+| `replyTo` | Optional, `[A-Za-z0-9_-]{1,64}`: the timeline id of the earlier message this one replies to (swipe to reply, see [Replies](#replies)). Empty = absent. |
 
 The channel comes from the `X-Secretary-Client: web|ios` request header,
 else from the body's `channel`, else defaults to `web`; the header wins when
@@ -251,6 +298,29 @@ and of Lucina's reply (present when Lucina records the timeline). The same
 items also arrive on [`/v1/timeline/stream`](#get-v1timelinestream);
 de-duplicate by `id` (or by `clientMessageId` for the optimistic copy of
 your own message).
+
+#### Replies
+
+Swiping a timeline message (the owner's or Lucina's) replies to it: send its
+`id` as `replyTo`.
+
+```json
+{ "message": "Cosa intendevi?", "sessionId": "iphone", "replyTo": "01K83ZK4Q6X1V9W2D3E4F5G6H7" }
+```
+
+- Lucina gets the quoted message in the turn, marked as the message being
+  replied to: its text, who wrote it and when, its attachments (names and
+  kinds, plus what Lucina read from them), and a voice note's transcript
+  (the attachment's `transcript`, else the one on Lucina's reply to it).
+  The block is clipped to 4000 characters.
+- The stored user item carries `"replyTo": "<that id>"`, so every client can
+  draw the quote by looking the item up; Lucina's answer keeps
+  `replyTo` = the owner's item, as for every turn.
+- An id that names no stored item is ignored (normal turn, no `replyTo` on
+  the item). A malformed one is `400 bad_request`. The response shape is
+  unchanged.
+- A shared file or voice note can be a reply too: `replyTo` form field on
+  `POST /v1/share` (docs/share.md, "Replies").
 
 `action` is `reply`, `grocery`, `list_reminders`, `schedule_reminder`
 (with `reminder` when one was created or already existed), or an async
@@ -281,7 +351,8 @@ Treat unknown `action` values as `reply`.
 
 The unified conversation: every message Lucina sees or sends, on every
 channel (Telegram, Discord, the web app, the iOS app, Alexa), as one list.
-Both routes need auth (Bearer or the session cookie); they are `GET`, so
+All timeline routes use the same device authentication and rate limits
+(Bearer or the session cookie); they are `GET`, so
 cookie callers need no CSRF header.
 
 Timeline item:
@@ -309,28 +380,113 @@ Timeline item:
 | `role` | `user` or `lucina`. Skip items with any other role. |
 | `text` | May be empty (for example an attachment-only message). |
 | `clientMessageId` | Optional; set on messages sent through `POST /v1/chat` with one. |
-| `replyTo` | Optional id of the item this answers. |
+| `replyTo` | Optional id of the item this answers: on Lucina's items the owner's message; on the owner's items the message he replied to (swipe to reply). |
 | `attachments` | Optional `[{kind: image\|voice\|file, name?}]`. |
 | `meta` | Optional `{chatTitle?, guildName?, channelName?, isDm?, kind?}` (`kind: "reminder"` for a delivered reminder). |
 | `backfilled` | Optional `true` for history imported after the fact. |
 
 Other fields may appear and are passed through unchanged.
 
-### `GET /v1/timeline?before=<id>&limit=50`
+### `GET /v1/timeline`
 
-Newest first. `200`:
+History pages are newest first. `200`:
 
 ```json
-{ "items": [ { "id": "tl_0193…", "…": "…" } ], "nextBefore": "tl_0150…" }
+{ "items": [ { "id": "tl_0193…", "…": "…" } ], "nextBefore": "tl_0150…", "cursor": "tl_0194…", "hasMore": false }
 ```
 
 | Query | Rules |
 |---|---|
 | `before` | Optional item id (`[A-Za-z0-9_.:-]{1,128}`): only older items. Pass the previous page's `nextBefore`. |
+| `after` | Optional item id (same validation as `before`): incremental arrivals after this cursor. Cannot be combined with `before`. |
+| `scope` | Optional; only `mine`. Cannot be combined with `conversation`. |
+| `conversation` | Optional conversation key matching `^[a-z]+(:[A-Za-z0-9_-]{1,64})?$`; `selftest` is also accepted. |
 | `limit` | Optional integer 1–200; Lucina's default is 50. |
 
 `nextBefore` is `null` at the start of history. Anything else is `400
-bad_request` before Lucina is called. Timeout 15 s.
+bad_request` before Lucina is called. `.` and `..` are invalid ids.
+Timeout 15 s.
+
+`cursor` is a string or null: an arrival-order item id to pass as the next
+`after`, including when the items' timestamps are older (for example imported
+history). `hasMore` is a boolean; on an `after` request, `true` means call
+again with `after=cursor` until caught up. Cache the returned cursor for the
+next incremental fetch. Older Lucina versions may omit these two fields.
+If Lucina no longer retains the cursor, the server returns HTTP `410` with
+`{"error":{"code":"cursor_expired","message":"…"}}`; refresh the timeline
+and establish a new cursor.
+
+For `scope=mine`, the server adds `device=<authenticated deviceId>` and
+`channel=<X-Secretary-Client>` to Lucina's query. The channel uses the same
+header trimming and `web|ios` validation as chat, defaulting to `web` when
+absent. Client-sent timeline `device` and `channel` parameters are ignored;
+only authenticated identity and headers determine these filters.
+
+Conversation keys are assigned in this order:
+
+1. `meta.via == "mcp"`: `agent:<caller>`. Lowercase the caller, drop
+   characters outside `[a-z0-9_-]`, and use `mcp` if empty.
+2. Channel `web|ios` with `meta.device`: `device:<device>`.
+3. Channel `web|ios` otherwise: `legacy:<channel>`.
+4. Channel `telegram|discord|alexa`: the channel itself.
+5. Everything else: `lucina`.
+
+“Mine” for device D on channel C includes `device:D`, `legacy:C`, and
+`lucina`. Use `conversation=<key>` to fetch one conversation in All chats.
+
+### `GET /v1/timeline/conversations`
+
+Forwards Lucina's `GET /api/secretary/timeline/conversations` and returns
+its `data` directly. Same authentication and rate limits as the timeline;
+timeout 15 s. `200`:
+
+```json
+{
+  "items": [{
+    "key": "device:dev_123", "kind": "device", "title": "My iPhone",
+    "channel": "ios", "device": "dev_123", "deviceName": "My iPhone",
+    "count": 12, "lastId": "tl_0193…", "lastTs": 1761048003000,
+    "lastRole": "lucina", "lastText": "Ciao!"
+  }]
+}
+```
+
+`device`, `deviceName`, and `caller` are optional; agent conversations can
+include `caller`. Unknown fields on conversations and the response are kept.
+
+The LucinaVoice speakers share **one** conversation, `{"key": "voice", "kind": "voice",
+"title": "Lucina Voice", "channel": "voice", …}` (protocol section 7). Its items have
+channel `voice`; each carries `meta.device` / `meta.deviceName` (which speaker heard it)
+and `meta.voice` (`{turnId, ms, route, layers, …}`, all optional) for the app's timing
+line. `GET /v1/timeline?conversation=voice` reads it like any other conversation.
+
+**Lucina's own endpoints (lucina-server).** `GET /api/secretary/timeline` and
+`GET /api/secretary/timeline/conversations` serve the same data with the same bearer
+authentication, wrapped in the usual envelope (`{"ok":true,"data":{"items":[],"nextBefore":null,"cursor":null,"hasMore":false}}`);
+items are raw stored JSON, newest id first, including incremental responses. Differences from
+the table above, as Lucina implements them:
+
+- `scope=mine` requires `device` (a valid id) and `channel` (`web` or `ios`); it includes
+  `device:<device>`, `legacy:<channel>`, and `lucina`. `conversation` and `scope` are mutually exclusive.
+- `after` scans the items that arrived after that id in file arrival order and returns at most
+  `limit` matches; it is mutually exclusive with `before`. A scan may cross nonmatching items, so
+  always advance using `cursor`, not a returned item's id. A late writer can append an older id:
+  incremental sync uses arrival order while responses display items newest id first. On 410,
+  rebuild the local snapshot using ordinary pages. The SSE stream is unchanged.
+- `nextBefore` is the oldest returned id if more matching older items remain, otherwise `null`.
+  `cursor` is the newest arrival id at read time for ordinary pages; for `after` pages it is the
+  last scanned id when more items remain to scan, otherwise the newest arrival id. It is `null`
+  only for an empty store. All responses have `Cache-Control: no-store`.
+- Chat bodies accept optional `device` (`[A-Za-z0-9_-]{1,64}`; invalid values are dropped) and
+  `deviceName` (controls removed, trimmed, clipped to 64 UTF-16 code units). Both are stored on the
+  user and reply meta, also on MCP turns and later job results when the turn context is available.
+  Existing lines remain unchanged.
+- The conversations list excludes the selftest store. Counts cover retained generations only.
+  The last fields describe the newest item by id; `lastText` is plain text with whitespace
+  collapsed and clipped to 160 UTF-16 code units. Device titles use the latest deviceName seen,
+  otherwise the device id; legacy titles are "iPhone (before devices)" and "Web (before devices)".
+  Agent titles are ChatGPT, Claude, Claude Code, Grok Bot (grok or grok-bot), Cursor, Codex,
+  otherwise the stored caller. Other titles are Telegram, Discord, Alexa, and Lucina.
 
 ### `GET /v1/timeline/stream`
 
@@ -350,7 +506,8 @@ data: {"id":"tl_0193…","ts":1761048003000,"channel":"web","role":"user","text"
 ```
 
 - `event: item` carries one timeline item as JSON in `data` (the raw
-  Lucina item, same shape as above). Ignore other event names.
+  Lucina item, same shape as above). `event: cards` says the
+  [closed buttons](#get-v1timelinecards-post-v1timelinecardsitem) changed. Ignore other event names.
 - `: ping` is a comment line Lucina sends every 20 s to keep proxies from
   closing the idle connection. EventSource ignores it; hand-written parsers
   must skip lines starting with `:`.
@@ -388,6 +545,19 @@ hold back `text/event-stream` responses to reach `minimum_length`: headers go
 out at once and the body is streamed as written. (Checked against Caddy's
 docs on 2026-10-21.) `X-Accel-Buffering: no` is for nginx, should one ever
 sit in front.
+
+### `GET /v1/timeline/cards`, `POST /v1/timeline/cards/{item}`
+
+Which items' buttons are closed, one answer for every client (lucina-rs `crates/lucina-server/src/card_state.rs`). Items are
+append-only, so this is an overlay on them.
+
+- `GET` answers `{cards: {<item id>: {closed: true, status, action?}}}`. `status` is `chosen` (a button was used), or a
+  decision's `decided`, `expired` or `withdrawn`. `action` is the button to mark as used; a card without one has all its
+  buttons off.
+- `POST` with `{action}` reports a button used and answers that item's card. The first one stays: a second client's different
+  answer gets the first back. `400 bad_request` for a malformed id or action.
+- `event: cards` on [`/v1/timeline/stream`](#get-v1timelinestream), `data: {}` and no `id`: read `GET` again, and the queue of
+  [secret requests](#secrets-add-secret) too. Clients also read it each time the stream connects.
 
 ## Reminders
 
@@ -783,6 +953,7 @@ Commands (fields are required unless marked `?`; weights as above):
 | `finish_workout` | — | needs ≥ 1 completed set |
 | `cancel_workout` | — | |
 | `save_routine` | `name`, `exercise_ids?: [catalog id]`, `from_active?: bool` | |
+| `update_routine` | `routine_id`, `name?`, `exercise_ids?: [catalog id]` | Rename and/or replace the exercises in order; kept exercises keep their sets, reps and weight, new ones start at 3 × 8. At least one of the two. |
 | `delete_routine` | `routine_id` | |
 | `delete_workout` | `workout_id` | |
 | `create_exercise` | `name`, `muscle`, `equipment` (1–120 bytes each), `kind: "weight_reps"\|"reps_only"\|"timed"\|"distance_time"` | |
@@ -870,6 +1041,72 @@ Errors (real):
 
 `clock` (real): `{"ok":true,"replayed":false,"clock":{"rest_remaining":90,"active_duration":"0m 00s","active_elapsed_seconds":0}}`.
 Tick `active_elapsed_seconds` locally between refreshes.
+
+## Chat engine kernel (iOS, `secretary_chat_request`)
+
+Not an HTTP route: the iPhone app's chat engine keeps its rules in `crates/secretary-chat` (proved in
+`verification/verus/chat_merge.rs`) and calls them through one stateless C function of `secretary-ffi`,
+`char *secretary_chat_request(const char *json)` (JSON in, JSON out, free the result with `secretary_string_free`).
+The Swift views and store keep the messages; they pass key records only. Any request it cannot answer (invalid JSON,
+unknown `op`, a missing or mistyped field) gets `{"error": "<reason>"}`.
+
+A **key** is `{"id": "tl_10", "ts_us": 1730000000000000, "role": "user" | "lucina", "client_message_id"?: "c1",
+"reply_to"?: "tl_9", "share_id"?: "s1"}`. `ts_us` is the item time in microseconds. An id that starts with `local-` is
+an optimistic bubble. `share_id` is `meta.shareId` of a share item (`meta.isShare == true`) and of a local item that
+has one, and absent for any other item.
+
+**`merge`**: `TimelineMerge.merge(current, incoming)`.
+
+```json
+{"op": "merge",
+ "current":  [{"id": "local-c1", "ts_us": 100000000, "role": "user", "client_message_id": "c1"},
+              {"id": "local-r1", "ts_us": 101000000, "role": "lucina", "reply_to": "local-c1"}],
+ "incoming": [{"id": "tl_9", "ts_us": 100500000, "role": "user", "client_message_id": "c1"}]}
+```
+
+```json
+{"ids": ["tl_9", "local-r1"],
+ "replaced": [{"local": "local-c1", "server": "tl_9"}],
+ "reply_to_updates": [{"id": "local-r1", "reply_to": "tl_9"}]}
+```
+
+`ids` is the new display order: time, the user before Lucina, then the id in byte order. The body of an id in the result
+is the last incoming copy of it (every user item is processed before every Lucina item, each group in input order),
+else the current one; `reply_to_updates` then set `reply_to` on those bodies. `replaced` (sorted by local id) lists the
+local items a server item replaced (move their job cards to `server`). An incoming user item replaces the local user
+items with the same `client_message_id` or the same `share_id`, an incoming Lucina item the local Lucina items with the
+same `client_message_id` or the same `reply_to`; a local item whose `reply_to` was a replaced local user item now
+replies to the server item. The result does not depend on the order of `current`. A repeated id in `current` keeps the
+last one.
+
+**`sync_next`**: `ChatSync.run` as a state machine. The caller loops: ask, do it, report.
+
+```json
+{"op": "sync_next", "plan": null, "cursor": "c0", "outcome": {"kind": "started"}}
+{"plan": {"phase": "fetching", "...": "opaque"}, "action": {"kind": "fetch", "after": "c0", "limit": 200}}
+```
+
+The first call has `"plan": null` and the stored `cursor` (null when there is none); every later call passes back the
+`plan` of the last response. Outcomes: `{"kind":"started"}` (first call only), `{"kind":"page","cursor":"c1"|null,
+"has_more":true}` (the fetch worked), `{"kind":"applied"}` (the page was applied), `{"kind":"gone410"}` (the server said
+the cursor expired), `{"kind":"failed"}` (any other error, from the fetch or from applying). Actions:
+`{"kind":"fetch","after":"c0"|null,"limit":200}` (ask the server for the items after `after`; `null` means the newest
+window), `{"kind":"apply","reset":false}` (apply the page just fetched; `reset: true` means drop the stored server
+items and cursor first), `{"kind":"done"}`, `{"kind":"abort"}` (throw the error of the `failed` outcome; no further
+fetches). Without a cursor: one `fetch(null, 50)` applied with `reset: false`. With a cursor: up to 10 times
+`fetch(cursor, 200)` applied with `reset: false`, stopping when the page has no more, leaving the loop when the page's
+cursor is missing or unchanged or after the tenth page, and on a 410; leaving the loop means one fresh
+`fetch(null, 50)` applied with `reset: true`. At most 11 fetches per run. A 410 outside the cursor loop is an error.
+
+**`older`**: the pagination rules of `ChatStore.hydrate` and `loadOlder`.
+
+```json
+{"op": "older", "ids": ["tl_5", "local-x", "tl_3"], "stored": null, "page_len": 60, "page_size": 60}
+{"older_cursor": "tl_3", "has_older": true}
+```
+
+`older_cursor` is `stored` when it is not empty, else the smallest id that does not start with `local-`, else `null`.
+`has_older` is `page_len == page_size` or a non-empty `stored`.
 
 ## Device bridge
 
@@ -1078,6 +1315,317 @@ const audio = new Audio(URL.createObjectURL(await r.blob()));
 await audio.play();
 ```
 
+### `POST /v1/voice` (authenticated)
+
+One push-to-talk turn for LucinaVoice, the ESP32 speaker: audio in, Lucina's
+spoken answer out.
+
+Request: the recording as the body, with `Transfer-Encoding: chunked` (the
+device streams it while the button is held) or a `Content-Length`. At most 1 MiB
+(about 32 s).
+
+| `Content-Type` | Body |
+|---|---|
+| `audio/x-s16le;rate=16000` | Raw little-endian signed 16-bit mono PCM at 16 kHz (wrapped into a WAV header by the server). |
+| `audio/wav` | A PCM WAV file (sent to the transcriber as is). |
+
+Optional query `lang=it\|en` (`it-IT` style accepted) picks the Kokoro voice
+and the language of the fixed phrases; without it the voice follows the
+language of the reply text, as for `/v1/tts`.
+
+The server transcribes the audio **locally first**: it posts it to
+`SECRETARY_VOICE_STT_URL` (default `http://127.0.0.1:8801/v1/memos/stt`, Caddy's
+loopback site on p1, which checks the device token and proxies to lucina-memo's
+whisper.cpp on nezopt; `off` disables it), forwarding the caller's own
+`Authorization: Bearer …` unchanged (a cookie caller: its `Cookie` plus
+`X-Secretary-CSRF: 1`), `lang` when given, and the audio as
+`audio/x-s16le;rate=16000` (a WAV body as `audio/wav`), 45 s at most. If that
+fails (no connection, timeout, 5xx including `stt_unavailable`, any other
+error status), it falls back to Gemini (the provider and settings of
+`/v1/calls/transcribe`, as a plain transcript), and answers `503
+transcription_unavailable` when Gemini is not configured. An empty local
+transcript is `422 no_speech` with no Gemini retry. The transcript goes to Lucina
+like `POST /v1/chat` but **streamed** (`Accept: text/event-stream`, `voice: true`;
+`sessionId: "lucinavoice"`, `channel: "voice"` (the shared "Lucina Voice" thread),
+the calling device, and `voiceMeta` (below); a Lucina
+that answers in plain JSON still works). The reply is cut into sentences as it
+is written and each goes to Kokoro as raw PCM, in order, the next one
+requested while the current one streams, so audio starts after the first
+sentence instead of after the whole reply. A reply Lucina marks `sensitive`
+is not spoken: the device hears "I'll answer that in the app." (Italian: "Ti
+rispondo nell'app."). An empty reply becomes "Sorry, I don't have an answer."
+The spoken text has markdown marks dropped and is at most 1200 characters.
+The same pipeline serves the persistent socket, [`GET /v1/voice/ws`](#get-v1voicews-websocket-authenticated).
+
+`200`: `Content-Type: audio/x-s16le;rate=24000`, raw little-endian signed 16-bit
+mono PCM at **24 kHz**, streamed chunked in frames of at most 8 KiB that keep
+sample boundaries. The headers go out with the first audio, so a failure
+before it is an error status; one after it ends the body abnormally.
+**`X-Lucina-Reply` is gone** (the reply is not known yet when the headers are
+sent). Headers:
+
+| Header | Value |
+|---|---|
+| `X-Lucina-Transcript` | What was heard. UTF-8, cut at 1000 bytes on a character boundary, then percent-encoded (everything but `A-Za-z0-9-_.~`). |
+| `X-TTS-Voice` | The voice used: from `lang`, else from the transcript and the first sentence. |
+
+Errors: `400 bad_request` (`lang`), `400 invalid_audio` (a `audio/wav` body
+that is not a PCM WAV), `401`, `413 payload_too_large`, `415
+unsupported_media_type`, `422 no_speech` (empty, under 0.3 s of audio, or an
+empty transcript), `429 rate_limited` (20 turns/minute per device, its own
+bucket), `429 voice_busy` (the device's previous turn is still running), `429
+transcription_provider_refused`, `502 transcription_failed` /
+`lucina_unreachable` / `lucina_error` / `tts_unavailable`, `503
+transcription_unavailable` (local speech-to-text failed and no `SECRETARY_GEMINI_KEY_FILE`), `504`
+`lucina_timeout` / `tts_unavailable`.
+
+```sh
+# 16 kHz mono s16le PCM from a file, streamed chunked, reply as raw PCM
+curl -sS -D - -X POST "$HOST/v1/voice?lang=it" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: audio/x-s16le;rate=16000" \
+  -H "Transfer-Encoding: chunked" --data-binary @speech.s16le -o reply.s16le
+ffplay -f s16le -ar 24000 -ac 1 reply.s16le
+```
+
+### `GET /v1/voice/ws` (WebSocket, authenticated)
+
+The low-latency LucinaVoice channel: one persistent socket per speaker, a
+turn per button press. Contract: `docs/lucinavoice-protocol.md` (section 2);
+code: `voice_ws.rs`, `voice_pipe.rs`, `voice_vad.rs`, `voice_split.rs`.
+
+Auth: the normal device auth on the upgrade request
+(`Authorization: Bearer <device token>`; a cookie session also works). `401`
+without it; a plain `GET` that is not a WebSocket upgrade is `400 bad_request`. A cookie
+caller that sends an `Origin` header must send this server's own origin, else `403
+forbidden_origin` (the cookie is `SameSite=Strict` as well).
+The server pings every 20 s and closes a socket that sent nothing (pongs
+included) for 50 s, and on shutdown. One turn at a time per connection and per
+device (also against `POST /v1/voice`); turns share `POST /v1/voice`'s rate
+limit (20 per minute per device). Messages are at most 64 KiB.
+
+Client → server:
+
+| Message | |
+|---|---|
+| text `{"type":"start","mode":"ptt"\|"vad","lang":"it"\|"en"?}` | A turn begins. `mode` defaults to `ptt`; `lang` as for `POST /v1/voice` (voice, fixed phrases, speech-to-text hint). The server starts warming speech-to-text now (0.5 s of silence to `SECRETARY_VOICE_STT_URL` with the caller's credentials), unless the engine answered in the last 60 s. |
+| binary | s16le mono 16 kHz PCM, any size (an odd split of a sample is stitched). At most 1 MiB per turn (about 32 s), then the server acts as if the turn ended. |
+| text `{"type":"end"}` | The button was released (`ptt`), or the device gives up. |
+| text `{"type":"cancel"}` | Drop the turn at any stage; speech-to-text, chat and speech are aborted at once and the device is free. |
+
+With no turn running, binary frames, `end` and `cancel` are ignored (they may be late). The device's
+`hello` and `telemetry` text frames (protocol section 4) are accepted at any time, stored and never
+answered (see [LucinaVoice device telemetry](#lucinavoice-device-telemetry)).
+
+Server → client:
+
+| Message | |
+|---|---|
+| `{"type":"listening"}` | Answer to a good `start`. |
+| `{"type":"endpoint"}` | The server stopped listening: the VAD found the end of speech (`vad` mode), or the size cap was hit (either mode). The device stops sending. |
+| `{"type":"transcript","text":"…"}` | What was heard. |
+| `{"type":"audio","rate":24000}` | Once per turn, before the first binary audio frame. |
+| binary | s16le mono 24 kHz PCM, at most 8 KiB per frame, even lengths. |
+| `{"type":"reply","text":"…"}` | What was spoken (for logs). A sensitive reply shows the fixed phrase only. |
+| `{"type":"done","ms":{"stt","lucina_first","tts_first","first_audio","total"}}` | Milliseconds since the end of speech (the `end` frame or the endpoint). `stt`: transcript ready; `lucina_first`: first delta (or the reply) from Lucina; `tts_first`: first PCM byte from Kokoro; `first_audio`: first audio frame handed to the socket; `total`: everything sent. With the Jev fast path (protocol section 6) it also has `route` (Lucina's `route` event) and, when a cached filler phrase was played on Lucina's `ack`, `ack` (the filler's audio, which then is also `first_audio`); both are absent otherwise. |
+| `{"type":"error","code","message"}` | The turn ended without (complete) audio, or the message was refused. The socket stays open. |
+
+Error codes: `no_speech` (under 0.3 s of audio after trimming, no speech in
+`vad` mode, or an empty transcript), `stt_unavailable` (local engine and
+Gemini both failed), `lucina_unavailable` (including an SSE `error` event),
+`tts_failed`, `busy` (a turn is already running on this connection or for
+this device), `rate_limited`, `bad_request` (bad `mode`/`lang`, unknown
+`type`, not JSON).
+
+Pipeline per turn:
+
+1. Energy VAD ([`voice_vad`](../crates/secretary-server/src/voice_vad.rs)) over
+   20 ms frames with an adaptive noise floor: speech after 300 ms above
+   `max(200 RMS, 3 × floor)`, end of speech after 700 ms of silence. In `vad`
+   mode the end of speech is the endpoint; in `ptt` mode the VAD only trims
+   trailing silence (keeping 200 ms) and `end` is the endpoint. A `ptt`
+   recording of at least 0.3 s always goes to speech-to-text.
+2. Speech-to-text: the local engine first, Gemini as fallback, as for
+   `POST /v1/voice`.
+3. Streaming chat (`POST {lucina}/api/secretary/chat`, `Accept:
+   text/event-stream`, `voice: true`, `sessionId: "lucinavoice"`, `channel: "voice"`, the device,
+   `voiceMeta`). Events `route` / `ack` / `delta` / `reply{text,sensitive,replaces}` /
+   `done` / `error`; plain JSON from an older Lucina counts as one `reply`.
+4. Sentence splitter: the first segment ends at the first `. ! ? …` (followed
+   by a space) or newline, or at a comma once it is 60 characters long; later
+   segments are one sentence each. `3.5` does not split. If `replaces` is
+   true and nothing was cut into a segment yet, the reply text is spoken
+   instead of the deltas; if something was, the rest is dropped. A `sensitive`
+   reply drops the segments not started yet and speaks the fixed phrase (what
+   already reached the speaker cannot be recalled).
+5. Kokoro (`pcm`): segments are synthesized strictly in order, the next one
+   requested while the current one streams; PCM is forwarded as it arrives.
+   At most 1200 characters are spoken.
+6. After `reply`, the connection to Lucina is read to its end in the
+   background so Lucina finishes the turn (memory, rich reply) after the
+   audio; `cancel` or a closed socket drops it.
+
+The timings are also logged at `info` (`voice turn`: device id and the
+milliseconds; never the transcript, audio or credentials).
+
+#### The thread and what the server tells Lucina
+
+Every `POST /v1/voice` and `/v1/voice/ws` turn is a chat request with `channel: "voice"` and
+a `voiceMeta` object (never audio), which lucina-server's chat route reads:
+
+```json
+{"turnId": "voice-1761048000000-1a2b3c4d", "ms": {"stt": 84},
+ "ambiguous": [{"heard": "via", "candidates": ["Skibigårdsvej", "Skibbyvej"]}]}
+```
+
+`turnId` is the request's `clientMessageId`; `ms.stt` is the speech-to-text time from the end
+of speech (both end up in the thread item's `meta.voice`, next to the route and layers Lucina
+adds); `ambiguous` (at most 3 spans of at most 5 candidates) is what the local engine
+(`/v1/memos/stt`) left alone as too close to call, for Lucina's `vocab` layer, and is absent
+when there is none. The engine's `corrections` are counted here (telemetry), not sent. A Lucina
+that does not know the field ignores it. The WebSocket `done` message carries the layers next
+to `ms`: `{"type":"done","ms":{…},"layers":[…]}` (`layers` only when there are any; `ms` stays
+numbers). The later stages of the turn (LLM, TTS, first audio, total) are known only after the
+thread item is written, so the thread's timing line has the STT time and Lucina's own route and
+layers; the whole `ms` is on the device page.
+
+### Voice Learn (`/v1/voice/learn`)
+
+The shared custom vocabulary of every speech-to-text path (protocol section 8). Lucina owns
+the entries (`{id, word, soundsLike?, meaning?, lang?: "it"|"en"|"da", source, createdAt,
+updatedAt}`, at most 500, 100 characters per field); these routes forward to Lucina's
+`/api/secretary/voice-learn` with the server's token and return its `data` (and its `400`
+validation messages, with its own code) unchanged. Code: `voice_learn.rs`.
+
+| Route | Who |
+|---|---|
+| `GET /v1/voice/learn` | the owner's session, any device token (a LucinaVoice speaker too) |
+| `POST /v1/voice/learn` `{word, soundsLike?, meaning?, lang?}` → `201` | the owner's browser session only |
+| `PATCH /v1/voice/learn/{id}` (any of the fields; `meaning: ""` and `lang: null` clear) | same |
+| `DELETE /v1/voice/learn/{id}` | same |
+| `POST /v1/voice/learn/suggest` `{transcript, corrected}` → candidate entries `{word, soundsLike, meaning?, lang?}` | same |
+| `POST /v1/voice/learn/sample` | same |
+
+The rule is the one of `/v1/voice/devices*`: a device token only ever reads, and only the
+owner's user session (cookie, with `X-Secretary-CSRF: 1` on writes) does the owner things.
+Every write by a device token gets `403 owner_only`, whatever device it is: a speaker, one
+just paired that never connected, the phone app. `401` without credentials; `400 bad_request`
+for a malformed id or body (an unknown field in `suggest`, a body that is not an object, text
+over 12100 characters).
+
+**`POST /v1/voice/learn/sample`** turns a short phone recording into what the speech-to-text
+engine heard, so the app can offer it as `soundsLike`. Body: `Content-Type: audio/wav` (PCM) or
+`audio/x-s16le;rate=16000`, at most 10 seconds (about 330 kB; `413 payload_too_large` above
+that, `400 invalid_audio` for 10.25 s to the size limit or a file that is not a PCM WAV,
+`415` for any other type such as the MediaRecorder's WebM or MP4). The web app decodes the
+clip in the browser and sends a 16 kHz mono WAV. Optional `?lang=it|en|da`. It goes through
+the same path as a voice turn (the local engine with the caller's credentials, Gemini as the
+fallback) and answers `{"heard": "…", "corrections": [{"from","to"}]}`: `heard` is the
+engine's text after its own Voice Learn post-correction, so a word it already fixed shows
+there as a correction whose `from` is what it first heard. `422 no_speech` for silence or
+under 0.3 s, `503 transcription_unavailable` when no engine can answer, `429` at 20 per minute
+per device. Nothing is stored, here or at Lucina.
+
+**Gemini fallback.** When the local engine fails and Gemini is set up, the transcription
+request gets a second part after the audio, `Vocabulary: Skibigårdsvej (sounds like skibi gård
+vej); Lucina` (newest entries first, at most 700 characters), built from the list above. The
+list is fetched with the server's Lucina token, cached for 60 seconds (15 after a failure), and
+fails open: no list, no line, and the turn goes on. Gemini's text then gets the same
+post-correction as the local engine's (`lucina-vocab`'s `Vocab::correct` over those cached
+entries): a close mishearing is replaced by the entry's word ("Skibi gaardsvej" →
+"Skibigårdsvej"), and the spans that are close to several entries are left alone and go to
+Lucina in `voiceMeta.ambiguous`, so both paths answer the same `{text, corrections, ambiguous}`
+(also for `/v1/voice/learn/sample`).
+
+### LucinaVoice device telemetry
+
+The speaker also sends text frames on the socket (protocol sections 4 and 5;
+`voice_telemetry.rs`), never answered:
+
+- `{"type":"hello","now":ms,"specs":{chip,rev,cores,cpu_mhz,flash_bytes,psram_bytes,fw,commit,mac,heap_total,ina,temp_sensor},"boot":{reset,seq}}`
+  first on every connection;
+- `{"type":"telemetry","now":ms,"dropped":n,"events":[{"t":ms,"k":"boot|wifi|link|turn|stats|error",…}]}`.
+
+Untrusted input: frames over 16 KiB and invalid JSON are ignored, at most 32
+events are taken, an event over 1 KiB or of an unknown kind is dropped, only the
+known keys of each kind are kept, numbers are clamped, strings are cut and lose
+control characters and `<` `>`. The turn and the socket are never affected.
+
+Stored under `SECRETARY_DATA_DIR/voice/<device id>/` (directory 0700, files
+0600): `events.jsonl` (the device's events with a wall-time `at`, and the
+server's own `server_turn` records; at 2 MiB it moves to `events.jsonl.1`,
+two files are kept) and `status.json` (specs, last stats, counters, the last 20
+turns; atomic, at most every 5 s per device, and at disconnect). Every turn of
+the socket and of `POST /v1/voice` is recorded (transcript length, never the
+text; spans in ms since the end of speech; audio bytes in and out) and merged
+with the device's own `turn` event (within 30 s). "Today" counters follow
+`SECRETARY_TIMEZONE`.
+
+#### `GET /v1/voice/devices` (authenticated)
+
+`[{id, name, online, last_seen, fw, rssi?, est_mw?}]`; `online` means a voice socket
+is open now.
+
+#### `GET /v1/voice/devices/{id}/status` (authenticated)
+
+```json
+{
+  "id": "dev_…", "name": "Speaker", "online": true,
+  "connected_since": "2026-11-01T10:00:00.000Z", "last_seen": "2026-11-01T10:05:00.000Z",
+  "specs": {"chip": "esp32", "fw": "0.4.1", "...": "..."},
+  "boot": {"reset": "poweron", "seq": 3},
+  "live": {"at": "…", "uptime_ms": 60000, "rssi": -58, "up_bytes": 4000, "power": {"est_mw": 395}},
+  "network": {"today_up_bytes": 4000, "today_down_bytes": 9000, "total_up_bytes": 4000, "total_down_bytes": 9000},
+  "power": {"est_mw": 395, "measured": true, "energy_mwh_today": 6.5},
+  "turns": [{"at": "…", "ok": true, "transcript_chars": 28, "speech_ms": 1000,
+             "spans": {"stt": 150, "lucina_first": 900, "tts_first": 1700, "first_audio": 1720, "total": 4000},
+             "device_first_audio_ms": 1300, "up_bytes": 32000, "down_bytes": 12}]
+}
+```
+
+`turns` is newest first (20 at most); `err` is present on a failed turn;
+`spans` are moments since the end of speech (cumulative), `null` when not reached.
+A turn Lucina routed (protocol section 6) also has `intent`, `confidence`,
+`jev_ms`, `fast` and `source` (no transcript text), and `spans.route` /
+`spans.ack` when those events came.
+
+A turn also has `layers` (protocol section 9: `[{layer, verdict, confidence, ms, used}]`,
+`layer` being `intent`, `slots`, `confirm` or `vocab`; from the `route` event's `layers`,
+completed by the `done` body's `voice.layers` when it arrives while the audio is still being
+made, at most 250 ms after it) and, when Voice Learn changed the transcript, the counts
+`stt_corrections` and `stt_ambiguous` (never the words). All of it is absent for a Lucina
+that sends none. The same keys are in the `server_turn` events.
+
+#### `GET /v1/voice/devices/{id}/events` (authenticated)
+
+Query: `since` (RFC 3339, inclusive), `before` (RFC 3339, exclusive), `kind`
+(`boot|wifi|link|turn|stats|error|server_turn`), `limit` (1–500, default 100).
+Answer `{events: [{at, k, t?, …}], next?}`, newest first; `next` (the `at` of the
+oldest event returned) is present when more remain and is what `before` takes
+for the next page.
+
+Access: only the owner's browser session (cookie) reads all devices. **Every
+device token** (a speaker, one paired but not connected yet, the phone app)
+reads only its own id (`403 owner_only` for any other, even an unknown one). `404 device_not_found` for an id with no voice data, `400 bad_request`
+for a malformed parameter, `401` without credentials.
+
+## Debug events
+
+The apps' step-by-step debug log (taps, intents, notifications, Live Activities, Face ID, approvals, failed
+requests; never secrets or text). Full contract, the never-log list and how to read a phone test:
+[debug-events.md](debug-events.md).
+
+### `POST /v1/debug/events` (device token)
+
+`{events: [{ts, seq, build, process, type, fields}]}`, at most 200 events and 256 KiB; the server sets `device`,
+re-runs the sanitizer (an event with a forbidden field name is refused alone) and appends to
+`debug-events.jsonl` (0600, rotated at 50 MiB, 3 old files kept). Answer `{accepted, refused: [{seq, reason}],
+max_seq}`. `403 devices_only` for the service token, `429` past 30 batches a minute per device.
+
+### `GET /v1/debug/events?device=&since=&until=&type=&limit=` (device or service token)
+
+`device` = id or part of a name, `since` / `until` = RFC 3339, `YYYY-MM-DD` or `30m` / `2h` / `1d`, `type` = prefix,
+`limit` 1–2000 (default 200). Answer `{count, more, events}`, the newest matches, oldest first.
+
 ## Avatar wardrobe
 
 Lucina's 3D avatar has outfits, hairstyles and hair colours. The owner picks
@@ -1178,7 +1726,19 @@ list); every list is empty when the file is missing.
   `hideTiara` (bool: hide the tiara while it is on) and `hideMaterials`
   (base-model materials to hide instead of the hair). A part is a separate
   GLB attached to the `head` bone; the base hair is hidden while it is on.
-- Colours: `id`, `hex` (`#rrggbb`), optional `name`.
+  A skinned part is re-bound to the outfit's bones by name, so every bone it
+  uses must be in every outfit GLB. How the installed ponytail is made
+  (`tools/wardrobe-glb`, run on the private assets, never committed):
+  - `glbpart lucina-gym.glb lucina-hair-ponytail.glb Hair,Clothes_HairTie`
+    cuts the Gym outfit's own ponytail out (same bind pose and bone names).
+  - `glbgraft <outfit>.glb lucina-gym.glb <out>.glb ptail_0,ptail_1,ptail_2,ptail_3`
+    adds its four bones under `head` in each other outfit, listed in a
+    joints-only skin `hairstyle-bones` so loaders make them bones.
+  - Each outfit manifest gets the Gym's `ponytail` spring chain, off for the
+    outfit (`physics.outfits.<id>.disable`) and on for the hairstyle
+    (`physics.hairstyles.ponytail`: enable `ponytail`, disable `hair_back*`).
+- Colours: `id`, `hex` (`#rrggbb`), optional `name`. The toon hair takes the
+  colour's hue in its glow, angel ring and outline too.
 - Other fields pass through unchanged.
 
 ### Live changes
@@ -1203,8 +1763,10 @@ Notification:
   "data": {}, "read": false, "readAt": null }
 ```
 
-`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`,
-`shopping`, `presence`, `system`. Without `title`, clients title it by category.
+`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`, `agent`,
+`shopping`, `presence`, `system`, `approval` (always on: no switch, no per-device mute, and quiet
+hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clients title it by category
+(`agent`: by `data.reason`, `finished`, `permission` or `error`).
 `route` is an app path (`/`, `/shopping`, `/gym`, `/weight`).
 
 | Route | |
@@ -1219,13 +1781,14 @@ Notification:
 | `DELETE /v1/push/subscribe {endpoint}` | `{removed}`. |
 | `DELETE /v1/push/subscriptions/{id}` | `{removed}`; `404 subscription_not_found`. |
 | `POST /v1/push/test {id?}` | A test push to that subscription (default: the caller's); waits: `{results: [{id, ok, delivery: {result: sent\|gone\|failed, status?, error?}}]}`. |
-| `POST /v1/push/apns {token, lang?}` | Native app device token → `201`; `503 apns_disabled` until APNs is configured. |
+| `POST /v1/push/apns {token, lang?, notifications?}` | Native app device token → `201` subscription view + `apnsEnabled`. `notifications`: what iOS lets the app show (`authorization`, `alert`, `lockScreen`, `timeSensitive`, `scheduledDelivery`, …), logged as `apns token registered`. The token is kept even while APNs is off; pushes to it start once a key is installed (and do not count as failures until then). |
+| `POST /v1/push/liveactivity {kind, token, approvalId?}` | The approval Live Activity's APNs tokens (hex, like device tokens) → `201 {ok: true}`. `kind: start`: the push-to-start token, one per device (replaced on each call). `kind: update`: one activity's token, with its `approvalId` (`apr_…`, required), one per device and approval. `400 bad_request` for a bad token, kind or id. Kept while APNs is off. A new approval request starts the activity on every device with a start token; its decision, withdrawal or expiry ends it through the update tokens, which are then forgotten (`docs/notifications.md`, "Live Activity"). |
 
 Settings:
 
 ```json
 { "categories": {"lucina_message": true, "reminder": true, "calendar": true, "device_confirm": true,
-                 "shopping": true, "presence": false, "system": false},
+                 "agent": true, "shopping": true, "presence": false, "system": false},
   "quietHours": {"enabled": false, "start": "22:30", "end": "07:30"},
   "timeZone": "Europe/Rome", "dndUntil": null, "calendarLeadMinutes": 10,
   "remindersBypassQuiet": true, "digest": true, "previews": true, "language": "en",
@@ -1237,7 +1800,9 @@ Settings:
 Lucina posts a notification:
 `{category, body (1–2000), title? (≤120), route?, dedupKey? (≤200), timelineId?, channel?, data? (≤4 KiB)}`
 (unknown fields → `400`). `201 {status: "created", notification, pushed, deferred}`,
-or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen),
+or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen;
+for `system` a repeated `dedupKey` instead replaces the older inbox entry and
+the shown notification, so "nezopt: x failed" is replaced by "nezopt: x recovered"),
 `disabled` (category off) or `present` (a Lucina message while the owner is in
 the app). Device tokens and cookies get `401`.
 
@@ -1246,6 +1811,47 @@ the app). Device tokens and cookies get `401`.
 `{settings, present}`: the settings object above plus whether the app is in
 front, so Lucina's proactive engine plans around quiet hours and Do Not
 Disturb. No subscriptions or device list.
+
+## Server health
+
+Each host's sentinel posts a full snapshot every run; the "Server health"
+plugin (`/server-health`) reads them. State in `system-health.json` (0600).
+Alerts are separate: the sentinel posts them to `POST /v1/notify` with
+`category: "system"`, `dedupKey: "<host>:<check id>"`, `route: "/server-health"`
+(the `system` category is off by default: the owner enables it in settings).
+
+### `POST /v1/system/health` (service token)
+
+Body ≤ 512 KB (`413 payload_too_large` above):
+
+```json
+{ "host": "nezopt", "at": "2026-10-27T10:30:00Z", "overall": "ok",
+  "metrics": { "disks": [{"mount": "/", "used_pct": 59.1, "free_gb": 736.0}],
+               "cpu_temp_c": 71.5, "load": [1.2, 1.4, 1.6], "mem_used_pct": 62.0, "swap_used_pct": 10.0 },
+  "checks": [{ "id": "unit:lucina-rs.service", "kind": "unit", "name": "lucina-rs", "group": "Lucina",
+               "state": "ok", "detail": "active", "since": "2026-10-27T09:00:00Z", "restarts_1h": 0 }] }
+```
+
+`overall`/`state`: `ok|warn|crit`; `kind`: `unit|timer|container|k3s|forward|log|disk|deadman`;
+`group`: `Lucina|Pokoin|CardRails|AI|Homelab|Other`; `at`, `since` RFC 3339; `cpu_temp_c` may be
+`null`; percentages 0–100; `host` 1–64 of `[A-Za-z0-9._-]`; check ids unique (≤ 2000 checks).
+Bad bodies → `400 bad_request` naming the field. `200 {ok: true, stored: true, events: n}`;
+a snapshot whose `at` is not newer than the stored one for that host (a retry) →
+`200 {ok: true, stored: false}`, nothing changes. At most 16 hosts (`409 too_many_hosts`).
+
+Every check present in both the previous and this snapshot whose `state` changed becomes an
+event (`at` = the snapshot's `at`); events are kept 30 days.
+
+### `GET /v1/system/health` (device or session)
+
+```json
+{ "hosts": [{"host": "nezopt", "received_at": "2026-10-27T10:30:02Z", "snapshot": {…as posted…}, "stale": false}],
+  "events": [{"at": "2026-10-27T10:05:00Z", "host": "nezopt", "check_id": "unit:lucina-rs.service",
+              "name": "lucina-rs", "from": "ok", "to": "crit", "detail": "restarted 12 times in 1 h"}] }
+```
+
+`stale`: nothing received for more than 15 minutes (the app shows the host as unreachable).
+`events`: newest first, last 30 days, at most 200.
 
 ## Proactive outreach
 
@@ -1351,14 +1957,26 @@ their `url`.
 
 ## Calendar
 
-All sources merged: Google Calendar (synced into `calendar.json` every
+**Lucina's own calendar is the owner's calendar** (since 2026-10-30): new
+events from the Calendar tab, from Lucina ("add it to my calendar") and
+accepted proposals are stored by secretary-server in
+`$SECRETARY_DATA_DIR/calendar-events.json` (primary data: atomic 0600
+writes, a corrupt file stops the server; backed up daily to mybook with the
+notes by nezopt's `secretary-notes-backup`). Each event is kept in Google
+Calendar's event shape (`summary`, `start`/`end`, `location`,
+`description`, `hangoutLink`, `extendedProperties.private.addedBy`,
+`created`, `updated`), so the same code validates and expands it, and a
+Google sync can copy it as it is. No Google grant is needed for any of it.
+
+All sources merged: Lucina's own calendar, Google Calendar (synced into `calendar.json` every
 `SECRETARY_CALENDAR_SYNC_SECS`, default 300, with sync tokens; a `410 Gone`
 triggers a full resync from 365 days back; recurring events are expanded by
 `secretary-calendar`, DST-correct, with EXDATEs and per-instance
 exceptions), ICS subscriptions, and the iPhone's EventKit events from the
 latest `POST /v1/device/state` snapshot (`events: [{id, title, start, end,
-allDay?, location?, calendar?, notes?}]`, start/end RFC 3339, epoch ms or
-`YYYY-MM-DD`). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
+allDay?, location?, calendar?, notes?, url?, alarms?, free?}]`, start/end RFC 3339, epoch ms or
+`YYYY-MM-DD`; `alarms`: minutes before the start; `notes` at most 2000 characters and left out when the
+snapshot would outgrow its body limit; `notes` and `url` stay in the calendar and are not forwarded to Lucina). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
 service token** (`svc_…`).
 
 Event:
@@ -1367,23 +1985,59 @@ Event:
 { "id": "google:abc_20261022T070000Z", "source": "google", "sourceId": "abc", "calendar": "Google",
   "title": "Gym", "start": "2026-10-22T07:00:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false,
   "startMs": 1792652400000, "endMs": 1792656000000, "location": "…", "url": "https://calendar.google.com/…",
+  "conferenceUrl": "https://meet.google.com/…", "addedBy": "Lucina",
+  "alarms": [60, 1440], "alarmsDefault": false, "free": false, "travelMin": 20, "leaveAlert": true,
   "recurring": true, "editable": true }
 ```
 
+Event settings (the event sheet's Settings, like Apple Calendar's):
+- `alarms`: alerts in minutes before the start, ascending (at most 5, 0–40320). From Google's
+  `reminders.overrides`, an ICS `VALARM` with a relative `TRIGGER` (absolute and end-related ones are not
+  shown) or the iPhone's EventKit alarms. `alarmsDefault: true`: the calendar's defaults apply (Google
+  `reminders.useDefault`, filled in from `events.list`'s `defaultReminders` once a sync has seen them; a
+  Lucina event without its own alerts gets the owner's `calendarLeadMinutes` "Coming up").
+- `free`: shown as free (Google `transparency: "transparent"`, ICS `TRANSP:TRANSPARENT`, EventKit
+  availability free).
+- `travelMin`: travel time before the start (`extendedProperties.private.travelMin`, ICS
+  `X-APPLE-TRAVEL-DURATION`); `leaveAlert`: a "time to leave" alert at start − `travelMin`
+  (`extendedProperties.private.leaveAlert`). The clients work the travel time out with `/v1/maps/routes`
+  (or MapKit) and send it with the alert.
+- `iphone:` events are read-only here. On the phone the event sheet reads the event itself through EventKit (full
+  notes, alerts, show as) and changes alerts, show as and its calendar there when that calendar is writable; the next
+  snapshot brings the change here. EventKit has no travel time, so on these events "time to leave" is an alert at
+  the worked-out travel time.
+- Lucina's own events notify at their own alerts and at the leave time (title "Time to leave");
+  Google's alerts are Google's (and the iPhone's) to ring.
+
 All-day events have `start`/`end` as `YYYY-MM-DD` (end exclusive) and
-`allDay: true`. Ids: `google:<event or instance id>`, `ics:<sub>:<hash>`,
-`iphone:<EventKit id>`.
+`allDay: true`. Ids: `lucina:<ev_…>` (calendar "Lucina"),
+`google:<event or instance id>`, `ics:<sub>:<hash>`,
+`iphone:<EventKit id>@<start ms>`. `editable` is true for Lucina's and
+Google events. `conferenceUrl`: Google's `hangoutLink` / video entry point,
+else the first Meet/Zoom/Teams/Webex/Whereby https link in the location,
+notes or url. `addedBy`: who created it (`Lucina` for the service token, the
+device name for the app, the proposer for an accepted proposal; Google's
+creator otherwise). Once Google is connected the iPhone mirrors the same
+Google events; an `iphone:` event whose id contains `:<google id>@google.com`
+at the same start as a `google:` event is dropped, so nothing shows twice.
+
+"Coming up" notifications cover the iPhone's and Lucina's own timed events
+(the next 35 days, refreshed after each write and every sync; Lucina's at their
+own alerts when they have them); their
+`route` is `/calendar?event=<merged id>&at=<start ms>`, which opens the
+Calendar tab on that event.
 
 | Route | |
 |---|---|
-| `GET /v1/calendar/events?from&to&days&sources` | `from`/`to`: `YYYY-MM-DD` (owner's zone, `to` inclusive) or RFC 3339; default today + 7 days; `days` 1–400; `sources=google,ics,iphone`. `{from, to, timeZone, events, sources}` (`sources` has each source's status). Range ≤ 400 days. |
+| `GET /v1/calendar/events?from&to&days&sources` | `from`/`to`: `YYYY-MM-DD` (owner's zone, `to` inclusive) or RFC 3339; default today + 7 days; `days` 1–400; `sources=lucina,google,ics,iphone`. `{from, to, timeZone, events, sources}` (`sources` has each source's status; `lucina: {count}`). Range ≤ 400 days. |
 | `GET /v1/calendar/free?from&to&minutes=60&dayStart=9&dayEnd=19&limit=5` | Gaps between timed events inside working hours: `{slots: [{start, end}]}`. All-day events do not block. |
 | `POST /v1/calendar/sync` | Sync now: `{google: {ok, changed?, error?}, ics: [{id, ok, changed?, error?}]}`. `error: "reconnect_needed"` when Google revoked access. |
-| `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, timeZone?}` → Google primary calendar. `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
-| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration. Google events only (`422 read_only_source` for ICS/iPhone). |
-| `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only. |
-| `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP): body as for create plus `from`; validated, kept 7 days, ≤ 50. |
-| `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event) or dismisses it **in the app**; the service token gets `403 owner_only`. |
+| `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, conferenceUrl?, timeZone?, target?}` → Lucina's own calendar (`target: "google"`: the Google primary calendar instead). `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
+| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration; `""`/`null` clears location, notes or `conferenceUrl`. Settings: `alarms` (list of minutes; `null`: the calendar's defaults), `free`, `travelMin` (`0`/`null` clears), `leaveAlert`. Lucina's and Google events (`422 read_only_source` for ICS/iPhone). |
+| `POST /v1/calendar/events/{id}/move` | `{target: "lucina"\|"google", confirm: true}`: creates the event in the other calendar (text, times, settings, private properties; a video link goes into Google's notes) and removes it from its own. `{moved, from, event}` (the new id). `422 recurring_event` for repeating events, `400` when it is already there. |
+| `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only; deleting a Lucina event that is already gone is `200`. |
+| `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP, agents), and from Lucina when her direct create for the owner failed: body as for create plus `from` and an optional `reason` (≤ 300 characters, why it is not an event yet); validated, kept 7 days, ≤ 50. The owner's own requests to Lucina go straight to `POST /v1/calendar/events`. |
+| `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event in Lucina's own calendar, `addedBy` = the proposer) or dismisses it **in the app**; the service token gets `403 owner_only`. |
 
 Errors: `409 google_not_connected`, `409 google_reconnect_needed` (show
 Reconnect in Links), `404 event_not_found`, `400 google_rejected`, `502
@@ -1507,17 +2161,20 @@ from Todoist durations or the title ("15 min shadowing").
 ## Notes
 
 Briefings, notes and documents the owner reads in the app (Notes view on
-web and iOS) and that Lucina recalls by name. ChatGPT, Grok and Claude Code
-save them through Lucina MCP (`note_save`, `note_append`), Lucina through
-her service token, the owner in the app.
+web and iOS) and that Lucina recalls by name; since Lucina Keep also colored
+notes, checklists, labels, archive, attachments and reminders (design and
+details: [keep.md](keep.md)). ChatGPT, Grok and Claude Code save notes through
+Lucina MCP (`note_save`, `note_append`), Lucina through her service token, the
+owner in the app.
 
 Auth: a device (Bearer, or the session cookie plus `X-Secretary-CSRF: 1` for
 writes) **or** Lucina's service token. Every write is logged (id, slug,
-size, source, caller; never the content). Bodies on these routes may be up
+size, source, caller; never the content). JSON bodies on these routes may be up
 to 768 KiB (a note holds at most 256 KiB of text; JSON escaping can double
-it).
+it); attachment uploads up to 25 MB.
 
-A note:
+A note (fields after `updatedAt` are the Keep additions; all have defaults, so
+notes written earlier load unchanged):
 
 ```json
 {
@@ -1529,74 +2186,176 @@ A note:
   "source": "chatgpt",
   "pinned": true,
   "createdAt": "2026-10-22T11:30:00.123Z",
-  "updatedAt": "2026-10-22T11:30:00.123Z"
+  "updatedAt": "2026-10-22T11:30:00.123Z",
+  "color": "default",
+  "archived": false,
+  "attachments": [],
+  "annotations": [],
+  "collaborators": [],
+  "position": 1761132600123.0,
+  "rev": 17
 }
 ```
 
+A list note also has `"items": [{"id": "i_0a1b2c3d4e5f", "text": "milk", "checked": false, "indent": 0}]`
+(and `content` is derived from it, `- [ ] milk`); a note with a reminder has
+`"reminder": {"at": "2026-11-01T09:00:00+01:00", "recurrence": "weekly", "lucinaId": "r42"}`
+(`recurrence` and `lucinaId` optional); an imported one has `"import": {...}`;
+a trashed one has `"deletedAt"`.
+
 - `slug`: unique among live notes, `[a-z0-9]` then `[a-z0-9-]` (no `--`, no
-  trailing `-`), at most 64; not `trash`, `new` or `search`. Wherever a route
-  takes `{key}`, it is the id or the slug (case-insensitive), so
-  `/v1/notes/craftit-meeting` works.
+  trailing `-`), at most 64; not `trash`, `new`, `search`, `labels`, `changes`,
+  `attachments`, `import` or `batch`. Wherever a route takes `{key}`, it is the
+  id or the slug (case-insensitive), so `/v1/notes/craftit-meeting` works.
+- `title`: at most 200 characters; **may be empty** when the note has content,
+  items or attachments (`400 title: must not be empty` otherwise). An untitled
+  note's slug comes from the first six words of its text.
 - `content`: markdown, at most 256 KiB (UTF-8), no control characters other
   than newline and tab; `\r\n` becomes `\n`. Clients render it without raw
   HTML and only follow `http(s)`/`mailto` links.
-- `tags`: at most 16, each at most 32 letters, digits, spaces, `-` or `_`;
-  stored lower-case, a leading `#` dropped, duplicates removed.
+- `tags` (= Keep labels): at most 50, each at most 50 characters, any characters
+  except control characters and `,`; stored trimmed, whitespace collapsed, a
+  leading `#` dropped, lower-case; duplicates removed. Bodies may also send
+  `labels` (alias; display names); both are merged. Display names live in the
+  label registry (below).
+- `color`: `default red orange yellow green teal blue cerulean purple pink brown gray`.
+- `position`: manual order, higher = earlier in the grid; defaults to `createdAt`
+  in epoch milliseconds.
+- `rev`: the store revision of the last write to the note (server-set; see
+  [Changes](#get-v1noteschangessincelimit)).
 - `source`: who wrote it, `[a-z0-9][a-z0-9-]*` (`owner`, `lucina`, `chatgpt`,
   `grok`, `claude-code`, …). Default: `lucina` for the service token,
   `owner` otherwise.
 - `updatedAt` has millisecond precision and doubles as the version for
   `baseUpdatedAt`.
 
-### `GET /v1/notes?q=&tag=&limit=200`
+### `GET /v1/notes?q=&tag=&limit=200&archived=&color=&type=`
 
-`{"notes": [NoteSummary]}`: pinned first, then the most recently updated. A
-summary is the note without `content`, plus `size` (bytes) and `excerpt`
-(the start of the content, or the text around the first match of `q`).
-`q` (at most 200 characters) looks in the title, slug, tags and content,
-case- and accent-insensitive; `tag` keeps notes with that tag. `limit`:
-1-500.
+`{"notes": [NoteSummary]}`: pinned first, then the most recently updated; the
+trash is not listed. A summary is the note without `content`, plus `size`
+(bytes) and `excerpt` (the start of the content, or the text around the first
+match of `q`), and `color`, `archived`, `isList`, `itemsTotal`, `itemsDone`,
+`attachmentCount`, `hasImage`, `reminderAt` (absent without a reminder),
+`position`, `rev` and `labels` (display names in tag order). `q` (at most 200
+characters) looks in the title, slug, tags and content (item text included),
+case- and accent-insensitive; `tag` keeps notes with that label (normalized the
+same way); `archived=include|exclude|only` (default `include`); `color`;
+`type=list|text|image|audio|link|reminder`. `limit`: 1-500. Unknown values are
+`400`.
 
 ### `POST /v1/notes`
 
-`{title, content?, slug?, tags?, source?, pinned?}` → `201` and the note.
-Without `slug`, one is made from the title (`-2`, `-3`, … when taken). An
-explicit slug that is taken answers `409 slug_taken` (update or append to
-that note instead). At most 2000 live notes (`409 notes_full`).
+`{title?, content?, slug?, tags?, labels?, source?, pinned?, color?, archived?,
+items?, annotations?, collaborators?, reminder?, position?, attachments?}` →
+`201` and the note. `items` (`[{text, checked?, indent?, id?}]`, at most 1000)
+makes a list note and `content` is derived (and any `content` in the body
+ignored). Without `slug`, one is made from the title (`-2`, `-3`, … when
+taken). An explicit slug that is taken answers `409 slug_taken` (update or
+append to that note instead). At most 20000 live notes (`409 notes_full`).
+`reminder` `{at, recurrence?}` creates a Lucina reminder (see
+[Reminders](keep.md#reminders)); Lucina failing is `502` and nothing is saved.
+`rev`, `import`, `createdAt` and `reminder.lucinaId` are accepted and ignored.
+`attachments` refers to files already stored (`[{id, file | mimetype}]`); upload
+new ones with the route below.
 
 ### `GET /v1/notes/{key}`
 
-The note, or `404 note_not_found`.
+The note, or `404 note_not_found` (notes in the trash are not found here; see
+the trash and `changes`).
 
 ### `PATCH /v1/notes/{key}`
 
-Any of `{title, content, slug, tags, pinned}`; absent fields keep their
-value. Optional `baseUpdatedAt`: the `updatedAt` the client edited; when
-the note changed since, `409 conflict` and nothing is saved. Optional
-`source` names who edited (logged only). Unknown fields are refused.
+Any of the `POST` fields (except `createdAt`); absent fields keep their value.
+Optional `baseUpdatedAt`: the `updatedAt` the client edited; when the note
+changed since, `409 conflict` and nothing is saved. Optional `source` names who
+edited (logged only). Unknown fields are refused.
+
+- `content` on a list note is parsed back into items (`- [ ]`/`- [x]` lines keep
+  their state, other non-empty lines become unchecked items); `items` and
+  `content` in one body: `items` wins; `items: null` is `400`.
+- `{"convert": "text"}` turns a list note into plain lines, `{"convert": "list"}`
+  turns every non-empty line into an item (cannot be combined with `items` or
+  `content`).
+- `reminder: {at, recurrence?}` sets or changes the reminder (a new Lucina
+  reminder, the old one cancelled), `reminder: null` clears it (cancelling it).
+  Lucina failing is `502` (`503 lucina_not_configured` without a Lucina) and
+  the note is unchanged.
+- `attachments` replaces the attachment list with already-stored files.
 
 ### `POST /v1/notes/{key}/append`
 
 `{content, separator?}`: adds `content` at the end exactly as given (for
 documents sent in chunks); `separator` (at most 8 characters, e.g.
 `"\n\n"`) goes between the old text and the new one when the note is not
-empty. Over 256 KiB in total: `413 note_too_large`.
+empty. On a list note the appended lines become items at the end. Over 256 KiB
+in total: `413 note_too_large`.
 
 ### `DELETE /v1/notes/{key}`
 
 Moves the note to the trash: `{deleted: true, id, slug, deletedAt,
-purgeAfter}`. The slug is free again at once.
+purgeAfter}`. The slug is free again at once. A Lucina reminder of the note is
+cancelled (best effort).
 
 ### `GET /v1/notes/trash`
 
 `{"notes": [NoteSummary + deletedAt, purgeAfter], "days": 30}`, newest
-deletion first. Notes deleted more than 30 days ago are purged here and on
-every delete.
+deletion first. Notes deleted more than 30 days ago are purged (forever).
 
 ### `POST /v1/notes/trash/{id}/restore`
 
 Brings the note back (by id) and answers it. If a live note took its slug
 meanwhile, the restored one gets `-2` (or the next free number).
+
+### `DELETE /v1/notes/trash/{id}` and `DELETE /v1/notes/trash`
+
+Delete one trashed note forever (`404 note_not_found` when it is not in the
+trash), or empty the trash: `{"ok": true, "removed": n}`. Attachment files that
+no remaining note uses are removed.
+
+### `POST /v1/notes/batch`
+
+`{ids: [≤500], set?: {color?, pinned?, archived?}, addLabels?: [name],
+removeLabels?: [name], trash?, restore?, deleteForever?}` → `{"notes": [Note]}`,
+the notes that changed (`deleteForever` adds `"removed": [id]`). `ids` are ids
+or slugs; unknown ones are skipped. `trash` / `restore` / `deleteForever` exclude
+each other and `set` / labels. Batch cannot set reminders.
+
+### `GET /v1/notes/changes?since=&limit=`
+
+The sync feed for the web app's cache. `{"notes": [Note], "removed": [id],
+"cursor": "<rev>", "hasMore": bool}`: full notes (live, archived and trashed,
+`deletedAt` set for trash) whose `rev` is above `since`, the ids deleted forever
+since, in revision order, at most `limit` (1-500, default 200). Keep the
+`cursor` and pass it as the next `since` while `hasMore`. No `since` (or `0`)
+returns everything. `410 cursor_expired` when `since` is older than the 60 days
+tombstones are kept (or is not a cursor of this store): drop the cache and load
+from 0.
+
+### Labels
+
+- `GET /v1/notes/labels` → `{"labels": [{tag, name, count}]}`, by name
+  (case-insensitive); `count` = live non-trashed notes.
+- `POST /v1/notes/labels` `{name}` → `201 {tag, name, count}`; `409 label_exists`.
+- `PATCH /v1/notes/labels/{tag}` `{name}` → `{tag, name, count}`: a new display
+  case for the same tag, or a new tag rewritten in every note (live and trash;
+  merged into the label that already has that name). `404 label_not_found`.
+  `{tag}` is percent-encoded.
+- `DELETE /v1/notes/labels/{tag}` → `{"ok": true, "removed": n}`: out of the
+  registry and every note.
+
+### Attachments
+
+- `POST /v1/notes/{key}/attachments?name=` with the raw bytes as the body and
+  `Content-Type` = mimetype → `201` and the note. Images (`png jpeg gif webp
+  heic heif`), audio (`3gpp mp4 aac mpeg ogg webm x-m4a`) and `application/pdf`
+  only (`415 unsupported_media_type`), at most 25 MB (`413
+  attachment_too_large`) and 50 per note (`409 attachments_full`). Stored by
+  SHA-256 and shared by notes with the same bytes; the attachment's `id` is the
+  hash: `{id, file: "<sha256>.<ext>", mimetype, size, name?, createdAt}`.
+- `DELETE /v1/notes/{key}/attachments/{attId}` → the note.
+- `GET /v1/notes/attachments/{file}` → the bytes (`file` as in `attachments[].file`;
+  `404` otherwise): `Cache-Control: private, max-age=31536000, immutable`, `ETag`,
+  `Range`.
 
 ### Seed notes
 
@@ -1607,6 +2366,87 @@ block (`slug`, `title`, `tags: a, b`, `source`, `pinned`) or `.json` files
 kept unless `--replace`. `secretary-server notes list` prints id, slug,
 size, source and title. The running server picks imported notes up on its
 next request.
+
+## Ops record
+
+Lucina's record of every project (crate `lucina-ops` in lucina-rs): deploys, incidents, decisions, status and
+findings, written to the Obsidian folder `Lucina/` (daily log, project pages, incident pages; synced to the owner's
+Mac) and to the Honcho session `lucina_ops`. Owner devices only (device token or web session), forwarded to Lucina's
+`/api/secretary/ops/*`; the MCP names its client in `X-Secretary-Caller`, which Lucina keeps as the reporter.
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| POST | `/v1/ops/records` | NewRecord (below, ≤ 256 KiB) | 201 new / 200 duplicate: `{id, duplicate, redacted, honcho, paths: {log, project, incident?}}` |
+| GET | `/v1/ops/records/{id}` | id = 16 lowercase hex | the stored record; 404 `record_not_found` |
+| GET | `/v1/ops/search` | `q, project, kind, since, until (YYYY-MM-DD), limit (1-50)` | `{items: [...], honcho: ok\|off\|error}` |
+
+NewRecord (snake_case; unknown fields are refused): `kind` deploy|incident|decision|status|finding, `project` slug
+`[a-z0-9][a-z0-9-]{0,47}`, `title` (1-200, one line), `body` (≤ 20000, Markdown), `links` (≤ 20), `commit` (7-40 hex),
+`host`, `severity` low|medium|high|critical, `timeline` (≤ 50 lines), `cause`, `fix`, `follow_ups` (≤ 20), `at`
+(RFC 3339, when it happened), `dedup_key` (≤ 200). Secrets in every field are redacted before anything is stored.
+Lucina answers 404 `ops_disabled` when the record is off (`LUCINA_OPS_VAULT_DIR` unset). MCP tools: `ops_record`
+(scope write), `ops_search` and `ops_get` (scope read); `agents` tokens may call all three.
+
+## Flaw tracker
+
+The small flaws the owner notices across his clients (crate `lucina-flaws` in lucina-rs, design
+[`docs/design/flaws.md`](design/flaws.md)). Owner devices only (device token or web session; Lucina's service token is not
+accepted), forwarded to Lucina's `/api/secretary/flaws/*`; the MCP names its client in `X-Secretary-Caller`, which Lucina
+keeps as the reporter.
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/flaws` | `q, state, platform, status, limit (1-200)` | `{items}`, worst first |
+| POST | `/v1/flaws` | `{words, title?, severity?, affected?, thread?, discovered_from?, gate?}` | 201 `{flaw, possible_duplicates}` |
+| GET | `/v1/flaws/matrix` | | `{platforms, rows: [{id, title, severity, state, cells: {<platform>: {status, layer, evidence, commit, deploy_tag, workspace, agent, session}}}]}` |
+| GET | `/v1/flaws/{id}` | id = `fl-` and 8 lowercase hex | the flaw, its `targets` and `events`; 404 `flaw_not_found` |
+| PATCH | `/v1/flaws/{id}` | `{title?, severity?, duplicate_of?, thread?, gate?, decision_id?, dismissed?}` | the flaw |
+| PUT | `/v1/flaws/{id}/targets/{platform}` | `{status?, layer?, evidence?: {kind, reference, build?, note?}, workspace?, session?, commit?, deploy_tag?, build?, note?}` | the target; 422 `evidence_required`, 409 `bad_transition` |
+| POST | `/v1/flaws/{id}/dispatch` | `{platform}` | 202 the target; 409 `not_claimable`, `needs_owner` or `busy`; 503 `dispatch_failed` |
+
+Platforms: `web`, `mac`, `android`, `ios`, `juno`. `verified` and `not_affected` need evidence of kind `harness_run` (with
+`build`), `debug_event` or `screenshot`; `code_reading` and `owner_report` only open a target. Setting a layer on an
+`affected` target starts its fix on Lucina's next round. 404 `flaws_disabled` when `LUCINA_FLAWS=off`.
+
+## Lucina's mailbox for Claude (reach)
+
+Lucina can message Claude (issue reports, requests the owner asked her to pass on). With no live Claude channel the message
+waits in her mailbox (lucina-rs `crates/lucina-server/src/reach.rs`); a Claude session reads it and answers, and the reply
+goes back into the owner's conversation with Lucina, who relays it. Forwarded to Lucina's `/api/secretary/reach/*`. Owner
+devices only (device token or web session; Lucina's service token is not accepted), like `/v1/ops`. Query values and the
+thread id (`rt-` and 12 lowercase hex digits) are validated first (400 `bad_request`).
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/lucina/reach/threads` | `to` claude\|grok\|agents, `status` open\|all\|answered\|failed\|queued\|sent (`open` = waiting for an answer), `limit` (1-100) | `{threads: [{id, to, kind, subject, text, channel, created, status, route, detail, replies: [{from, text, at}]}]}`, newest first |
+| GET | `/v1/lucina/reach/threads/{id}` | | one thread plus `envelope` (the full text as sent); 404 `thread_not_found` |
+| POST | `/v1/lucina/reach/threads/{id}/reply` | `{from?, text}` (body ≤ 64 KiB, `text` 1-8000 characters, `from` ≤ 60, one line) | `{thread, status, delivered}`; 404 `thread_not_found` |
+
+A reply's `from` reaches Lucina as `<from or Claude> (<client>)`, where `<client>` is the MCP client named in
+`X-Secretary-Caller` (`mcp:claude`), so she knows which session answered; a reply from the app itself is `from` alone.
+Lucina answers 404 `reach_disabled` when messaging is off (`LUCINA_REACH`). MCP tools: `lucina_inbox` (scope read; `to`,
+`status`, `limit`, or `thread` to read one in full) and `lucina_reply` (scope write: `thread`, `text`, optional `from`);
+`agents` tokens may call both.
+
+## AU Find
+
+Aarhus University people, buildings and campus maps through AU Find (aufind.au.dk), forwarded to Lucina's
+`/api/secretary/au/*` (lucina-rs), which applies the retries (surname, then prefix) and the disambiguation (top 3 when
+ambiguous). Read-only; any owner device (device token or web session) and the MCP's device token. The query is
+validated first and only the parameters below travel on (unknown ones are 400); Lucina's JSON passes through as is.
+
+| Method | Path | Query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/au/health` | — | `{reachable, af_server: {…}\|null, error?}` |
+| GET | `/v1/au/people` | `q` (1-200 characters), `lang` da\|en | `{source: "aufind", status: found\|ambiguous\|not_found\|unavailable, query, tried: [{q, total}], total, people: [{uuid, name, position, units, email, phone, building, room, au_room, address, profile_url, map_url, source, profile_source}], more?, fallback?, upstream}` |
+| GET | `/v1/au/buildings` | `q` (1-200 characters) | `{source, status, buildings: [{id, names, address, latitude, longitude, polygon}], map?: {z, path}}` |
+| GET | `/v1/au/map.png` | `building` (`[0-9A-Za-z]{1,6}`) or `lat` (54-58) + `lng` (8-16); `z` 14-18 | `image/png` 800×600, `Cache-Control: private, max-age=3600` |
+
+Lucina unreachable, timing out, failing (5xx) or without the routes → 503 `au_unavailable`. Lucina's chat replies show
+the maps as an `image` block whose `src` is `/v1/au/map.png?…` (see `docs/lucina-message-format.md`). MCP tools (scope
+read; `agents` tokens too): `au_people_search {query, lang?}` and `au_building {query}` (a numbered text rendering
+ending with the source line, then the raw JSON), `au_campus_map {building?, latitude?, longitude?, zoom?}` (the PNG as
+an image block and a caption; building → zoom 17, nothing → the AU park 56.1697, 10.2039 at zoom 15).
 
 ## Library
 
@@ -1930,6 +2770,116 @@ location/source and say when progress, sessions or relationships are unknown.
 note as `[obsidian:<vault>/<path>#L<line>]`, stating that mentions are not
 reading evidence and saying plainly when no vault has been indexed.
 
+## Approvals
+
+Owner approvals (the whole contract is the module doc of `crates/secretary-server/src/approvals.rs`).
+A requester (service token or device) asks and long-polls; one of the owner's devices answers. A
+sensitive approve (`root.*`, `secret.*`, `approver.*`, …) needs a proof by one of the deciding
+device's own keys, or the app PIN. Denying never does.
+
+| Route | Auth | |
+|---|---|---|
+| `POST /v1/approvals` | svc or device | create |
+| `GET /v1/approvals/{id}/wait?timeout=` | the requester | long poll (≤ 30 s); the grant once approved |
+| `POST /v1/approvals/{id}/withdraw` | the requester | a pending request becomes `expired` |
+| `GET /v1/approvals/public-key` | public | the grant verification key |
+| `GET /v1/approvals?status=pending\|all&since=&wait=` | device | what this device may decide now |
+| `GET /v1/approvals/{id}` | device | one request, decided or expired too (`decidedVia`, `biometric`, `verifiedBy`) |
+| `POST /v1/approvals/{id}/decide` | device | `{decision, payloadHash, proof?: {keyId, signature}, pin?}` → `{status}` |
+| `GET`, `PUT /v1/approvals/settings` | device | main device; each device's `hasBiometricKey`, `hasUnlockKey` |
+| `POST`, `DELETE /v1/approvals/keys` | device | this device's biometric key |
+| `DELETE /v1/approvals/keys/{deviceId}` | device with a key | revoke another device's key (proof or PIN) |
+| `POST`, `DELETE /v1/approvals/unlock-key` | device | this device's unlock key (below) |
+| `PUT`, `DELETE /v1/approvals/pin` | device | the optional app PIN |
+
+`proof.signature`: base64 DER ECDSA P-256 over `secretary-approval-v1\n{id}\n{payloadHash}\n{decision}`.
+
+**Repeated answers.** The same device sending the same decision (and `payloadHash`) for a request it
+already decided gets `200 {status, repeated: true}`: nothing is recorded or pushed again, no PIN or
+proof is checked. A different decision, or another device, is `409 approval_decided`.
+
+**Unlock key** (optional, one per device). A second Secure Enclave key that the device can use
+whenever it is unlocked, without Face ID at signing time. The iPhone uses it for the notification's
+one-tap Approve: iOS asks Face ID or the passcode to run the action, and the biometric key's own
+prompt can't show from a background action. The trade-off: anyone who can unlock the iPhone can
+approve a root command with one tap, with no second Face ID.
+
+- `POST /v1/approvals/unlock-key {publicKey, proof: {signature}}`: only for a device that has an
+  active biometric key (else `403 biometric_key_required`). `publicKey` is base64 of an uncompressed
+  P-256 point; `proof.signature` is that biometric key's signature over
+  `secretary-unlock-key-v1\n{deviceId}\n{publicKey}` (else `400 proof_invalid`). It replaces any
+  earlier unlock key of the device and answers `{keyId}`. Audit: `unlock_key.enrolled`.
+- `DELETE /v1/approvals/unlock-key` → `{removed}`. Audit: `unlock_key.removed`. Removing, revoking or
+  replacing the device's biometric key also drops it.
+- In `decide`, a proof by the deciding device's unlock key (its `keyId`) verifies like the
+  biometric key, except for `approver.*` actions (adding approvers keeps Face ID / Touch ID:
+  `403 biometric_required`). It is recorded as `verifiedBy: "unlock_key"`, `biometric: false`,
+  `decidedVia: "unlock key (notification/card) on {device}"`. The grant carries
+  `verifiedBy: "unlock_key"` and `biometric: true`: in a grant `biometric` means the owner was
+  verified (it is also true for the PIN), and that is what the root and agentd verifiers check. One
+  device's keys never verify another device's decision.
+
+## Secrets ("Add secret")
+
+The owner stores secrets and creates projects in Infisical from the apps. **Device login only**
+(Bearer device token, or the browser session with `X-Secretary-CSRF: 1`); Lucina's service token
+gets 401. Every call signs one single-use **owner grant** (Ed25519, key
+`$SECRETARY_DATA_DIR/secret-grant.key`, 0600, made on first use; lifetime 90 s) naming exactly the
+action, and forwards it to Lucina (`POST /api/secretary/secrets/grant`), which relays it to
+infisical-brokerd. The broker trusts only this server's public key (`[owner_grants]` in
+`broker.toml`). Values are never logged, stored or put in a grant (it carries the sha256).
+
+| Route | Body / query | Answer |
+|---|---|---|
+| `GET /v1/secrets/status` | | `{grantKey, audience}`: the public key for broker.toml (also `secretary-server secret-grant-key`) |
+| `GET /v1/secrets/catalog` | | `{projects: [{id, name, slug, alias, environments: [{slug, name}]}]}`: every secret-manager project the broker's owner identity sees, names only |
+| `GET /v1/secrets/names` | `project, environment, path` | `{folders: [name], secrets: [{key, version, updated_at}]}` at that folder, no values |
+| `POST /v1/secrets` | `{name, value \| held, project, environment, path?, overwrite?, createFolder?, confirmed: true}` | `{key, project: {id, name}, environment, path, action: created\|updated, version, fingerprint, receipt}` |
+| `POST /v1/secrets/projects` | `{name, slug?, confirmed: true}` | `{project: {id, name, slug, environments}, access, receipt}`. No access for the agents or services identities. |
+
+`name`: `[A-Za-z0-9_.@-]`, 1-256. `path`: folders of the same characters. `value`: 1-65536 bytes.
+`held`: a value Lucina holds after the owner typed `/secret` or pasted a token in chat (410
+`held_expired` after 10 minutes). Errors: 400 `bad_request` (never echoes the value), 403
+`grant_*`, 404 `unknown_project`/`unknown_environment`, 409 `exists` (send `overwrite: true` after
+the owner saw the name), 502 `upstream_unauthorized` (the owner identity's org role cannot create
+projects), 503 `secrets_unconfigured` / `broker_unavailable`.
+
+Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved `NAME` in project /
+env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
+or replay cache, and token-shaped text is masked before the turn and offered as a held value.
+
+**Secret requests (agents).** `POST /v1/secrets/request` is a device-token route like
+`/v1/decisions` (secretary-mcp `secret_request`), not one of the device-login routes above: it
+asks, it never writes. Body `{name, project, environment, path?, reason, from?, new_project?,
+asking_client}` (≤ 8 KiB) → Lucina `POST /api/secretary/secrets/request`. She refuses any other
+field with 400 (`value_refused` for value-like names: `value`, `secret`, `psk`, `password`,
+`token`, `held`, `…key`) and a `reason`/`from` that holds a token shape or a value she knows. She
+posts one card to the owner's chat (`meta.kind: secret_request`): who asks and why, the button
+"Add NAME" (`kind: secret`, `{mode: save, name, project, environment, path}`) and "Not now"; plus
+"Create project" (`mode: project`) when the last catalog the owner's sheet loaded doesn't list
+`project` (or, before any catalog, when `new_project` is true). A push (`lucina_message`, dedup
+`tl:<item>`) goes with it. Answer `{status: asked | already_asked, itemId, name, project,
+environment, path, projectKnown: bool | null, createProject}`; the same request within 10 minutes
+is `already_asked` with the first card. The owner then saves through `POST /v1/secrets` as usual,
+so the value never passes through the agent, the timeline or a log. The sheet matches `project`
+by id, alias, slug or name, never picks another project for it, and puts the cursor in the value.
+
+**The queue and its cards.** A request names a secret, never a value, and waits in Lucina's queue
+(`crates/lucina-server/src/secret_requests.rs`, `<data_dir>/secret-requests.json`, names only): one
+card at a time in the owner's timeline, the next posted when it is saved, dismissed or expires (7
+days). The answer's `status` is `asked`, `queued` (with `ahead`) or `already_asked`. Lucina herself asks
+through the `secret_request` tool or the owner's "salva un segreto [NAME] [project/env]", in words,
+answered before the model. Device-only: `GET /v1/secrets/requests` (`{requests: [{id, name, project,
+environment, path, reason, who, status, fingerprint?, action?, itemId?}], active, queued}`, what the
+cards draw) and `POST /v1/secrets/requests/{id}/dismiss` ("Not now"; `{status, nextItemId}`). `POST
+/v1/secrets` takes an optional `request` id, closes that request and answers with `nextItemId`; a save
+without it closes a request with the same names.
+
+APNs key: a `value` named `APNS_AUTH_KEY_<KEYID>` (10 letters/digits; the whole `.p8` text) is also
+installed as this server's APNs key before it is forwarded, and push to the native app is on at once.
+400 `bad_request` when it is not a P-256 `.p8` (nothing is forwarded) or the server has no
+`SECRETARY_APNS_TEAM_ID`. The answer (also a forwarding error) carries `apnsInstalled: true`.
+
 ## Models
 
 The owner's private 3D gallery: models Lucina made with Meshy AI (crate
@@ -1973,6 +2923,12 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 400 | `due_in_past`, `unparseable_reminder`, `invalid_status` | Lucina | See the routes above. |
 | 401 | `unauthorized` | server | No/invalid/revoked device token or session. |
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
+| 400 | `proof_invalid` | server | Approvals: key (or unlock key) registration without a valid proof. |
+| 403 | `self_approval`, `not_main_device`, `biometric_required`, `biometric_key_required`, `pin_wrong` (+ `attemptsLeft`), `pin_auth_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
+| 429 | `pin_locked` | server | Approvals: 5 wrong PINs in a row; `Retry-After` is the seconds left of 15 min. |
+| 404 | `approval_not_found` | server | No such approval request (or not yours to wait on). |
+| 409 | `approval_decided`, `payload_mismatch` | server | Approvals. |
+| 410 | `approval_expired` | server | Deciding an approval request that ran out. |
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
 | 404 | `note_not_found` | server | No note with that id or slug. |
@@ -1981,7 +2937,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
 | 409 | `conflict` | server | `PATCH /v1/notes/{key}` with a stale `baseUpdatedAt`. |
 | 409 | `slug_taken`, `notes_full` | server | Notes: the slug is used by another note; 2000 live notes. |
-| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
+| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`, 1 MiB for `POST /v1/voice`) / 64 KiB (Lucina). |
 | 413 | `note_too_large` | server | A note would hold more than 256 KiB of text. |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
@@ -1992,14 +2948,16 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
-| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
+| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`, `POST /v1/voice`). |
+| 422 | `no_speech` | server | `POST /v1/voice`: empty or under 0.3 s of audio, or an empty transcript (on the socket: an `error` message). |
+| 429 | `voice_busy` | server | `POST /v1/voice`: the device's previous turn is still running. |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
+| 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` or `/v1/notify` without `SECRETARY_SERVICE_TOKEN_FILE`. |
-| 503 | `apns_disabled` | server | `POST /v1/push/apns` without APNs configured. |
 | 404 | `subscription_not_found` | server | `DELETE /v1/push/subscriptions/{id}`, `POST /v1/push/test`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
-| 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
+| 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, decision creation 60 s, else 15 s). |
 | 504 | `tts_unavailable` | server | Kokoro did not answer within 30 s. |
 
 Any other Lucina 4xx code is passed through with Lucina's status.
@@ -2059,3 +3017,42 @@ It matches the standalone `/lucina/` page that Caddy serves
 origins, so the web build must not use inline `<script>`, remote scripts or fonts, or
 remote images (`imageUrl` from a `generate_image` job will not render in an
 `<img>` under this CSP; open it as a link instead).
+
+### Decisions: `POST /v1/decisions`, `GET /v1/decisions/{id}`, `DELETE /v1/decisions/{id}`, `GET /v1/decisions`
+
+Device-token routes forwarded to Lucina's `/api/secretary/decisions…` with the
+server's Lucina credential. See [the decision contract](design/decisions-api.md)
+for request and response fields and the go-ahead policy.
+
+- POST accepts a JSON object up to 32 KB, passed through unchanged, and uses a
+  60 s upstream timeout (allow at least 65 s in clients).
+- GET by id requires `dc-` followed by exactly 12 lowercase hexadecimal digits;
+  invalid ids return 400. Lucina's `404 decision_not_found` passes through.
+- DELETE by id (same id rule) withdraws a pending decision; optional `reason`
+  (trimmed, at most 500 characters, else 400) is forwarded URL-encoded. Returns
+  the decision with status `withdrawn`.
+- GET list accepts only `status=pending|decided|expired` and `limit=1..100`
+  (default 20); unknown query parameters return 400. Returns `{"items": [...]}`,
+  newest first.
+
+Pending decisions mean do not act yet. Agents request a go-ahead with
+`lucina_decide` and follow it with `lucina_decision_status`; `ask_lucina` is
+answers-only for agent clients unless its one-message `allow` opts into a request kind.
+
+### About me: `GET /v1/about`, `POST /v1/about`, `PATCH /v1/about/{id}`, `POST /v1/about/{id}/end`, `POST /v1/about/{id}/retract`
+
+Device-token routes forwarded to Lucina's `/api/secretary/about…` with the
+server's Lucina credential: what Lucina knows about the owner, and the owner's
+corrections of it.
+
+- GET returns `{"facts": [...], "history": [...]}`: active facts, and
+  expired/retracted ones newest first.
+- POST adds a fact (`{text, category, validUntil?, validUntilCondition?}`) and
+  returns the created fact (source `owner-edit`).
+- PATCH by id changes any of `{text, category, validUntil, validUntilCondition}`
+  (`""` clears the validity part) and returns the fact.
+- POST `…/end` (`{reason?}`) marks the fact `expired`; POST `…/retract`
+  (`{reason?}`) marks it `retracted`; both return the fact.
+- Ids must match `af-` followed by exactly 16 lowercase hexadecimal digits,
+  else 400; bodies must be JSON objects up to 4 KB, else 400. Lucina's
+  `400 bad_request` / `secret_refused` and `404 not_found` pass through.

@@ -1,0 +1,498 @@
+{
+ "payloads": [
+  {
+   "reason": "finished",
+   "assistantMessage": null,
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "Finished working."
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "Finished working."
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "   \n\t ",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "Finished working."
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "Done.",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "Done."
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "## Summary\n\n- **Fixed** the `scroll` anchor in [the list](https://example.com/a_(b))\n- Added _tests_ and ~~removed~~ code\n> quoted *line*\n\n```rust\nfn main() {}\n```\n---\n1. one\n<https://example.com>",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "Summary Fixed the scroll anchor in [the list](https://example.com/a_(b)) Added tests and removed code quoted line fn main() {} one https://example.com"
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "![logo](img.png) and __bold__ text\r\nnext line　wide",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "logo and bold text next line wide"
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word wo..."
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "          yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy..."
+  },
+  {
+   "reason": "finished",
+   "assistantMessage": "~~~\ncode\n~~~\n***\n  3. item\n####### seven hashes",
+   "permissionRequest": null,
+   "title": "Agent finished",
+   "body": "code item ####### seven hashes"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": null,
+   "permissionRequest": null,
+   "title": "Agent needs permission",
+   "body": "Permission requested."
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p1",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "Run npm test",
+    "description": "Runs the tests"
+   },
+   "title": "Agent needs permission",
+   "body": "Run npm test - Runs the tests"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p2",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "  Same  ",
+    "description": "Same"
+   },
+   "title": "Agent needs permission",
+   "body": "Same"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p3",
+    "provider": "codex",
+    "name": "apply_patch",
+    "kind": "tool",
+    "input": {
+     "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "b": 1
+    }
+   },
+   "title": "Agent needs permission",
+   "body": "{\"a\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p4",
+    "provider": "mock",
+    "name": "MockQuestions",
+    "kind": "question",
+    "metadata": {
+     "source": "mock_questions"
+    }
+   },
+   "title": "Agent needs permission",
+   "body": "{\"source\":\"mock_questions\"}"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p5",
+    "provider": "mock",
+    "name": "  ",
+    "kind": "plan"
+   },
+   "title": "Agent needs permission",
+   "body": "plan"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p6",
+    "provider": "mock",
+    "name": "ExitPlanMode",
+    "kind": "plan",
+    "description": "**Plan**: do `x`"
+   },
+   "title": "Agent needs permission",
+   "body": "Plan: do x"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": "",
+   "permissionRequest": null,
+   "title": "Agent needs permission",
+   "body": "Permission requested."
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p1",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "Run npm test",
+    "description": "Runs the tests"
+   },
+   "title": "Agent needs permission",
+   "body": "Run npm test - Runs the tests"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p2",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "  Same  ",
+    "description": "Same"
+   },
+   "title": "Agent needs permission",
+   "body": "Same"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p3",
+    "provider": "codex",
+    "name": "apply_patch",
+    "kind": "tool",
+    "input": {
+     "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "b": 1
+    }
+   },
+   "title": "Agent needs permission",
+   "body": "{\"a\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p4",
+    "provider": "mock",
+    "name": "MockQuestions",
+    "kind": "question",
+    "metadata": {
+     "source": "mock_questions"
+    }
+   },
+   "title": "Agent needs permission",
+   "body": "{\"source\":\"mock_questions\"}"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p5",
+    "provider": "mock",
+    "name": "  ",
+    "kind": "plan"
+   },
+   "title": "Agent needs permission",
+   "body": "plan"
+  },
+  {
+   "reason": "permission",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p6",
+    "provider": "mock",
+    "name": "ExitPlanMode",
+    "kind": "plan",
+    "description": "**Plan**: do `x`"
+   },
+   "title": "Agent needs permission",
+   "body": "Plan: do x"
+  },
+  {
+   "reason": "error",
+   "assistantMessage": null,
+   "permissionRequest": null,
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p1",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "Run npm test",
+    "description": "Runs the tests"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p2",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "  Same  ",
+    "description": "Same"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p3",
+    "provider": "codex",
+    "name": "apply_patch",
+    "kind": "tool",
+    "input": {
+     "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "b": 1
+    }
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p4",
+    "provider": "mock",
+    "name": "MockQuestions",
+    "kind": "question",
+    "metadata": {
+     "source": "mock_questions"
+    }
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p5",
+    "provider": "mock",
+    "name": "  ",
+    "kind": "plan"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": null,
+   "permissionRequest": {
+    "id": "p6",
+    "provider": "mock",
+    "name": "ExitPlanMode",
+    "kind": "plan",
+    "description": "**Plan**: do `x`"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": "",
+   "permissionRequest": null,
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p1",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "Run npm test",
+    "description": "Runs the tests"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p2",
+    "provider": "claude",
+    "name": "Bash",
+    "kind": "tool",
+    "title": "  Same  ",
+    "description": "Same"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p3",
+    "provider": "codex",
+    "name": "apply_patch",
+    "kind": "tool",
+    "input": {
+     "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "b": 1
+    }
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p4",
+    "provider": "mock",
+    "name": "MockQuestions",
+    "kind": "question",
+    "metadata": {
+     "source": "mock_questions"
+    }
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p5",
+    "provider": "mock",
+    "name": "  ",
+    "kind": "plan"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  },
+  {
+   "reason": "error",
+   "assistantMessage": "",
+   "permissionRequest": {
+    "id": "p6",
+    "provider": "mock",
+    "name": "ExitPlanMode",
+    "kind": "plan",
+    "description": "**Plan**: do `x`"
+   },
+   "title": "Agent needs attention",
+   "body": "Encountered an error."
+  }
+ ],
+ "latest": [
+  {
+   "items": [],
+   "expected": null
+  },
+  {
+   "items": [
+    {
+     "type": "user_message",
+     "text": "hi"
+    }
+   ],
+   "expected": null
+  },
+  {
+   "items": [
+    {
+     "type": "assistant_message",
+     "text": "a"
+    },
+    {
+     "type": "assistant_message",
+     "text": "b"
+    }
+   ],
+   "expected": "ab"
+  },
+  {
+   "items": [
+    {
+     "type": "assistant_message",
+     "text": "old"
+    },
+    {
+     "type": "tool_call",
+     "callId": "c",
+     "name": "Bash",
+     "detail": {
+      "type": "shell",
+      "command": "ls"
+     },
+     "status": "completed",
+     "error": null
+    },
+    {
+     "type": "assistant_message",
+     "text": "new "
+    },
+    {
+     "type": "assistant_message",
+     "text": "end"
+    },
+    {
+     "type": "user_message",
+     "text": "after"
+    }
+   ],
+   "expected": "new end"
+  }
+ ]
+}

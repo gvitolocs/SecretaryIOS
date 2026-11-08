@@ -1,0 +1,688 @@
+/* People: the People page (views/GalleryPeople.tsx), a person's header (components/gallery/people), and the faces in the
+   photo viewer (components/gallery/faces). The page scrolls inside the app shell like the albums page. */
+
+.pp-page {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 8px 16px 40px;
+  color: var(--lu-text, inherit);
+  font-family: var(--lu-font, inherit);
+  --g-fg-soft: var(--lu-text-secondary, #8e8e93);
+  --g-line: var(--lu-separator, rgba(84, 84, 88, 0.45));
+  --g-field: var(--lu-field, rgba(118, 118, 128, 0.24));
+  --g-accent: var(--lu-accent, #7f8fe0);
+  --g-accent-fill: var(--lu-accent-fill, #4a5bb5);
+  --g-on-accent: var(--lu-on-accent, #fff);
+  --g-bg: var(--lu-bg, #0b0d10);
+}
+
+.pp-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  max-width: 1100px;
+  margin: 0 auto 8px;
+  padding: 6px 0;
+}
+
+.pp-h1 {
+  flex: 1;
+  min-width: 120px;
+  margin: 0;
+  font-size: var(--lu-type-title-2, 22px);
+  font-weight: 600;
+}
+
+.pp-head .btn svg {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+
+.pp-selcount {
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.pp-empty {
+  max-width: 560px;
+  margin: 40px auto;
+  text-align: center;
+  line-height: 1.6;
+  color: var(--g-fg-soft);
+}
+
+/* ---- the card shown while recognition is off ---- */
+
+.pp-card {
+  max-width: 560px;
+  margin: 24px auto;
+  padding: 22px 22px 20px;
+  border-radius: 18px;
+  background: var(--lu-card, var(--g-field));
+  line-height: 1.55;
+}
+
+.pp-card p {
+  margin: 0 0 10px;
+}
+
+.pp-card__title {
+  margin: 0 0 10px;
+  font-size: var(--lu-type-title-3, 19px);
+  font-weight: 600;
+}
+
+.pp-card__privacy {
+  font-weight: 600;
+}
+
+.pp-card__soft {
+  color: var(--g-fg-soft);
+}
+
+.pp-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* ---- the scan ---- */
+
+.pp-scan {
+  max-width: 1100px;
+  margin: 0 auto 10px;
+}
+
+.pp-scan__line {
+  margin: 4px 0 0;
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-footnote, 13px);
+}
+
+.pp-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--g-field);
+}
+
+.pp-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--g-accent);
+  transition: width 0.4s ease-out;
+}
+
+.pp-scan--paused .pp-bar__fill {
+  background: var(--lu-warning, #e8a33d);
+}
+
+/* ---- the people ---- */
+
+.pp-grid {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+  gap: 22px 14px;
+  max-width: 1100px;
+  margin: 14px auto 0;
+  padding: 0;
+}
+
+.pp-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  text-align: center;
+}
+
+.pp-tile--hidden .pp-face {
+  opacity: 0.45;
+}
+
+.pp-tile__face {
+  position: relative;
+  width: 100%;
+  max-width: 132px;
+}
+
+.pp-open {
+  display: block;
+  position: relative;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.pp-open:focus-visible,
+.pp-faces__btn:focus-visible,
+.pp-hide:focus-visible,
+.pp-name:focus-visible {
+  outline: 2px solid var(--g-accent);
+  outline-offset: 3px;
+}
+
+.pp-face {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--g-field);
+  transition: transform 0.12s ease-out;
+}
+
+.pp-open:hover .pp-face {
+  transform: scale(1.03);
+}
+
+.pp-face__img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pp-face--small {
+  width: 40px;
+  flex: none;
+}
+
+.pp-face--large {
+  width: 88px;
+  flex: none;
+}
+
+.pp-hide {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lu-card-raised, rgba(44, 44, 46, 0.92));
+  color: inherit;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.pp-hide .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.pp-tile:hover .pp-hide,
+.pp-hide:focus-visible,
+.pp-tile--hidden .pp-hide {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .pp-hide {
+    opacity: 1;
+  }
+}
+
+.pp-check {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.pp-tile--selected .pp-check {
+  border-color: var(--g-accent);
+  background: var(--g-accent-fill);
+}
+
+.pp-tile--selected .pp-face {
+  box-shadow: 0 0 0 3px var(--g-accent);
+}
+
+.pp-name {
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.pp-name:hover {
+  background: var(--g-field);
+}
+
+.pp-name--empty {
+  color: var(--g-accent);
+  font-weight: 500;
+}
+
+.pp-name--large {
+  margin-top: 0;
+  font-size: var(--lu-type-title-2, 22px);
+}
+
+.pp-rename {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.pp-rename__input {
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.pp-rename__error {
+  color: var(--lu-negative, #ff453a);
+  font-size: var(--lu-type-footnote, 12px);
+}
+
+.pp-count {
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-footnote, 13px);
+}
+
+/* ---- the settings menu ---- */
+
+.pp-menu {
+  position: relative;
+}
+
+.pp-menu__list {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--lu-card-raised, #2c2c2e);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+}
+
+.pp-menu__item {
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pp-menu__item:hover,
+.pp-menu__item:focus-visible {
+  background: var(--g-field);
+}
+
+.pp-menu__item--danger {
+  color: var(--lu-negative, #ff453a);
+}
+
+/* ---- merge dialog ---- */
+
+.pp-keep {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  margin: 10px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.pp-keep__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgb(255 255 255 / 14%));
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.pp-keep__row--on {
+  border-color: var(--g-accent, #5b7cff);
+  background: var(--lu-accent-soft, rgb(91 124 255 / 14%));
+}
+
+.pp-keep__name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* ---- faces without a person ---- */
+
+.pp-unassigned {
+  max-width: 1100px;
+  margin: 34px auto 0;
+}
+
+.pp-section {
+  margin: 0 0 4px;
+  font-size: var(--lu-type-subheadline, 14px);
+  font-weight: 600;
+  color: var(--g-fg-soft);
+}
+
+.pp-hint {
+  margin: 0 0 12px;
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-footnote, 13px);
+}
+
+.pp-faces {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-faces__btn {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  background: var(--g-field);
+  cursor: pointer;
+}
+
+.pp-faces__btn img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ---- the status line ---- */
+
+.pp-status {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 8px 8px 8px 16px;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: var(--lu-card-raised, #2c2c2e);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  font-size: var(--lu-type-footnote, 13px);
+  transform: translateX(-50%);
+}
+
+.pp-status--error {
+  color: var(--lu-negative, #ff453a);
+}
+
+.pp-status button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* ---- a person's page header ---- */
+
+.pp-person {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 4px 6px;
+}
+
+.pp-person__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pp-person .pp-rename {
+  width: auto;
+  min-width: 220px;
+  margin-top: 0;
+}
+
+.pp-birth {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-footnote, 13px);
+}
+
+.pp-birth .text-input {
+  width: auto;
+  padding: 3px 8px;
+}
+
+/* ---- the picker for a face ---- */
+
+.gf-pick-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.gf-pick-head .gv-dialog-sub {
+  margin: 0;
+}
+
+.gf-pick-face {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 10%);
+  object-fit: cover;
+}
+
+.gf-people {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  margin: 10px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.gf-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border, rgb(255 255 255 / 14%));
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gf-person:hover:not(:disabled) {
+  border-color: var(--lu-accent, #5b7cff);
+  background: var(--lu-accent-soft, rgb(91 124 255 / 14%));
+}
+
+.gf-person:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gf-person__img {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 12%);
+  object-fit: cover;
+}
+
+.gf-person__name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.gf-person__count {
+  flex: none;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+.gf-new {
+  margin-top: 12px;
+}
+
+.gf-new__row {
+  display: flex;
+  gap: 8px;
+}
+
+.gf-new__row .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.gf-new__row .btn {
+  flex: none;
+}
+
+/* ---- the boxes over the photo ---- */
+
+.gf-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.gf-box {
+  position: absolute;
+  padding: 0;
+  border: 2px solid rgb(255 255 255 / 90%);
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 45%), inset 0 0 0 1px rgb(0 0 0 / 35%);
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.gf-box--open {
+  border-style: dashed;
+  border-color: #ffd36b;
+}
+
+.gf-box:hover,
+.gf-box:focus-visible {
+  background: rgb(255 255 255 / 14%);
+}
+
+.gf-box:focus-visible {
+  outline: 2px solid var(--lu-accent, #7f8fe0);
+  outline-offset: 2px;
+}
+
+.gf-box__label {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  max-width: 14em;
+  padding: 2px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 72%);
+  font-size: 12px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pp-face,
+  .pp-bar__fill,
+  .pp-hide {
+    transition: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .pp-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pp-person .pp-rename {
+    min-width: 0;
+    width: 100%;
+  }
+}

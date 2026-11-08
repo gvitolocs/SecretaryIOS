@@ -1,0 +1,9 @@
+[Unit]
+Description=One-shot JEV-first recalibration suggestion (2026-11-04 09:00 Europe/Copenhagen)
+
+[Timer]
+OnCalendar=2026-11-04 09:00 Europe/Copenhagen
+Persistent=true
+
+[Install]
+WantedBy=timers.target

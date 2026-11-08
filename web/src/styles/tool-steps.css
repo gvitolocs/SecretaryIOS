@@ -1,0 +1,50 @@
+/* Lucina's tool calls: one quiet line per run of steps (components/ToolSteps.tsx). */
+.tool-steps {
+  align-self: flex-start;
+  max-width: min(560px, 92%);
+  margin: 2px 0 2px 4px;
+  color: var(--text-muted, #8a8a94);
+  font-size: var(--fs-xs, 12px);
+}
+.tool-steps > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+  user-select: none;
+}
+.tool-steps > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-steps > summary::before {
+  content: "›";
+  display: inline-block;
+  width: 1em;
+  transition: transform 0.15s ease;
+}
+.tool-steps[open] > summary::before {
+  transform: rotate(90deg);
+}
+.tool-steps--failed > summary {
+  color: var(--danger, #d0605e);
+}
+.tool-steps ol {
+  margin: 4px 0 0 1em;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+.tool-steps code {
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-step--failed code {
+  color: var(--danger, #d0605e);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-steps > summary::before {
+    transition: none;
+  }
+}

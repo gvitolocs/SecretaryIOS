@@ -1,0 +1,584 @@
+/*
+ * The desktop Training overview (gym/TrainingDesk.tsx, WeightCard.tsx): the pieces
+ * only it has (the week strip, the play buttons, the routine menu, the workout in
+ * progress, the weight card). The frame, header, grid, cards, rows, buttons and
+ * empty states are the page system's (styles/page.css). The phone layout
+ * (styles/gym.css) is untouched.
+ */
+
+.trd {
+  --trd-text: var(--pg-text);
+  --trd-muted: var(--pg-muted);
+  --trd-border: var(--pg-border);
+  --trd-hair: var(--pg-hair);
+  --trd-fill: var(--pg-fill);
+  --trd-fill-hover: var(--pg-fill-hover);
+  --trd-accent: var(--pg-accent);
+  --trd-data: var(--pg-data);
+  --trd-success: var(--pg-success);
+  --trd-warning: var(--pg-warning);
+  --trd-danger: var(--pg-danger);
+}
+
+/* ---------- This week ---------- */
+
+.trd-week {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+}
+
+.trd-week-count {
+  margin-top: 8px;
+}
+
+.trd-week-count .pg-num {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.trd-week-next {
+  margin-top: 4px;
+}
+
+.trd-days {
+  display: flex;
+  gap: 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.trd-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 32px;
+}
+
+.trd-day-letter {
+  font-size: 12px;
+  color: var(--trd-muted);
+}
+
+.trd-day-dot {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--trd-fill);
+}
+
+.trd-day--future .trd-day-dot {
+  border: 1.5px dashed color-mix(in srgb, var(--trd-text) 30%, transparent);
+  background: transparent;
+}
+
+.trd-day--done .trd-day-dot {
+  background: var(--trd-success);
+  color: color-mix(in srgb, var(--trd-success) 15%, #000);
+}
+
+.trd-day--done .trd-day-dot .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.6;
+}
+
+.trd-day--today .trd-day-dot {
+  outline: 2px solid var(--trd-accent);
+  outline-offset: 2px;
+}
+
+.trd-day--today .trd-day-letter {
+  color: var(--trd-text);
+  font-weight: 600;
+}
+
+/* ---------- Rows (routines, recent workouts) ---------- */
+
+.trd-more {
+  color: var(--trd-text);
+}
+
+.trd-play {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--trd-border);
+  border-radius: 50%;
+  background: var(--trd-fill);
+  color: var(--trd-text);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.trd-play .icon {
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+}
+
+.trd-play:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--trd-data) 60%, transparent);
+  background: color-mix(in srgb, var(--trd-data) 20%, transparent);
+}
+
+.trd-play:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------- The ⋯ menu ---------- */
+
+.trd-menu {
+  position: relative;
+  flex: none;
+}
+
+.trd-menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-solid);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+}
+
+.trd-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--trd-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trd-menu-item:hover {
+  background: var(--trd-fill);
+}
+
+.trd-menu-item--danger {
+  color: var(--trd-danger);
+}
+
+.trd-menu-prompt {
+  padding: 8px 8px 12px;
+}
+
+.trd-menu-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 4px 4px;
+}
+
+/* ---------- Workout in progress ---------- */
+
+.trd-active {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+}
+
+.trd-live {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--trd-success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--trd-success) 22%, transparent);
+}
+
+.trd-active-label {
+  font-size: 13px;
+}
+
+.trd-active-meta {
+  flex: none;
+  font-weight: 600;
+}
+
+.trd-active-meta .pg-muted {
+  font-weight: 400;
+}
+
+/* ---------- Weight ---------- */
+
+.trd-range {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--trd-fill);
+}
+
+.trd-range-btn {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--trd-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.trd-range-btn[aria-pressed="true"] {
+  background: var(--trd-fill-hover);
+  color: var(--trd-text);
+  font-weight: 600;
+}
+
+.trd-weight-now {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.trd-weight-value {
+  font-size: 36px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.6px;
+}
+
+.trd-weight-unit {
+  margin-left: 4px;
+  color: var(--trd-muted);
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.trd-chip {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.trd-chip--good {
+  background: color-mix(in srgb, var(--trd-success) 16%, transparent);
+  color: var(--trd-success);
+}
+
+.trd-chip--bad {
+  background: color-mix(in srgb, var(--trd-warning) 16%, transparent);
+  color: var(--trd-warning);
+}
+
+.trd-chip--steady {
+  background: var(--trd-fill);
+  color: var(--trd-muted);
+}
+
+.trd-weight-line {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+/* The sparkline: a 0-100 SVG box stretched to the card; strokes do not scale, the
+   labels are HTML beside it, so nothing is clipped or squashed at any width. */
+.trd-spark {
+  margin: 16px 0 0;
+  color: var(--trd-data);
+}
+
+.trd-spark-plot {
+  position: relative;
+  height: 112px;
+  margin-right: 48px;
+}
+
+.trd-spark-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.trd-spark-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.trd-spark-dots {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: 0.35;
+  stroke-width: 4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.trd-spark-goal {
+  stroke: color-mix(in srgb, var(--trd-text) 45%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.trd-spark-label {
+  position: absolute;
+  left: calc(100% + 8px);
+  color: var(--trd-muted);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateY(-50%);
+}
+
+.trd-spark-x {
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 48px 0 0;
+  color: var(--trd-muted);
+  font-size: 12px;
+}
+
+.trd-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--trd-hair);
+}
+
+.trd-log-row {
+  display: flex;
+  gap: 8px;
+}
+
+.trd-log-row .pg-btn {
+  min-height: 36px;
+}
+
+.trd-log-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--trd-muted);
+  font-size: 13px;
+}
+
+/* ---------- Last 30 days ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .trd .trd-play {
+    transition: none;
+  }
+}
+
+.trd-error {
+  margin: 0;
+}
+
+/* ---------- Journal, Progress, details (gym/DeskViews.tsx) ---------- */
+
+.trd-names {
+  display: block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trd-confirm {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
+
+.trd-detail-title {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.trd-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--pg-hair);
+}
+
+.trd-notes {
+  margin-top: 12px;
+}
+
+.pg-card--list > .trd-notes {
+  margin: 4px 0 12px;
+}
+
+.trd-set {
+  min-height: 48px;
+}
+
+.trd-set--skipped .pg-row-main {
+  color: var(--pg-muted);
+  text-decoration: line-through;
+}
+
+.trd-set-badge {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--pg-fill);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.trd-set-badge--flag {
+  background: color-mix(in srgb, var(--pg-data) 18%, transparent);
+  color: var(--pg-data);
+}
+
+.trd-caption {
+  font-size: 12px;
+}
+
+.trd-chart {
+  margin-top: 16px;
+}
+
+.trd-measure-value {
+  color: var(--pg-text);
+  font-weight: 600;
+}
+
+.trd-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- Settings (gym/Settings.tsx, desk) ---------- */
+
+.trd-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.trd-settings.pg-card > .pg-card-title + * {
+  margin-top: 0;
+}
+
+.trd-settings .field-label {
+  margin-bottom: 8px;
+  color: var(--pg-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.trd-settings .segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--pg-border);
+  border-radius: 12px;
+  background: transparent;
+}
+
+.trd-settings .segment {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: var(--pg-muted);
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.trd-settings .segment:hover {
+  background: var(--pg-fill);
+  color: var(--pg-text);
+}
+
+.trd-settings .segment--on {
+  background: var(--pg-fill-hover);
+  color: var(--pg-text);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.trd-settings .segment:has(input:focus-visible) {
+  outline: 2px solid var(--pg-data);
+  outline-offset: 2px;
+}
+
+.trd-settings .stepper {
+  gap: 8px;
+}
+
+.trd-settings .stepper-label {
+  flex: none;
+  min-width: 200px;
+  font-weight: 600;
+}
+
+.trd-settings legend {
+  padding: 0;
+}
+
+.trd-settings .stepper-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid color-mix(in srgb, var(--pg-text) 14%, transparent);
+  border-radius: var(--pg-radius-control);
+  background: var(--pg-fill);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.trd-settings-save {
+  align-self: flex-start;
+}
+
+.trd-settings .data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trd-settings .restore-confirm {
+  padding: 16px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pg-danger) 8%, transparent);
+}
+
+.trd-settings .restore-confirm-title {
+  font-weight: 600;
+}

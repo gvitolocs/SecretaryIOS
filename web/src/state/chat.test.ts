@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readItems } from "../lib/chatdb";
 import { STREAM_BACKOFF_MS } from "../api/timeline";
 import { installEventSource, MockEventSource } from "../test/eventsource";
 import { deferred, stubFetch, type Call } from "../test/fetch";
@@ -20,7 +21,7 @@ import {
 const T0 = Date.parse("2026-10-20T10:00:00Z");
 
 function item(id: number, extra: Record<string, unknown> = {}) {
-  return { id: String(id), ts: new Date(T0 + id * 60_000).toISOString(), channel: "telegram", role: "user", text: `m${id}`, ...extra };
+  return { id: String(id), ts: new Date(T0 + id * 60_000).toISOString(), channel: "web", role: "user", text: `m${id}`, ...extra };
 }
 
 /** Items `from`..`to` (inclusive), newest first, like the server. */
@@ -81,13 +82,14 @@ describe("chat jobs", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("marks interrupted sends as failed after a reload", () => {
+  it("removes the legacy timeline cache on reload", () => {
     sessionStorage.setItem(
       "secretary.timeline.v1",
       JSON.stringify([{ key: "c:m1", role: "user", text: "hi", createdAt: 1, channel: "web", clientMessageId: "m1", status: "sending" }]),
     );
     reloadChatFromStorage();
-    expect(chat.messages[0]).toMatchObject({ status: "error" });
+    expect(chat.messages).toHaveLength(0);
+    expect(sessionStorage.getItem("secretary.timeline.v1")).toBeNull();
   });
 
   it("drops the old sessionStorage transcript", () => {
@@ -113,9 +115,9 @@ describe("timeline pages", () => {
 
   it("loads the newest page, then older ones, merging in time order without duplicates", async () => {
     const calls = stubFetch((c) => {
-      if (c.url === "/v1/timeline?limit=50") return { body: { items: page(6, 10), nextBefore: "6" } };
+      if (c.url === "/v1/timeline?limit=50&scope=mine") return { body: { items: page(6, 10), nextBefore: "6" } };
       // The older page overlaps by one item (6) and carries a malformed one.
-      if (c.url === "/v1/timeline?before=6&limit=50") return { body: { items: [...page(2, 6), { id: "x" }], nextBefore: null } };
+      if (c.url === "/v1/timeline?before=6&limit=50&scope=mine") return { body: { items: [...page(2, 6), { id: "x" }], nextBefore: null } };
       return { status: 404 };
     });
     await loadLatest();
@@ -140,29 +142,30 @@ describe("timeline pages", () => {
     expect(chat.nextBefore).toBe("6");
   });
 
-  it("drops stale history when a refresh no longer joins up with it", async () => {
+  it("keeps stored history across fresh loads without a cursor", async () => {
     let from = 1;
     stubFetch(() => ({ body: { items: page(from, from + 2), nextBefore: String(from) } }));
     await loadLatest();
     from = 100;
     await loadLatest();
-    expect(ids()).toEqual(["100", "101", "102"]);
-    expect(chat.nextBefore).toBe("100");
+    expect(ids()).toEqual(["1", "2", "3", "100", "101", "102"]);
+    expect(chat.nextBefore).toBe("1");
   });
 
   it("ignores live items it already has", () => {
-    receiveItem({ id: "5", ts: T0, channel: "discord", role: "user", text: "once" });
-    receiveItem({ id: "5", ts: T0, channel: "discord", role: "user", text: "once (edited)" });
+    receiveItem({ id: "5", ts: T0, channel: "web", role: "user", text: "once" });
+    receiveItem({ id: "5", ts: T0, channel: "web", role: "user", text: "once (edited)" });
     expect(chat.messages).toHaveLength(1);
     expect(chat.messages[0]!.text).toBe("once (edited)");
   });
 
-  it("caches only the last 50 messages", async () => {
+  it("persists received items in IndexedDB rather than sessionStorage", async () => {
     stubFetch(() => ({ body: { items: page(1, 80), nextBefore: null } }));
     await loadLatest();
-    const cached = JSON.parse(sessionStorage.getItem("secretary.timeline.v1") ?? "[]") as { itemId: string }[];
+    const cached = await readItems("mine");
     expect(cached).toHaveLength(50);
-    expect(cached[49]!.itemId).toBe("80");
+    expect(cached[0]!.id).toBe("80");
+    expect(sessionStorage.getItem("secretary.timeline.v1")).toBeNull();
   });
 
   it("drops a page that lands after logout", async () => {
@@ -283,6 +286,9 @@ describe("optimistic sends", () => {
   });
 });
 
+/** The timeline page reads, without the closed-card reads that go with them. */
+const pages = (calls: Call[]) => calls.filter((c) => !c.url.startsWith("/v1/timeline/cards"));
+
 describe("live stream", () => {
   let disconnect: (() => void) | null = null;
   beforeEach(() => reloadChatFromStorage());
@@ -312,14 +318,15 @@ describe("live stream", () => {
     es.open(); // The browser reconnected with Last-Event-ID; no resync needed.
     expect(streamStatus()).toBe("live");
     expect(MockEventSource.instances).toHaveLength(1);
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await vi.waitFor(() => expect(pages(calls)).toHaveLength(1));
   });
 
   it("resyncs when the stream drops before its first item (no Last-Event-ID to resume from)", async () => {
     // Model: verification/models/src/timeline.rs case T5, formal/timeline/Timeline_gap_bug.cfg.
     installEventSource();
     let n = 0;
-    const calls = stubFetch(() => {
+    const calls = stubFetch((c) => {
+      if (c.url.startsWith("/v1/timeline/cards")) return { body: { cards: {} } };
       n++;
       return { body: { items: n === 1 ? page(1, 2) : page(1, 3), nextBefore: null } };
     });
@@ -329,7 +336,7 @@ describe("live stream", () => {
     es.open();
     es.drop(); // dropped before any item: the browser reconnects without Last-Event-ID
     es.open(); // so the server starts fresh; item 3 was written in between
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await vi.waitFor(() => expect(pages(calls)).toHaveLength(2));
     await vi.waitFor(() => expect(ids()).toEqual(["1", "2", "3"]));
     expect(MockEventSource.instances).toHaveLength(1);
   });
@@ -340,7 +347,7 @@ describe("live stream", () => {
     const calls = stubFetch(() => ({ body: { items: page(1, 2), nextBefore: null } }));
     disconnect = connectTimeline();
     await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toHaveLength(1);
+    expect(pages(calls)).toHaveLength(1);
     const first = MockEventSource.latest();
     first.open();
 
@@ -362,7 +369,7 @@ describe("live stream", () => {
     MockEventSource.latest().open();
     expect(streamStatus()).toBe("live");
     await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toHaveLength(2); // The new stream has no Last-Event-ID: fill the gap.
+    expect(pages(calls)).toHaveLength(3); // Initial open and reopening both sync; the new stream has no Last-Event-ID: fill the gap.
     // Events from the abandoned connection are ignored.
     first.emit("item", item(9));
     expect(ids()).toEqual(["1", "2"]);
@@ -381,4 +388,29 @@ describe("live stream", () => {
     clearChat();
     expect(es2.closed).toBe(true);
   });
+});
+
+describe("device-scoped live items", () => {
+ beforeEach(() => reloadChatFromStorage());
+ it("stores every stream item but hides other devices, bots and agents", async () => {
+   const { setChatDevice } = await import("./chat");
+   setChatDevice("D");
+   receiveItem({ id: "d", ts: T0, channel: "web", role: "user", text: "mine", meta: { device: "D" } });
+   receiveItem({ id: "other", ts: T0, channel: "web", role: "user", text: "other", meta: { device: "E" } });
+   receiveItem({ id: "agent", ts: T0, channel: "web", role: "user", text: "agent", meta: { via: "mcp", caller: "chatgpt" } });
+   receiveItem({ id: "bot", ts: T0, channel: "telegram", role: "user", text: "bot" });
+   expect(ids()).toEqual(["d"]);
+   expect(await readItems("conversation:device:E")).toHaveLength(1);
+   expect(await readItems("conversation:telegram")).toHaveLength(1);
+ });
+ it("hides unknown-device items except this tab's optimistic send", async () => {
+   const { setChatDevice } = await import("./chat"); setChatDevice(undefined);
+   receiveItem({ id: "other", ts: T0, channel: "web", role: "user", text: "other", meta: { device: "D" } });
+   expect(ids()).toEqual([]);
+   const gate = deferred<void>(); stubFetch(async () => { await gate.promise; return { body: { reply: "Hi" } }; });
+   const pending = sendMessage("hello"); const cmid = chat.messages[0]!.clientMessageId;
+   receiveItem({ id: "own", ts: T0, channel: "web", role: "user", text: "hello", clientMessageId: cmid, meta: { device: "D" } });
+   expect(ids()).toEqual(["own"]);
+   gate.resolve(); await pending;
+ });
 });

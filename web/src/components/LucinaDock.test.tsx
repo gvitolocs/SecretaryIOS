@@ -98,6 +98,33 @@ describe("Lucina in the shell", () => {
     expect(document.querySelectorAll("canvas.stage-canvas")).toHaveLength(1);
   });
 
+  it("inside Secretary Code: hidden on plugin pages, the stage still mounted", async () => {
+    viewport(true);
+    serve();
+    window.secretaryShell = { version: 1, showCode: vi.fn() };
+    try {
+      const stage = await mounted("/shopping");
+      expect(dock()).toHaveAttribute("hidden");
+      expect(dock()).toHaveClass("dock--offstage");
+      expect(stage.dispose).not.toHaveBeenCalled();
+    } finally {
+      delete window.secretaryShell;
+    }
+  });
+
+  it("inside Secretary Code: on stage in the chat", async () => {
+    viewport(true);
+    serve();
+    window.secretaryShell = { version: 1, showCode: vi.fn() };
+    try {
+      await mounted("/");
+      expect(dock()).not.toHaveAttribute("hidden");
+      expect(dock()).not.toHaveClass("dock--offstage");
+    } finally {
+      delete window.secretaryShell;
+    }
+  });
+
   it("desktop: a full-body column beside the page, which keeps its own column", async () => {
     viewport(true);
     serve();

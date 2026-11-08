@@ -286,11 +286,44 @@ separate Hermes Poko runtime on `:8789`.
 
 ### 4.2 `/api/secretary/*` (contract: Lucina `docs/secretary-api.md`; worktree adds 329 lines)
 
-Live: `GET /health`; `POST /chat`; `GET /jobs/:id`; `GET /reminders?scope=upcoming|today|all&includeSent=0|1`;
+Live: `GET /health`; `POST /chat` (with `Accept: text/event-stream` and/or `"voice": true`: LucinaVoice, see "Streaming chat" below); `GET /jobs/:id`; `GET /reminders?scope=upcoming|today|all&includeSent=0|1`;
 `POST /reminders` (`{text,dueAt}` or `{naturalText}`; 201/200); `DELETE /reminders/:id`;
 `GET /agenda?date=&refresh=`; `GET /shopping`; `POST /shopping`; `PATCH /shopping/:itemId`;
 `GET /timeline?before=&limit=`; `GET /timeline/stream` (SSE, `Last-Event-ID`/`?lastEventId=`, replay ≤500,
 `retry: 5000`, `: ping` every 20 s, ≤8 streams).
+**Streaming chat (LucinaVoice, `src/voice.rs`; contract: `docs/lucinavoice-protocol.md` section 1).**
+`POST /chat` takes an optional `"voice": true` (any other body is unchanged; nothing new is rejected). It adds
+the spoken-style rule (`voice::SPOKEN_RULE`: one to three short sentences, no markdown, lists, emoji or URLs,
+numbers/dates/times as said) to the turn's fixed system text (`planner::TURN_SYSTEM`), so the JSON planner and
+every `generate_reply` see it; the intent classifier does not. It works with or without the stream. With
+`Accept: text/event-stream` the route answers `200 text/event-stream` at once (`Cache-Control: no-store`,
+`X-Accel-Buffering: no`; after the HTTP checks: bearer, JSON body size) and runs the turn in its own task:
+
+| event | data | when |
+|---|---|---|
+| `: connected` | comment | first bytes |
+| `delta` | `{"text":"…"}` | reply text as the model writes it; only from `generate_reply` and its callers (the casual-chat shortcut, skill replies, fallbacks); zero or more; never tool-call markup |
+| `reply` | `{"text":"…","sensitive":bool,"replaces":bool}` | exactly once, when the turn's reply text is settled: in `chat::run_turn_scoped` right after the `Finish`, before rich-reply, Honcho, memory, timeline (same for the tools planner). Turns that never reach a `Finish` (`/secret` command, OTP, project offers, a replayed `clientMessageId`) settle from the result (`sensitive` = the body's `sensitive`). `replaces` = the text, trimmed, is not the concatenation of the deltas (so also true when there were none) |
+| `route` | `{"intent","confidence","jev_ms","fast":bool,"source":"jev"\|"tier0"\|"fallback"}` | spoken turns of the owner only: once, as soon as the route is decided, before any reply text (Jev fast path, below) |
+| `ack` | `{"text":"Un attimo…"}` | at most once, right after `route` for a slow intent or when the JSON plan call starts; never for a fast turn or after streamed words |
+| `done` | `{"ok":true,"data":{…}}` | the exact body the plain call returns (redacted like it) |
+| `error` | `{"code","message"}` | the turn failed (HTTP-level errors of the chat route, e.g. `bad_request`; 500s are `internal_error`); no `done` |
+| `: ping` | comment | every 15 s while the turn runs |
+
+The deltas come from `ChatModel::complete_streaming` (default: `complete`, the whole text as one delta;
+`DeepSeek` streams; `RedactingModel` holds each fragment back to the last whitespace so a secret split across
+deltas is whole when redacted). A tool-call-markup retry in `generate_reply` is not streamed: its text (or the
+fixed failure line) goes out in `reply` with `replaces: true`. A client that disconnects does not cancel the
+turn: it finishes and writes the timeline as usual. The `reply` text is the answer before the rich composer;
+`done.data.reply` can differ when the composer rewrites it.
+
+**Jev fast path (`chat/voice_fast.rs`; contract: `docs/lucinavoice-protocol.md` section 6; details in
+`JEV-ROUTING.md`).** A spoken turn starts one Jev intent call first (cap `LUCINA_VOICE_JEV_CAP_MS`, 400 ms) while
+the context is built; at `LUCINA_VOICE_FAST_MIN` (0.85) the time or date, the shopping list, the reminders,
+and shopping add/remove and reminder writes that the deterministic parsers resolve are answered from the stores
+with a templated reply and no model call (`reply` with `replaces: true`, then `done`; the timeline is written as
+usual). Anything else, or a slow or failing Jev, is today's path, plus `route` and `ack`.
+
 Worktree: `GET|POST /shopping/lists`; `GET|PATCH|DELETE /shopping/lists/:id` (`:id` = uuid or `default`);
 `POST /shopping/lists/:id/ops` (`{ops, expectedRevision, channel}` → `{revision, applied, duplicates, rejected,
 list, items}`); `POST /device/events`; `GET|POST /device/state`; `GET /device/commands`;

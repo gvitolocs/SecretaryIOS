@@ -4,7 +4,7 @@
 //! Safety: no tool buys anything, messages third parties or deletes data.
 //! `reminder_cancel` only moves a pending reminder to `cancelled` (Lucina
 //! keeps the record). Everything else that could act in the world goes
-//! through `ask_lucina`, i.e. through Lucina's own pipeline and its own
+//! through dedicated tools, i.e. through Lucina's own pipeline and its own
 //! confirmation flow. Notes are the owner's own local data: `note_save` and
 //! `note_append` write without a confirmation step, and every write is
 //! logged with the caller.
@@ -13,11 +13,12 @@ use std::sync::Arc;
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::backend::{seg, BackendError};
 use crate::format;
+use crate::keep::{self, ItemRef};
 use crate::scope::{Caller, Scope};
 use crate::App;
 
@@ -71,6 +72,150 @@ pub struct AskArgs {
     /// Optional conversation name (letters, digits, '-' and '_', up to 32) to keep separate threads, e.g. "travel". Default: one conversation per client.
     #[serde(default)]
     pub conversation: Option<String>,
+    /// Permit this one message to act on these request kinds; duplicates are removed and kinds sorted.
+    pub allow: Option<Vec<AllowArg>>,
+    /// Seconds to wait for her answer before getting an id to follow instead (0-110, default 25). Stay under
+    /// your own client's tool timeout.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AllowArg {
+    Reminders,
+    Notes,
+    Tasks,
+    Shopping,
+}
+impl AllowArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Reminders => "reminders",
+            Self::Notes => "notes",
+            Self::Tasks => "tasks",
+            Self::Shopping => "shopping",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ImpactArg {
+    Low,
+    Medium,
+    High,
+}
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum UrgencyArg {
+    Low,
+    Normal,
+    High,
+}
+
+/// A structured go-ahead request. The authenticated client name is supplied by the server.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecideArgs {
+    /// The decision to make, 1-2000 characters.
+    pub question: String,
+    /// 2-6 choices, each 1-200 characters; unique ignoring case and surrounding whitespace.
+    pub options: Vec<String>,
+    /// Recommended option text (case-insensitive, trimmed) or its 1-based number, e.g. "2".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<String>,
+    /// Supporting context, up to 8000 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Whether the proposed action can be undone. False always requires the owner.
+    pub reversible: bool,
+    /// Consequence level. High always requires the owner.
+    pub impact: ImpactArg,
+    /// How urgent the decision is; default normal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub urgency: Option<UrgencyArg>,
+    /// Subject grouping, up to 64 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Asking session name or id, up to 120 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asking_session: Option<String>,
+    /// Poll a pending answer every 3 seconds for 0-100 seconds; default 0.
+    #[serde(skip_serializing)]
+    pub wait_seconds: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionStatusArgs {
+    /// Decision id: dc- followed by 12 lowercase hexadecimal digits.
+    pub decision_id: String,
+    /// Poll a pending answer every 3 seconds for 0-100 seconds; default 0.
+    pub wait_seconds: Option<u32>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionWithdrawArgs {
+    /// Decision id from lucina_decide: dc- followed by 12 lowercase hexadecimal digits.
+    pub decision_id: String,
+    /// Why it no longer needs an answer, shown to the owner; at most 500 characters.
+    pub reason: Option<String>,
+}
+/// Ask the owner for a secret by name. There is no value field, on purpose: the owner pastes the
+/// value in the app and it goes straight to Infisical.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretRequestArgs {
+    /// Secret name (the Infisical key): letters, digits, _ . @ -, 1-256 characters, e.g. GBGO_WIFI_PSK.
+    pub name: String,
+    /// Infisical project slug or name: letters, digits, _ . @ -, e.g. lucinaos.
+    pub project: String,
+    /// Environment slug, e.g. prod or dev.
+    pub environment: String,
+    /// Folder in the environment; default "/".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Why you need it and what will read it, 1-500 characters, shown to the owner. Never put the value or any token here.
+    pub reason: String,
+    /// Your session or task name, up to 120 characters, shown to the owner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// True when the project may not exist yet: the card then also offers "Create project".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_project: Option<bool>,
+}
+impl SecretRequestArgs {
+    fn validate(&self) -> Result<(), ToolError> {
+        let slug = |field: &str, v: &str, max: usize| {
+            let ok = (1..=max).contains(&v.len())
+                && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'));
+            if ok {
+                Ok(())
+            } else {
+                Err(bad(format!("`{field}` must be 1-{max} letters, digits, _ . @ or -")))
+            }
+        };
+        slug("name", &self.name, 256)?;
+        slug("project", &self.project, 128)?;
+        slug("environment", &self.environment, 128)?;
+        check_text("reason", &self.reason, 500)?;
+        if let Some(f) = &self.from {
+            if f.chars().count() > 120 {
+                return Err(bad("`from` must be at most 120 characters"));
+            }
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JobStatusArgs {
+    /// Background job id, or the `turn_…` id, returned by ask_lucina.
+    pub job_id: String,
+    /// For a `turn_…` id: seconds to wait for her answer (0-110, default 25).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -242,25 +387,143 @@ pub struct GymArgs {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct NoArgs {}
 
+/// One checklist item: plain text, or text with its state.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ItemArg {
+    Text(String),
+    Item {
+        text: String,
+        #[serde(default)]
+        checked: Option<bool>,
+    },
+}
+
+/// A checklist item of an existing note: its number as note_get shows it (from 1), or its exact text.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ItemRefArg {
+    Number(u32),
+    Text(String),
+}
+
 /// Arguments of `note_save`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct NoteSaveArgs {
     /// Title shown in the app, 1-200 characters, e.g. "CRAFT-IT4SD — meeting with Marianne & Jonas".
     pub title: String,
-    /// The note in Markdown (headings, lists, links). Up to 256 KB in total; for very long documents send the first part here and the rest with note_append.
-    pub content: String,
+    /// The note in Markdown (headings, lists, links). Up to 256 KB in total; for very long documents send the first part here and the rest with note_append. Optional when `items` is given.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Make it a checklist (a Keep list note): strings, or {text, checked}. The note's content becomes the `- [ ]` lines.
+    #[serde(default)]
+    pub items: Option<Vec<ItemArg>>,
     /// Short name to find it again, e.g. "craftit-meeting": lower-case letters, digits and '-', up to 64. Default: made from the title. Lucina and note_get find the note by this name.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Up to 16 tags, e.g. ["work", "aarhus"].
+    /// Up to 50 tags (the same thing as labels), e.g. ["work", "aarhus"].
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// Keep labels by display name, e.g. ["GodLevel", "Fisica 2"] (created when new). Same field as `tags`.
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
+    /// Keep colour: default, red, orange, yellow, green, teal, blue, cerulean, purple, pink, brown or gray.
+    #[serde(default)]
+    pub color: Option<String>,
     /// Pin it to the top of the owner's notes (default false).
     #[serde(default)]
     pub pinned: Option<bool>,
-    /// When a note with this slug exists: true replaces its title, content (and tags/pin if given); false (default) refuses so nothing is overwritten by accident.
+    /// Put it in the archive (default false).
+    #[serde(default)]
+    pub archived: Option<bool>,
+    /// When a note with this slug exists: true replaces its title, content (and tags, items, colour, pin, archive if given); false (default) refuses so nothing is overwritten by accident.
     #[serde(default)]
     pub replace: Option<bool>,
+}
+
+/// Repeat of a note reminder.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RepeatArg {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+    /// Not repeating.
+    None,
+}
+
+/// Convert a note between checklist and text.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ConvertArg {
+    /// Each non-empty line becomes an unchecked item.
+    List,
+    /// The items become plain lines (checked state is lost).
+    Text,
+}
+
+fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// Arguments of `note_update`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteUpdateArgs {
+    /// The note's slug, e.g. "shopping" (or give `id`).
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// The note's id ("n_…"), instead of `slug`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// New title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Replace the whole content (for a checklist note the lines become the items; prefer the item operations below).
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Keep colour: default, red, orange, yellow, green, teal, blue, cerulean, purple, pink, brown or gray.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Pin or unpin.
+    #[serde(default)]
+    pub pinned: Option<bool>,
+    /// Archive (true) or bring back from the archive (false).
+    #[serde(default)]
+    pub archived: Option<bool>,
+    /// Labels to add, by display name (created when new).
+    #[serde(default)]
+    pub add_labels: Option<Vec<String>>,
+    /// Labels to remove, by name.
+    #[serde(default)]
+    pub remove_labels: Option<Vec<String>>,
+    /// Set the note's reminder (RFC 3339 with offset, e.g. 2026-11-03T09:00:00+01:00; Lucina delivers it), or null to clear it.
+    #[serde(default, deserialize_with = "nullable")]
+    #[schemars(with = "Option<String>")]
+    pub reminder_at: Option<Option<String>>,
+    /// Repeat of the reminder: daily, weekly, monthly, yearly or none. Default: keep the current one.
+    #[serde(default)]
+    pub reminder_repeat: Option<RepeatArg>,
+    /// Check off these checklist items: numbers as note_get shows them, or exact item texts.
+    #[serde(default)]
+    pub check: Option<Vec<ItemRefArg>>,
+    /// Uncheck these checklist items (numbers or exact texts).
+    #[serde(default)]
+    pub uncheck: Option<Vec<ItemRefArg>>,
+    /// Add these items at the end of the checklist: strings, or {text, checked}.
+    #[serde(default)]
+    pub add_items: Option<Vec<ItemArg>>,
+    /// Remove these checklist items (numbers or exact texts).
+    #[serde(default)]
+    pub remove_items: Option<Vec<ItemRefArg>>,
+    /// Turn the note into a checklist ("list") or back into plain text ("text").
+    #[serde(default)]
+    pub convert: Option<ConvertArg>,
 }
 
 /// Arguments of `note_append`.
@@ -296,15 +559,48 @@ pub struct NoteGetArgs {
     pub max_chars: Option<usize>,
 }
 
+/// Which notes of the archive to include.
+#[derive(Debug, Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchivedArg {
+    Include,
+    Exclude,
+    Only,
+}
+
+/// What kind of notes.
+#[derive(Debug, Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteKindArg {
+    List,
+    Text,
+    Image,
+    Audio,
+    Link,
+    Reminder,
+}
+
 /// Arguments of `notes_search`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct NotesSearchArgs {
-    /// Words to look for in titles, slugs, tags and content. Empty: list the latest notes.
+    /// Words to look for in titles, slugs, labels, content and checklist items. Empty: list the latest notes.
     #[serde(default)]
     pub q: Option<String>,
-    /// Only notes with this tag.
+    /// Only notes with this tag (same as `label`).
     #[serde(default)]
     pub tag: Option<String>,
+    /// Only notes with this label, e.g. "GodLevel" (see note_labels).
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Only notes of this Keep colour.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Only this kind: list (checklist), text, image, audio, link or reminder.
+    #[serde(default, rename = "type")]
+    pub kind: Option<NoteKindArg>,
+    /// Archived notes: include (default), exclude or only.
+    #[serde(default)]
+    pub archived: Option<ArchivedArg>,
     /// How many to return (1-50, default 20).
     #[serde(default)]
     pub limit: Option<u32>,
@@ -358,7 +654,24 @@ pub struct ToolSpec {
     schema: fn() -> Tool,
 }
 
+/// A second scope that also allows a tool: every coding agent (scope `agents`)
+/// reports to and reads Lucina's ops record, answers Lucina's messages
+/// (`lucina_inbox`, `lucina_reply`), and looks things up in AU Find and the
+/// caller screen.
+pub fn also_allowed(name: &str) -> Option<Scope> {
+    (name.starts_with("ops_")
+        || name.starts_with("au_")
+        || matches!(name, "flaw_report" | "flaw_search" | "flaw_status" | "flaw_matrix" | "flaw_target")
+        || matches!(name, "caller_screen" | "lucina_inbox" | "lucina_reply"))
+    .then_some(Scope::Agents)
+}
+
 impl ToolSpec {
+    /// Whether a caller with these scopes may list and call the tool.
+    pub fn allowed(&self, has: impl Fn(Scope) -> bool) -> bool {
+        has(self.scope) || also_allowed(self.name).is_some_and(&has)
+    }
+
     pub fn tool(&self) -> Tool {
         (self.schema)().with_title(self.title).with_annotations(
             ToolAnnotations::with_title(self.title)
@@ -390,13 +703,23 @@ macro_rules! spec {
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec!("ask_lucina", "Ask Lucina", Scope::Chat, ro = false, destructive = false, idempotent = false, AskArgs,
-            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and can act through her own tools (reminders, shopping, research jobs, images). Use it for anything that needs Lucina's judgement or memory. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. A turn can take up to two minutes; long jobs finish in the background and show up in lucina_timeline."),
+            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and recent context. For agent clients this is consult-only: answers, no jobs, computer tasks, reminders, posts or list writes. This chat never alerts the owner's phone, so asking her to tell him does not reach him: if he has to know or decide, use lucina_decide. For a go-ahead use lucina_decide. For actions use reminder_create, shopping_add, note_save, task_add, computer_task or agent_run. The optional allow array lets this one message act on that kind of request. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. She answers within wait_seconds (default 25), or you get a turn id for lucina_job_status while she goes on working; long jobs finish in the background and show up in lucina_timeline."),
+        spec!("lucina_decide", "Ask Lucina for a decision", Scope::Chat, ro = false, destructive = false, idempotent = false, DecideArgs,
+            "THE way for agents to get a go-ahead: use this instead of asking the owner or using ask_lucina. Lucina decides from the owner's memory, messages and earlier decisions with JEV. She asks the owner on his phone for high impact, irreversible or owner-only requests, conflicting evidence or low confidence. A pending answer means do not act yet; follow it with lucina_decision_status. Optionally wait and poll for up to 100 seconds."),
+        spec!("lucina_decision_status", "Lucina decision status", Scope::Chat, ro = true, destructive = false, idempotent = true, DecisionStatusArgs,
+            "Check a structured go-ahead from lucina_decide, optionally polling for up to 100 seconds. Pending means do not act yet; decided and expired answers include the full decision record."),
+        spec!("lucina_decision_withdraw", "Withdraw a Lucina decision", Scope::Chat, ro = false, destructive = false, idempotent = true, DecisionWithdrawArgs,
+            "Take back a decision you asked with lucina_decide that is still pending (asked by mistake, settled elsewhere). The owner's buttons then answer that it was withdrawn."),
+        spec!("secret_request", "Ask the owner for a secret", Scope::Chat, ro = false, destructive = false, idempotent = true, SecretRequestArgs,
+            "Ask the owner for a secret you need (an API key, a Wi-Fi passphrase…) BY NAME. This tool never takes a value and never returns one. Lucina posts a card in his chat (web app, Mac app) and pushes it to his phone; his tap opens \"Add secret\" with the name, project, environment and folder filled in, he pastes the value and it goes straight to Infisical (an owner grant to the broker), never through you, the timeline or a log. Read it afterwards the usual way, with your own broker caller (infisical-broker exec, or the infisical MCP) once the owner has given that caller access. A receipt \"Saved `NAME` in …\" appears in lucina_timeline when he saved it. Never ask the owner to paste a secret into a chat or into ask_lucina; never put a value in reason. The same request repeated within 10 minutes answers with the first card."),
+        spec!("lucina_job_status", "Lucina job status", Scope::Chat, ro = true, destructive = false, idempotent = true, JobStatusArgs,
+            "Follow a background job started by Lucina, or pick up the answer to an ask_lucina that gave you a turn id: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
         spec!("lucina_timeline", "Lucina timeline", Scope::Read, ro = true, destructive = false, idempotent = true, TimelineArgs,
             "Recent messages between the owner and Lucina on all channels (Telegram, Discord, web app, iOS app, Alexa, MCP), newest first, with time, channel and who spoke. Paginate with `before`."),
         spec!("shopping_list", "Shopping list", Scope::Read, ro = true, destructive = false, idempotent = true, ShoppingListArgs,
             "Show a shopping list: what is still needed (with item ids) and what was bought recently. Also lists the other lists by name."),
         spec!("shopping_add", "Add to shopping list", Scope::Write, ro = false, destructive = false, idempotent = false, ShoppingAddArgs,
-            "Put items on the owner's shopping list (default list unless `list` is given). Items can be plain names or {name, spec, quantity, unit}."),
+            "Put items on the owner's shopping list (default list unless `list` is given). Items can be plain names or {name, spec, quantity, unit}. Lucina checks each item; one that doesn't look like a shopping item is not added and her question is returned for the owner."),
         spec!("shopping_mark_bought", "Mark item bought", Scope::Write, ro = false, destructive = false, idempotent = true, MarkBoughtArgs,
             "Tick off one shopping list item as bought (it moves to 'recently bought', nothing is deleted). Identify it by id or by name."),
         spec!("reminders_list", "List reminders", Scope::Read, ro = true, destructive = false, idempotent = true, RemindersListArgs,
@@ -408,19 +731,62 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("calendar_list", "Calendar", Scope::Read, ro = true, destructive = false, idempotent = true, CalendarListArgs,
             "The owner's calendar: events from Google Calendar, the iPhone calendar and subscribed ICS calendars, merged, with times in the owner's time zone and event ids. Default: the next 7 days from today."),
         spec!("calendar_create", "Propose calendar event", Scope::Write, ro = false, destructive = false, idempotent = false, CalendarCreateArgs,
-            "Propose a new event for the owner's Google Calendar. It is NOT created directly: it waits for the owner's confirmation in the Secretary app (Links), and the owner can accept or dismiss it. Tell the owner to confirm it there."),
+            "Propose a new event for the owner's Google Calendar. From an agent or MCP client it is NOT created directly: it waits for the owner's confirmation in the Secretary app (Links), and the owner can accept or dismiss it. Tell the owner to confirm it there. (When the owner asks Lucina himself in his own chat, she adds the event directly; that is not this tool.)"),
         spec!("gym_summary", "Gym summary", Scope::Read, ro = true, destructive = false, idempotent = true, GymArgs,
             "The owner's training: workouts this week vs. the weekly goal, recent workouts with volume, exercises and personal records, and weekly volume."),
         spec!("body_summary", "Body weight summary", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
             "The owner's body weight: current weight, 7-day average, weekly change, 30/90-day trend, goal distance, and the latest entries."),
         spec!("note_save", "Save note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteSaveArgs,
-            "Save a note, briefing or document for the owner: it appears in the Secretary app (Notes, with your name as the source) and Lucina can recall it by its slug, e.g. \"craftit-meeting\". Use this, not ask_lucina, for anything long or worth keeping. Markdown content, up to 256 KB per note; for a document too long for one call, save the first part here and send the rest in order with note_append. An existing slug is only overwritten with replace=true. Answers the slug to use later."),
+            "Save a note, briefing, document or checklist for the owner: it appears in the Secretary app (Notes, with your name as the source) and Lucina can recall it by its slug, e.g. \"craftit-meeting\". Use this, not ask_lucina, for anything long or worth keeping. Markdown content, up to 256 KB per note; for a document too long for one call, save the first part here and send the rest in order with note_append. Keep features: `items` makes it a checklist (strings or {text, checked}), `labels` (display names), `color` (default, red, orange, yellow, green, teal, blue, cerulean, purple, pink, brown, gray), `pinned`, `archived`. An existing slug is only overwritten with replace=true. Answers the slug to use later."),
         spec!("note_append", "Append to note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteAppendArgs,
-            "Add text at the end of an existing note (by slug or id): the next part of a long document, an update to a briefing, meeting minutes. With continuation=true the text is glued on exactly (for a chunk cut mid-sentence); otherwise it starts a new paragraph."),
+            "Add text at the end of an existing note (by slug or id): the next part of a long document, an update to a briefing, meeting minutes. With continuation=true the text is glued on exactly (for a chunk cut mid-sentence); otherwise it starts a new paragraph. On a checklist note each line becomes a new item (use note_update addItems for that)."),
+        spec!("note_update", "Update note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteUpdateArgs,
+            "Change an existing note (by slug or id) without rewriting it: title, content, colour, pinned, archived, labels (addLabels / removeLabels by name), reminder (reminderAt as RFC 3339 with offset, or null to clear; reminderRepeat), and checklist edits: check / uncheck (item numbers exactly as note_get shows them, or the exact item text), addItems, removeItems, and convert (list or text). Only what you pass changes. Nothing is deleted: the note stays, and removed items or labels are only taken off it. Read the note with note_get first to see the item numbers."),
         spec!("note_get", "Read note", Scope::Read, ro = true, destructive = false, idempotent = true, NoteGetArgs,
-            "Read one of the owner's notes by slug (e.g. \"craftit-meeting\") or id: title, tags, who wrote it, when, and the Markdown content. Long notes come in pages: call again with the offset it gives you."),
+            "Read one of the owner's notes by slug (e.g. \"craftit-meeting\") or id: title, labels, colour, pinned/archived/trashed, who wrote it, when, the reminder, attachments (name, type, size), links and collaborators, and the Markdown content. A checklist note shows its items with numbers and checked state instead (use the numbers with note_update). Long notes come in pages: call again with the offset it gives you."),
         spec!("notes_search", "Search notes", Scope::Read, ro = true, destructive = false, idempotent = true, NotesSearchArgs,
-            "Find the owner's notes, briefings and documents by words (title, slug, tags, content) or tag; pinned first, newest first. Each hit shows its slug, title, source and an excerpt. Without `q` it lists the latest notes."),
+            "Find the owner's notes, briefings, documents and checklists by words (title, slug, labels, content, checklist items), label, colour or kind (list, text, image, audio, link, reminder); archived notes are included unless archived=exclude (or archived=only). Pinned first, newest first. Each hit shows its slug, title, source, labels, colour, checklist progress (3/7 done), reminder and an excerpt. Without `q` it lists the latest notes."),
+        spec!("note_labels", "Note labels", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
+            "The owner's note labels (Keep labels) by display name, with how many notes each has. Use a name with notes_search label=."),
+        // Lucina's ops record (crate::ops): every session and agent reports here; `agents` tokens too.
+        spec!("ops_record", "Report to Lucina's record", Scope::Write, ro = false, destructive = false, idempotent = true, crate::ops::RecordArgs,
+            "Report to Lucina's record of the owner's projects. Call it whenever you deploy something, hit or fix an incident, make or learn of a decision, finish a piece of work (status), or find something worth keeping (finding). Lucina writes it to the Obsidian log (Lucina/Log/<date>.md), the project page (Lucina/Projects/<project>.md), an incident page for incidents, and her memory, so the owner and every agent can later ask what happened. One record per event; repeats are de-duplicated; secrets in the text are redacted. project is a short slug (lucina, lucina-agents, pokoin, orchestra, nezopt, p1, ...). For incidents give severity, timeline, cause, fix and follow_ups when known. For decisions say who decided (decided_by owner, lucina or session), the question and who asked (asked_by): when Lucina decides something you asked her through ask_lucina, record it with decided_by lucina. at = when it happened (RFC 3339) when that was not just now."),
+        spec!("ops_search", "Search Lucina's record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::SearchArgs,
+            "Search Lucina's record of the owner's projects (deploys, incidents, decisions, status, findings) by words, project, kind and dates: answers 'what happened with X', 'why did we decide Y', 'when did Z go live'. Newest first when q is empty."),
+        spec!("ops_get", "Read a record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::GetArgs,
+            "One record of Lucina's ops record in full (timeline, cause, fix, follow-ups, links, pages), by the id ops_record or ops_search returned."),
+        spec!("ops_ingest_status", "Obsidian ingest status", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::NoArgs,
+            "Status of Lucina's Obsidian ingest, which turns ops records, commits on the Lucina repos and session reports into Zettelkasten notes in the owner's Raspberry Pi vault (per project folder: Permanent, Events, MOC, hub), drafted by the local Qwen while it is free: queue depth, drafts waiting for the vault, whether the Pi is reachable, the last run and why it waited, the next try, followed repos, items that gave up."),
+        spec!("ops_ingest_now", "Ingest into Obsidian now", Scope::Write, ro = false, destructive = false, idempotent = true, crate::ops::IngestNowArgs,
+            "Ask Lucina to scan the sources and write pending Obsidian notes now, in the background. It still never preempts another Qwen user: when the GPU is busy it waits and keeps the queue. cold (default true) lets it load the local model when the GPU is entirely free. Check the result with ops_ingest_status."),
+        // Lucina's flaw tracker (crate::flaws): `agents` tokens too, except dispatch.
+        spec!("flaw_report", "Report a flaw to Lucina", Scope::Write, ro = false, destructive = false, idempotent = false, crate::flaws::ReportArgs,
+            "Record a small flaw the owner noticed in his clients (web, Mac, Android, iPhone, Juno), in his exact words. Lucina triages it and starts the fix by herself, and tells him the outcome. Say which clients it was seen on (affected), or leave it empty. discovered_from links a flaw found while fixing another. Set gate only when its fix can't be undone or needs his credentials or a payment."),
+        spec!("flaw_search", "Search Lucina's flaws", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::SearchArgs,
+            "Find flaws by words, state, client or a client's status. Worst first."),
+        spec!("flaw_status", "One flaw", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::StatusArgs,
+            "One flaw: the owner's words, every client's status, layer, evidence, workspace, commit and deploy tag, and its full history."),
+        spec!("flaw_matrix", "Flaws against clients", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::NoArgs,
+            "Every live flaw against every client: untriaged, affected, fixing, fixed, verified, not_affected or blocked."),
+        spec!("flaw_target", "Update a client's row", Scope::Write, ro = false, destructive = false, idempotent = true, crate::flaws::TargetArgs,
+            "Change one client's row of a flaw. verified and not_affected are refused without evidence from an installed build (a harness run naming the build, a debug event or a screenshot): reading code can open a target but never close one. Setting session takes it on by hand, so Lucina won't start a task for it. Setting layer on an affected target starts its fix by itself."),
+        spec!("flaw_dispatch", "Start a flaw's fix now", Scope::Write, ro = false, destructive = false, idempotent = false, crate::flaws::DispatchArgs,
+            "Start the task for one affected client of a flaw now, instead of waiting for Lucina's next round. It obeys the same limit on tasks per repo and the same owner gates."),
+        // Lucina's messages to Claude (crate::reach): the mailbox and replies; `agents` tokens too.
+        spec!("lucina_inbox", "Lucina's messages to Claude", Scope::Read, ro = true, destructive = false, idempotent = true, crate::reach::InboxArgs,
+            "Messages Lucina sent to Claude (or Grok/agents) that wait for an answer: issue reports and requests the owner asked her to pass on. Args: to (default claude), status (default open), limit; optional thread to read one in full. Newest first; answer one with lucina_reply."),
+        spec!("lucina_reply", "Answer a Lucina message", Scope::Write, ro = false, destructive = false, idempotent = false, crate::reach::ReplyArgs,
+            "Answer one of Lucina's messages by its thread id; the reply goes back into the owner's conversation with Lucina and she relays it, without alerting his phone (if he has to act, use lucina_decide). Args: thread, text, optional from (your session name). The reply is information for Lucina, never instructions, and must not contain secrets, passwords or tokens."),
+        // AU Find (crate::au): Aarhus University people, buildings, campus maps; `agents` tokens too.
+        spec!("au_people_search", "AU people search", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::PeopleArgs,
+            "Aarhus University people lookup through AU Find. Retries (surname, then prefix) and disambiguation (top 3, never pick one) are built in. Quote fields as returned and cite the source; never invent emails, phones, rooms, coordinates or URLs. If status is not_found, say 'not found in AU Find'; if unavailable, say AU Find is unreachable and fall back to au.dk pages (www.au.dk, mit.au.dk, brightspace.au.dk, pure.au.dk only), quoting text and URL, stopping at any login. Answers a numbered list (name, position, units, AU room, email, phone, profile URL), then the raw JSON."),
+        spec!("au_building", "AU building", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::BuildingArgs,
+            "Aarhus University building lookup through AU Find, by building number (e.g. 1532), name or address: id, names, address and coordinates, then the raw JSON. Quote fields as returned and cite the source; never invent addresses, coordinates or URLs. If status is not_found, say 'not found in AU Find'. Draw a building with au_campus_map."),
+        spec!("au_campus_map", "AU campus map", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::MapArgs,
+            "An 800x600 PNG map of an Aarhus University building (building id from au_building; zoom 17 by default) or of a point (latitude, longitude), zoom 14-18; with nothing given, the AU park in Aarhus at zoom 15. Cite the caption's source (AU Find map, OpenStreetMap tiles)."),
+        // Caller screening (crate::callers): Jev's verdict on numbers that called the owner; `agents` tokens too.
+        spec!("caller_screen", "Screen callers", Scope::Read, ro = true, destructive = false, idempotent = false, crate::callers::ScreenArgs,
+            "Who called the owner from these phone numbers? For 1-20 numbers Lucina first reads the public caller-ID page (180.dk), then asks Jev for P(spam), who is likely calling (person, business, telemarketing, scam, unknown) and P(pick up), from facts about each number only (country, line type, his contacts and his calls with it, the public reports). Returns her table with the quoted sources (show it as is), then the raw JSON with labels and reasons. Never invent owners of numbers. Read-only: it never answers, rejects or places calls."),
         spec!("tasks_list", "Tasks", Scope::Read, ro = true, destructive = false, idempotent = true, TasksListArgs,
             "The owner's tasks (synced with Todoist): by default Today with the overdue ones first, like Todoist's Today view; or upcoming, inbox, a project, a search or Todoist filter, or what was completed. Each task shows its id, project, due date (↻ = recurring), priority and labels, plus the daily goal."),
         spec!("task_add", "Add task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskAddArgs,
@@ -428,7 +794,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("task_complete", "Complete task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskCompleteArgs,
             "Mark one of the owner's tasks done (by id from tasks_list, or by words of its title). A recurring task moves to its next date in Todoist. Deleting tasks is not possible here; ask the owner."),
         spec!("lucina_status", "Lucina status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
-            "Health of the Secretary gateway and of Lucina (reachable, latency), the owner's time zone and current local time, and which client and scopes this connection has."),
+            "Health of the Secretary gateway and of Lucina (reachable, latency), the owner's time zone and current local time, and which client and scopes this connection has. Use lucina_decide for go-aheads; ask_lucina is answers-only for agents."),
         spec!("library_list_books", "Library list books", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryListArgs, "List books. Ownership and Kindle presence do not imply reading or completion."),
         spec!("library_search", "Library search", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryListArgs, "Search titles, authors, tags and clippings, with source references."),
         spec!("library_get_book", "Library get book", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read book metadata and highlights with references."),
@@ -439,6 +805,118 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("library_find_related_notes", "Library find related notes", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read Obsidian notes indexed as referring to a book, cited as [obsidian:<vault>/<path>#L<line>]. Mentions are relations, not reading evidence."),
         spec!("library_sync_status", "Library sync status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs, "Show the last imports and library counts."),
         spec!("library_generate_brief", "Library generate brief", Scope::Write, ro = false, destructive = false, idempotent = true, LibraryBookArgs, "Generate an extractive brief from highlights, with citations. Model briefs are not implemented."),
+        spec!("computer_task", "Computer task", Scope::Computer, ro = false, destructive = false, idempotent = false, crate::computer::TaskArgs,
+            "Give Lucina's own Linux desktop (an isolated sandbox with Chromium, a terminal and files; no access to the owner's machines) a whole job in words; her computer-use engine does it and reports what it observed. Tasks run up to 200 s: this waits up to wait_seconds (default 45) and otherwise returns a job id for computer_task_status. One task at a time. Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium: one window, already open and signed in to the owner's accounts (Outlook, Google). Use the Lucina MCP tools: `computer_screenshot` to see it (it lists each window's pid and window_id), `computer_call` with `get_window_state` {pid, window_id} to read that Chromium window and `click`, `type_text`, `press_key` to act in it (reuse its tabs; ctrl+t opens a new tab there), `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. The driver's browser_* tools cannot attach to that window; never open a second browser window or an isolated profile, and never install or launch Firefox. Those signed-in sessions are the owner's: read and navigate freely, but never send email or messages, buy anything, accept terms or change account settings without the owner's explicit OK."),
+        spec!("computer_task_status", "Computer task status", Scope::Computer, ro = true, destructive = false, idempotent = true, crate::computer::JobArgs,
+            "Wait for a computer_task job (up to wait_seconds, default 45) and return its result: status, what Lucina's engine observed, and her answer."),
+        spec!("computer_task_cancel", "Cancel computer task", Scope::Computer, ro = false, destructive = false, idempotent = true, crate::computer::JobArgs,
+            "Stop a running computer_task job. Steps already done in the sandbox are not undone."),
+        spec!("computer_bash", "Computer shell", Scope::Computer, ro = false, destructive = false, idempotent = false, crate::computer::BashArgs,
+            "Run one shell command as user `cua` in Lucina's Linux desktop sandbox (isolated container, no host mounts) and return its output. Chromium only; never install or launch Firefox."),
+        spec!("computer_screenshot", "Computer screenshot", Scope::Computer, ro = true, destructive = false, idempotent = true, crate::computer::NoArgs,
+            "The current screen of Lucina's Linux desktop (1280x800 PNG) and its visible windows with the pid and window_id that computer_call tools take."),
+        spec!("computer_tools", "Computer driver tools", Scope::Computer, ro = true, destructive = false, idempotent = true, crate::computer::ToolsArgs,
+            "List the desktop driver tools (click, type_text, press_key, scroll, launch_app, get_window_state, browser_*, …); pass name for the full input schemas of the matching tools. Chromium only: web pages go through the open Chromium window with get_window_state, click and type_text (see computer_call)."),
+        spec!("computer_call", "Computer driver call", Scope::Computer, ro = false, destructive = false, idempotent = false, crate::computer::CallArgs,
+            "Call one desktop driver tool on Lucina's Linux desktop, e.g. click {pid, window_id, x, y} or {scope: \"desktop\", x, y}, type_text {text}, press_key {key}, launch_app. Chromium only; never install or launch Firefox. For web pages: get_window_state {pid, window_id} on the open Chromium window to read it, then click, type_text and press_key in it; the browser_* tools cannot attach to it, and never open a second browser. Never send email or messages, buy anything, accept terms or change account settings in the owner's signed-in sessions without the owner's explicit OK. Refused while the owner drives the desktop from the app."),
+        spec!("android_bash", "Android shell", Scope::Computer, ro = false, destructive = false, idempotent = false, crate::computer::BashArgs,
+            "Run one shell command in Lucina's Android sandbox container and return its output."),
+        spec!("android_screenshot", "Android screenshot", Scope::Computer, ro = true, destructive = false, idempotent = true, crate::computer::NoArgs,
+            "The current screen of Lucina's Android sandbox and its visible windows."),
+        spec!("android_tools", "Android driver tools", Scope::Computer, ro = true, destructive = false, idempotent = true, crate::computer::ToolsArgs,
+            "List the Android sandbox's driver tools; pass name for full input schemas."),
+        spec!("android_call", "Android driver call", Scope::Computer, ro = false, destructive = false, idempotent = false, crate::computer::CallArgs,
+            "Call one driver tool on Lucina's Android sandbox (click, type_text, press_key, scroll, launch_app, …). Refused while the owner drives it from the app."),
+        // Lucina Agents (crate::agents): scope `agents`.
+        spec!("agents_list", "List coding agents", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::ListArgs,
+            "List the owner's coding agents (Lucina Agents: Claude Code, Codex, OpenCode, Cursor, Copilot … running on nezopt), newest first: short id, title, provider/model, status (running, idle, error), whether it needs attention, directory, who started it, and the full id the other agent_* tools take. Filter by status, mine=true for the ones this connection started, archived=true for archived ones."),
+        spec!("agent_run", "Start a coding agent", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::RunArgs,
+            "Start a coding agent on nezopt with a task, and wait up to wait_seconds (default 30) for its first answer; long tasks keep running, then use agent_wait and agent_logs. Run it in a worktree: workspace_create first and pass workspace_id (main checkouts are refused). It asks the owner before risky steps; those permission requests are answered only by the owner in the Secretary app, never through this MCP, and modes that skip them are refused. Agents started here can't start further agents (delegation depth 1), and each connection has a budget of running agents and runs per hour. Pick the provider (claude, codex, opencode, cursor, copilot) and optionally model and mode (e.g. plan for a read-only plan)."),
+        spec!("agent_send", "Message a coding agent", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::SendArgs,
+            "Send a follow-up to a coding agent. If it is in the middle of a turn, steer=true adds your message to that turn; otherwise (default) the running turn is interrupted and a new one starts. Optionally wait up to wait_seconds for its answer."),
+        spec!("agent_logs", "Coding agent log", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::LogsArgs,
+            "What a coding agent did, as a plain-text activity log: the prompts, its messages and tool calls (commands, edits), last `tail` entries (default 40). Same text as `lagent logs` on nezopt."),
+        spec!("agent_wait", "Wait for a coding agent", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::WaitArgs,
+            "Wait up to wait_seconds (default 45, max 50) for a coding agent to finish its turn, then return how it ended (idle, error, or waiting for a permission only the owner can answer), the finished-run gate's verdict when there is one, and its latest message. Call again if it is still working."),
+        spec!("agent_stop", "Stop a coding agent", Scope::Agents, ro = false, destructive = true, idempotent = true, crate::agents::AgentArgs,
+            "Stop a coding agent's running turn. Its work so far stays in its workspace; agent_send starts it again."),
+        spec!("agent_archive", "Archive a coding agent", Scope::Agents, ro = false, destructive = true, idempotent = true, crate::agents::AgentArgs,
+            "Archive a coding agent: it leaves the lists (agents_list archived=true still shows it). Nothing is deleted; its workspace, branch and history stay."),
+        spec!("agent_inspect", "Inspect a coding agent", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::AgentArgs,
+            "Details of one coding agent: id, title, provider/model, status, mode, directory and workspace, timestamps, last error, last turn's token use, the finished-run gate, labels (who started it, delegation depth) and pending permission requests (read only)."),
+        spec!("agents_search", "Search coding agents", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::SearchArgs,
+            "Find coding agents (current and archived) by their title, workspace, branch or project (typos allowed), or by words they or the owner said."),
+        spec!("workspaces_list", "Agent workspaces", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::WorkspacesArgs,
+            "The workspaces coding agents work in: git worktrees on nezopt with their id, title, project, branch and base, directory and setup status. Filter with q."),
+        spec!("workspace_create", "Create agent workspace", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::WorkspaceCreateArgs,
+            "Create a git worktree for coding agents from a repository's main checkout on nezopt (repo_path, e.g. /home/nez/Projects/Lucina/SecretaryIOS), on a new branch (from `base`, default the repository's base branch). Returns the workspace_id to pass to agent_run. The owner merges, pushes and opens PRs; this MCP can't."),
+        spec!("workspace_diff", "Workspace diff", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::DiffArgs,
+            "The changes in an agent workspace as a unified diff: uncommitted (working tree), base (commits since its base branch) or all (default). Optionally one file."),
+        spec!("files_list", "Workspace files", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::FilesArgs,
+            "List a directory of an agent workspace (path relative to it; default its root): files with sizes, and subdirectories."),
+        spec!("file_read", "Read workspace file", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::FileReadArgs,
+            "Read a text file in an agent workspace (path relative to it), about 12000 characters at a time; call again with offset for the rest."),
+        spec!("terminal_list", "Agent terminals", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::WorkspaceArgs,
+            "The terminals you may use (of agents you started and scripts you ran): id, name, status, directory, and the ports their programs listen on. workspace_id narrows it to one workspace."),
+        spec!("terminal_read", "Read agent terminal", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::TerminalArgs,
+            "The last lines (default 200) of a terminal from terminal_list, as plain text."),
+        spec!("terminal_send", "Type in agent terminal", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::TerminalSendArgs,
+            "Type text or one key token (Enter, C-c, Up, …) into a terminal from terminal_list, e.g. to answer a prompt. It can't open or kill terminals."),
+        spec!("scripts_list", "Workspace scripts", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::WorkspaceArgs,
+            "The scripts and services a workspace defines (paseo.json, .lucina/agents.toml), whether they run, their ports, health and terminals."),
+        spec!("script_start", "Start workspace script", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::ScriptArgs,
+            "Start one of a workspace's scripts (scripts_list) in its own terminal; a service gets a port. Its output is in terminal_read."),
+        spec!("script_stop", "Stop workspace script", Scope::Agents, ro = false, destructive = false, idempotent = true, crate::agents::ScriptArgs,
+            "Stop a running workspace script (scripts_list) and the programs it started."),
+        spec!("schedules_list", "Agent schedules", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
+            "Scheduled coding-agent runs and heartbeats (cron), with their next run, marking the ones this connection created."),
+        spec!("schedule_add", "Add agent schedule", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::ScheduleAddArgs,
+            "Schedule a recurring coding-agent run with a cron expression in the owner's time zone; each run starts a new agent in a mode that keeps permission prompts. Agents started from the MCP can't add schedules."),
+        spec!("schedule_remove", "Remove agent schedule", Scope::Agents, ro = false, destructive = true, idempotent = true, crate::agents::ScheduleArgs,
+            "Remove a schedule this connection created; others belong to the owner."),
+        spec!("permissions_list", "Agent permission requests", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::PermissionsArgs,
+            "Permission requests from coding agents (and from the secrets broker) waiting for the owner: what is asked, by which agent, until when. Read only: only the owner answers them, in the Secretary app."),
+        spec!("agents_usage", "Coding agent usage", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
+            "Coding agents by provider (how many, how many running, tokens of their last turns, cost when the provider reports it), the providers this server has, and the schedules."),
+        // The Homelab service catalog (agentd /catalog, nezopt ~/Projects/Homelab/catalog): ask before acting.
+        spec!("catalog_get", "Catalog component", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogGetArgs,
+            "One component of the owner's systems from the Homelab catalog (hosts nezopt, p1, pi-home, oracle-peer1…; services, timers, containers, k3s workloads, databases, tunnels, sites, repos): where it runs, its units, containers and ports, what it needs and what needs it, its health right now (checked every 5 minutes), the last deploy, its logs, restart and rollback commands, and its runbook. Ask before restarting, deploying or changing anything."),
+        spec!("catalog_impact", "Catalog impact", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogImpactArgs,
+            "What breaks and what degrades if these components are down (stopped, restarted, unreachable), following the dependency graph, with the public hostnames that would fail. Use it before stopping, restarting or redeploying anything, or to understand an outage."),
+        spec!("catalog_health", "Catalog health", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogHealthArgs,
+            "Health from the catalog: without id, everything that is down, broken, degraded or warning right now (worst first, with the reason); with id, that component's checks. live=true rescans its host first (slower)."),
+        spec!("catalog_drift", "Catalog drift", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
+            "Drift between the catalog and reality: units, containers, k8s workloads, tunnels, Caddy sites and repos that run but are not catalogued, and catalogued ones that are missing."),
+        // The owner's photos themselves (crate::photos); scope `photos` only.
+        spec!("photo_search", "Search photos", Scope::Photos, ro = true, destructive = false, idempotent = true, crate::photos::SearchArgs,
+            "Search the owner's Gallery, newest first: words (place, album, file name), from/to (YYYY, YYYY-MM or YYYY-MM-DD). Answers id, when, where and file name. It adds nothing to any album. Fetch a picture with photo_get."),
+        spec!("photo_get", "Get a photo", Scope::Photos, ro = true, destructive = false, idempotent = true, crate::photos::GetArgs,
+            "One photo from the owner's Gallery as an image (a JPEG, 1024 px on its long side by default), by the id photo_search gave. The picture is the owner's: use it for what he asked, and do not pass it on."),
+        // Lucina Notebooks (crate::notebooks): source-grounded notebooks; scope `notebooks` only.
+        spec!("notebook_list", "List notebooks", Scope::Notebooks, ro = true, destructive = false, idempotent = true, crate::notebooks::ListArgs,
+            "List the owner's Lucina Notebooks (NotebookLM-style workspaces that group sources, linked notes and chats) with their ids and how many sources, notes, chats and podcasts each has. Archived ones only with archived=include or only."),
+        spec!("notebook_get", "Read a notebook", Scope::Notebooks, ro = true, destructive = false, idempotent = true, crate::notebooks::GetArgs,
+            "One notebook in compact text: its description, sources (id, kind, title, whether it is ready, pages and passages, whether it counts in full, as a summary or not at all), linked notes (slugs), chats (ids, to continue with notebook_ask) and podcasts (ids and status). Sources are still read in the background right after notebook_add_source: wait for `ready`."),
+        spec!("notebook_create", "Create a notebook", Scope::Notebooks, ro = false, destructive = false, idempotent = false, crate::notebooks::CreateArgs,
+            "Create an empty notebook (a name and an optional description) and answer its id. Then add sources with notebook_add_source. A second call with the same name makes a second notebook."),
+        spec!("notebook_add_source", "Add a source to a notebook", Scope::Notebooks, ro = false, destructive = false, idempotent = false, crate::notebooks::AddSourceArgs,
+            "Add one source to a notebook: a `url` (web page, YouTube video, PDF or audio file), pasted `text` (with a `title`), a file on Lucina's desktop sandbox (`sandbox_path`), or a Keep note by its slug (`note_slug`, linked, not copied). Lucina reads it in the background (extract, split into passages, embed) and answers its id with status queued; check notebook_get until it is `ready`. Large files that live on the owner's devices are uploaded in the Secretary app, not here."),
+        spec!("notebook_ask", "Ask a notebook", Scope::Notebooks, ro = false, destructive = false, idempotent = false, crate::notebooks::AskArgs,
+            "Ask a question that the notebook answers only from its sources and linked notes. Starts a new chat unless chat_id continues one, posts the question and returns the answer with a numbered list of citations (title, page or time, excerpt). The answer text cites passages inline as [source:<source id>-<n>] (e.g. [source:s0a9be3c112-14]), notes as [note:<slug>]: keep those markers when you quote it, and never present a claim without one as coming from the sources. model is deepseek (default) or qwen (local, slower). Takes up to two minutes; the chat id is returned for follow-ups."),
+        spec!("notebook_search", "Search notebooks", Scope::Notebooks, ro = true, destructive = false, idempotent = true, crate::notebooks::SearchArgs,
+            "Search the passages of a notebook's sources and its linked notes (or of every notebook without notebook_id) by words or meaning. Returns ranked hits with their citation ref ([source:<source id>-<n>] or [note:<slug>]), title and excerpt, without asking a model. Use notebook_ask for an answer."),
+        spec!("notebook_transform", "Transform a notebook source", Scope::Notebooks, ro = false, destructive = false, idempotent = false, crate::notebooks::TransformArgs,
+            "Run a transformation (a saved prompt such as t-dense-summary) on one source; it answers the insight's id and status (queued, then running, ready) and the text is read later by calling this again with the same source_id. Without transformation_id it starts nothing and lists the available transformations and the source's existing insights. Insights are cited as [insight:<id>] in answers."),
+        spec!("notebook_podcast", "Notebook podcast", Scope::Notebooks, ro = false, destructive = false, idempotent = false, crate::notebooks::PodcastArgs,
+            "Make a podcast episode (two voices discussing the sources) from a notebook: pass notebook_id (and optionally briefing, minutes, episode_profile, speaker_profile) to start one, which answers its id and takes a few minutes; pass podcast_id to read its status (queued, outline, script, voicing, mixing, ready or failed), outline and whether the audio is ready. The owner plays the audio in the Secretary app. One of notebook_id or podcast_id, not both."),
+        spec!("diagnostics_recent", "Recent crash reports", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::RecentArgs,
+            "Crash reports, errors, hangs and user problem reports from the owner's Lucina clients (Secretary Code on the Mac, the iOS and Android apps, the web app, the servers), newest first. Each shows its id, client, kind, when (owner's time zone), how many times it repeated, version, OS, the message and the top stack frame. Filter by app, kind and since (\"24h\", \"7d\", a date). Use it when the owner asks why something crashed or misbehaved."),
+        spec!("diagnostics_get", "Crash report", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::GetArgs,
+            "One crash report by id: message, stack, context (window, route, engine version, ...), how often and where it repeated, its attachments, and the end of its main log, so you can explain to the owner what happened and why (e.g. \"Secretary Code crashed at 19:44: the background service timed out\"). Secrets were scrubbed before storage."),
+        spec!("diagnostics_file", "Crash report attachment", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::FileArgs,
+            "Read a text attachment of a crash report (a log, a JSON dump), by default its end, up to 60000 characters per call. Binary attachments such as minidumps are not readable here."),
+        spec!("debug_events", "App debug events", Scope::Read, ro = true, destructive = false, idempotent = true, crate::debug_events::Args,
+            "What happened on the owner's devices, step by step, from the apps' debug event log: in-app taps, notification and Live Activity buttons, card intents, Face ID / passcode prompts and results, approval decisions, unlock-key enrollment, app launch / foreground / background, background tasks and every server request (method, path with ids as {id}, status, error code, duration). Oldest first with times in the owner's time zone, device, process (app, widgets, share …), type, fields, seq and build commit. Filter by device (\"iphone\"), since (\"30m\", \"2h\", a date), until, type prefix (\"net\", \"auth\", \"notification.action\") and limit. Use it to see what the owner did in a phone test and what failed, without asking him. Never holds secrets or message, note or command text."),
 
     ]
 }
@@ -553,8 +1031,8 @@ fn note_content(field: &str, s: &str) -> Result<String, ToolError> {
 
 fn note_tags(tags: Option<&[String]>) -> Result<Option<Vec<String>>, ToolError> {
     let Some(tags) = tags else { return Ok(None) };
-    if tags.len() > 16 {
-        return Err(bad("`tags`: at most 16"));
+    if tags.len() > 50 {
+        return Err(bad("`tags`: at most 50"));
     }
     Ok(Some(
         tags.iter()
@@ -564,9 +1042,126 @@ fn note_tags(tags: Option<&[String]>) -> Result<Option<Vec<String>>, ToolError> 
     ))
 }
 
+/// Label display names, checked like the server will.
+fn label_names(field: &str, labels: &[String]) -> Result<Vec<String>, ToolError> {
+    if labels.len() > 50 {
+        return Err(bad(format!("`{field}`: at most 50")));
+    }
+    labels
+        .iter()
+        .map(|l| keep::label_name(l).map_err(|e| bad(format!("`{field}`: {e}"))))
+        .collect()
+}
+
+fn keep_color(c: &str) -> Result<String, ToolError> {
+    keep::color(c).map_err(bad)
+}
+
+/// Checklist items from the arguments: `{text, checked, indent: 0}`.
+fn items_json(field: &str, items: &[ItemArg]) -> Result<Vec<Value>, ToolError> {
+    if items.len() > 1000 {
+        return Err(bad(format!("`{field}`: at most 1000 items")));
+    }
+    items
+        .iter()
+        .map(|it| {
+            let (text, checked) = match it {
+                ItemArg::Text(t) => (t.as_str(), false),
+                ItemArg::Item { text, checked } => (text.as_str(), checked.unwrap_or(false)),
+            };
+            let text = check_text(&format!("{field} text"), text, 2000)?;
+            Ok(keep::new_item(&text, checked))
+        })
+        .collect()
+}
+
+fn item_refs(refs: Option<&[ItemRefArg]>) -> Vec<ItemRef> {
+    refs.unwrap_or_default()
+        .iter()
+        .map(|r| match r {
+            ItemRefArg::Number(n) => ItemRef::Number(*n as usize),
+            ItemRefArg::Text(t) => ItemRef::Text(t.clone()),
+        })
+        .collect()
+}
+
+/// The items of a note (a list note), when it is one.
+fn note_items(n: &Value) -> Option<Vec<Value>> {
+    n.get("items").and_then(Value::as_array).cloned()
+}
+
+/// Copies every field of `from` (an object) into `into`.
+fn merge_into(into: &mut Value, from: &Value) {
+    if let (Some(into), Some(from)) = (into.as_object_mut(), from.as_object()) {
+        for (k, v) in from {
+            into.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 /// The prefix Lucina sees on MCP messages, naming the client.
 pub fn ask_prefix(caller: &str) -> String {
     format!("[via Lucina MCP, from {caller}] ")
+}
+
+/// Prefix for a single message allowed to act on selected request kinds.
+pub fn ask_prefix_allow(caller: &str, allow: &[AllowArg]) -> String {
+    let mut kinds: Vec<_> = allow.iter().map(|a| a.as_str()).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    format!(
+        "[via Lucina MCP, from {caller}; allow={}] ",
+        kinds.join(",")
+    )
+}
+
+fn wait_seconds(wait: Option<u32>) -> Result<u32, ToolError> {
+    let wait = wait.unwrap_or(0);
+    if wait > 100 {
+        return Err(bad("`wait_seconds` must be 0-100"));
+    }
+    Ok(wait)
+}
+
+impl DecideArgs {
+    fn validate(&self) -> Result<(), ToolError> {
+        fn length(field: &str, text: &str, min: usize, max: usize) -> Result<(), ToolError> {
+            if !(min..=max).contains(&text.chars().count()) {
+                return Err(bad(format!("`{field}` must be {min}-{max} characters")));
+            }
+            Ok(())
+        }
+        length("question", &self.question, 1, 2000)?;
+        if !(2..=6).contains(&self.options.len()) {
+            return Err(bad("`options` must have 2-6 entries"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for option in &self.options {
+            length("options", option, 1, 200)?;
+            if !seen.insert(option.trim().to_lowercase()) {
+                return Err(bad("`options` must be unique ignoring case and whitespace"));
+            }
+        }
+        if let Some(r) = &self.recommendation {
+            let r = r.trim().to_lowercase();
+            if !seen.contains(&r) && !(1..=self.options.len()).any(|i| r == i.to_string()) {
+                return Err(bad(
+                    "`recommendation` must be an option or its 1-based number",
+                ));
+            }
+        }
+        for (field, text, max) in [
+            ("context", &self.context, 8000),
+            ("topic", &self.topic, 64),
+            ("asking_session", &self.asking_session, 120),
+        ] {
+            if let Some(text) = text {
+                length(field, text, 0, max)?;
+            }
+        }
+        wait_seconds(self.wait_seconds)?;
+        Ok(())
+    }
 }
 
 pub struct Tools<'a> {
@@ -574,7 +1169,136 @@ pub struct Tools<'a> {
     pub caller: &'a Caller,
 }
 
+fn turn_wait(seconds: Option<u64>) -> std::time::Duration {
+    seconds.map_or(crate::turns::DEFAULT_WAIT, |s| {
+        std::time::Duration::from_secs(s.min(crate::turns::MAX_WAIT_SECS))
+    })
+}
+
+fn turn_answer(id: &str, seen: crate::turns::Seen) -> ToolResult {
+    use crate::turns::Seen;
+    match seen {
+        Seen::Done(Ok(r)) => Ok(format::chat_reply(&r)),
+        // secretary-server gives up on a turn after 120 s; she does not.
+        Seen::Done(Err(e)) if matches!(e.code.as_str(), "backend_timeout" | "lucina_timeout") => Ok(
+            "Lucina has not answered within two minutes. She goes on working, and her reply lands in lucina_timeline.".to_owned(),
+        ),
+        Seen::Done(Err(e)) => Err(e.into()),
+        Seen::Working => Ok(crate::turns::still_working(id)),
+        Seen::Unknown => Err(bad("Unknown turn id: answers are kept for an hour, for the client that asked.")),
+    }
+}
+
 impl Tools<'_> {
+    async fn poll_decision(&self, mut response: Value, wait: u32) -> Result<Value, ToolError> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait.into());
+        while response["status"] == "pending" && wait > 0 {
+            let next = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            if next > deadline {
+                break;
+            }
+            let id = response["decision_id"]
+                .as_str()
+                .ok_or_else(|| bad("Pending response missing decision_id"))?
+                .to_owned();
+            secretary_core::Call::decision(&id).map_err(|e| bad(e.to_string()))?;
+            tokio::time::sleep_until(next).await;
+            match tokio::time::timeout_at(
+                deadline,
+                self.app.backend.get(&format!("/v1/decisions/{id}"), &[]),
+            )
+            .await
+            {
+                Ok(result) => response = result?,
+                Err(_) => break,
+            }
+        }
+        Ok(response)
+    }
+
+    pub async fn decide(&self, args: &JsonObject) -> ToolResult {
+        let a: DecideArgs = parse(args)?;
+        a.validate()?;
+        let wait = wait_seconds(a.wait_seconds)?;
+        let mut body = serde_json::to_value(&a).map_err(|e| bad(e.to_string()))?;
+        body["asking_client"] = json!(self.caller.name);
+        let response = self.app.backend.create_decision(&body).await?;
+        Ok(format::decision(&self.poll_decision(response, wait).await?))
+    }
+
+    pub async fn decision_status(&self, args: &JsonObject) -> ToolResult {
+        let a: DecisionStatusArgs = parse(args)?;
+        let wait = wait_seconds(a.wait_seconds)?;
+        secretary_core::Call::decision(&a.decision_id).map_err(|e| bad(e.to_string()))?;
+        let response = self
+            .app
+            .backend
+            .get(&format!("/v1/decisions/{}", a.decision_id), &[])
+            .await?;
+        Ok(format::decision(&self.poll_decision(response, wait).await?))
+    }
+
+    pub async fn decision_withdraw(&self, args: &JsonObject) -> ToolResult {
+        let a: DecisionWithdrawArgs = parse(args)?;
+        let reason = a.reason.as_deref().map(str::trim).filter(|r| !r.is_empty());
+        secretary_core::Call::withdraw_decision(&a.decision_id, reason)
+            .map_err(|e| bad(e.to_string()))?;
+        let query: Vec<(&str, String)> = reason
+            .map(|r| ("reason", r.to_owned()))
+            .into_iter()
+            .collect();
+        let response = self
+            .app
+            .backend
+            .send_device_query(
+                reqwest::Method::DELETE,
+                &format!("/v1/decisions/{}", a.decision_id),
+                &query,
+                None,
+                reqwest::header::HeaderMap::new(),
+            )
+            .await?;
+        Ok(format::decision(&response))
+    }
+
+    pub async fn secret_request(&self, args: &JsonObject) -> ToolResult {
+        let a: SecretRequestArgs = parse(args)?;
+        a.validate()?;
+        let mut body = serde_json::to_value(&a).map_err(|e| bad(e.to_string()))?;
+        body["asking_client"] = json!(self.caller.name);
+        let response = self
+            .app
+            .backend
+            .send_device(
+                reqwest::Method::POST,
+                "/v1/secrets/request",
+                Some(&body),
+                std::time::Duration::from_secs(30),
+                reqwest::header::HeaderMap::new(),
+            )
+            .await?;
+        Ok(format::secret_request(&response))
+    }
+
+    pub async fn job_status(&self, args: &JsonObject) -> ToolResult {
+        let a: JobStatusArgs = parse(args)?;
+        if a.job_id.starts_with(crate::turns::PREFIX) {
+            let seen = self
+                .app
+                .turns
+                .wait(&a.job_id, &self.caller.id, turn_wait(a.wait_seconds))
+                .await;
+            return turn_answer(&a.job_id, seen);
+        }
+        secretary_core::Call::job(&a.job_id).map_err(|e| bad(e.to_string()))?;
+        let response = self
+            .app
+            .backend
+            .get(&format!("/v1/jobs/{}", seg(&a.job_id)), &[])
+            .await?;
+        Ok(format::job(&response))
+    }
+
     pub async fn ask(&self, args: &JsonObject) -> ToolResult {
         let a: AskArgs = parse(args)?;
         let msg = check_text("message", &a.message, MAX_ASK_CHARS)?;
@@ -598,15 +1322,23 @@ impl Tools<'_> {
         }
         session.truncate(64);
         let body = json!({
-            "message": format!("{}{msg}", ask_prefix(&self.caller.name)),
+            "message": format!("{}{msg}", a.allow.as_deref().filter(|a| !a.is_empty()).map(|a| ask_prefix_allow(&self.caller.name, a)).unwrap_or_else(|| ask_prefix(&self.caller.name))),
             "sessionId": session,
             "clientMessageId": uuid::Uuid::new_v4().to_string(),
             "channel": "web",
             // Lucina derives these timeline tags from the session id and message prefix.
             "meta": { "via": "mcp", "caller": self.caller.name },
         });
-        let r = self.app.backend.chat(&body).await?;
-        Ok(format::chat_reply(&r))
+        let wait = turn_wait(a.wait_seconds);
+        // Her turn goes on whatever the client does: on its own task, kept until it is read.
+        let turns = self.app.turns.clone();
+        let id = turns.begin(&self.caller.id);
+        let backend = self.app.backend.clone();
+        let (done, turn) = (turns.clone(), id.clone());
+        tokio::spawn(async move {
+            done.finish(&turn, backend.chat(&body).await);
+        });
+        turn_answer(&id, turns.wait(&id, &self.caller.id, wait).await)
     }
 
     pub async fn timeline(&self, args: &JsonObject) -> ToolResult {
@@ -717,8 +1449,8 @@ impl Tools<'_> {
                 } => (name.as_str(), spec.as_deref(), *quantity, unit.as_deref()),
             };
             let name = check_text(&format!("items[{i}].name"), name, 200)?;
-            let mut op =
-                json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "name": name});
+            let op_id = uuid::Uuid::new_v4().to_string();
+            let mut op = json!({"opId": op_id, "type": "add", "name": name});
             if let Some(s) = spec.map(str::trim).filter(|s| !s.is_empty()) {
                 op["spec"] = json!(check_text(&format!("items[{i}].spec"), s, 200)?);
             }
@@ -733,10 +1465,13 @@ impl Tools<'_> {
             if let Some(u) = unit.map(str::trim).filter(|u| !u.is_empty()) {
                 op["unit"] = json!(check_text(&format!("items[{i}].unit"), u, 32)?);
             }
-            names.push(match spec.map(str::trim).filter(|s| !s.is_empty()) {
-                Some(s) => format!("{name} ({s})"),
-                None => name,
-            });
+            names.push((
+                op_id,
+                match spec.map(str::trim).filter(|s| !s.is_empty()) {
+                    Some(s) => format!("{name} ({s})"),
+                    None => name,
+                },
+            ));
             ops.push(op);
         }
         let v2 = match self.list_id(a.list.as_deref()).await? {
@@ -745,18 +1480,19 @@ impl Tools<'_> {
                 .backend
                 .post(
                     &format!("/v1/shopping/lists/{}/ops", seg(&id)),
-                    &json!({"ops": ops}),
+                    &json!({"via": "mcp", "ops": ops}),
                 )
                 .await
                 .map(|r| (id, r)),
             Err(e) => Err(e),
         };
         match v2 {
-            Ok((id, r)) => Ok(format::ops_result("Added", &names, &id, &r)),
+            // Lucina's questions are a normal answer to relay, not an error
+            Ok((id, r)) => Ok(format::add_result(&names, &id, &r)),
             Err(e) if e.is_v2_unavailable() => {
                 self.legacy_ok(a.list.as_deref(), e).await?;
                 let mut added = Vec::new();
-                for n in &names {
+                for (_, n) in &names {
                     self.app
                         .backend
                         .post("/v1/shopping", &json!({"rawName": n}))
@@ -1174,30 +1910,71 @@ impl Tools<'_> {
             chars,
             caller = %self.caller.name,
         );
+        let list = note_items(n)
+            .map(|items| format!(" (checklist, {})", format::progress(&items)))
+            .unwrap_or_default();
         format!(
-            "{verb} note \"{slug}\" ({title}), {chars} characters in total. The owner sees it in the Secretary app under Notes; Lucina and note_get find it by the slug \"{slug}\"."
+            "{verb} note \"{slug}\" ({title}){list}, {chars} characters in total. The owner sees it in the Secretary app under Notes; Lucina and note_get find it by the slug \"{slug}\"."
         )
     }
 
     pub async fn note_save(&self, args: &JsonObject) -> ToolResult {
         let a: NoteSaveArgs = parse(args)?;
         let title = check_text("title", &a.title, 200)?;
-        let content = note_content("content", &a.content)?;
+        let items = a
+            .items
+            .as_deref()
+            .map(|i| items_json("items", i))
+            .transpose()?;
+        let content = match (a.content.as_deref(), &items) {
+            (Some(c), Some(_)) if c.trim().is_empty() => None,
+            (Some(c), _) => Some(note_content("content", c)?),
+            (None, Some(_)) => None,
+            (None, None) => {
+                return Err(bad(
+                    "`content` must not be empty (or give `items` for a checklist)",
+                ))
+            }
+        };
         let tags = note_tags(a.tags.as_deref())?;
+        let labels = a
+            .labels
+            .as_deref()
+            .map(|l| label_names("labels", l))
+            .transpose()?;
+        let color = a.color.as_deref().map(keep_color).transpose()?;
         let slug = match a.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(s) => Some(note_key(Some(s), None)?),
             None => None,
         };
-        let mut body = json!({"title": title, "content": content, "source": self.caller.name});
+        // The fields both a new note and a replacement carry.
+        let mut keep = json!({});
+        if let Some(t) = &tags {
+            keep["tags"] = json!(t);
+        }
+        if let Some(l) = &labels {
+            keep["labels"] = json!(l);
+        }
+        if let Some(c) = &color {
+            keep["color"] = json!(c);
+        }
+        if let Some(p) = a.pinned {
+            keep["pinned"] = json!(p);
+        }
+        if let Some(r) = a.archived {
+            keep["archived"] = json!(r);
+        }
+        if let Some(i) = &items {
+            keep["items"] = json!(i);
+        }
+        let mut body = json!({"title": title, "source": self.caller.name});
+        if let Some(c) = &content {
+            body["content"] = json!(c);
+        }
         if let Some(s) = &slug {
             body["slug"] = json!(s);
         }
-        if let Some(t) = &tags {
-            body["tags"] = json!(t);
-        }
-        if let Some(p) = a.pinned {
-            body["pinned"] = json!(p);
-        }
+        merge_into(&mut body, &keep);
         match self.app.backend.post("/v1/notes", &body).await {
             Ok(n) => Ok(self.note_saved("Saved", &n)),
             Err(e) if e.code == "slug_taken" => {
@@ -1215,16 +1992,14 @@ impl Tools<'_> {
                         .map(|t| format!(" (\"{t}\")"))
                         .unwrap_or_default();
                     return Err(bad(format!(
-                        "A note named \"{slug}\"{what} already exists. Call note_save again with replace=true to overwrite it, use note_append to add to it, or pick another slug."
+                        "A note named \"{slug}\"{what} already exists. Call note_save again with replace=true to overwrite it, use note_append (or note_update) to add to it, or pick another slug."
                     )));
                 }
-                let mut patch = json!({"title": body["title"], "content": body["content"], "source": self.caller.name});
-                if let Some(t) = tags {
-                    patch["tags"] = json!(t);
+                let mut patch = json!({"title": body["title"], "source": self.caller.name});
+                if let Some(c) = &content {
+                    patch["content"] = json!(c);
                 }
-                if let Some(p) = a.pinned {
-                    patch["pinned"] = json!(p);
-                }
+                merge_into(&mut patch, &keep);
                 let n = self
                     .app
                     .backend
@@ -1261,27 +2036,313 @@ impl Tools<'_> {
         }
     }
 
-    pub async fn note_get(&self, args: &JsonObject) -> ToolResult {
-        let a: NoteGetArgs = parse(args)?;
-        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
-        let max = a.max_chars.unwrap_or(40_000).clamp(1000, 100_000);
+    /// `GET /v1/notes/{key}`, with "no such note" as a message the model can act on.
+    async fn fetch_note(&self, key: &str) -> Result<Value, ToolError> {
         match self
             .app
             .backend
-            .get(&format!("/v1/notes/{}", seg(&key)), &[])
+            .get(&format!("/v1/notes/{}", seg(key)), &[])
             .await
         {
-            Ok(n) => Ok(format::note(
-                &n,
-                a.offset.unwrap_or(0),
-                max,
-                self.app.cfg.timezone,
-            )),
+            Ok(n) => Ok(n),
             Err(e) if e.code == "note_not_found" => Err(bad(format!(
                 "No note \"{key}\". notes_search finds notes by words or lists the latest ones."
             ))),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// A full note carries its labels as stored tags; add the display names
+    /// (`labels`) from the owner's label registry, when it can be read.
+    async fn with_label_names(&self, n: &mut Value) {
+        if n.get("labels").is_some_and(Value::is_array) {
+            return;
+        }
+        let tags: Vec<String> = n
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|t| {
+                t.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tags.is_empty() {
+            return;
+        }
+        let Ok(reg) = self.app.backend.get("/v1/notes/labels", &[]).await else {
+            return;
+        };
+        let known = reg
+            .get("labels")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let names: Vec<String> = tags
+            .iter()
+            .map(|t| {
+                known
+                    .iter()
+                    .find(|l| l.get("tag").and_then(Value::as_str) == Some(t))
+                    .and_then(|l| l.get("name").and_then(Value::as_str))
+                    .unwrap_or(t)
+                    .to_owned()
+            })
+            .collect();
+        n["labels"] = json!(names);
+    }
+
+    pub async fn note_get(&self, args: &JsonObject) -> ToolResult {
+        let a: NoteGetArgs = parse(args)?;
+        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
+        let max = a.max_chars.unwrap_or(40_000).clamp(1000, 100_000);
+        let mut n = self.fetch_note(&key).await?;
+        self.with_label_names(&mut n).await;
+        Ok(format::note(
+            &n,
+            a.offset.unwrap_or(0),
+            max,
+            self.app.cfg.timezone,
+        ))
+    }
+
+    /// PATCH a note, editing from the version we hold; on `409 conflict`
+    /// (somebody changed it since) fetch the new version and edit that, once.
+    async fn patch_note(
+        &self,
+        key: &str,
+        mut note: Value,
+        build: impl Fn(&Value) -> Result<Value, ToolError>,
+    ) -> Result<Value, ToolError> {
+        let path = format!("/v1/notes/{}", seg(key));
+        let mut retried = false;
+        loop {
+            let mut body = build(&note)?;
+            if let Some(u) = note.get("updatedAt") {
+                body["baseUpdatedAt"] = u.clone();
+            }
+            match self.app.backend.patch(&path, &body).await {
+                Ok(n) => return Ok(n),
+                Err(e) if e.code == "conflict" && !retried => {
+                    retried = true;
+                    note = self.fetch_note(key).await?;
+                }
+                Err(e) if e.code == "conflict" => {
+                    return Err(bad(
+                        "The note was changed by someone else while this edit was being made. Read it again with note_get and repeat the change.",
+                    ))
+                }
+                Err(e) if e.status == 502 && body.get("reminder").is_some() => {
+                    return Err(bad(
+                        "Lucina could not be reached to schedule the reminder, so the note is unchanged. Try again later.",
+                    ))
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    pub async fn note_update(&self, args: &JsonObject) -> ToolResult {
+        let a: NoteUpdateArgs = parse(args)?;
+        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
+        // Everything that can be checked without the note.
+        let mut fields = json!({});
+        let mut changes: Vec<String> = Vec::new();
+        if let Some(t) = &a.title {
+            fields["title"] = json!(check_text("title", t, 200)?);
+            changes.push("title".into());
+        }
+        if let Some(c) = &a.content {
+            fields["content"] = json!(note_content("content", c)?);
+            changes.push("content".into());
+        }
+        if let Some(c) = &a.color {
+            let c = keep_color(c)?;
+            changes.push(format!("colour {c}"));
+            fields["color"] = json!(c);
+        }
+        if let Some(p) = a.pinned {
+            fields["pinned"] = json!(p);
+            changes.push(if p { "pinned" } else { "unpinned" }.into());
+        }
+        if let Some(r) = a.archived {
+            fields["archived"] = json!(r);
+            changes.push(if r { "archived" } else { "unarchived" }.into());
+        }
+        let add_labels = label_names("addLabels", a.add_labels.as_deref().unwrap_or_default())?;
+        let remove_labels = label_names(
+            "removeLabels",
+            a.remove_labels.as_deref().unwrap_or_default(),
+        )?;
+        if !add_labels.is_empty() {
+            changes.push(format!("label +{}", add_labels.join(", +")));
+        }
+        if !remove_labels.is_empty() {
+            changes.push(format!("label -{}", remove_labels.join(", -")));
+        }
+        let add_items = items_json("addItems", a.add_items.as_deref().unwrap_or_default())?;
+        let (check, uncheck, remove) = (
+            item_refs(a.check.as_deref()),
+            item_refs(a.uncheck.as_deref()),
+            item_refs(a.remove_items.as_deref()),
+        );
+        let has_ops =
+            !(check.is_empty() && uncheck.is_empty() && remove.is_empty() && add_items.is_empty());
+        if has_ops && a.content.is_some() {
+            return Err(bad(
+                "Give either `content` or the checklist operations (check, uncheck, addItems, removeItems), not both.",
+            ));
+        }
+        if let Some(Some(at)) = &a.reminder_at {
+            if chrono::DateTime::parse_from_rfc3339(at).is_err() {
+                return Err(bad(
+                    "`reminderAt` must be RFC 3339 with a UTC offset, e.g. 2026-11-03T09:00:00+01:00 (or null to clear the reminder)",
+                ));
+            }
+        }
+        let reminder_change = a.reminder_at.is_some() || a.reminder_repeat.is_some();
+        if fields.as_object().is_some_and(|f| f.is_empty())
+            && !reminder_change
+            && !has_ops
+            && add_labels.is_empty()
+            && remove_labels.is_empty()
+            && a.convert.is_none()
+        {
+            return Err(bad(
+                "Nothing to change: pass at least one of title, content, color, pinned, archived, addLabels, removeLabels, reminderAt, check, uncheck, addItems, removeItems, convert.",
+            ));
+        }
+
+        let mut note = self.fetch_note(&key).await?;
+        // Convert first: the item operations then work on the converted note.
+        if let Some(c) = &a.convert {
+            let is_list = note.get("items").is_some_and(Value::is_array);
+            let want_list = matches!(c, ConvertArg::List);
+            if want_list != is_list {
+                let how = if want_list { "list" } else { "text" };
+                note = self
+                    .patch_note(&key, note, |_| Ok(json!({"convert": how})))
+                    .await?;
+                changes.insert(0, format!("converted to {how}"));
+            }
+        }
+        // The checklist edits, resolved once against the items as note_get showed them.
+        let plan = if has_ops {
+            let Some(items) = note_items(&note) else {
+                return Err(bad(
+                    "This is a text note, not a checklist. Pass convert=\"list\" to make it one, or use note_append to add text.",
+                ));
+            };
+            let plan =
+                keep::Plan::new(&items, &check, &uncheck, &remove, add_items).map_err(bad)?;
+            changes.push(plan.summary());
+            plan
+        } else {
+            keep::Plan::default()
+        };
+        let needs_patch = fields.as_object().is_some_and(|f| !f.is_empty())
+            || reminder_change
+            || !plan.is_empty()
+            || !add_labels.is_empty()
+            || !remove_labels.is_empty();
+        if needs_patch {
+            let reminder_text = match &a.reminder_at {
+                Some(Some(at)) => Some(format!(
+                    "reminder {}",
+                    format::local_time(Some(&json!(at)), self.app.cfg.timezone)
+                )),
+                Some(None) => Some("reminder cleared".to_owned()),
+                None if a.reminder_repeat.is_some() => Some("reminder repeat".to_owned()),
+                None => None,
+            };
+            note = self
+                .patch_note(&key, note, |cur| {
+                    let mut body = fields.clone();
+                    if !add_labels.is_empty() || !remove_labels.is_empty() {
+                        let tags: Vec<String> = cur
+                            .get("tags")
+                            .and_then(Value::as_array)
+                            .map(|t| {
+                                t.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        body["labels"] =
+                            json!(keep::merge_labels(&tags, &add_labels, &remove_labels));
+                    }
+                    if !plan.is_empty() {
+                        let items = note_items(cur).ok_or_else(|| {
+                            bad("The note is no longer a checklist; read it again with note_get.")
+                        })?;
+                        body["items"] = json!(plan.apply(&items));
+                    }
+                    if reminder_change {
+                        body["reminder"] = self.reminder_value(&a, cur)?;
+                    }
+                    Ok(body)
+                })
+                .await?;
+            changes.extend(reminder_text);
+        }
+        let slug = note.get("slug").and_then(Value::as_str).unwrap_or("?");
+        let title = note.get("title").and_then(Value::as_str).unwrap_or("");
+        let id = note.get("id").and_then(Value::as_str).unwrap_or("");
+        tracing::info!(
+            target: "secretary_mcp::audit",
+            event = "note_update",
+            slug,
+            id,
+            changes = %changes.join("; "),
+            caller = %self.caller.name,
+        );
+        let mut out = format!("Updated note \"{slug}\" ({title}): {}.", changes.join(", "));
+        if let Some(items) = note_items(&note) {
+            out.push_str(&format!(
+                "\nChecklist, {}:\n{}",
+                format::progress(&items),
+                format::checklist(&items)
+            ));
+        }
+        Ok(out)
+    }
+
+    /// The `reminder` object to send: the new time (or the current one), and
+    /// the repeat asked for (or the current one).
+    fn reminder_value(&self, a: &NoteUpdateArgs, cur: &Value) -> Result<Value, ToolError> {
+        if let Some(None) = a.reminder_at {
+            return Ok(Value::Null);
+        }
+        let cur_r = cur.get("reminder").filter(|r| r.is_object());
+        let at = match &a.reminder_at {
+            Some(Some(at)) => at.clone(),
+            _ => cur_r
+                .and_then(|r| r.get("at").and_then(Value::as_str))
+                .map(str::to_owned)
+                .ok_or_else(|| bad("This note has no reminder yet: give `reminderAt`."))?,
+        };
+        let repeat = match &a.reminder_repeat {
+            Some(RepeatArg::None) => None,
+            Some(RepeatArg::Daily) => Some("daily".to_owned()),
+            Some(RepeatArg::Weekly) => Some("weekly".to_owned()),
+            Some(RepeatArg::Monthly) => Some("monthly".to_owned()),
+            Some(RepeatArg::Yearly) => Some("yearly".to_owned()),
+            None => cur_r
+                .and_then(|r| r.get("recurrence").and_then(Value::as_str))
+                .map(str::to_owned),
+        };
+        let mut r = json!({"at": at});
+        if let Some(rec) = repeat {
+            r["recurrence"] = json!(rec);
+        }
+        Ok(r)
+    }
+
+    pub async fn note_labels(&self) -> ToolResult {
+        let v = self.app.backend.get("/v1/notes/labels", &[]).await?;
+        Ok(format::note_labels(&v))
     }
 
     /// Library tools use typed arguments and the same authenticated backend as notes.
@@ -1391,16 +2452,72 @@ impl Tools<'_> {
         let a: NotesSearchArgs = parse(args)?;
         let limit = a.limit.unwrap_or(20).clamp(1, 50);
         let mut q = vec![("limit", limit.to_string())];
+        let mut what = String::new();
         let words = a.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
         if let Some(w) = words {
             q.push(("q", check_text("q", w, 200)?));
+            what.push_str(&format!(" matching {w:?}"));
         }
-        let tag = a.tag.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        if let Some(t) = tag {
-            q.push(("tag", check_text("tag", t.trim_start_matches('#'), 32)?));
+        let label = a
+            .label
+            .as_deref()
+            .or(a.tag.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if let Some(l) = label {
+            let l = check_text("label", l.trim_start_matches('#'), 50)?;
+            q.push(("tag", keep::label_tag(&l)));
+            what.push_str(&format!(" with label {l:?}"));
+        }
+        if let Some(c) = a.color.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let c = keep_color(c)?;
+            what.push_str(&format!(" in colour {c}"));
+            q.push(("color", c));
+        }
+        if let Some(k) = a.kind {
+            let k = match k {
+                NoteKindArg::List => "list",
+                NoteKindArg::Text => "text",
+                NoteKindArg::Image => "image",
+                NoteKindArg::Audio => "audio",
+                NoteKindArg::Link => "link",
+                NoteKindArg::Reminder => "reminder",
+            };
+            q.push(("type", k.to_owned()));
+            what.push_str(&format!(" of type {k}"));
+        }
+        match a.archived {
+            Some(ArchivedArg::Exclude) => {
+                q.push(("archived", "exclude".into()));
+                what.push_str(" (archive excluded)");
+            }
+            Some(ArchivedArg::Only) => {
+                q.push(("archived", "only".into()));
+                what.push_str(" (archived only)");
+            }
+            Some(ArchivedArg::Include) | None => {}
         }
         let v = self.app.backend.get("/v1/notes", &q).await?;
-        Ok(format::notes_list(&v, words, tag, self.app.cfg.timezone))
+        Ok(format::notes_list(&v, &what, self.app.cfg.timezone))
+    }
+
+    /// `diagnostics_recent` / `diagnostics_get` / `diagnostics_file`.
+    pub async fn diagnostics(&self, name: &str, args: &JsonObject) -> ToolResult {
+        let d = self.app.diagnostics.as_ref().ok_or_else(|| {
+            bad("Diagnostics are not configured on this server (SECRETARY_MCP_DIAGNOSTICS_URL).")
+        })?;
+        let tz = self.app.cfg.timezone;
+        match name {
+            "diagnostics_recent" => d.recent(parse(args)?, tz).await,
+            "diagnostics_get" => d.get(parse(args)?, tz).await,
+            "diagnostics_file" => d.file(parse(args)?).await,
+            _ => Err(bad(format!("unknown tool {name}"))),
+        }
+    }
+
+    /// `debug_events`.
+    pub async fn debug_events(&self, args: &JsonObject) -> ToolResult {
+        crate::debug_events::query(&self.app.backend, parse(args)?, self.app.cfg.timezone).await
     }
 
     pub async fn status(&self) -> ToolResult {
@@ -1681,5 +2798,87 @@ mod library_tests {
             &json!({"book":{"id":"bk_a","title":"Book","status":"unknown","progress":null}})
         )
         .contains("progress unknown"));
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    #[test]
+    fn decision_argument_contract() {
+        let base = json!({"question":"Ship?", "options":["Ship", "Wait"], "reversible":true, "impact":"low"});
+        for recommendation in [" ship ", "2"] {
+            let mut args = base.clone();
+            args["recommendation"] = json!(recommendation);
+            args["wait_seconds"] = json!(100);
+            serde_json::from_value::<DecideArgs>(args)
+                .unwrap()
+                .validate()
+                .unwrap();
+        }
+        for (field, value) in [
+            ("question", json!("")),
+            ("question", json!("é".repeat(2001))),
+            ("options", json!(["only"])),
+            ("options", json!(["a", "b", "c", "d", "e", "f", "g"])),
+            ("options", json!(["Ship", " SHIP "])),
+            ("options", json!(["x".repeat(201), "Wait"])),
+            ("recommendation", json!("3")),
+            ("recommendation", json!("other")),
+            ("context", json!("x".repeat(8001))),
+            ("topic", json!("x".repeat(65))),
+            ("asking_session", json!("x".repeat(121))),
+            ("wait_seconds", json!(101)),
+        ] {
+            let mut args = base.clone();
+            args[field] = value;
+            assert!(
+                serde_json::from_value::<DecideArgs>(args)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{field}"
+            );
+        }
+        let mut boundary = base.clone();
+        boundary["question"] = json!("é".repeat(2000));
+        boundary["context"] = json!("x".repeat(8000));
+        boundary["topic"] = json!("x".repeat(64));
+        boundary["asking_session"] = json!("x".repeat(120));
+        boundary["wait_seconds"] = json!(0);
+        serde_json::from_value::<DecideArgs>(boundary)
+            .unwrap()
+            .validate()
+            .unwrap();
+        for (field, value) in [
+            ("asking_client", json!("spoof")),
+            ("extra", json!(1)),
+            ("wait_seconds", json!(-1)),
+            ("impact", json!("unknown")),
+            ("urgency", json!("medium")),
+        ] {
+            let mut args = base.clone();
+            args[field] = value;
+            assert!(serde_json::from_value::<DecideArgs>(args).is_err());
+        }
+    }
+
+    #[test]
+    fn prefixes() {
+        assert_eq!(
+            ask_prefix("claude-code"),
+            "[via Lucina MCP, from claude-code] "
+        );
+        assert_eq!(
+            ask_prefix_allow(
+                "claude-code",
+                &[AllowArg::Tasks, AllowArg::Notes, AllowArg::Notes]
+            ),
+            "[via Lucina MCP, from claude-code; allow=notes,tasks] "
+        );
+        assert_eq!(
+            ask_prefix_allow("claude-code", &[]),
+            "[via Lucina MCP, from claude-code; allow=] "
+        );
     }
 }

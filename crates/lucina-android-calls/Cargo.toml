@@ -1,0 +1,25 @@
+[package]
+name = "lucina-android-calls"
+description = "Rust core of the Secretary · Lucina Android app (tech.getsecretary.secretary): number validation, the private call journal, Lucina voice turns and recording transcription over HTTPS, Telecom calls over JNI, and the formatting the Kotlin shell shows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "lucina_calls"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lucina-phone-core = { path = "../lucina-phone-core" }
+lucina-vault = { path = "../lucina-vault" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"
+jni = { version = "0.21", default-features = false }
+# The same TLS stack as tools/lucina-device: pure-Rust rustls with the
+# Graviola provider and the webpki roots, no OpenSSL and no platform verifier.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "json"] }
+rustls-graviola = { version = "=0.3.4", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"

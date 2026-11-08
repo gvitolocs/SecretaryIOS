@@ -1,0 +1,7 @@
+[Unit]
+Description=Lucina (Rust) watchdog: restart lucina-rs when /health fails twice or the unit failed
+After=lucina-rs.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/lucina-rs-health-check

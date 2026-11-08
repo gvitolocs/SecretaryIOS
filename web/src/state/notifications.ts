@@ -38,9 +38,11 @@ export const CATEGORY_TITLE: Record<Category, MessageKey> = {
   reminder: "notify.catReminder",
   calendar: "notify.catCalendar",
   device_confirm: "notify.catDevice",
+  agent: "notify.catAgent",
   shopping: "notify.catShopping",
   presence: "notify.catPresence",
   system: "notify.catSystem",
+  approval: "notify.catApproval",
 };
 
 export const CATEGORY_DESC: Record<Category, MessageKey> = {
@@ -48,9 +50,11 @@ export const CATEGORY_DESC: Record<Category, MessageKey> = {
   reminder: "notify.descReminder",
   calendar: "notify.descCalendar",
   device_confirm: "notify.descDevice",
+  agent: "notify.descAgent",
   shopping: "notify.descShopping",
   presence: "notify.descPresence",
   system: "notify.descSystem",
+  approval: "notify.descApproval",
 };
 
 export function titleOf(n: AppNotification): string {

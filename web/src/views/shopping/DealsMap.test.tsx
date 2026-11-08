@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
+import { onMount } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setLocale } from "../../i18n";
 import { Route } from "@solidjs/router";
@@ -6,12 +7,24 @@ import { resetShopping } from "../../state/shopping";
 import { renderAt } from "../../test/router";
 import { stubFetch, type Call } from "../../test/fetch";
 import type { Deal, DealsMapData, MapStore } from "../../lib/dealsMap";
-import { mockMaps } from "./fakeMaps";
+import type { LucinaMapProps } from "../../components/LucinaMap";
+import type { MapPin } from "../../lib/mapKit";
 
-// The Google Maps JS API never loads in tests: loadMaps is the boundary.
-vi.mock("./mapLoader", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./mapLoader")>()),
-  loadMaps: mockMaps.loadMaps,
+// jsdom has no WebGL: LucinaMap is the boundary. The mock records its props,
+// renders the pins through `renderPin` and reports whether tiles exist.
+const lucinaMap = vi.hoisted(() => ({
+  available: true,
+  props: null as LucinaMapProps | null,
+  renders: 0,
+}));
+
+vi.mock("../../components/LucinaMap", () => ({
+  LucinaMap: (props: LucinaMapProps) => {
+    lucinaMap.props = props;
+    lucinaMap.renders++;
+    onMount(() => props.onAvailable?.(lucinaMap.available));
+    return lucinaMap.available ? <div data-testid="lucina-map" aria-label={props.label} /> : props.fallback;
+  },
 }));
 
 import DealsMapView from "./DealsMap";
@@ -79,8 +92,17 @@ const kvickly = store({
   clearances: [deal({ key: "c3", name: "Rugbrød", discountPct: 18 })],
 });
 
+// The server still sends the old key fields; nothing reads them.
 const noMaps = { webKey: null, iosKey: null, mapId: null };
-const withMaps = { webKey: "web-key-1", iosKey: null, mapId: "map-9" };
+const withKey = { webKey: "web-key-1", iosKey: null, mapId: "map-9" };
+
+function pins(): MapPin[] {
+  return lucinaMap.props?.pins ?? [];
+}
+
+function noGoogleScript() {
+  expect(document.querySelector('script[src*="maps.googleapis.com"], script[src*="google"]')).toBeNull();
+}
 
 let calls: Call[];
 
@@ -98,12 +120,15 @@ async function renderMap(maps: DealsMapData["maps"], stores: MapStore[], failure
 beforeEach(() => {
   setLocale("it");
   resetShopping();
-  mockMaps.reset();
+  lucinaMap.available = true;
+  lucinaMap.props = null;
+  lucinaMap.renders = 0;
 });
 
 describe("Deals map view", () => {
-  it("lists the nearby stores sorted by distance and logs one GET; no web key, no loader", async () => {
-    await renderMap(noMaps, [foetex, netto, kvickly]);
+  it("lists the nearby stores sorted by distance and logs one GET; without tiles, a note instead of the map", async () => {
+    lucinaMap.available = false;
+    await renderMap(withKey, [foetex, netto, kvickly]);
     const list = await screen.findByRole("list", { name: "Offerte vicino a te" });
     const names = [...list.querySelectorAll(".deals-store-name")].map((n) => n.textContent);
     // Lucina sorts by distance; 240 m < 560 m < 1200 m
@@ -111,9 +136,10 @@ describe("Deals map view", () => {
     expect(list.textContent).toContain("240 m");
     expect(list.textContent).toContain("1.2 km");
     expect(list.textContent).toContain("Skelagervej 1-9");
-    // the map panel is just the note; nothing Maps-like is loaded
-    expect(screen.getByText("Chiave mappa non configurata sul server.")).toBeInTheDocument();
-    expect(mockMaps.loadMaps).not.toHaveBeenCalled();
+    // the map panel is just the note, even with the (unused) Google key; no Google script
+    expect(await screen.findByText("Le mappe non sono ancora installate.")).toBeInTheDocument();
+    expect(screen.queryByTestId("lucina-map")).toBeNull();
+    noGoogleScript();
     expect(calls.map((c) => `${c.method} ${new URL(c.url, "http://test.local").pathname}`)).toEqual(["GET /v1/grocery/deals/map"]);
   });
 
@@ -143,24 +169,45 @@ describe("Deals map view", () => {
     expect(screen.getByRole("button", { name: /^føtex Skejby/ })).toBeInTheDocument();
   });
 
-  it("builds a map with chip markers via the mocked loader and opens the store panel", async () => {
-    await renderMap(withMaps, [foetex, netto, kvickly]);
+  it("passes home and store pins to LucinaMap; a pin tap opens the store panel", async () => {
+    await renderMap(noMaps, [foetex, netto, kvickly]);
     await screen.findByText("Netto Risskov");
-    await waitFor(() => expect(mockMaps.loadMaps).toHaveBeenCalledTimes(1));
-    expect(mockMaps.loadMaps).toHaveBeenCalledWith({ key: "web-key-1", mapId: "map-9" });
-    await waitFor(() => expect(mockMaps.made.maps).toHaveLength(1));
-    expect((mockMaps.made.maps[0]!.opts as Record<string, unknown>).mapId).toBe("map-9");
-    // one home pin (created once with the map) plus one chip marker per store
-    await waitFor(() => expect(mockMaps.made.advanced).toHaveLength(4));
-    expect((mockMaps.made.advanced[0]!.content as HTMLElement).textContent).toBe("🏠");
-    const foetexChip = mockMaps.made.advanced.find((m) => m.title === "føtex Skejby")!;
-    expect(foetexChip.position).toEqual({ lat: 56.193657, lng: 10.193406 });
-    expect((foetexChip.content as HTMLElement).querySelector(".deals-chip-badge")?.textContent).toBe("−32%");
-    // bounds fit home + every store
-    expect(mockMaps.made.fit).toBeTruthy();
-    expect(mockMaps.made.fitPoints).toHaveLength(4);
+    expect(await screen.findByTestId("lucina-map")).toHaveAttribute("aria-label", "Offerte vicino a te");
+    expect(screen.queryByText("Le mappe non sono ancora installate.")).toBeNull();
+    // one home pin plus one per store, at their coordinates and tinted by what they offer
+    expect(pins().map((p) => [p.id, p.tint])).toEqual([
+      ["home", "home"],
+      ["tjek:4412", "neutral"],
+      ["salling:0847307a-1111-4222-8333-9c0d1e2f3a4b", "clearance"],
+      ["salling:kvik-1", "clearance"],
+    ]);
+    const foetexPin = pins().find((p) => p.title === "føtex Skejby")!;
+    expect([foetexPin.lat, foetexPin.lng]).toEqual([56.193657, 10.193406]);
+    expect(foetexPin.subtitle).toBe("Skelagervej 1-9");
+    // the chip look: chain initial + best clearance badge; home stays the house
+    const chip = lucinaMap.props!.renderPin!(foetexPin);
+    expect(chip.querySelector(".deals-chip-letter")?.textContent).toBe("F");
+    expect(chip.querySelector(".deals-chip-badge")?.textContent).toBe("−32%");
+    expect(lucinaMap.props!.renderPin!(pins()[0]!).textContent).toBe("🏠");
+    noGoogleScript();
 
+    // the home pin selects nothing; a store pin opens its panel and marks the pin
+    lucinaMap.props!.onSelect!("home");
+    expect(screen.queryByRole("complementary")).toBeNull();
+    lucinaMap.props!.onSelect!(foetexPin.id);
+    expect(await screen.findByRole("complementary", { name: "føtex Skejby" })).toBeInTheDocument();
+    await waitFor(() => expect(pins().find((p) => p.id === foetexPin.id)?.selected).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Chiudi føtex Skejby" }));
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "føtex Skejby" })).toBeNull());
+
+    // filters narrow the pins too (home always stays)
+    fireEvent.click(screen.getByRole("button", { name: "Dalla tua lista" }));
+    await waitFor(() => expect(pins().map((p) => p.id)).toEqual(["home", foetexPin.id]));
+    fireEvent.click(screen.getByRole("button", { name: "Dalla tua lista" }));
+
+    // a list tap opens the panel and asks the map to fly to the store
     fireEvent.click(screen.getByRole("button", { name: /^føtex Skejby/ }));
+    await waitFor(() => expect(lucinaMap.props!.focus).toEqual({ id: foetexPin.id, tick: 1 }));
     const panel = await screen.findByRole("complementary", { name: "føtex Skejby" });
     expect(within(panel).getByRole("heading", { name: "føtex Skejby" })).toBeInTheDocument();
     expect(within(panel).getByRole("heading", { name: "Dalla tua lista" })).toBeInTheDocument();
@@ -172,10 +219,10 @@ describe("Deals map view", () => {
     expect(txt).toContain("−32%");
     expect(txt).toContain("Scorta 3 stk");
     expect(txt).toContain("valido fino al 26 ott");
-    expect(within(panel).getByRole("link", { name: /Indicazioni/ })).toHaveAttribute(
-      "href",
-      "https://www.google.com/maps/dir/?api=1&destination=56.193657,10.193406",
-    );
+    // the store's directions are Lucina's own navigation, never another maps app
+    const nav = within(panel).getByRole("link", { name: /Indicazioni/ });
+    expect(nav.getAttribute("href")).toMatch(/^\/map\/place\?navigate=1&lat=56\.193657&lng=10\.193406&title=f%C3%B8tex\+Skejby/);
+    expect(nav).not.toHaveAttribute("target");
     fireEvent.click(within(panel).getByRole("button", { name: "Chiudi føtex Skejby" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "føtex Skejby" })).toBeNull());
   });

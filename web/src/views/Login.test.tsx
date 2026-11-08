@@ -1,8 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { session, setSessionForTests } from "../state/session";
-import { stubFetch } from "../test/fetch";
+import { stubFetch, type Call } from "../test/fetch";
 import Login from "./Login";
+
+/** The password form's requests (the QR panel asks for codes on its own). */
+const formCalls = (calls: Call[]) => calls.filter((c) => !c.url.startsWith("/v1/session/qr"));
 
 function fill(email: string, password: string) {
   fireEvent.input(screen.getByLabelText("Email"), { target: { value: email } });
@@ -37,8 +40,8 @@ describe("Login", () => {
     render(() => <Login />);
     fill("owner@example.test", "dev-password-123");
     await waitFor(() => expect(session()).toEqual({ status: "authed", deviceName: "Browser" }));
-    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["POST /v1/session", "GET /v1/session"]);
-    expect(calls[0]!.body).toEqual({ email: "owner@example.test", password: "dev-password-123" });
+    expect(formCalls(calls).map((c) => `${c.method} ${c.url}`)).toEqual(["POST /v1/session", "GET /v1/session"]);
+    expect(formCalls(calls)[0]!.body).toEqual({ email: "owner@example.test", password: "dev-password-123" });
   });
 
   it("shows one generic message for wrong credentials (401)", async () => {
@@ -68,7 +71,7 @@ describe("Login", () => {
     vi.advanceTimersByTime(2_000);
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
-    expect(calls).toHaveLength(1);
+    expect(formCalls(calls)).toHaveLength(1);
   });
 
   it("says rate limited for rate_limited", async () => {

@@ -1,8 +1,10 @@
 //! The unified conversation timeline: every message Lucina sees or sends,
 //! from any channel.
 //!
-//! - `GET /v1/timeline?before=&limit=` → Lucina's `{items, nextBefore}`
-//!   (typed through `secretary-core`, unknown fields kept).
+//! - `GET /v1/timeline` → history or incremental arrivals, optionally filtered
+//!   by conversation or authenticated device.
+//!   Typed through `secretary-core`, unknown fields kept.
+//! - `GET /v1/timeline/conversations` → conversation summaries.
 //! - `GET /v1/timeline/stream` → Server-Sent Events, relayed byte for byte
 //!   from Lucina's `/api/secretary/timeline/stream` without buffering.
 //!   `Last-Event-ID` (header, or `?lastEventId=` for a fresh EventSource) is
@@ -28,18 +30,18 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Path as UrlPath, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use futures_util::StreamExt;
-use secretary_core::models::{TimelinePage, TimelineQuery};
+use secretary_core::models::{TimelineConversations, TimelinePage, TimelineQuery};
 use secretary_core::Call;
 use serde::Deserialize;
 
 use crate::auth::Identity;
-use crate::error::{ApiError, QueryArgs};
+use crate::error::{ApiError, JsonBody, QueryArgs};
 use crate::AppState;
 
 /// Open streams allowed per device.
@@ -124,10 +126,35 @@ fn too_many_streams() -> ApiError {
 
 async fn page(
     State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    headers: HeaderMap,
     QueryArgs(q): QueryArgs<TimelineQuery>,
 ) -> Result<Json<TimelinePage>, ApiError> {
-    let call = Call::timeline(&q)?;
+    let call = if q.scope.as_deref() == Some("mine") {
+        let channel = crate::routes::chat_channel(&headers, None)?;
+        Call::timeline_for_device(&q, &ident.device_id, &channel)?
+    } else {
+        Call::timeline(&q)?
+    };
     Ok(Json(st.lucina()?.call::<TimelinePage>(&call).await?))
+}
+
+/// `GET /v1/timeline/cards`: which items' buttons are closed, the same for every client.
+async fn cards(State(st): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(st.lucina()?.call::<serde_json::Value>(&Call::timeline_cards()).await?))
+}
+
+/// `POST /v1/timeline/cards/{item}` with `{action}`: the owner used this button.
+async fn choose_card(
+    State(st): State<AppState>,
+    UrlPath(item): UrlPath<String>,
+    JsonBody(body): JsonBody<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(st.lucina()?.call::<serde_json::Value>(&Call::timeline_card_choice(&item, body)?).await?))
+}
+
+async fn conversations(State(st): State<AppState>) -> Result<Json<TimelineConversations>, ApiError> {
+    Ok(Json(st.lucina()?.timeline_conversations().await?))
 }
 
 #[derive(Deserialize)]
@@ -211,11 +238,14 @@ async fn stream(
     Ok(resp)
 }
 
-/// Behind `require_device` (Bearer or cookie; both routes are GET, so no CSRF).
+/// Behind `require_device` (Bearer or cookie; GET needs no CSRF).
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/timeline", get(page))
         .route("/v1/timeline/stream", get(stream))
+        .route("/v1/timeline/conversations", get(conversations))
+        .route("/v1/timeline/cards", get(cards))
+        .route("/v1/timeline/cards/{item}", post(choose_card))
 }
 
 #[cfg(test)]

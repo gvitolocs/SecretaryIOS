@@ -1,0 +1,19 @@
+[package]
+name = "lucina-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Honcho v3 REST client and Lucina's memory (same workspace, peers and sessions as the Node Lucina)"
+
+[dependencies]
+lucina-secrets = { path = "../lucina-secrets", default-features = false }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
+wiremock = "0.6"

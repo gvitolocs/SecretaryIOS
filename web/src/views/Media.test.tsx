@@ -1,9 +1,11 @@
+/// <reference types="node" />
 import { Route } from "@solidjs/router";
-import { fireEvent, screen, waitFor } from "@solidjs/testing-library";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clientProfile, type SubtitleTrack } from "../api/player";
 import { stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import MediaView, { trackDetail, trackName } from "./Media";
 
 // The real engine from the committed module (the page fetches it; jsdom cannot).
@@ -53,5 +55,28 @@ describe("Media", () => {
     expect(clientProfile("Mozilla/5.0 (Macintosh) AppleWebKit/605 Version/19.0 Safari/605.1.15")).toBe("web_safari");
     expect(clientProfile("Mozilla/5.0 (X11) AppleWebKit/537.36 Chrome/150.0 Safari/537.36")).toBe("web_chrome");
     expect(clientProfile("Mozilla/5.0 (X11; rv:150.0) Gecko/20100101 Firefox/150.0")).toBe("web_firefox");
+  });
+});
+
+describe("Media desktop", () => {
+  beforeEach(() => stubWide());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses SectionNav, search and a single list card", async () => {
+    stubFetch((call) => {
+      if (call.url.startsWith("/v1/media/items")) return { body: { ok: true, items: ITEMS, next_cursor: null } };
+      if (call.url.startsWith("/v1/media/progress")) return { body: { ok: true, entries: [], acks: [] } };
+      return { status: 404, body: {} };
+    });
+    renderAt("/media", () => <Route path="/media" component={MediaView} />);
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Media");
+    const nav = screen.getByRole("navigation", { name: "Media sections" });
+    expect(within(nav).getByRole("button", { name: "Videos" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelector(".media-chips")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    expect(screen.getByRole("searchbox", { name: "Search" })).toHaveClass("pg-input");
+    expect(await screen.findByRole("region", { name: "Videos" })).toBeInTheDocument();
+    fireEvent.click(within(nav).getByRole("button", { name: "Audio" }));
+    expect(within(nav).getByRole("button", { name: "Audio" })).toHaveAttribute("aria-current", "page");
   });
 });

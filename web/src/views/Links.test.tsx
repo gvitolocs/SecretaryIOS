@@ -6,6 +6,7 @@ import { setLocale } from "../i18n";
 import { nav } from "../lib/navigate";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import LinksView from "./Links";
 
 function overview(over: Partial<LinksOverview> = {}): LinksOverview {
@@ -257,5 +258,52 @@ describe("Links", () => {
     const card = screen.getByText("Todoist").closest("li") as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://app.todoist.com/oauth/authorize?client_id=x"));
+  });
+});
+
+describe("Links desktop page", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("keeps the header while loading, with proposals and agenda beside source lists", async () => {
+    stubWide();
+    server({ proposals: [] });
+    show();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Links" }),
+    ).toBeInTheDocument();
+    const proposals = await screen.findByRole("region", {
+      name: "Waiting for your OK",
+    });
+    expect(
+      within(proposals).getByText(
+        "There are no proposals waiting for your OK.",
+      ),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Dentist")).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("region", { name: "Calendars" })
+        .querySelector(".pg-rows"),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".pg-grid--rail")).toBeInTheDocument();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+    expect(
+      document.querySelector(".links-head, .links-grid, .view-title, .pg-seg"),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Subscribe to a calendar" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Subscribe to a calendar" }),
+    ).toBeInTheDocument();
+  });
+  it("shows one retry state under the title on load failure", async () => {
+    stubWide();
+    stubFetch(() => ({ status: 503, body: { error: "Offline" } }));
+    show();
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Links",
+    );
+    expect(document.querySelectorAll(".pg-error")).toHaveLength(1);
   });
 });

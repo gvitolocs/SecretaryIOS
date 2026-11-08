@@ -1,0 +1,298 @@
+import AVKit
+import SwiftUI
+import UIKit
+
+struct IgViewerRequest: Identifiable {
+    let id = UUID()
+    let items: [IgItem]
+    let start: Int
+    let username: String
+    var archived = false
+    var tab: IgTab?
+    var highlight: IgHighlight?
+}
+
+struct IgSlide: Identifiable, Equatable {
+    let id: String
+    let item: IgItem
+    let child: IgChild
+    let frame: Int
+    let frames: Int
+    static func slides(_ items: [IgItem]) -> [IgSlide] {
+        items.enumerated().flatMap { itemIndex, item in
+            let children = item.children.isEmpty ? [IgChild(id: item.id, kind: item.kind == "video" ? "video" : "image", url: item.url, thumbUrl: item.thumbUrl)] : item.children
+            // The id names the item and the frame, never the item's place in the list: a page that arrives (or a
+            // dedupe) while the viewer is open must not move the viewer to another slide.
+            return children.enumerated().map { index, child in
+                IgSlide(id: "\(item.id.isEmpty ? String(itemIndex) : item.id):\(index)", item: item, child: child, frame: index, frames: children.count)
+            }
+        }
+    }
+    static func startIndex(_ items: [IgItem], itemIndex: Int) -> Int {
+        slides(Array(items.prefix(max(0, itemIndex)))).count
+    }
+    /// The id of the slide the viewer opens on (the first one when the index is out of range).
+    static func startID(_ items: [IgItem], itemIndex: Int) -> String {
+        let all = slides(items)
+        let index = startIndex(items, itemIndex: itemIndex)
+        return all.indices.contains(index) ? all[index].id : (all.first?.id ?? "")
+    }
+    /// Where the slide with this id is now (0 when it is gone).
+    static func index(of id: String, in slides: [IgSlide]) -> Int {
+        slides.firstIndex { $0.id == id } ?? 0
+    }
+}
+
+/// Carousels become consecutive frames, so paging follows the grid's original order.
+struct InstagramViewer: View {
+    @Environment(\.dismiss) private var dismiss
+    let store: InstagramStore
+    let request: IgViewerRequest
+    @State private var selectedID: String
+    init(store: InstagramStore, request: IgViewerRequest) {
+        self.store = store; self.request = request
+        _selectedID = State(initialValue: IgSlide.startID(request.items, itemIndex: request.start))
+    }
+    private var selection: Int { IgSlide.index(of: selectedID, in: slides) }
+    private var items: [IgItem] {
+        if let key = request.highlight?.id ?? request.tab?.rawValue { return store.pages[key]?.items ?? request.items }
+        return request.items
+    }
+    private var slides: [IgSlide] { IgSlide.slides(items) }
+    var body: some View {
+        // Stories and highlights open the Gallery's way: full screen, zoom, one tap for the bars (InstagramGalleryViewer).
+        if request.tab == .stories || request.highlight != nil {
+            InstagramGalleryViewer(store: store, request: request)
+        } else {
+            paged
+        }
+    }
+    private var paged: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel("Close").accessibilityIdentifier("instagram-viewer-close")
+                Spacer()
+                Text(verbatim: "@" + request.username).font(.headline)
+                Spacer()
+                Text("\(min(selection + 1, slides.count)) of \(slides.count)").font(.caption)
+                    .accessibilityIdentifier("instagram-viewer-position").accessibilityValue(selectedID)
+            }.padding()
+            TabView(selection: $selectedID) {
+                ForEach(slides) { slide in
+                    InstagramSlideView(store: store, slide: slide, username: request.username,
+                                       archived: request.archived, active: selectedID == slide.id)
+                        .tag(slide.id)
+                }
+            }.tabViewStyle(.page(indexDisplayMode: .never))
+                .accessibilityIdentifier("instagram-viewer-pages")
+        }
+        .background(Theme.page.ignoresSafeArea()).foregroundStyle(Theme.text).tint(Theme.accent)
+        .simultaneousGesture(DragGesture().onEnded { value in
+            if value.translation.height > 120 && abs(value.translation.width) < 80 { dismiss() }
+        })
+        .overlay(alignment: .bottom) { IgNotice(store: store) }
+        .task(id: selectedID) {
+            if selection >= slides.count - 3 {
+                if let highlight = request.highlight {
+                    await store.load(.highlights, username: request.username, more: true, highlight: highlight)
+                } else if let tab = request.tab { await store.load(tab, username: request.username, more: true) }
+            }
+        }
+    }
+}
+
+private struct InstagramSlideView: View {
+    let store: InstagramStore
+    let slide: IgSlide
+    let username: String
+    let archived: Bool
+    let active: Bool
+    var body: some View {
+        VStack(spacing: 12) {
+            if slide.child.kind == "video" {
+                InstagramVideoView(url: store.absolute(slide.child.url), active: active)
+                    .frame(maxHeight: .infinity)
+            } else {
+                InstagramZoomPicture(store: store, path: slide.child.url).frame(maxHeight: .infinity)
+            }
+            if slide.frames > 1 { Text("Frame \(slide.frame + 1) of \(slide.frames)").font(.caption).foregroundStyle(Theme.textSecondary) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let seconds = slide.item.takenAt {
+                        Text("Taken at \(Date(timeIntervalSince1970: seconds).formatted(date: .abbreviated, time: .shortened))").font(.caption)
+                    }
+                    if let caption = slide.item.caption, !caption.isEmpty { Text(verbatim: caption).textSelection(.enabled) }
+                    HStack {
+                        if let likes = slide.item.likeCount { Label("\(likes) likes", systemImage: "heart") }
+                        if let comments = slide.item.commentCount { Label("\(comments) comments", systemImage: "bubble") }
+                    }.font(.caption).foregroundStyle(Theme.textSecondary)
+                    actions
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
+            }.frame(maxHeight: 170)
+        }.padding(.bottom)
+    }
+    private var actions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !archived {
+                HStack {
+                    Button("Save to Lucina") { Task { await store.save(slide.item, username: username, child: slide.child) } }
+                        .buttonStyle(.borderedProminent).disabled(store.saving).accessibilityIdentifier("instagram-save")
+                    if slide.frames > 1 {
+                        Button("Save all \(slide.frames)") { Task { await store.save(slide.item, username: username) } }.disabled(store.saving)
+                    }
+                    if store.saving { ProgressView() }
+                }
+            }
+            HStack(spacing: 20) {
+                if let url = store.absolute(slide.item.permalink ?? slide.child.url) {
+                    ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
+                }
+                if let link = slide.item.permalink.flatMap({ store.absolute($0) }) {
+                    Link("Open on Instagram", destination: link).accessibilityIdentifier("instagram-open-permalink")
+                }
+            }.font(.callout)
+        }
+    }
+}
+
+private struct InstagramVideoView: View {
+    let url: URL?
+    let active: Bool
+    @State private var player: AVPlayer?
+    var body: some View {
+        Group {
+            if let player { VideoPlayer(player: player) }
+            else { ProgressView() }
+        }
+        .task(id: url) {
+            player?.pause()
+            player = url.map { AVPlayer(url: $0) }
+            if active { player?.play() }
+        }
+        .onChange(of: active) { _, playing in if playing { player?.play() } else { player?.pause() } }
+        .onDisappear { player?.pause() }
+    }
+}
+
+struct InstagramProfilePicture: View {
+    @Environment(\.dismiss) private var dismiss
+    let store: InstagramStore
+    let path: String?
+    var body: some View {
+        VStack {
+            HStack {
+                Spacer()
+                Button("Close") { dismiss() }.padding().accessibilityIdentifier("instagram-picture-close")
+            }
+            InstagramZoomPicture(store: store, path: path)
+        }.background(Theme.page.ignoresSafeArea()).tint(Theme.accent)
+            .simultaneousGesture(DragGesture().onEnded { value in
+                if value.translation.height > 140 && abs(value.translation.width) < 80 { dismiss() }
+            })
+    }
+}
+
+struct InstagramZoomPicture: View {
+    let store: InstagramStore
+    let path: String?
+    /// One tap (not a double tap): the viewer shows or hides its bars.
+    var onTap: () -> Void = {}
+    /// The picture went from fitted to zoomed or back (a swipe down closes only when fitted).
+    var onZoom: (Bool) -> Void = { _ in }
+    @State private var image: UIImage?
+    @State private var failed = false
+    var body: some View {
+        Group {
+            if let image { InstagramZoomScroll(image: image, onTap: onTap, onZoom: onZoom) }
+            else if failed {
+                ContentUnavailableView {
+                    Label("Couldn't load the image.", systemImage: "photo")
+                } actions: {
+                    Button("Try again") { Task { await load() } }
+                }
+            } else { ProgressView() }
+        }.task(id: path) { await load() }
+    }
+    private func load() async {
+        failed = false
+        image = await InstagramPictureLoader.image(store: store, path: path)
+        failed = image == nil
+    }
+}
+
+/// UIScrollView gives photos native pinch, panning and double-tap zoom on iOS 17.
+private struct InstagramZoomScroll: UIViewRepresentable {
+    let image: UIImage
+    var onTap: () -> Void = {}
+    var onZoom: (Bool) -> Void = { _ in }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = InstagramPhotoScroll()
+        scroll.minimumZoomScale = 1; scroll.maximumZoomScale = 5
+        scroll.delegate = context.coordinator
+        scroll.showsHorizontalScrollIndicator = false; scroll.showsVerticalScrollIndicator = false
+        scroll.bouncesZoom = true
+        let picture = context.coordinator.picture
+        picture.contentMode = .scaleAspectFit
+        picture.isUserInteractionEnabled = true
+        scroll.picture = picture
+        scroll.addSubview(picture)
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        scroll.addGestureRecognizer(doubleTap)
+        let singleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.singleTap(_:)))
+        singleTap.require(toFail: doubleTap)
+        scroll.addGestureRecognizer(singleTap)
+        context.coordinator.onTap = onTap
+        context.coordinator.onZoom = onZoom
+        return scroll
+    }
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
+        context.coordinator.onTap = onTap
+        context.coordinator.onZoom = onZoom
+        if context.coordinator.picture.image !== image {
+            scroll.setZoomScale(1, animated: false)
+            context.coordinator.picture.image = image
+        }
+        scroll.setNeedsLayout()
+    }
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        let picture = UIImageView()
+        var onTap: () -> Void = {}
+        var onZoom: (Bool) -> Void = { _ in }
+        private var wasZoomed = false
+        @objc func singleTap(_ gesture: UITapGestureRecognizer) { onTap() }
+        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+            let zoomed = scale > 1.01
+            if zoomed != wasZoomed { wasZoomed = zoomed; onZoom(zoomed) }
+        }
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            let horizontal = max(0, (scrollView.bounds.width - picture.frame.width) / 2)
+            let vertical = max(0, (scrollView.bounds.height - picture.frame.height) / 2)
+            scrollView.contentInset = UIEdgeInsets(top: vertical, left: horizontal, bottom: vertical, right: horizontal)
+        }
+        @objc func doubleTap(_ gesture: UITapGestureRecognizer) {
+            guard let scroll = gesture.view as? UIScrollView else { return }
+            if scroll.zoomScale > 1 { scroll.setZoomScale(1, animated: true) }
+            else {
+                let point = gesture.location(in: picture)
+                let size = CGSize(width: scroll.bounds.width / 3, height: scroll.bounds.height / 3)
+                scroll.zoom(to: CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2, width: size.width, height: size.height), animated: true)
+            }
+        }
+    }
+}
+
+/// SwiftUI can assign the viewport after `updateUIView`; size the photo during UIKit layout.
+private final class InstagramPhotoScroll: UIScrollView {
+    weak var picture: UIImageView?
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if zoomScale == 1, let picture, picture.frame.size != bounds.size {
+            picture.frame = CGRect(origin: .zero, size: bounds.size)
+            contentSize = bounds.size
+        }
+    }
+}

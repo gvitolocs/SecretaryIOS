@@ -1,0 +1,17 @@
+{
+  "html_url": "https://github.com/a/x/compare/v0.19.0...main",
+  "ahead_by": 3,
+  "total_commits": 3,
+  "merge_base_commit": {"sha": "base000000000000000000000000000000000000", "commit": {"committer": {"date": "2026-10-12T21:18:07Z"}}},
+  "commits": [
+    {"sha": "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "commit": {"message": "feat(vfs): overlayfs\n\nbody", "committer": {"date": "2026-10-13T10:00:00Z"}}},
+    {"sha": "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "commit": {"message": "docs: typo", "committer": {"date": "2026-10-14T10:00:00Z"}}},
+    {"sha": "3333333ccccccccccccccccccccccccccccccccc", "commit": {"message": "fix(mm): frame leak", "committer": {"date": "2026-10-15T10:00:00Z"}}}
+  ],
+  "files": [
+    {"filename": "kernel/src/fs/overlay.rs"},
+    {"filename": "kernel/src/fs/mod.rs"},
+    {"filename": "ostd/src/mm/frame.rs"},
+    {"filename": "README.md"}
+  ]
+}

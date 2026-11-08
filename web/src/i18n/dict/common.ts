@@ -11,6 +11,7 @@ const en = {
   confirmDelete: "Confirm delete",
   saving: "Saving…",
   loading: "Loading",
+  updating: "Updating…",
 };
 
 export const common: FeatureDictionary<typeof en> = {
@@ -26,6 +27,7 @@ export const common: FeatureDictionary<typeof en> = {
     confirmDelete: "Conferma eliminazione",
     saving: "Salvataggio…",
     loading: "Caricamento",
+    updating: "Aggiornamento…",
   },
   da: {
     close: "Luk",
@@ -38,5 +40,6 @@ export const common: FeatureDictionary<typeof en> = {
     confirmDelete: "Bekræft sletning",
     saving: "Gemmer…",
     loading: "Indlæser",
+    updating: "Opdaterer…",
   },
 };

@@ -1,0 +1,18 @@
+# p1 (getsecretary.tech), inside the site block, BEFORE the catch-all `handle`.
+# Signed image URLs carry their own HMAC and skip forward_auth (like /v1/media/s/*).
+@nclient_img path /v1/nclient/s/*
+handle @nclient_img {
+	reverse_proxy NEZOPT_TAILNET_IP:8870
+}
+@nclient path /v1/nclient/*
+handle @nclient {
+	forward_auth 127.0.0.1:8800 {
+		uri /v1/avatar
+	}
+	reverse_proxy NEZOPT_TAILNET_IP:8870 {
+		# The secret from ~/.config/secretary-nclient/gateway.secret, via p1's env (never in git).
+		header_up X-Lucina-Gateway {env.NCLIENT_GATEWAY_SECRET}
+		header_up -Authorization
+		header_up -Cookie
+	}
+}

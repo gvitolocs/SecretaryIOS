@@ -14,7 +14,14 @@
 //!   crash (the systemd restart continues from the recorded steps);
 //! - another GPU job taking and releasing the lease; `gpu-lease` prunes the
 //!   lease of a dead holder on its next access;
-//! - the owner: rename the memo, or reprocess it from the transcript.
+//! - the owner: rename the memo, or reprocess it from the transcript; pick the
+//!   memo's calendar event on the memo screen (another one, or none);
+//! - the calendar link (2026-10-26): the worker fetches the events around the
+//!   recording and links the best one (`kernel::pick_event`, here always the
+//!   lecture) unless the owner chose (K9); a linked memo's note lives in the
+//!   event's folder (`Courses/…`, `Meetings/…`), so a change of event moves it:
+//!   the new path and every old one are recorded before the push, the old copies
+//!   deleted after it.
 //!
 //! Switches (current code before 2026-10-25 vs the fixes):
 //! - `fix_note_path`: the note's path is recorded before the rsync (kernel K7);
@@ -24,7 +31,18 @@
 //! - `fix_recovery`: a recording cut off by iOS killing the app is recovered and
 //!   queued on the next launch (crash-safe CAF file);
 //! - `prune_dead`: `gpu-lease` drops a dead holder (it does; switching it off
-//!   shows the lease property depends on it).
+//!   shows the lease property depends on it);
+//! - `fix_old_notes`: every earlier note path is kept for deletion (the first
+//!   draft kept one slot: two moves around a crash left a second note, B5);
+//! - `fix_link_recheck`: the worker's write of the link re-checks the owner's
+//!   choice (without it, a choice made while the calendar was being read is lost);
+//! - `late_event` / `fix_relink` (2026-10-28): the event reaches the server only
+//!   after the memo was processed (the iPhone sent it late, or never in time);
+//!   the re-link job links the memo when it appears and re-summarises it quietly
+//!   (before it, step 1b was the only chance and the memo stayed unlinked).
+//! - `fix_diarize_reset`: speaker labels (step 1a, kernel K11) are attempted once per
+//!   transcript, and a new transcript (Whisper upgrade, reprocess) clears the attempt, so a
+//!   finished memo's labels belong to its current transcript.
 
 use stateright::{Model, Property};
 
@@ -61,9 +79,24 @@ pub enum Src {
     Whisper,
 }
 
+/// Who linked the memo's event (`Memo::event_source`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Link {
+    None,
+    Auto,
+    Owner,
+}
+
+/// Note folders: the memo folder, a course's, a meeting's.
+pub const ROOT: u8 = 0;
+pub const COURSE: u8 = 1;
+pub const MEETING: u8 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Step {
     Idle,
+    /// The calendar's events were read; the link not yet written.
+    Linking,
     /// Whisper running under the lease.
     Whisper,
     /// rsync done, the meta not yet updated (current code: name not yet recorded).
@@ -84,12 +117,27 @@ pub struct State {
     pub device_transcript_sent: bool,
     // server
     pub transcript: Option<Src>,
+    /// The transcript the speaker labels were made for; and whether step 1a ran on the
+    /// current transcript (`diarized_at`).
+    pub diarized: Option<Src>,
+    pub diar_attempted: bool,
     pub had_whisper: bool,
     pub saw_device_then_whisper: bool,
     pub summarized: bool,
     pub rendered: bool,
-    /// The note name recorded in meta (a title version).
-    pub note_recorded: Option<u8>,
+    /// The note path recorded in meta: (folder, name = a title version).
+    pub note_recorded: Option<(u8, u8)>,
+    /// Earlier note paths still to delete (`Memo::obsidian_old_notes`).
+    pub old_notes: Vec<(u8, u8)>,
+    /// The linked event's folder (COURSE or MEETING), who linked it, whether step 1b ran.
+    pub event: Option<u8>,
+    pub event_source: Link,
+    pub linked: bool,
+    /// The owner's last choice of event (`None` = never chose).
+    pub owner_choice: Option<Option<u8>>,
+    /// The worker gave up (`failed` after the last attempt, e.g. the old note's delete kept
+    /// failing); only the owner moves it on.
+    pub failed: bool,
     pub published: bool,
     pub notified: bool,
     pub telegram_marker: Option<u8>,
@@ -100,8 +148,8 @@ pub struct State {
     pub lease: Lease,
     pub gpu_was_busy: bool,
     // the world
-    /// Note names in the vault for this memo.
-    pub vault: Vec<u8>,
+    /// Note paths (folder, name) in the vault for this memo.
+    pub vault: Vec<(u8, u8)>,
     /// Telegram messages for the current revision; app inbox entries (dedup key = revision).
     pub telegram: u8,
     pub inbox: Vec<u8>,
@@ -112,6 +160,12 @@ pub struct State {
     pub owner_acts: u8,
     pub other_jobs: u8,
     pub toggles: u8,
+    pub event_acts: u8,
+    pub give_ups: u8,
+    /// The server knows the memo's event (its calendar cache has it).
+    pub calendar_has: bool,
+    /// The re-link job linked it after the pipeline had run.
+    pub relinked: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -126,12 +180,16 @@ pub enum Action {
     SendDeviceTranscript,
     WorkerStep,
     WorkerCrash,
+    WorkerGivesUp,
     OtherTakesGpu,
     OtherReleasesGpu,
     PruneDeadLease,
     OwnerRename,
     OwnerReprocess,
+    OwnerChoosesEvent,
     Upgrade,
+    CalendarGainsEvent,
+    WorkerRelink,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +199,15 @@ pub struct Memos {
     pub fix_telegram_marker: bool,
     pub fix_recovery: bool,
     pub prune_dead: bool,
+    pub fix_old_notes: bool,
+    pub fix_link_recheck: bool,
+    /// Calendar linking on (off: the model before 2026-10-26).
+    pub events: bool,
+    pub event_acts: u8,
+    pub give_ups: u8,
+    pub late_event: bool,
+    pub fix_relink: bool,
+    pub fix_diarize_reset: bool,
     /// The memo is short (the iPhone transcribes it).
     pub short: bool,
     pub kills: u8,
@@ -156,12 +223,16 @@ impl Memos {
     }
 
     /// The first pipeline step still to do (the worker's order).
-    fn pending_step(s: &State) -> Option<u8> {
-        if !Self::audio_on_server(s) || s.done {
+    fn pending_step(&self, s: &State) -> Option<u8> {
+        if !Self::audio_on_server(s) || s.done || s.failed {
             return None;
         }
         Some(if s.transcript.is_none() {
             1
+        } else if self.events && !s.linked {
+            10
+        } else if !s.diar_attempted {
+            11
         } else if !s.summarized {
             2
         } else if !s.rendered {
@@ -175,11 +246,21 @@ impl Memos {
         })
     }
 
-    fn push_note(s: &mut State, name: u8) {
-        if !s.vault.contains(&name) {
-            s.vault.push(name);
+    fn push_note(s: &mut State, path: (u8, u8)) {
+        if !s.vault.contains(&path) {
+            s.vault.push(path);
             s.vault.sort();
         }
+    }
+
+    /// The folder the note belongs in now.
+    fn folder(s: &State) -> u8 {
+        s.event.unwrap_or(ROOT)
+    }
+
+    /// `kernel::may_auto_link` (K9).
+    fn may_auto_link(s: &State) -> bool {
+        s.event_source != Link::Owner
     }
 }
 
@@ -196,11 +277,19 @@ impl Model for Memos {
             uploaded: false,
             device_transcript_sent: false,
             transcript: None,
+            diarized: None,
+            diar_attempted: false,
             had_whisper: false,
             saw_device_then_whisper: false,
             summarized: false,
             rendered: false,
             note_recorded: None,
+            old_notes: vec![],
+            event: None,
+            event_source: Link::None,
+            linked: false,
+            owner_choice: None,
+            failed: false,
             published: false,
             notified: false,
             telegram_marker: None,
@@ -219,6 +308,10 @@ impl Model for Memos {
             owner_acts: self.owner_acts,
             other_jobs: self.other_jobs,
             toggles: 2,
+            event_acts: self.event_acts,
+            give_ups: self.give_ups,
+            calendar_has: !self.late_event,
+            relinked: false,
         }]
     }
 
@@ -248,11 +341,28 @@ impl Model for Memos {
         if s.app_alive && self.short && s.queued && s.uploaded && !s.device_transcript_sent {
             out.push(Action::SendDeviceTranscript);
         }
-        if Self::pending_step(s).is_some() || s.step != Step::Idle {
+        if self.pending_step(s).is_some() || s.step != Step::Idle {
             out.push(Action::WorkerStep);
         }
-        if s.crashes > 0 && (Self::pending_step(s).is_some() || s.step != Step::Idle) {
+        if s.crashes > 0 && (self.pending_step(s).is_some() || s.step != Step::Idle) {
             out.push(Action::WorkerCrash);
+        }
+        if s.give_ups > 0 && s.step == Step::Idle && self.pending_step(s).is_some() {
+            out.push(Action::WorkerGivesUp);
+        }
+        if self.events && !s.calendar_has {
+            out.push(Action::CalendarGainsEvent);
+        }
+        // `worker::relink_one`: idle, a finished (or failed) memo still without an event.
+        if self.fix_relink
+            && s.calendar_has
+            && s.linked
+            && s.event.is_none()
+            && Self::may_auto_link(s)
+            && (s.done || s.failed)
+            && s.step == Step::Idle
+        {
+            out.push(Action::WorkerRelink);
         }
         if s.other_jobs > 0 && s.lease == Lease::Free {
             out.push(Action::OtherTakesGpu);
@@ -269,6 +379,10 @@ impl Model for Memos {
         }
         if s.owner_acts > 0 && s.done {
             out.push(Action::OwnerReprocess);
+        }
+        // PUT /v1/memos/{id}/event: before the summary, once finished or failed (409 in between).
+        if self.events && s.event_acts > 0 && s.uploaded && (s.done || s.failed || !s.summarized) {
+            out.push(Action::OwnerChoosesEvent);
         }
         if s.done && s.transcript == Some(Src::Device) && s.lease == Lease::Free {
             out.push(Action::Upgrade);
@@ -323,6 +437,24 @@ impl Model for Memos {
                 }
                 n.step = Step::Idle;
             }
+            Action::WorkerGivesUp => {
+                n.give_ups -= 1;
+                n.failed = true;
+            }
+            Action::CalendarGainsEvent => n.calendar_has = true,
+            Action::WorkerRelink => {
+                // One store.update: the link, then a quiet re-summary (no second notification).
+                n.event = Some(COURSE);
+                n.event_source = Link::Auto;
+                n.relinked = true;
+                n.summarized = false;
+                n.rendered = false;
+                n.published = false;
+                n.done = false;
+                n.failed = false;
+                n.revision += 1;
+                n.telegram = 0;
+            }
             Action::OtherTakesGpu => {
                 n.other_jobs -= 1;
                 n.lease = Lease::Other;
@@ -343,6 +475,9 @@ impl Model for Memos {
                 // reprocess --transcript: step 1 again, new summary and notification.
                 n.owner_acts -= 1;
                 n.transcript = None;
+                if self.fix_diarize_reset {
+                    n.diar_attempted = false;
+                }
                 n.summarized = false;
                 n.rendered = false;
                 n.published = false;
@@ -351,9 +486,35 @@ impl Model for Memos {
                 n.revision += 1;
                 n.telegram = 0;
             }
+            Action::OwnerChoosesEvent => {
+                // Alternately a meeting and no event; a finished memo is summarised again.
+                n.event_acts -= 1;
+                let choice = if s.owner_choice == Some(Some(MEETING)) {
+                    None
+                } else {
+                    Some(MEETING)
+                };
+                n.event = choice;
+                n.event_source = Link::Owner;
+                n.linked = true;
+                n.owner_choice = Some(choice);
+                n.failed = false;
+                if s.summarized {
+                    n.summarized = false;
+                    n.rendered = false;
+                    n.published = false;
+                    n.notified = false;
+                    n.done = false;
+                    n.revision += 1;
+                    n.telegram = 0;
+                }
+            }
             Action::Upgrade => {
                 // The idle worker: Whisper under the lease, then a quiet re-summary.
                 n.transcript = Some(Src::Whisper);
+                if self.fix_diarize_reset {
+                    n.diar_attempted = false;
+                }
                 n.had_whisper = true;
                 n.saw_device_then_whisper = true;
                 n.summarized = false;
@@ -369,18 +530,40 @@ impl Model for Memos {
                     n.step = Step::Idle;
                     n.lease = Lease::Free;
                     n.transcript = Some(Src::Whisper);
+                    if self.fix_diarize_reset {
+                        n.diar_attempted = false;
+                    }
                     n.had_whisper = true;
+                }
+                Step::Linking => {
+                    // The update closure: the owner may have chosen while the calendar was read.
+                    n.step = Step::Idle;
+                    n.linked = true;
+                    if !self.fix_link_recheck || Self::may_auto_link(s) {
+                        n.event_source = Link::Auto;
+                        // No event known yet: the memo goes on unlinked (link-pending).
+                        n.event = if s.calendar_has {
+                            Some(COURSE)
+                        } else {
+                            s.event
+                        };
+                    }
                 }
                 Step::Pushed => {
                     n.step = Step::Idle;
-                    n.note_recorded = Some(n.note_recorded.unwrap_or(s.title));
+                    n.note_recorded = Some(n.note_recorded.unwrap_or((Self::folder(s), s.title)));
+                    // The note moved: the old copies go, then the list is cleared.
+                    for old in &s.old_notes {
+                        n.vault.retain(|p| p != old);
+                    }
+                    n.old_notes.clear();
                     n.published = true;
                 }
                 Step::Sent => {
                     n.step = Step::Idle;
                     n.notified = true;
                 }
-                Step::Idle => match Self::pending_step(s)? {
+                Step::Idle => match self.pending_step(s)? {
                     1 => {
                         // `kernel::transcript_choice` over the reprocess's previous source.
                         let previous_whisper = s.had_whisper && self.fix_no_downgrade;
@@ -393,20 +576,41 @@ impl Model for Memos {
                                 n.gpu_was_busy = true;
                                 if s.device_transcript_sent && !previous_whisper {
                                     n.transcript = Some(Src::Device);
+                                    if self.fix_diarize_reset {
+                                        n.diar_attempted = false;
+                                    }
                                 } else {
                                     return None; // wait (the retry is the same state)
                                 }
                             }
                         }
                     }
+                    10 => n.step = Step::Linking,
+                    11 => {
+                        // K11: label the current transcript (the step is recorded either way).
+                        n.diar_attempted = true;
+                        n.diarized = s.transcript;
+                    }
                     2 => n.summarized = true,
                     3 => n.rendered = true,
                     4 => {
-                        let name = s.note_recorded.unwrap_or(s.title);
-                        if self.fix_note_path {
-                            n.note_recorded = Some(name);
+                        // K7 keeps the name; the folder follows the event.
+                        let path = (Self::folder(s), s.note_recorded.map_or(s.title, |p| p.1));
+                        if self.fix_note_path && s.note_recorded != Some(path) {
+                            // `obsidian::move_note`, recorded before the push.
+                            if let Some(old) = s.note_recorded {
+                                if self.fix_old_notes {
+                                    if !n.old_notes.contains(&old) {
+                                        n.old_notes.push(old);
+                                    }
+                                } else if n.old_notes.is_empty() {
+                                    n.old_notes.push(old);
+                                }
+                            }
+                            n.old_notes.retain(|o| *o != path);
+                            n.note_recorded = Some(path);
                         }
-                        Self::push_note(&mut n, name);
+                        Self::push_note(&mut n, path);
                         n.step = Step::Pushed;
                     }
                     5 => {
@@ -431,7 +635,16 @@ impl Model for Memos {
 
     fn properties(&self) -> Vec<Property<Self>> {
         vec![
-            Property::always("no_duplicate_notes", |_, s: &State| s.vault.len() <= 1),
+            // Every note in the vault is the memo's current one or a copy listed for deletion.
+            Property::always("no_duplicate_notes", |_, s: &State| {
+                s.vault
+                    .iter()
+                    .all(|p| Some(*p) == s.note_recorded || s.old_notes.contains(p))
+            }),
+            Property::always("owner_choice_kept", |_, s: &State| {
+                s.owner_choice
+                    .is_none_or(|c| s.event == c && s.event_source == Link::Owner)
+            }),
             Property::always("telegram_at_most_once", |_, s: &State| s.telegram <= 1),
             Property::always("app_inbox_once_per_revision", |_, s: &State| {
                 let mut v = s.inbox.clone();
@@ -458,9 +671,14 @@ impl Model for Memos {
                         && s.published
                         && s.notified)
             }),
+            Property::always("done_labels_follow_transcript", |_, s: &State| {
+                !s.done || s.diarized == s.transcript
+            }),
             Property::eventually("finished_with_one_note_pdf_notification", |_, s: &State| {
                 s.done
                     && s.vault.len() == 1
+                    && s.note_recorded == Some(s.vault[0])
+                    && s.vault[0].0 == s.event.unwrap_or(ROOT)
                     && s.rendered
                     && !s.inbox.is_empty()
                     && s.lease != Lease::Dead
@@ -471,6 +689,17 @@ impl Model for Memos {
             }),
             Property::sometimes("device_transcript_replaced", |_, s: &State| {
                 s.saw_device_then_whisper && s.done
+            }),
+            Property::sometimes("note_moved_to_the_owner_s_event", |_, s: &State| {
+                s.done && s.vault == [(MEETING, 0)] && s.event_source == Link::Owner
+            }),
+            // A memo recorded in a lecture ends linked to it (or to the owner's choice), however
+            // late the event reaches the server.
+            Property::eventually("lecture_memo_ends_linked", |_, s: &State| {
+                s.done && (s.owner_choice.is_some() || s.event == Some(COURSE))
+            }),
+            Property::sometimes("relinked_quietly", |_, s: &State| {
+                s.relinked && s.done && s.vault == [(COURSE, 0)] && s.inbox.len() == 1
             }),
         ]
     }
@@ -484,6 +713,14 @@ pub fn cases(deep: bool) -> Vec<Case> {
         fix_telegram_marker: fixed,
         fix_recovery: fixed,
         prune_dead: prune,
+        fix_old_notes: true,
+        fix_link_recheck: true,
+        events: false,
+        event_acts: 0,
+        give_ups: 0,
+        late_event: false,
+        fix_relink: true,
+        fix_diarize_reset: true,
         short: true,
         kills: 1,
         crashes: if deep { 2 } else { 1 },
@@ -500,10 +737,26 @@ pub fn cases(deep: bool) -> Vec<Case> {
             ("no_lost_audio", bugs),
             ("live_activity_matches_recorder", Holds),
             ("done_has_every_output", Holds),
+            ("owner_choice_kept", Holds),
+            ("done_labels_follow_transcript", Holds),
             ("finished_with_one_note_pdf_notification", live),
             ("gpu_busy_then_free", Reached),
             ("device_transcript_replaced", Reached),
         ]
+    };
+    // The calendar link: two event choices by the owner and a worker crash, so a note can
+    // move twice with a delete cut off in between.
+    let events = |old_notes: bool, recheck: bool, give_ups: u8| Memos {
+        fix_old_notes: old_notes,
+        fix_link_recheck: recheck,
+        events: true,
+        event_acts: 2,
+        give_ups,
+        kills: 0,
+        net_fails: 0,
+        owner_acts: 0,
+        other_jobs: 1,
+        ..base(true, true)
     };
     vec![
         Case::new(
@@ -529,6 +782,87 @@ pub fn cases(deep: bool) -> Vec<Case> {
                 ("no_duplicate_notes", Holds),
                 ("telegram_at_most_once", Holds),
                 ("finished_with_one_note_pdf_notification", Violated),
+            ],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V calendar link: owner's choice, note moves (K8-K10, obsidian_old_notes)",
+            events(true, true, 0),
+            None,
+            vec![
+                ("no_duplicate_notes", Holds),
+                ("owner_choice_kept", Holds),
+                ("telegram_at_most_once", Holds),
+                ("app_inbox_once_per_revision", Holds),
+                ("done_has_every_output", Holds),
+                ("finished_with_one_note_pdf_notification", Holds),
+                ("note_moved_to_the_owner_s_event", Reached),
+            ],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V calendar link, a publish that gives up (failed) then a new choice",
+            events(true, true, 1),
+            None,
+            vec![("no_duplicate_notes", Holds), ("owner_choice_kept", Holds)],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V calendar link, one old-note slot (first draft, B5)",
+            events(false, true, 1),
+            None,
+            vec![("no_duplicate_notes", Violated)],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V calendar link, link written without re-checking the owner",
+            events(true, false, 0),
+            None,
+            vec![("owner_choice_kept", Violated)],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V late event: the re-link job links it later, quietly (calendar cache)",
+            Memos {
+                late_event: true,
+                event_acts: 1,
+                ..events(true, true, 0)
+            },
+            None,
+            vec![
+                ("no_duplicate_notes", Holds),
+                ("owner_choice_kept", Holds),
+                ("telegram_at_most_once", Holds),
+                ("app_inbox_once_per_revision", Holds),
+                ("done_has_every_output", Holds),
+                ("finished_with_one_note_pdf_notification", Holds),
+                ("lecture_memo_ends_linked", Holds),
+                ("relinked_quietly", Reached),
+            ],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V late event without the re-link job (before 2026-10-28)",
+            Memos {
+                late_event: true,
+                fix_relink: false,
+                event_acts: 0,
+                ..events(true, true, 0)
+            },
+            None,
+            vec![("lecture_memo_ends_linked", Violated)],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V fixed, a new transcript keeps the old diarization attempt",
+            Memos {
+                fix_diarize_reset: false,
+                ..base(true, true)
+            },
+            None,
+            vec![
+                ("done_labels_follow_transcript", Violated),
+                ("whisper_never_downgraded", Holds),
             ],
         ),
     ]

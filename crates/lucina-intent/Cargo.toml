@@ -1,0 +1,16 @@
+[package]
+name = "lucina-intent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina's deterministic turn routing, ported from the Node Lucina: tier-0 intents, context policy, grocery/notes/calendar/outfit/MCP parsers"
+
+[dependencies]
+lucina-store = { path = "../lucina-store" }
+lucina-grocery = { path = "../lucina-grocery" }
+fancy-regex = "0.19"
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-normalization = "0.1"

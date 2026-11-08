@@ -121,6 +121,19 @@ describe("service worker", () => {
     expect(sw.windows[0]!.postMessage).toHaveBeenCalledWith({ type: "push", id: "n_1", category: "reminder" });
   });
 
+  it("preserves decision routes through push and notification clicks", async () => {
+    const route = "/decisions/dc-0123456789ab";
+    const sw = load();
+    await sw.dispatch("push", { data: { json: () => ({ route, title: "Decision" }) } }).done;
+    expect(sw.shown[0]!.options.data).toMatchObject({ route });
+    const notification = { close: vi.fn(), data: { route } };
+    await sw.dispatch("notificationclick", { notification }).done;
+    expect(sw.self.clients.openWindow).toHaveBeenCalledWith(route);
+    const open = load({ windows: [{ url: ORIGIN + "/" }] });
+    await open.dispatch("notificationclick", { notification }).done;
+    expect(open.windows[0]!.postMessage).toHaveBeenCalledWith({ type: "open", route, id: null });
+  });
+
   it("opens the route on click: focuses a window or opens one", async () => {
     const closed = vi.fn();
     const notification = { close: closed, data: { id: "n_9", route: "/shopping" } };

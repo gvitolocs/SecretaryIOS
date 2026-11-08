@@ -17,6 +17,17 @@ function fill(current: string, next: string, confirm: string) {
 describe("AccountDialog", () => {
   beforeEach(() => setSessionForTests({ status: "authed", deviceName: "Browser" }));
 
+  it("links to the QR scanner and closes", () => {
+    stubFetch(() => ({ body: {} }));
+    const onClose = vi.fn();
+    render(() => <AccountDialog open onClose={onClose} />);
+    const link = screen.getByRole("link", { name: /Scan QR code/ });
+    expect(link).toHaveAttribute("href", "/scan");
+    link.addEventListener("click", (e) => e.preventDefault());
+    fireEvent.click(link);
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("validates length and confirmation before sending", async () => {
     const calls = stubFetch(() => ({ body: { ok: true } }));
     render(() => <AccountDialog open onClose={vi.fn()} />);

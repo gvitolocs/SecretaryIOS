@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { parseItem, type ItemMeta, type TimelineItem } from "../api/timeline";
 import { matchesFilter, mcpSource, SOURCE_FILTERS, sourceLine } from "./timeline";
 
+describe("Mistral chip", () => {
+  const item = (caller: string | undefined, via: string | undefined) =>
+    ({ channel: "other", role: "user", text: "x", meta: { via, caller } }) as never;
+  it("shows only Mistral's conversation", () => {
+    expect(matchesFilter(item("mistral", "mcp"), "mistral")).toBe(true);
+    expect(matchesFilter(item("claude", "mcp"), "mistral")).toBe(false);
+    expect(matchesFilter(item(undefined, undefined), "mistral")).toBe(false);
+  });
+  it("labels the caller", () => {
+    expect(mcpSource("user", "x", { via: "mcp", caller: "mistral" } as never)?.label).toBe("Mistral");
+  });
+});
+
 describe("mcpSource", () => {
   it.each([
     ["claude-code", "Claude Code"],

@@ -1,0 +1,994 @@
+[
+  {
+    "id": "u1pHUaT4qnB0nOvOBcV53",
+    "heading": "Arla frisk dansk mælk",
+    "description": "Skummetmælk, minimælk,\nletmælk el. sødmælk",
+    "pricing": {
+      "price": 8.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "hKqHvlzidIUbimRNySipL",
+    "heading": "Arla Cultura A38",
+    "description": "1000 g",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "pc4G8tC-p0suaUuR3WnYg",
+    "heading": "ARLA/MATILDE Proteindrik med chokolade eller milkshakemix",
+    "description": "1 l. Pr. l 22,00",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "HijlcQO5Poom_6RQNytgx",
+    "heading": "Arla økologisk yoghurt, ymer el. tykmælk",
+    "description": "Flere varianter",
+    "pricing": {
+      "price": 11.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "F2qwrtcqWEp9s5eP4wEeI",
+    "heading": "Arla Protein Pudding, mousse eller milkshake",
+    "description": "200 g/200 ml 50.00 pr. kg/50.00 pr. liter",
+    "pricing": {
+      "price": 10,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 200,
+        "to": 200
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "a0dDuXGN5sEXwvgvN5miV",
+    "heading": "Løgismose økologisk sødmælk",
+    "description": "1 liter.",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "W1es3hVjN7hugpGVsI4Lf",
+    "heading": "MILBONA XXL High Protein drik",
+    "description": "850 g\n850 g. Pr. kg 23,53",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 850,
+        "to": 850
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "3zmddqtpZYNQt3HNmSNyB",
+    "heading": "Arla laktosefri mælk*",
+    "description": "1 liter. Literpris 15,00. 1 stk.",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "fE3agHA00Z2TS85uncSyg",
+    "heading": "MILBONA Kakaomælk",
+    "description": "1 liter / stk. Pr. liter 9,95",
+    "pricing": {
+      "price": 9.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "OMzOijLh-KdJa--vouLWD",
+    "heading": "Cocio eller Sunjoy*",
+    "description": "60 cl 60-100 cl. Literpris maks. 30,00 + pant. 1 flaske.",
+    "pricing": {
+      "price": 18,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "cl",
+      "size": {
+        "from": 60,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "5OClN3U50bRAEbLcu3o6d",
+    "heading": "MILBONA High Protein drik",
+    "description": "420 g. Pr. kg 28,57",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 420,
+        "to": 420
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "5Tf5-xRgYLfBtY5LNLNdn",
+    "heading": "Thise økologisk kefir",
+    "description": "1 liter. Literpris max. \n19,16. 1. stk.",
+    "pricing": {
+      "price": 17.56,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "pkgJuImeUHFr9yYivo1WX",
+    "heading": "SONDEY Mælke- og hasselnøddesnitte",
+    "description": "300 g. Pr. kg 116,67",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 300,
+        "to": 300
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "CwsnY6p9iqYsdqwmiKEKF",
+    "heading": "Arla laktosefri mælk",
+    "description": "1 liter. Literpris 16,00. 1 stk.",
+    "pricing": {
+      "price": 16,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "3Udc436lZ3xWanQTwIkk9",
+    "heading": "Kefir naturel 2,5% laktosefri",
+    "description": "1000 ml",
+    "pricing": {
+      "price": 18,
+      "pre_price": 19.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "ml",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-19T22:00:00+0000",
+    "run_till": "2026-10-26T22:59:59+0000",
+    "dealer_id": "i7NdvM",
+    "dealer": {
+      "id": "i7NdvM",
+      "name": "Wolt Market"
+    },
+    "store_id": null
+  },
+  {
+    "id": "i73zCUZVU7dJaD6CG6Yvj",
+    "heading": "Cultura A38",
+    "description": "",
+    "pricing": {
+      "price": 14.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "haYpLXX_3uMSM_wgaarJD",
+    "heading": "Protein Milkshake m. Caffe Caramello, Jordbær eller Vanilje",
+    "description": "330 ml",
+    "pricing": {
+      "price": 19,
+      "pre_price": 22.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "ml",
+      "size": {
+        "from": 330,
+        "to": 330
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-19T22:00:00+0000",
+    "run_till": "2026-10-26T22:59:59+0000",
+    "dealer_id": "i7NdvM",
+    "dealer": {
+      "id": "i7NdvM",
+      "name": "Wolt Market"
+    },
+    "store_id": null
+  },
+  {
+    "id": "DQJ0ys6XpCipDSIrwH3L1",
+    "heading": "Kakaomælk",
+    "description": "1 liter Literpris 18,00. 1 stk.",
+    "pricing": {
+      "price": 18,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "bToLsGSpfqnZl_ZkXUqyx",
+    "heading": "MATILDE MILKSHAKE",
+    "description": "Kakao eller Jordbær. 200 ml. Literpris 50,00. PR. STK.",
+    "pricing": {
+      "price": 10,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "ml",
+      "size": {
+        "from": 200,
+        "to": 200
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "qDZVqANy3tD8wN4raDQUV",
+    "heading": "Thise økologisk kefir",
+    "description": "Kefir fra Thise Et yoghurt lignende produkt der er fermenteret med gær og 7 mælkesyrekulturer. Let perlende og frisk. coop MEDLEM MEDLEMSRABAT 20% på Thise kefir Pris ikke-medlem 21,95 Medlemspris 17,56 Pris ikke-medlem 23,95 Medlemspris 19,16 1 liter. Literpris max. 19,16. 1. stk.",
+    "pricing": {
+      "price": 21.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "tFxG6uMsmnrsH3NNM0Ge5",
+    "heading": "Peter Larsen eller Löfbergs kaffe eller hele bønner",
+    "description": "Ved køb af flere end 6 stk. pr. variant pr. dag er prisen op til 79.00 pr. stk.\n400-500 g\nMax. 122.50 pr. kg",
+    "pricing": {
+      "price": 49,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "QEI9CmTX3JCRiNXQ0AcN9",
+    "heading": "Marabou",
+    "description": "Flere varianter. 160-180 g. Max. kg pris 125,00. SKARP PRIS PR. STK.",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 160,
+        "to": 180
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "osnbqQp88TOvQcio_kR67",
+    "heading": "Lindt chokolade eller Lakridshuset Møn lakridsbar",
+    "description": "35-50 g\nPartivare. Max. 428.57 pr. kg",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 35,
+        "to": 50
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "cZL6NaoYaYH8c_vRBJBVt",
+    "heading": "Ritter Sport",
+    "description": "100 g\n150.00 pr. kg",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-28T23:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "C3HGJsSq86-HpvpH1IBx_",
+    "heading": "Galle & Jessen Pålægschokolade",
+    "description": "Lys eller Mørk. 216 g. Kg pris 185,19.\n2-pak",
+    "pricing": {
+      "price": 40,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 216,
+        "to": 216
+      },
+      "pieces": {
+        "from": 2,
+        "to": 2,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "kYQXk0tapS_evxjkG7FOK",
+    "heading": "Ritter Sport*",
+    "description": "Flere varianter. 100 g. Kg-pris 160,00. 1 stk.",
+    "pricing": {
+      "price": 16,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "gFUzVlrJSz8Lf_pl1G8cD",
+    "heading": "Marabou barer\teller Toblerone*",
+    "description": "35-43 g. Kg-pris maks. 285,71. 1 stk.",
+    "pricing": {
+      "price": 10,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 35,
+        "to": 43
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "nChHSra79lPT56RlvAaWt",
+    "heading": "RITTER SPORT",
+    "description": "Flere varianter. 100 g. Kg pris 220,00.",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "2lwGDANh8RDKCOPMh-4kh",
+    "heading": "Nordthy majskiks, riskiks el. mini müslibarer",
+    "description": "Udvalgte varianter\n45-175 g",
+    "pricing": {
+      "price": 10,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 45,
+        "to": 175
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "rCaVadNEES0MFmWTzyt_l",
+    "heading": "Curré mint bites eller jordnøddebrud mix",
+    "description": "130-175 g. Pr. kg max. 192,31",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 130,
+        "to": 175
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "sGL4jP3QXj1kjwwW4UYKF",
+    "heading": "Mcvitie’s digestive eller Pick up! 4-pak",
+    "description": "106-400 g. Udvalgte varianter. Pr. kg max. 207,55\nPr. kg max. 188,68\nGælder kun med føtex plus appen",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 106,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "RzAYWzZEZEYORV_ATVvgf",
+    "heading": "Hobnobs m. mælkechokolade",
+    "description": "262 g",
+    "pricing": {
+      "price": 25,
+      "pre_price": 35.5,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 262,
+        "to": 262
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-19T22:00:00+0000",
+    "run_till": "2026-10-26T22:59:59+0000",
+    "dealer_id": "i7NdvM",
+    "dealer": {
+      "id": "i7NdvM",
+      "name": "Wolt Market"
+    },
+    "store_id": null
+  }
+]

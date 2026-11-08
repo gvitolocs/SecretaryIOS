@@ -582,60 +582,7 @@
   mask: radial-gradient(farthest-side, transparent calc(100% - 3px), var(--lu-text) 0);
 }
 
-/* ---- Lightbox ------------------------------------------------------------ */
-
-.lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: color-mix(in srgb, var(--lu-bg) 94%, transparent);
-  outline: none;
-}
-
-.lightbox-img {
-  max-width: min(100%, 1200px);
-  max-height: calc(100dvh - 48px);
-  border-radius: 8px;
-  object-fit: contain;
-}
-
-.lightbox-count {
-  position: absolute;
-  bottom: 18px;
-  left: 50%;
-  color: var(--lu-text-secondary);
-  font-size: var(--lu-type-caption);
-  transform: translateX(-50%);
-}
-
-.lightbox-close,
-.lightbox-prev,
-.lightbox-next {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 50%;
-  background: var(--lu-card-raised);
-  color: var(--lu-text);
-  font-size: 26px;
-  cursor: pointer;
-}
-
-.lightbox-close { top: 16px; right: 16px; }
-.lightbox-prev { top: 50%; left: 16px; transform: translateY(-50%); }
-.lightbox-next { top: 50%; right: 16px; transform: translateY(-50%); }
-
 @media (max-width: 600px) {
   .attachments--album { width: 100%; }
   .attach-menu { left: -8px; }
-  .lightbox { padding: 8px; }
-  .lightbox-prev { left: 8px; }
-  .lightbox-next { right: 8px; }
 }

@@ -43,7 +43,8 @@ const apiTarget =
   process.env.SECRETARY_API ?? `http://127.0.0.1:${process.env.MOCK_PORT ?? "8791"}`;
 
 const proxy = {
-  "/v1": { target: apiTarget, changeOrigin: false },
+  // ws: the live view sockets (Cua viewer, LucinaDesk) go through the same proxy.
+  "/v1": { target: apiTarget, changeOrigin: false, ws: true },
 };
 
 export default defineConfig({

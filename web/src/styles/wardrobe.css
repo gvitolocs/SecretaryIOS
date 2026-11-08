@@ -32,6 +32,9 @@
 }
 
 .wardrobe-panel {
+  /* Side padding of the head and body (the chip rows bleed to the edges with it). */
+  --wpad-l: var(--pad-left);
+  --wpad-r: var(--pad-right);
   position: absolute;
   left: 0;
   right: 0;
@@ -39,12 +42,10 @@
   height: var(--wardrobe-sheet-h);
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
+  /* The frame owns the radius, hairline and clip; only .wardrobe-body scrolls. */
+  overflow: hidden;
   pointer-events: auto;
-  padding: 8px var(--pad-right) calc(var(--safe-bottom) + 20px) var(--pad-left);
+  padding: 8px 0 0;
   border-radius: var(--radius-xl) var(--radius-xl) 0 0;
   background: color-mix(in srgb, var(--surface-solid) 93%, transparent);
   -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
@@ -54,6 +55,22 @@
 }
 
 .wardrobe-panel > * {
+  flex: none;
+}
+
+.wardrobe-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px var(--wpad-r) calc(var(--safe-bottom) + 20px) var(--wpad-l);
+}
+
+.wardrobe-body > * {
   flex: none;
 }
 
@@ -149,9 +166,16 @@
     right: calc(var(--wardrobe-side-w) + 6px);
     width: min(500px, calc(100vw - var(--wardrobe-side-w) - 40px));
     height: auto;
-    padding: 20px 22px 22px;
+    --wpad-l: 22px;
+    --wpad-r: 22px;
+    padding: 0;
     border-radius: 30px;
     animation: wardrobe-in var(--dur-3) var(--ease-out) both;
+  }
+
+  /* The COM3D2 fitting room needs room for its stage and controls. */
+  .wardrobe-panel.wardrobe-panel--wide {
+    width: min(1100px, calc(100vw - var(--wardrobe-side-w) - 40px));
   }
 
   .wardrobe-grab {
@@ -170,25 +194,18 @@
 /* ---------- Header ---------- */
 
 .wardrobe-head {
-  position: sticky;
-  top: -8px;
-  z-index: 3;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin: -8px calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
-  padding: 8px var(--pad-right) 8px var(--pad-left);
-  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-  background: linear-gradient(to bottom, color-mix(in srgb, var(--surface-solid) 97%, transparent) 80%, transparent);
+  padding: 8px var(--wpad-r) 10px var(--wpad-l);
+  /* The body scrolls under this line. */
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
 
 @media (min-width: 1024px) {
   .wardrobe-head {
-    top: -20px;
-    margin: -20px -22px 0;
-    padding: 20px 22px 10px;
-    border-radius: 30px 30px 0 0;
+    padding: 20px var(--wpad-r) 10px var(--wpad-l);
   }
 }
 
@@ -365,8 +382,8 @@
 .wardrobe-cats {
   display: flex;
   gap: 12px;
-  margin: 0 calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
-  padding: 4px var(--pad-right) 6px var(--pad-left);
+  margin: 0 calc(-1 * var(--wpad-r)) 0 calc(-1 * var(--wpad-l));
+  padding: 4px var(--wpad-r) 6px var(--wpad-l);
   overflow-x: auto;
   scrollbar-width: none;
   scroll-snap-type: x proximity;
@@ -566,23 +583,27 @@
   width: 74%;
 }
 
-/* The name ribbon across the top of the tile. */
+/* The name ribbon across the top of the tile: up to two lines (the tile's title has the rest). */
 .wtile-ribbon {
   position: absolute;
   top: 7px;
   left: 7px;
   right: 7px;
+  display: -webkit-box;
   overflow: hidden;
   padding: 4px 8px;
-  border-radius: 999px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--surface-solid) 78%, transparent);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   font-size: var(--fs-xs);
   font-weight: 600;
+  line-height: 1.25;
   text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .wtile--on .wtile-ribbon {
@@ -640,7 +661,8 @@
 .wtile-pin {
   position: absolute;
   right: 7px;
-  top: 38px;
+  /* Over the check, clear of a two-line name ribbon. */
+  bottom: 40px;
   border-color: color-mix(in srgb, var(--amber) 60%, transparent);
   color: var(--amber);
 }
@@ -857,12 +879,39 @@
 
 /* Outfit categories, under the Outfit tab: a row of small pills. */
 .wchips {
+  --fade: 32px;
   display: flex;
   gap: 8px;
-  margin: 0 calc(-1 * var(--pad-right)) 12px calc(-1 * var(--pad-left));
-  padding: 2px var(--pad-right) 4px var(--pad-left);
+  margin: 0 calc(-1 * var(--wpad-r)) 12px calc(-1 * var(--wpad-l));
+  padding: 2px var(--wpad-r) 4px var(--wpad-l);
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+/* Phones swipe the chips sideways: the edge with more chips behind it fades out. */
+.wchips--more-start {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade));
+  mask-image: linear-gradient(to right, transparent, #000 var(--fade));
+}
+
+.wchips--more-end {
+  -webkit-mask-image: linear-gradient(to left, transparent, #000 var(--fade));
+  mask-image: linear-gradient(to left, transparent, #000 var(--fade));
+}
+
+.wchips--more-start.wchips--more-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade), #000 calc(100% - var(--fade)), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 var(--fade), #000 calc(100% - var(--fade)), transparent);
+}
+
+/* Mouse and trackpad: every chip in view, wrapping onto a second line. */
+@media (min-width: 1024px) {
+  .wchips {
+    flex-wrap: wrap;
+    margin-inline: 0;
+    padding-inline: 0;
+    overflow: visible;
+  }
 }
 
 .wchips::-webkit-scrollbar {
@@ -966,4 +1015,18 @@
   width: 40px;
   height: 40px;
   border-radius: 50%;
+}
+
+/* ---------- COM3D2 fitting room (beta) ---------- */
+
+/* It takes the rest of the sheet below the switches, so the whole stage is in view without scrolling; a short
+   window still gets a usable stage. */
+.wardrobe-com3d2 {
+  display: block;
+  flex: 1 1 0;
+  width: 100%;
+  min-height: min(420px, 55vh);
+  border: 0;
+  border-radius: 18px;
+  background: #090e20;
 }

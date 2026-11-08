@@ -16,7 +16,7 @@ use axum::Json;
 use serde_json::json;
 
 use crate::oauth::ACCESS_PREFIX;
-use crate::scope::Scope;
+use crate::scope::Scopes;
 use crate::tokens::TOKEN_PREFIX;
 use crate::AppState;
 
@@ -51,11 +51,8 @@ fn presented_token(headers: &HeaderMap) -> Option<&str> {
 
 /// `WWW-Authenticate: Bearer resource_metadata="…", scope="…"[, error=…]`.
 pub fn challenge(st: &AppState, error: Option<&str>) -> String {
-    let scopes = Scope::ALL
-        .iter()
-        .map(|s| s.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
+    // The scopes a client should ask for by default; `agents` and `notebooks` only when it wants them.
+    let scopes = Scopes::default_grant().to_oauth();
     let mut c = format!(
         "Bearer resource_metadata=\"{}\", scope=\"{scopes}\"",
         st.cfg.resource_metadata_url()

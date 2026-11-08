@@ -1,0 +1,13 @@
+[package]
+name = "lucinavoice-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "LucinaVoice firmware logic without hardware: HTTP/1.1 framing, settings records, PCM conversion"
+publish = false
+
+[dependencies]
+sha1_smol = { version = "1", default-features = false }
+
+# Standalone: not a member of the repository workspace. Host-testable with `cargo test`.
+[workspace]

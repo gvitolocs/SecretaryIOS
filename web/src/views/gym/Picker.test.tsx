@@ -38,6 +38,17 @@ describe("ExercisePicker", () => {
     expect(post.command).toEqual({ type: "add_exercise", exercise_id: "overhead-press" });
   });
 
+  it("scrolls the list inside the sheet's body, not the sheet", async () => {
+    stubFetch(() => ({ body: { ok: true, view: gymView() } }));
+    await refreshGym();
+    render(() => <ExercisePicker open activeExerciseIds={[]} onClose={vi.fn()} />);
+    const sheet = screen.getByRole("dialog");
+    const body = screen.getByRole("list", { name: "Exercises" }).parentElement!;
+    expect(body).toHaveClass("picker-body");
+    expect(body.parentElement).toBe(sheet);
+    expect(within(sheet).getByRole("group", { name: "Equipment" })).toHaveClass("picker-chips--equipment");
+  });
+
   it("closes on Escape", async () => {
     stubFetch(() => ({ body: { ok: true, view: gymView() } }));
     await refreshGym();

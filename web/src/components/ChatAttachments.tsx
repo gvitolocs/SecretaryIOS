@@ -1,15 +1,17 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { Portal } from "solid-js/web";
 import { getMediaItem, playMedia, type MediaItem } from "../api/media";
 import type { Attachment } from "../api/timeline";
 import { t } from "../i18n";
 import { albumCellStyle, albumLayout, ALBUM_MAX } from "../lib/album";
-import { formatBytes, formatCoordinate, formatDuration, googleMapsUrl } from "../lib/attachments";
+import { formatBytes, formatCoordinate, formatDuration } from "../lib/attachments";
 import { chooseGridUrl, choosePreviewUrl, mediaOriginalUrl, supportsJxl } from "../lib/jxl";
 import { safeHref } from "../lib/linkify";
+import { hasPoint, placeFromMapsLink, type PlaceInfo } from "../lib/mapKit";
 import { linkHost } from "../lib/share";
 import { thumbHashToImage } from "../lib/thumbhash";
 import { trayIcon } from "./AttachmentTray";
+import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
+import { PlaceCard } from "./PlaceCard";
 import "../styles/share.css";
 
 const LABELS: Record<Attachment["kind"], "image" | "video" | "audio" | "pdf" | "document" | "file" | "link" | "text" | "contact" | "location" | "voice"> = {
@@ -291,98 +293,59 @@ function LinkCard(props: { item: Attachment }) {
   );
 }
 
+/** A shared location, or a shared Apple/Google Maps or `geo:` link, as a place. */
+export function attachmentPlace(item: Attachment): PlaceInfo | null {
+  if (item.kind === "location") {
+    const point = { lat: item.lat, lng: item.lon };
+    if (!hasPoint(point)) return null;
+    return { title: item.name || `${formatCoordinate(point.lat)}, ${formatCoordinate(point.lng)}`, ...point, kind: "place" };
+  }
+  if (item.kind === "link" && item.url) {
+    const place = placeFromMapsLink(item.url);
+    if (!place) return null;
+    // a link's own title (e.g. "Folkehuset") beats the bare coordinates
+    const title = item.name && !/^https?:|^geo:/i.test(item.name) && !place.address ? item.name : place.title;
+    return { ...place, title, kind: "place" };
+  }
+  return null;
+}
+
 function LocationCard(props: { item: Attachment }) {
-  const hasPoint = () => typeof props.item.lat === "number" && typeof props.item.lon === "number";
-  const maps = () => (hasPoint() ? googleMapsUrl(props.item.lat!, props.item.lon!) : null);
-  const title = () => props.item.name || (hasPoint() ? `${formatCoordinate(props.item.lat!)}, ${formatCoordinate(props.item.lon!)}` : t("share.location"));
-  const content = () => (
-    <>
-      <span class="location-pin" aria-hidden="true">{trayIcon("location")}</span>
-      <span class="location-body">
-        <span class="location-name">{title()}</span>
-        <Show when={hasPoint()}>
-          <small>{formatCoordinate(props.item.lat!)}, {formatCoordinate(props.item.lon!)}</small>
-        </Show>
-      </span>
-    </>
-  );
+  const title = () => props.item.name || t("share.location");
   return (
     <li class="attachment attachment--location">
-      <Show when={maps()} fallback={<div class="location-card">{content()}</div>}>
-        {(url) => (
-          <a class="location-card" href={url()} target="_blank" rel="noopener noreferrer" aria-label={t("share.openMap", { name: title() })}>
-            {content()}
-          </a>
-        )}
-      </Show>
+      <div class="location-card">
+        <span class="location-pin" aria-hidden="true">{trayIcon("location")}</span>
+        <span class="location-body">
+          <span class="location-name">{title()}</span>
+        </span>
+      </div>
     </li>
   );
 }
 
+/** The chat's images in the gallery's photo viewer (PhotoViewer). */
 function Lightbox(props: { items: Attachment[]; index: number; onIndex: (index: number) => void; onClose: () => void }) {
-  let panel: HTMLDivElement | undefined;
-  let startX = 0;
   const current = () => props.items[props.index];
   const info = useMediaItem(() => current() ?? { kind: "image" }, () => !current()?.previewUrl);
-  const url = () => {
-    const item = current();
-    if (!item) return null;
+  const previewOf = (item: Attachment, isCurrent: boolean) => {
     if (item.previewUrl) return item.previewUrl;
     if (!item.mediaId) return safeHref(item.url ?? "");
-    const loaded = info();
+    const loaded = isCurrent ? info() : undefined;
     return choosePreviewUrl(item.mediaId, loaded?.id === item.mediaId ? loaded.urls?.preview : undefined);
   };
-  const move = (delta: number) => {
-    const next = (props.index + delta + props.items.length) % props.items.length;
-    props.onIndex(next);
-  };
-  onMount(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    panel?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        props.onClose();
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        move(1);
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        move(-1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    onCleanup(() => {
-      window.removeEventListener("keydown", onKey);
-      previous?.focus();
-    });
-  });
+  const items = createMemo<ViewerItem[]>(() =>
+    props.items.map((item, i) => ({ src: previewOf(item, i === props.index), name: labelFor(item), mime: item.mime })),
+  );
   return (
-    <Portal>
-      <div
-        ref={panel}
-        class="lightbox"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("share.lightbox", { index: props.index + 1, count: props.items.length })}
-        tabindex="-1"
-        onPointerDown={(e) => { startX = e.clientX; }}
-        onPointerUp={(e) => {
-          const delta = e.clientX - startX;
-          if (Math.abs(delta) > 40) move(delta < 0 ? 1 : -1);
-        }}
-      >
-        <button type="button" class="lightbox-close" aria-label={t("common.close")} onClick={props.onClose}>×</button>
-        <Show when={props.items.length > 1}>
-          <button type="button" class="lightbox-prev" aria-label={t("share.previous")} onClick={() => move(-1)}>‹</button>
-          <button type="button" class="lightbox-next" aria-label={t("share.next")} onClick={() => move(1)}>›</button>
-        </Show>
-        <Show when={url()}>
-          {(src) => <img class="lightbox-img" src={src()} alt={labelFor(current()!)} />}
-        </Show>
-        <span class="lightbox-count">{props.index + 1} / {props.items.length}</span>
-      </div>
-    </Portal>
+    <PhotoViewer
+      items={items()}
+      index={props.index}
+      onIndex={props.onIndex}
+      onClose={props.onClose}
+      wrap
+      label={(index, count) => t("share.lightbox", { index, count })}
+    />
   );
 }
 
@@ -412,6 +375,14 @@ export function Attachments(props: { items: Attachment[] }) {
           <For each={others()}>{(item) => {
             if (item.kind === "video") return <VideoCard item={item} />;
             if (item.kind === "audio" || item.kind === "voice") return <AudioCard item={item} />;
+            const place = attachmentPlace(item);
+            if (place) {
+              return (
+                <li class="attachment attachment--place">
+                  <PlaceCard place={place} />
+                </li>
+              );
+            }
             if (item.kind === "link") return <LinkCard item={item} />;
             if (item.kind === "location") return <LocationCard item={item} />;
             return <FileCard item={item} />;

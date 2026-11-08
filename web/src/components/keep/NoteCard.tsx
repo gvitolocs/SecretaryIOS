@@ -1,0 +1,345 @@
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { attachmentUrl, isAudio, isImage, type ChecklistItem, type KeepNote } from "../../api/keep";
+import { t } from "../../i18n";
+import { cardBackground, cardBorder } from "../../lib/keepColors";
+import { hostOf, splitTitleHeading } from "../../lib/keepText";
+import { reminderLabel } from "../../lib/keepTime";
+import { keep } from "../../state/keep";
+import { archive, copyNote, deleteForever, restore, setColor, setPinned, trash, unarchive } from "../../state/keepActions";
+import { selection, toggleSelected } from "../../state/keepUi";
+import { ContextMenu, menuMode, type MenuAction, type MenuRequest } from "../ContextMenu";
+import { useKeep } from "./ctx";
+import { ArchiveIcon, AudioIcon, CheckBoxIcon, CheckboxOutlineIcon, CheckCircleIcon, ClockIcon, CopyIcon, DeleteForeverIcon, EditIcon, LinkIcon, PinFilledIcon, PinOutlineIcon, RestoreIcon, TrashIcon, UnarchiveIcon } from "./icons";
+import { KeepText } from "./KeepText";
+import { NoteToolbar } from "./NoteToolbar";
+
+/** Keep clips a card's list at 20 unchecked rows. */
+export const CARD_LIST_MAX = 20;
+
+export function labelsConfig(id: string, tags: () => string[]) {
+  return {
+    all: keep.labels(),
+    selected: tags(),
+    onToggle: (l: { tag: string; name: string }, on: boolean) => void (on ? keep.addLabel([id], l.name) : keep.removeLabel([id], l.tag)),
+    onCreate: (name: string) => void keep.addLabel([id], name),
+  };
+}
+
+export function CardImages(props: { note: KeepNote; max?: number }) {
+  const images = createMemo(() => props.note.attachments.filter(isImage));
+  const shown = () => images().slice(0, props.max ?? 4);
+  return (
+    <Show when={images().length > 0}>
+      <div class="kp-images" data-count={shown().length}>
+        <For each={shown()}>
+          {(a, i) => (
+            <div class="kp-image">
+              <img src={attachmentUrl(a)} alt="" loading="lazy" decoding="async" draggable={false} />
+              <Show when={i() === shown().length - 1 && images().length > shown().length}>
+                <span class="kp-image-more">{t("keep.imagesMore", { count: images().length - shown().length })}</span>
+              </Show>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+}
+
+function CardList(props: { note: KeepNote; readOnly: boolean }) {
+  const open = createMemo(() => (props.note.items ?? []).filter((i) => !i.checked));
+  const doneCount = createMemo(() => (props.note.items ?? []).filter((i) => i.checked).length);
+  const shown = () => open().slice(0, CARD_LIST_MAX);
+  const toggle = (item: ChecklistItem) => {
+    if (props.readOnly) return;
+    void keep.update(props.note.id, { items: (props.note.items ?? []).map((i) => (i.id === item.id ? { ...i, checked: !i.checked } : i)) });
+  };
+  return (
+    <div class="kp-card-list">
+      <For each={shown()}>
+        {(item) => (
+          <div class="kp-card-item" data-indent={item.indent}>
+            <button
+              type="button"
+              class="kp-card-item-box"
+              role="checkbox"
+              aria-checked={item.checked}
+              aria-label={item.text}
+              tabindex={-1}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(item);
+              }}
+            >
+              <CheckboxOutlineIcon />
+            </button>
+            <span class="kp-card-item-text">{item.text}</span>
+          </div>
+        )}
+      </For>
+      <Show when={open().length > shown().length}>
+        <div class="kp-card-more">{t("keep.moreItems", { count: open().length - shown().length })}</div>
+      </Show>
+      <Show when={doneCount() > 0}>
+        <div class="kp-card-more kp-card-more--checked">
+          <CheckBoxIcon />
+          <span>{t("keep.checkedMore", { count: doneCount() })}</span>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+export function NoteCard(props: { note: KeepNote; draggable?: boolean; onDragStart?: (e: DragEvent) => void; onDragEnd?: () => void }) {
+  const ctx = useKeep();
+  const n = () => props.note;
+  const selected = () => selection().has(n().id);
+  const inTrash = () => !!n().deletedAt;
+  const anySelected = () => selection().size > 0;
+  // A leading "# <title>" line only repeats the title: the card shows it once.
+  const body = () => splitTitleHeading(n().content, n().title).body;
+  const hasText = () => (n().items ? false : body().trim() !== "");
+  const bg = () => cardBackground(n().color, ctx.theme());
+  const border = () => cardBorder(n().color, ctx.theme());
+  const audios = createMemo(() => n().attachments.filter(isAudio));
+  const hasChips = () => !!n().reminder || n().annotations.length > 0 || n().tags.length > 0 || n().collaborators.length > 0 || audios().length > 0;
+
+  // The shared context menu (components/ContextMenu): a right-click or the menu key on a desktop, a long press on a
+  // phone. The press that opened it must not also open the note.
+  const [menu, setMenu] = createSignal<MenuRequest | null>(null);
+  let press: ReturnType<typeof setTimeout> | undefined;
+  let pressAt: { x: number; y: number } | null = null;
+  let pressed = false;
+  onCleanup(() => clearTimeout(press));
+  const openMenu = (x: number, y: number, pointerType?: string) => setMenu({ x, y, mode: menuMode(pointerType), title: n().title || undefined });
+  const actions = (): MenuAction[] => {
+    const id = n().id;
+    if (inTrash())
+      return [
+        { id: "restore", label: t("keep.restore"), icon: <RestoreIcon />, run: () => restore([id]) },
+        { id: "delete-forever", label: t("keep.deleteForever"), icon: <DeleteForeverIcon />, danger: true, separator: true, run: () => deleteForever([id]) },
+      ];
+    return [
+      { id: "open", label: t("keep.openNote"), icon: <EditIcon />, run: () => ctx.open(id) },
+      { id: "pin", label: n().pinned ? t("keep.unpin") : t("keep.pin"), icon: n().pinned ? <PinFilledIcon /> : <PinOutlineIcon />, run: () => setPinned([id], !n().pinned) },
+      {
+        id: "archive",
+        label: n().archived ? t("keep.unarchiveAct") : t("keep.archiveAct"),
+        icon: n().archived ? <UnarchiveIcon /> : <ArchiveIcon />,
+        run: () => (n().archived ? unarchive([id]) : archive([id])),
+      },
+      { id: "copy", label: t("keep.makeCopy"), icon: <CopyIcon />, run: () => void copyNote(id) },
+      { id: "select", label: t("keep.select"), icon: <CheckCircleIcon />, run: () => toggleSelected(id) },
+      { id: "delete", label: t("keep.deleteNote"), icon: <TrashIcon />, danger: true, separator: true, run: () => trash([id]) },
+    ];
+  };
+
+  return (
+    <>
+    <article
+      class="kp-card"
+      classList={{ "kp-card--selected": selected(), "kp-card--pinned": n().pinned, "kp-card--trash": inTrash(), "kp-card--tmp": n().id.startsWith("tmp_") }}
+      data-note={n().id}
+      data-color={n().color}
+      tabindex="0"
+      aria-label={n().title || t("keep.openNote")}
+      draggable={props.draggable}
+      onDragStart={(e) => props.onDragStart?.(e)}
+      onDragEnd={() => props.onDragEnd?.()}
+      style={{ "--kp-card-bg": bg(), "--kp-card-border": border() }}
+      onClick={() => {
+        if (pressed) {
+          pressed = false;
+          return;
+        }
+        if (anySelected()) toggleSelected(n().id);
+        else ctx.open(n().id);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        clearTimeout(press);
+        openMenu(e.clientX, e.clientY, pressAt ? "touch" : "mouse");
+      }}
+      onPointerDown={(e) => {
+        if (e.pointerType !== "touch") return;
+        pressAt = { x: e.clientX, y: e.clientY };
+        clearTimeout(press);
+        press = setTimeout(() => {
+          pressed = true;
+          if (pressAt) openMenu(pressAt.x, pressAt.y, "touch");
+        }, 500);
+      }}
+      onPointerMove={(e) => {
+        if (pressAt && Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 10) clearTimeout(press);
+      }}
+      onPointerUp={() => {
+        clearTimeout(press);
+        pressAt = null;
+      }}
+      onPointerCancel={() => {
+        clearTimeout(press);
+        pressAt = null;
+      }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+          e.preventDefault();
+          const r = e.currentTarget.getBoundingClientRect();
+          openMenu(r.left + 16, r.top + 16, "keyboard");
+        } else if (e.key === "Enter") ctx.open(n().id);
+        else if (e.key === " ") {
+          e.preventDefault();
+          toggleSelected(n().id);
+        }
+      }}
+    >
+      <button
+        type="button"
+        class="kp-select"
+        aria-pressed={selected()}
+        aria-label={selected() ? t("keep.deselect") : t("keep.select")}
+        title={selected() ? t("keep.deselect") : t("keep.select")}
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleSelected(n().id);
+        }}
+      >
+        <CheckCircleIcon />
+      </button>
+      <CardImages note={n()} />
+      <div class="kp-card-body">
+        <Show when={!inTrash()}>
+          <button
+            type="button"
+            class="kp-pin"
+            classList={{ "kp-pin--on": n().pinned }}
+            aria-pressed={n().pinned}
+            aria-label={n().pinned ? t("keep.unpin") : t("keep.pin")}
+            title={n().pinned ? t("keep.unpin") : t("keep.pin")}
+            onClick={(e) => {
+              e.stopPropagation();
+              setPinned([n().id], !n().pinned);
+            }}
+          >
+            {n().pinned ? <PinFilledIcon /> : <PinOutlineIcon />}
+          </button>
+        </Show>
+        <Show when={n().title}>
+          <div class="kp-card-title">{n().title}</div>
+        </Show>
+        <Show when={n().items}>
+          <CardList note={n()} readOnly={inTrash()} />
+        </Show>
+        <Show when={hasText()}>
+          <KeepText class="kp-card-text" text={body()} />
+        </Show>
+        <Show when={hasChips()}>
+          <div class="kp-chips">
+            <Show when={n().reminder}>
+              {(r) => (
+                <span class="kp-chip kp-chip--reminder" title={t("keep.remindMe")}>
+                  <ClockIcon />
+                  <span>{reminderLabel(r().at)}</span>
+                </span>
+              )}
+            </Show>
+            <For each={audios()}>
+              {() => (
+                <span class="kp-chip">
+                  <AudioIcon />
+                  <span>{t("keep.audio")}</span>
+                </span>
+              )}
+            </For>
+            <For each={n().annotations}>
+              {(a) => (
+                <a class="kp-chip kp-chip--link" href={a.url} target="_blank" rel="noopener noreferrer nofollow" title={a.url} onClick={(e) => e.stopPropagation()}>
+                  <LinkIcon />
+                  <span>{a.title || hostOf(a.url)}</span>
+                </a>
+              )}
+            </For>
+            <For each={n().tags}>
+              {(tag) => (
+                <button
+                  type="button"
+                  class="kp-chip kp-chip--label"
+                  data-label={tag}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    ctx.goLabel(tag);
+                  }}
+                >
+                  {keep.labelName(tag)}
+                </button>
+              )}
+            </For>
+            <For each={n().collaborators}>
+              {(email) => (
+                <span class="kp-avatar kp-avatar--sm" title={email} aria-label={email}>
+                  {email.charAt(0).toUpperCase()}
+                </span>
+              )}
+            </For>
+          </div>
+        </Show>
+      </div>
+      <div class="kp-card-foot">
+        <Show
+          when={!inTrash()}
+          fallback={
+            <div class="kp-tools">
+              <button
+                type="button"
+                class="kp-icon-btn"
+                data-tool="delete-forever"
+                title={t("keep.deleteForever")}
+                aria-label={t("keep.deleteForever")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteForever([n().id]);
+                }}
+              >
+                <DeleteForeverIcon />
+              </button>
+              <button
+                type="button"
+                class="kp-icon-btn"
+                data-tool="restore"
+                title={t("keep.restore")}
+                aria-label={t("keep.restore")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  restore([n().id]);
+                }}
+              >
+                <RestoreIcon />
+              </button>
+            </div>
+          }
+        >
+          <NoteToolbar
+            theme={ctx.theme()}
+            color={n().color}
+            onColor={(c) => setColor([n().id], c)}
+            reminder={n().reminder}
+            onReminder={(r) => void keep.update(n().id, { reminder: r })}
+            collaborators={n().collaborators}
+            onCollaborators={(emails) => void keep.update(n().id, { collaborators: emails })}
+            onImages={(files) => void keep.uploadImages(n().id, files)}
+            archived={n().archived}
+            onArchive={() => (n().archived ? unarchive([n().id]) : archive([n().id]))}
+            labels={labelsConfig(n().id, () => n().tags)}
+            more={[
+              { id: "delete", label: t("keep.deleteNote"), run: () => trash([n().id]) },
+              { id: "copy", label: t("keep.makeCopy"), run: () => void copyNote(n().id) },
+            ]}
+          />
+        </Show>
+      </div>
+    </article>
+    {/* Beside the card, not in it: the menu's clicks must not reach the card's own click (open the note). */}
+    <ContextMenu request={menu()} actions={actions()} label={t("keep.noteActions")} onClose={() => setMenu(null)} />
+    </>
+  );
+}

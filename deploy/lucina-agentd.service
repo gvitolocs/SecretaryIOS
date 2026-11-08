@@ -1,0 +1,26 @@
+# Lucina Agents daemon (the Rust rebuild of Paseo). User unit on nezopt.
+# Not installed yet: Paseo (paseo.service) stays the live orchestrator until the
+# parity matrix (docs/design/agents-parity.md) is green and the owner signs off.
+#
+#   install -m 0755 target/release/lucina-agentd target/release/lagent ~/.local/bin/
+#   cp deploy/lucina-agentd.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   systemctl --user enable --now lucina-agentd     (then add it to ~/.config/pokoin/expected-active.txt)
+[Unit]
+Description=Lucina Agents daemon (agent supervisor)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lucina-agentd
+Restart=on-failure
+RestartSec=2
+# lucina-agentd drains in at most ~4 s on SIGTERM and exits 0.
+TimeoutStopSec=10s
+KillMode=mixed
+# The drop-in runs it through infisical-broker exec; journal lines keep this name.
+SyslogIdentifier=lucina-agentd
+Environment=RUST_LOG=info
+Environment=PATH=%h/.local/bin:%h/.opencode/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+[Install]
+WantedBy=default.target

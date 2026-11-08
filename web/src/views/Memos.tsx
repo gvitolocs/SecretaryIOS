@@ -3,6 +3,7 @@ import { createEffect, createResource, createSignal, For, on, onCleanup, onMount
 import { toApiError } from "../api/client";
 import { clock, memosApi, PROCESSING, type Memo, type MemoItem, type MemoStatus, type MemoTranscript } from "../api/memos";
 import { BackIcon } from "../components/Icons";
+import { Button, Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, RowList, useWide } from "../components/page";
 import { t, type MessageKey } from "../i18n";
 import { formatDateTime } from "../lib/units";
 import { createMemoRecorder, flushQueue, queue, setOnUploaded } from "../lib/memoRecorder";
@@ -105,7 +106,45 @@ function StatusChip(props: { memo: Memo }) {
   );
 }
 
-function List(props: { memos: Memo[] | undefined; loading: boolean }) {
+function List(props: { memos: Memo[] | undefined; loading: boolean; desk?: boolean; selectedId?: string }) {
+  if (props.desk) {
+    return (
+      <Card list label={t("memos.title")}>
+        <RowList>
+          <For each={queue()}>
+            {(q) => (
+              <ListRow
+                title={formatDateTime(Date.parse(q.recordedAt))}
+                badge={q.error ? t("memos.waiting") : t("memos.uploading", { pct: Math.round((q.uploaded / q.sizeBytes) * 100) })}
+                sub={q.error}
+              />
+            )}
+          </For>
+          <For each={props.memos ?? []}>
+            {(m) => (
+              <ListRow
+                href={`/memos/${m.id}`}
+                class={props.selectedId === m.id ? "pg-row--current" : undefined}
+                title={m.title}
+                badge={<StatusChip memo={m} />}
+                sub={
+                  <>
+                    {formatDateTime(Date.parse(m.recordedAt))} · {clock(m.durationSec)}
+                    <Show when={m.preview}>
+                      <span class="memo-row__preview">{m.preview}</span>
+                    </Show>
+                  </>
+                }
+              />
+            )}
+          </For>
+        </RowList>
+        <Show when={!props.loading && (props.memos?.length ?? 0) === 0 && queue().length === 0}>
+          <EmptyState title={t("memos.empty")} text={t("memos.emptySub")} />
+        </Show>
+      </Card>
+    );
+  }
   return (
     <>
       <For each={queue()}>
@@ -179,7 +218,7 @@ function ItemList(props: { title: string; items: MemoItem[]; seek: (t: number) =
   );
 }
 
-function Detail(props: { id: string; onChanged: () => void }) {
+function Detail(props: { id: string; onChanged: () => void; desk?: boolean }) {
   const navigate = useNavigate();
   const [detail, { refetch }] = createResource(() => props.id, (id) => memosApi.detail(id));
   const [transcript, setTranscript] = createSignal<MemoTranscript | null>(null);
@@ -219,16 +258,24 @@ function Detail(props: { id: string; onChanged: () => void }) {
 
   return (
     <article class="memo-detail">
-      <A href="/memos" class="memo-muted">
-        <BackIcon /> {t("memos.back")}
-      </A>
+      <Show when={!props.desk}>
+        <A href="/memos" class="memo-muted">
+          <BackIcon /> {t("memos.back")}
+        </A>
+      </Show>
       <Show when={error()}>
         <p role="alert" class="memo-chip" data-state="failed">{error()}</p>
       </Show>
-      <Show when={detail()} fallback={<p class="memo-muted">{t("memos.loading")}</p>}>
+      <Show when={detail()} fallback={
+        <Show when={props.desk} fallback={<p class="memo-muted">{t("memos.loading")}</p>}>
+          <LoadingState label={t("memos.loading")} />
+        </Show>
+      }>
         {(d) => (
           <>
-            <h1>{d().memo.title}</h1>
+            <Show when={props.desk} fallback={<h1>{d().memo.title}</h1>}>
+              <h2 class="trd-detail-title">{d().memo.title}</h2>
+            </Show>
             <span class="memo-muted">
               {formatDateTime(Date.parse(d().memo.recordedAt))} · {clock(d().memo.durationSec)}
               {d().memo.language ? ` · ${d().memo.language?.toUpperCase()}` : ""} <StatusChip memo={d().memo} />
@@ -238,34 +285,68 @@ function Detail(props: { id: string; onChanged: () => void }) {
               <Show when={d().pdf}>
                 <a href={memosApi.pdfUrl(props.id)} target="_blank" rel="noopener">{t("memos.pdf")}</a>
               </Show>
-              <button
-                onClick={() => {
-                  const title = prompt(t("memos.renamePrompt"), d().memo.title)?.trim();
-                  if (title) void act(() => memosApi.rename(props.id, title));
-                }}
-              >
-                {t("memos.rename")}
-              </button>
-              <button
-                disabled={d().memo.status === "uploading" || PROCESSING.includes(d().memo.status)}
-                onClick={() => {
-                  const instr = prompt(t("memos.resummarizePrompt"), "");
-                  if (instr !== null) void act(() => memosApi.resummarize(props.id, instr));
-                }}
-              >
-                {t("memos.resummarize")}
-              </button>
-              <button
-                onClick={() => {
-                  if (!confirm(t("memos.deleteConfirm", { title: d().memo.title }))) return;
-                  void act(async () => {
-                    await memosApi.remove(props.id);
-                    navigate("/memos");
-                  });
-                }}
-              >
-                {t("memos.delete")}
-              </button>
+              <Show when={props.desk} fallback={
+                <>
+                  <button
+                    onClick={() => {
+                      const title = prompt(t("memos.renamePrompt"), d().memo.title)?.trim();
+                      if (title) void act(() => memosApi.rename(props.id, title));
+                    }}
+                  >
+                    {t("memos.rename")}
+                  </button>
+                  <button
+                    disabled={d().memo.status === "uploading" || PROCESSING.includes(d().memo.status)}
+                    onClick={() => {
+                      const instr = prompt(t("memos.resummarizePrompt"), "");
+                      if (instr !== null) void act(() => memosApi.resummarize(props.id, instr));
+                    }}
+                  >
+                    {t("memos.resummarize")}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!confirm(t("memos.deleteConfirm", { title: d().memo.title }))) return;
+                      void act(async () => {
+                        await memosApi.remove(props.id);
+                        navigate("/memos");
+                      });
+                    }}
+                  >
+                    {t("memos.delete")}
+                  </button>
+                </>
+              }>
+                <Button
+                  onClick={() => {
+                    const title = prompt(t("memos.renamePrompt"), d().memo.title)?.trim();
+                    if (title) void act(() => memosApi.rename(props.id, title));
+                  }}
+                >
+                  {t("memos.rename")}
+                </Button>
+                <Button
+                  disabled={d().memo.status === "uploading" || PROCESSING.includes(d().memo.status)}
+                  onClick={() => {
+                    const instr = prompt(t("memos.resummarizePrompt"), "");
+                    if (instr !== null) void act(() => memosApi.resummarize(props.id, instr));
+                  }}
+                >
+                  {t("memos.resummarize")}
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    if (!confirm(t("memos.deleteConfirm", { title: d().memo.title }))) return;
+                    void act(async () => {
+                      await memosApi.remove(props.id);
+                      navigate("/memos");
+                    });
+                  }}
+                >
+                  {t("memos.delete")}
+                </Button>
+              </Show>
             </div>
             <Show when={d().summary}>
               {(s) => (
@@ -311,14 +392,17 @@ function Detail(props: { id: string; onChanged: () => void }) {
 
 export default function MemosView() {
   const params = useParams<{ id?: string }>();
+  const { wide, trackSlot } = useWide();
   const [memos, { refetch }] = createResource(() => memosApi.list());
+  // Read without throwing: a failed list shows its error instead of breaking the page.
+  const list = () => (memos.error ? undefined : memos());
   const reload = () => void refetch();
   onMount(() => {
     setOnUploaded(reload);
     void flushQueue();
   });
   const poll = setInterval(() => {
-    const busy = (memos() ?? []).some((m) => m.status !== "done" && m.status !== "failed") || queue().length > 0;
+    const busy = (list() ?? []).some((m) => m.status !== "done" && m.status !== "failed") || queue().length > 0;
     if (busy) reload();
   }, 5000);
   onCleanup(() => {
@@ -326,18 +410,18 @@ export default function MemosView() {
     setOnUploaded(null);
   });
 
-  return (
-    <main id="main" class="memos">
+  const phone = () => (
+    <>
       <Show
         when={params.id}
         fallback={
           <>
-            <h1>{t("memos.title")}</h1>
+            <h1 id="memos-title">{t("memos.title")}</h1>
             <Show when={memos.error}>
               <p role="alert" class="memo-chip" data-state="failed">{toApiError(memos.error).message}</p>
             </Show>
             <ul class="memos-list">
-              <List memos={memos()} loading={memos.loading} />
+              <List memos={list()} loading={memos.loading} />
             </ul>
           </>
         }
@@ -345,6 +429,45 @@ export default function MemosView() {
         {(id) => <Detail id={id()} onChanged={reload} />}
       </Show>
       <Recorder onSaved={reload} />
+    </>
+  );
+
+  const desk = () => (
+    <Page class="memos-desk">
+      <PageHeader title={t("memos.title")} />
+      <Show when={memos.error}>
+        <ErrorState message={toApiError(memos.error!).message} retryLabel={t("common.tryAgain")} onRetry={reload} />
+      </Show>
+      <Show when={memos.loading && !memos.error}>
+        <LoadingState label={t("memos.loading")} />
+      </Show>
+      <Show when={!memos.loading && !memos.error}>
+        <PageGrid
+          layout="split"
+          railLabel={t("memos.title")}
+          rail={<List memos={list()} loading={memos.loading} desk selectedId={params.id} />}
+        >
+          <Show
+            when={params.id}
+            fallback={<EmptyState text={t("memos.pickOne")} />}
+          >
+            {(id) => (
+              <Card class="memos-desk-detail">
+                <Detail id={id()} onChanged={reload} desk />
+              </Card>
+            )}
+          </Show>
+        </PageGrid>
+      </Show>
+      <Recorder onSaved={reload} />
+    </Page>
+  );
+
+  return (
+    <main id="main" class="memos" classList={{ "memos--wide": wide() }} ref={trackSlot}>
+      <Show when={wide()} fallback={phone()}>
+        {desk()}
+      </Show>
     </main>
   );
 }

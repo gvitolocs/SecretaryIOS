@@ -32,6 +32,8 @@ export interface ShopItem {
   unit: string | null;
   section: string | null;
   icon: string | null;
+  /** The server says `icon` is the row's own, hand-picked emoji (else it is the catalog's). */
+  iconPicked?: boolean;
   status: ItemStatus;
   position: number;
   updatedAt: string;
@@ -344,6 +346,7 @@ export function parseItem(raw: unknown, index = 0): ShopItem | null {
     unit: str(raw.unit),
     section: str(raw.section),
     icon: str(raw.icon),
+    iconPicked: raw.iconPicked === true,
     status,
     position: typeof raw.position === "number" && Number.isFinite(raw.position) ? raw.position : index,
     updatedAt: str(raw.updatedAt) ?? "",

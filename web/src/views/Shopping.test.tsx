@@ -18,11 +18,13 @@ function tileState(name: RegExp): string | null {
 }
 
 const lists = () => screen.queryAllByRole("list").map((l) => l.getAttribute("aria-label"));
+const tileNames = (list: string) =>
+  Array.from(screen.getByRole("list", { name: list }).querySelectorAll("[data-tile]")).map((b) => b.getAttribute("aria-label") ?? "");
 const opTypes = () => srv.opsPosts().flatMap((p) => p.ops.map((o) => o.type));
 
-async function renderView() {
+async function renderView(firstTile = /^Latte, da comprare/) {
   renderAt("/shopping", () => <Route path="/shopping" component={ShoppingView} />);
-  await screen.findByRole("button", { name: /^Latte, da comprare/ });
+  await screen.findByRole("button", { name: firstTile });
   await waitFor(() => expect(shop.pending).toBe(0));
   await waitFor(() => expect(shop.lists.length).toBe(2));
   await waitFor(() => expect(shop.catalog.items.length).toBeGreaterThan(0));
@@ -31,6 +33,7 @@ async function renderView() {
 describe("Shopping view (Bring layout)", () => {
   beforeEach(() => {
     setLocale("it");
+    localStorage.clear();
     resetShopping();
     srv = fakeShoppingServer({
       default: {
@@ -47,25 +50,27 @@ describe("Shopping view (Bring layout)", () => {
     stubFetch(srv.handler);
   });
 
-  it("lays out the home screen: app bar, to-buy grid by section, Recently, then collapsed catalog sections", async () => {
+  it("lays out the home screen: list switcher, one to-buy grid in store order, Recently, then collapsed catalogue sections", async () => {
     await renderView();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Casa");
     expect(screen.getByRole("button", { name: "Liste, lista attuale Casa" })).toBeInTheDocument();
     expect(screen.getByRole("status", { name: "2 da comprare" })).toHaveTextContent("2");
-    expect(lists()).toEqual(["Frutta e verdura", "Latticini", "Usati di recente"]);
+    expect(lists()).toEqual(["Da comprare", "Usati di recente"]);
+    // To buy is one grid, sorted by the store walk (produce before dairy), whatever the row order.
+    expect(tileNames("Da comprare")).toEqual([expect.stringMatching(/^Banane/), expect.stringMatching(/^Latte/)]);
     expect(screen.getByText("mature")).toBeInTheDocument();
-    // Catalog sections start collapsed; opening one shows its tiles, with on-list items in red.
-    const dairy = screen.getByRole("button", { name: "Latticini", expanded: false });
+    // Catalogue sections start collapsed and show how many of their items are to buy.
+    const dairy = screen.getByRole("button", { name: "Latticini, 1 in lista", expanded: false });
     fireEvent.click(dairy);
     expect(dairy).toHaveAttribute("aria-expanded", "true");
-    const section = screen.getAllByRole("list", { name: "Latticini" }).at(-1)!;
+    const section = screen.getByRole("list", { name: "Latticini" });
     expect(within(section).getByRole("button", { name: /^Latte, da comprare/ }).closest(".tile")).toHaveClass("tile--need");
     expect(within(section).getByRole("button", { name: "Latte d'avena. Tocca per aggiungerlo." }).closest(".tile")).toHaveClass("tile--catalog");
 
-    // Sorting by section is a list setting.
+    // Section headers inside "To buy" are a list setting.
     fireEvent.click(screen.getByRole("button", { name: "Impostazioni lista" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Ordina per reparto" }));
-    expect(lists().slice(0, 2)).toEqual(["Da comprare", "Usati di recente"]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Titoli dei reparti" }));
+    expect(lists().slice(0, 3)).toEqual(["Frutta e verdura", "Latticini", "Usati di recente"]);
   });
 
   it("tap moves a tile to Recently and back, with undo", async () => {
@@ -108,34 +113,83 @@ describe("Shopping view (Bring layout)", () => {
     expect(srv.lists.get("default")!.items.filter((i) => i.status !== "removed")).toHaveLength(0);
   });
 
-  it("searches from the bottom sheet: catalog results, custom text, Done", async () => {
+  it("searches from the top: suggestions as tiles, quick specs, the list's own items, custom text", async () => {
     await renderView();
     const input = screen.getByRole("searchbox", { name: "Cerca o aggiungi un articolo" });
-    fireEvent.focus(input);
-    expect(screen.getByRole("button", { name: "Fatto" })).toBeInTheDocument();
-    // Empty query: recently used items for quick re-add.
-    expect(screen.getAllByRole("list", { name: "Usati di recente" })).toHaveLength(2);
 
+    // Typing swaps the home grids for suggestions; tapping one adds it and brings the list back.
     fireEvent.input(input, { target: { value: "caffe" } });
-    const results = screen.getByRole("list", { name: "Cerca o aggiungi un articolo" });
+    expect(screen.queryByRole("list", { name: "Da comprare" })).toBeNull();
+    let results = screen.getByRole("list", { name: "Suggerimenti" });
     fireEvent.click(within(results).getByRole("button", { name: "Caffè. Tocca per aggiungerlo." }));
-    expect(within(results).getByRole("button", { name: /^Caffè, da comprare/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("list", { name: "Dispensa" })).toBeInTheDocument();
+    expect(input).toHaveValue("");
+    expect(within(screen.getByRole("list", { name: "Da comprare" })).getByRole("button", { name: /^Caffè, da comprare/ })).toBeInTheDocument();
 
+    // A spec typed after the name goes on the row.
+    fireEvent.input(input, { target: { value: "pasta x2" } });
+    results = screen.getByRole("list", { name: "Suggerimenti" });
+    expect(within(results).getByText("x2")).toBeInTheDocument();
+    fireEvent.click(within(results).getByRole("button", { name: "Pasta. Tocca per aggiungerlo." }));
+    expect(screen.getByRole("button", { name: /^Pasta \(x2\), da comprare/ })).toBeInTheDocument();
+
+    // Free text with a quick-spec chip, added with Enter.
     fireEvent.input(input, { target: { value: "Candele" } });
-    expect(screen.getByRole("button", { name: "Aggiungi «Candele»" }).closest(".tile")).toHaveClass("tile--custom");
+    fireEvent.click(screen.getByRole("button", { name: "bio" }));
+    expect(screen.getByRole("button", { name: "Aggiungi «Candele (bio)»" }).closest(".tile")).toHaveClass("tile--custom");
     fireEvent.submit(input.closest("form")!);
     expect(input).toHaveValue("");
-    expect(screen.getByRole("button", { name: /^Candele, da comprare/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Candele \(bio\), da comprare/ })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Fatto" }));
-    expect(screen.queryByRole("button", { name: "Fatto" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Aggiungi" })).toBeInTheDocument();
+    // The owner's own items come back as suggestions; Escape clears the search.
+    fireEvent.input(input, { target: { value: "cand" } });
+    results = screen.getByRole("list", { name: "Suggerimenti" });
+    expect(within(results).getByRole("button", { name: /^Candele, da comprare/ })).toBeInTheDocument();
+    expect(within(results).queryByRole("button", { name: /^Aggiungi/ })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("list", { name: "Da comprare" })).toBeInTheDocument();
+
     await waitFor(() => expect(shop.pending).toBe(0));
     expect(srv.opsPosts().flatMap((p) => p.ops)).toEqual([
       expect.objectContaining({ type: "add", catalogId: "coffee", name: "Caffè" }),
-      expect.objectContaining({ type: "add", name: "Candele" }),
+      expect.objectContaining({ type: "add", catalogId: "pasta", name: "Pasta", spec: "x2" }),
+      expect.objectContaining({ type: "add", name: "Candele", spec: "bio" }),
     ]);
+  });
+
+  it("orders sections by the store walk: the to-buy grid and the catalogue follow it", async () => {
+    await renderView();
+    fireEvent.click(screen.getByRole("button", { name: "Ordine dei reparti" }));
+    const dialog = screen.getByRole("dialog", { name: "Ordine dei reparti" });
+    expect(within(dialog).getByRole("button", { name: "Sposta Frutta e verdura su" })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sposta Latticini su" }));
+    expect(within(dialog).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      expect.stringContaining("Latticini"),
+      expect.stringContaining("Frutta e verdura"),
+      expect.stringContaining("Dispensa"),
+    ]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Fatto" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(tileNames("Da comprare")).toEqual([expect.stringMatching(/^Latte/), expect.stringMatching(/^Banane/)]);
+    const headers = screen.getAllByRole("button", { expanded: false }).map((b) => b.textContent);
+    expect(headers.indexOf("Latticini1")).toBeLessThan(headers.indexOf("Frutta e verdura1"));
+    expect(JSON.parse(localStorage.getItem("secretary.shopping.sectionOrder") ?? "{}")).toEqual({
+      default: ["dairy", "produce", "pantry"],
+    });
+  });
+
+  it("names catalogue items in the list's language, also under another UI language", async () => {
+    setLocale("en");
+    await renderView(/^Latte, to buy/);
+    const input = screen.getByRole("searchbox", { name: "Search or add an item" });
+    fireEvent.input(input, { target: { value: "oat" } });
+    // The list's rows are Italian, so the suggestion is too, and "oat" still finds it.
+    expect(screen.getByRole("button", { name: "Latte d'avena. Tap to add." })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "List settings" }));
+    fireEvent.change(screen.getByLabelText("Item names"), { target: { value: "en" } });
+    fireEvent.input(input, { target: { value: "oat" } });
+    expect(screen.getByRole("button", { name: "Oat milk. Tap to add." })).toBeInTheDocument();
   });
 
   it("edits an item in the details sheet and saves on Done", async () => {
@@ -154,7 +208,7 @@ describe("Shopping view (Bring layout)", () => {
 
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByText("2 l · x6, senza lattosio")).toBeInTheDocument();
-    expect(screen.getByRole("list", { name: "Dispensa" })).toBeInTheDocument();
+    expect(shop.items.find((i) => i.id === "milk-row")?.section).toBe("pantry");
     await waitFor(() => expect(shop.pending).toBe(0));
     expect(srv.opsPosts().at(-1)!.ops).toEqual([
       expect.objectContaining({ type: "set_spec", itemId: "milk-row", spec: "x6, senza lattosio" }),

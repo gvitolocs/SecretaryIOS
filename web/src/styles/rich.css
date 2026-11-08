@@ -499,3 +499,34 @@
     animation: none;
   }
 }
+
+/* Image (an AU Find map): full width of the bubble column, rounded, caption under it. */
+.rw-image {
+  margin: 0;
+  padding: 6px;
+}
+
+.rw-image a {
+  display: block;
+  border-radius: calc(var(--radius-sm) - 4px);
+  overflow: hidden;
+}
+
+.rw-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: var(--surface-2, var(--glass));
+}
+
+.rw-image figcaption {
+  margin: 6px 4px 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.rw-image-error {
+  margin: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}

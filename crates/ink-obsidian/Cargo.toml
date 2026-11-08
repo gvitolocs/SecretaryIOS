@@ -4,13 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Book references, the incremental index and generated book notes. Without it this is only the
+# vault reader: no zip, XML or date dependencies for apps that just open a vault.
+default = ["books"]
+books = ["dep:ink-library", "dep:sha2", "dep:serde_json", "dep:unicode-normalization"]
+
 [dependencies]
-ink-library = { path = "../ink-library" }
+ink-library = { path = "../ink-library", optional = true }
 serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
-unicode-normalization = "0.1"
+unicode-normalization = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
