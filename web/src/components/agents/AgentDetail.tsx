@@ -16,7 +16,7 @@ import {
   loadTerminals,
 } from "../../state/agents";
 import { AgentChat, PromptsMenu } from "./AgentChat";
-import { StatusBadge } from "./status";
+import { StatusBadge, CONTINUED_FROM, CONTINUED_ON, CONTINUED_PROVIDER } from "./status";
 import { ScriptsPane, TerminalPane } from "./Terminals";
 import { DiffPane, FilesPane } from "./Workspace";
 
@@ -51,6 +51,10 @@ export function AgentDetail(props: { id: string; tab: AgentTab; desk?: boolean }
 
   const archived = () => !!(snap()?.archivedAt ?? item()?.archivedAt);
   const parent = () => (snap()?.labels ?? item()?.labels ?? {})["lucina.parent-agent-id"];
+  // A run handed on to another agent at a usage limit, and the run it continues (lucina-agentd handoff).
+  const labelOf = (k: string) => (snap()?.labels ?? item()?.labels ?? {})[k];
+  const continuedFrom = () => labelOf(CONTINUED_FROM);
+  const continuedOn = () => labelOf(CONTINUED_ON);
   const title = () => (item() ? agentTitle(item()!) : props.id.slice(0, 7));
 
   const tabs = (): { id: AgentTab; label: string }[] => {
@@ -128,6 +132,20 @@ export function AgentDetail(props: { id: string; tab: AgentTab; desk?: boolean }
               <Show when={ws()}>{` · ${ws()!.projectDisplayName ? ws()!.projectDisplayName + " / " : ""}${ws()!.name}`}</Show>
               <Show when={!ws() && item()?.cwd}>{` · ${item()!.cwd}`}</Show>
             </p>
+            <Show when={continuedFrom()}>
+              {(id) => (
+                <p class="ag-muted ag-head__meta">
+                  {t("agents.continuedFrom")} <A href={agentHref(id())}>{id().slice(0, 8)}</A>
+                </p>
+              )}
+            </Show>
+            <Show when={continuedOn()}>
+              {(id) => (
+                <p class="ag-muted ag-head__meta">
+                  {t("agents.continuedOn", { provider: labelOf(CONTINUED_PROVIDER) ?? "?" })} <A href={agentHref(id())}>{id().slice(0, 8)}</A>
+                </p>
+              )}
+            </Show>
           </div>
           <Show when={item()}>{(a) => <StatusBadge agent={a()} />}</Show>
           <div class="ag-head__actions">
