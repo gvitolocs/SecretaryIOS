@@ -84,3 +84,31 @@ A copy and its golden hold private notes: they stay out of the repo.
 - YAML is not fully parsed. Broken frontmatter is detected for the mistakes found in the fixture and the real vault; a rarer
   one would keep tags that Obsidian drops.
 - A note with invalid UTF-8 is skipped with a warning. None in the real vault.
+
+## The platforms
+
+| Platform | How it reaches the core | Where the copy is | Proven on a copy of the real vault |
+|---|---|---|---|
+| Juno | `crates/lucina-app-vault` in LucinaOS, pinned git dependency | `/data/vault` | See LucinaOS `docs/research/juno-vault.md` |
+| iOS | `secretary_vault_*` in `secretary-ffi`, `ios/Secretary/Features/Vault` | `Documents/Vault` in the app's container | See "Device results" |
+| Android | `Native.vault` in `lucina-android-calls`, `android/secretary/src/VaultActivity.kt` | `Android/data/tech.getsecretary.secretary/files/Vault` | See "Device results" |
+| Mac | `lucina-vault-stdio`, the same protocol over stdin and stdout, because Secretary Code is Electron and links no Rust | `~/Documents/Obsidian`, read-only | See "Device results" |
+
+Every platform opens a vault read-only and asks before the first edit. The Mac page has no editing at all yet. No platform fetches a remote picture.
+
+## Sync: the proposal, not built
+
+Nothing here syncs yet: each device holds a copy put there by hand for the proof. What exists today:
+
+- The Pi is canonical. Syncthing is installed on it (1.29.5) but disabled, so the Syncthing mesh is only nezopt and the Mac, for Lucina's separate ops record.
+- The Mac's `~/Documents/Obsidian` follows by `~/bin/pi-obsidian-sync`, a rsync by hand where the newer file wins and nothing warns. It has fallen behind: 1,110 notes against 2,446 on the Pi.
+- `lucina-media` (Drive) is built around hashes and dedupe, not paths, and the notes service is its own store. Neither keeps a vault's folders, so neither fits.
+
+Proposal, using what is there:
+
+1. **Backbone: Syncthing on the Pi, turned on.** One folder between the Pi and nezopt, with staggered versions on the Pi, ignoring `.obsidian/workspace*` and `._*`. Syncthing's conflict files stay plain Markdown that Obsidian opens. nezopt holds a replica only, so the rule that notes live on the Pi stands. This needs the owner's OK, because it puts the vault on nezopt.
+2. **Mac: the same Syncthing folder**, replacing `pi-obsidian-sync` and its silent newer-wins. Ignore `Lucina/`, already a separate Syncthing folder inside it.
+3. **Phones and Juno: routes, not a service.** Syncthing has no official iOS client and none on Juno. Add `GET /v1/vault/manifest` (path, size, sha256), `GET /v1/vault/file` and `PUT /v1/vault/file` with the revision read, to the existing server, behind the device token, on nezopt's replica. A `sync` module in this crate pulls what differs into the device's plain folder with the same atomic writes.
+4. **Writes last, one at a time.** A `PUT` is this crate's compare-and-swap; a refused one becomes a conflict copy on the device. Pull-only comes first, and writing to the real vault needs the owner's go after a run on a copy.
+
+`lucina-vault-ingest` already writes to the Pi by compare-and-swap over SSH, so it stays compatible.
