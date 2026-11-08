@@ -24,6 +24,12 @@ install -m 0755 "$BIN" "$HOME/.local/bin/lucina-rs.new"
 [ -f "$HOME/.local/bin/lucina-rs" ] && cp -p "$HOME/.local/bin/lucina-rs" "$HOME/.local/bin/lucina-rs.prev"
 mv -f "$HOME/.local/bin/lucina-rs.new" "$HOME/.local/bin/lucina-rs"
 mkdir -p "$UNITS" /home/nez/Projects/Lucina/data/lucina-rs
+# The shopping catalog Lucina reads first (data/shopping-catalog.v1.json, crates/lucina-grocery/src/catalog.rs)
+# is this commit's assets/catalog/catalog.v1.json: a copy left from an older deploy made Red Bull unknown to
+# Lucina while the apps already had it (2026-11-08, docs/design/shopping-labels.md). Atomic, re-read within 30 s.
+CATALOG=/home/nez/Projects/Lucina/data/shopping-catalog.v1.json
+install -m 0664 "$REPO/assets/catalog/catalog.v1.json" "$CATALOG.new"
+mv -f "$CATALOG.new" "$CATALOG"
 
 install -m 0644 "$REPO/deploy/lucina-rs.service" "$REPO/deploy/lucina-rs-health.service" "$REPO/deploy/lucina-rs-health.timer" "$UNITS/"
 # The upstream watch (docs/upstream-watch.md): `lucina-rs upstream check` weekly, `reconcile` hourly.
