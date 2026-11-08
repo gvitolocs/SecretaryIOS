@@ -60,6 +60,11 @@ pub struct ShareConfig {
     /// How long one image may wait for vision (lease, cold load, the answer) before the read goes on with OCR.
     pub vision_budget: Duration,
     pub whisper: lucina_memo::transcribe::WhisperConfig,
+    /// Whisper for short clips (voice notes and chat voice, at most `whisper_short_secs`): a small model with a
+    /// small GPU lease that fits beside Qwen, a short wait for it, and the same small model on the CPU after.
+    /// `None` (no `LUCINA_WHISPER_SHORT_MODEL`): short clips use `whisper` like everything else.
+    pub whisper_short: Option<lucina_memo::transcribe::WhisperConfig>,
+    pub whisper_short_secs: f64,
     /// Only compiled into debug/test builds; never populated from the environment.
     #[cfg(debug_assertions)]
     pub test_allow_loopback: bool,
@@ -75,10 +80,32 @@ impl ShareConfig {
             "HOME" => Some(home.clone()),
             "LUCINA_MEMO_WHISPER_CLI" => get("LUCINA_WHISPER_BIN"),
             "LUCINA_MEMO_WHISPER_MODEL" => get("LUCINA_WHISPER_MODEL"),
+            // The CPU fallback: lucina-memo's default file (large-v3-turbo-q8_0) is not on every host, and a missing
+            // one means no fallback at all: after the GPU wait the share got no transcript.
+            "LUCINA_MEMO_WHISPER_CPU_MODEL" => get("LUCINA_WHISPER_CPU_MODEL"),
             _ => None,
         });
         whisper.timeout = Duration::from_secs(14 * 60);
-        whisper.gpu_wait = Duration::from_secs(90);
+        whisper.gpu_wait = Duration::from_secs(
+            get("LUCINA_WHISPER_GPU_WAIT_SEC").and_then(|v| v.trim().parse().ok()).unwrap_or(90),
+        );
+        let whisper_short = get("LUCINA_WHISPER_SHORT_MODEL").filter(|m| !m.trim().is_empty()).map(|model| {
+            let mut w = lucina_memo::transcribe::WhisperConfig::from_lookup(|k| match k {
+                "HOME" => Some(home.clone()),
+                "LUCINA_MEMO_WHISPER_CLI" => get("LUCINA_WHISPER_BIN"),
+                "LUCINA_MEMO_WHISPER_MODEL" => Some(model.clone()),
+                "LUCINA_MEMO_WHISPER_CPU_MODEL" => Some(model.clone()),
+                "LUCINA_MEMO_GPU_MB" => get("LUCINA_WHISPER_SHORT_GPU_MB").or_else(|| Some("1500".into())),
+                _ => None,
+            });
+            w.timeout = Duration::from_secs(3 * 60);
+            w.gpu_wait = Duration::from_secs(
+                get("LUCINA_WHISPER_SHORT_GPU_WAIT_SEC").and_then(|v| v.trim().parse().ok()).unwrap_or(3),
+            );
+            w
+        });
+        let whisper_short_secs =
+            get("LUCINA_WHISPER_SHORT_SECS").and_then(|v| v.trim().parse().ok()).unwrap_or(60.0);
         Self {
             key_file: get("LUCINA_SHARE_GATEWAY_KEY_FILE").map(PathBuf::from),
             dir: path("LUCINA_SHARE_DIR", format!("{data_dir}/share")),
@@ -103,6 +130,8 @@ impl ShareConfig {
                     .unwrap_or(360),
             ),
             whisper,
+            whisper_short,
+            whisper_short_secs,
             #[cfg(debug_assertions)]
             test_allow_loopback: false,
         }
@@ -1537,6 +1566,34 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_clips_get_their_own_whisper() {
+        let dir = std::env::temp_dir().join(format!("share-short-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let small = dir.join("ggml-small.bin");
+        std::fs::write(&small, b"x").unwrap();
+        let small_s = small.to_string_lossy().to_string();
+        let env = |k: &str| -> Option<String> {
+            match k {
+                "HOME" => Some("/home/test".into()),
+                "LUCINA_WHISPER_SHORT_MODEL" | "LUCINA_WHISPER_CPU_MODEL" => Some(small_s.clone()),
+                _ => None,
+            }
+        };
+        let c = ShareConfig::from_lookup(&env);
+        let s = c.whisper_short.as_ref().expect("short whisper");
+        assert_eq!(s.model, small);
+        assert_eq!(s.cpu_model.as_deref(), Some(small.as_path()), "the CPU fallback is a file that exists");
+        assert_eq!(s.gpu_wait, std::time::Duration::from_secs(3));
+        assert_eq!(s.gpu_mb, 1500);
+        assert_eq!(c.whisper_short_secs, 60.0);
+        assert_eq!(c.whisper.gpu_wait, std::time::Duration::from_secs(90));
+        assert_eq!(c.whisper.cpu_model.as_deref(), Some(small.as_path()));
+        let none = ShareConfig::from_lookup(&|k: &str| (k == "HOME").then(|| "/home/test".to_string()));
+        assert!(none.whisper_short.is_none(), "without LUCINA_WHISPER_SHORT_MODEL nothing changes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn names_limits_and_wording() {
         for name in ["../../etc/passwd", "a\\b\n.jpg", "...", "", "/"] {
