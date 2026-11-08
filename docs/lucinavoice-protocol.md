@@ -416,12 +416,16 @@ her spoken style (`voice: true`) either way.
    answer is followed in the background. When Lucina has answered, the server sends
    `{"type":"reply","shareId":"…","text":"…","itemId":"<Lucina's timeline id>"}` and then
    `{"type":"done","shareId":"…","ms":{"stt":…,"note":…,"reply":…,"total":…}}` (ms from t0; `stt` absent when the
-   server did not transcribe). The server watches the share's status (`GET /v1/share/{id}`, every 250 ms, for at
-   most 3 minutes) for at most 4 notes per connection; the oldest is dropped beyond that. When the socket
+   server did not transcribe). The server follows the share by event, not by polling (each status read goes through
+   the gateway's auth and counts against the device's request budget): it opens Lucina's timeline stream with its own
+   credentials, makes ONE status read (`GET /v1/share/{id}`) to catch an answer written before the stream opened, and
+   takes the answer from the timeline item with `role` `lucina` and `replyTo` equal to the note's `userItemId`. At the
+   3-minute deadline it makes one last status read. A stream that drops is reopened once with its last event id; after
+   that the status is read every 5 s. This is done for at most 4 notes per connection; the oldest is dropped beyond that. When the socket
    closes, watching stops; the note and its answer are in the chat anyway.
 4. Errors: before `note`, `error` as in section 2 plus `note_failed` (the share was refused; the message has the
    status). After `note`, a share that ends in `error` sends `{"type":"error","code":"lucina_unavailable","shareId":…}`,
-   and so does one that has not answered after the 3 minutes (the note is in the chat anyway).
+   and so does one that has not answered at the 3-minute deadline (the note is in the chat anyway). A share's `error` is not on the timeline: the first or the deadline status read finds it, or the 5 s reads of a dropped stream.
    `cancel` before `note` drops the recording (nothing is posted); after `note` it changes nothing. A `cancel` that
    arrives while the share request is already on its way may come too late to stop it; the device then still gets `note`
    if the share was accepted.

@@ -76,6 +76,28 @@ struct Mock {
     share_polls: Mutex<Vec<(String, Option<String>)>>,
     /// How the mock share behaves.
     share: Mutex<ShareScript>,
+    /// How the mock Lucina's timeline stream behaves.
+    timeline: Mutex<TimelineScript>,
+    /// Timeline streams opened so far, and open now.
+    stream_opens: Mutex<usize>,
+    streams_open: Mutex<usize>,
+}
+
+/// The mock Lucina's `GET /api/secretary/timeline/stream`: off (404) unless `reply_after` is set.
+#[derive(Debug, Clone, Default)]
+struct TimelineScript {
+    /// Emit the answer to the latest share this long after the stream opens (never if `None`).
+    reply_after: Option<Duration>,
+    /// The first stream closes at once (the second one is the normal one).
+    drop_first: bool,
+}
+
+struct StreamGuard(Arc<Mock>);
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        *self.0.streams_open.lock().unwrap() -= 1;
+    }
 }
 
 /// What the mock share endpoint does.
@@ -306,6 +328,9 @@ async fn lucina(
     headers: HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    if uri.path() == "/api/secretary/timeline/stream" {
+        return timeline_stream(m).await;
+    }
     if uri.path() != "/api/secretary/chat" {
         return (AxumStatus::NOT_FOUND, "no").into_response();
     }
@@ -499,6 +524,53 @@ async fn lucina(
         EMPTY_REPLY => Json(json!({"ok": true, "data": {"reply": "  "}})).into_response(),
         _ => Json(json!({"ok": true, "data": {"reply": "Ok."}})).into_response(),
     }
+}
+
+/// Items for the voice notes: an unrelated one, then (after the delay) the reply to the latest note.
+async fn timeline_stream(m: Arc<Mock>) -> axum::response::Response {
+    let script = m.timeline.lock().unwrap().clone();
+    let Some(delay) = script.reply_after else {
+        return (AxumStatus::NOT_FOUND, "no").into_response();
+    };
+    let nth = {
+        let mut n = m.stream_opens.lock().unwrap();
+        *n += 1;
+        *n
+    };
+    *m.streams_open.lock().unwrap() += 1;
+    let guard = StreamGuard(m.clone());
+    let item = |id: &str, role: &str, reply_to: &str, text: &str| {
+        let data = json!({"id": id, "ts": "2026-11-08T10:00:00.000Z", "channel": "ios", "role": role,
+                          "text": text, "replyTo": reply_to});
+        format!("event: item\nid: {id}\ndata: {data}\n\n")
+    };
+    let mut chunks: Vec<(Duration, String)> = vec![(Duration::ZERO, ": ping\n\n".into())];
+    if script.drop_first && nth == 1 {
+        return (
+            [("content-type", "text/event-stream")],
+            Body::from_stream(stream::iter(chunks.into_iter().map(|(_, c)| Ok::<_, std::io::Error>(Bytes::from(c))))),
+        )
+            .into_response();
+    }
+    chunks.push((Duration::ZERO, item("lci_other", "lucina", "usr_somebody", "Non per te.")));
+    chunks.push((Duration::ZERO, item("usr_echo", "user", "usr_x", "Eco.")));
+    let uid = {
+        let shares = m.shares.lock().unwrap();
+        let id = shares.last().and_then(|c| c.field("shareId")).unwrap_or("").to_owned();
+        format!("usr_{}", &id[..8.min(id.len())])
+    };
+    chunks.push((delay, item("lci_42", "lucina", &uid, "Fatto, ho aggiunto il latte.")));
+    let s = stream::unfold((chunks.into_iter(), guard), |(mut it, guard)| async move {
+        match it.next() {
+            Some((d, c)) => {
+                tokio::time::sleep(d).await;
+                Some((Ok::<_, std::io::Error>(Bytes::from(c)), (it, guard)))
+            }
+            // Stay open, like Lucina's stream, until the client goes away.
+            None => std::future::pending().await,
+        }
+    });
+    ([("content-type", "text/event-stream")], Body::from_stream(s)).into_response()
 }
 
 async fn kokoro(State(m): State<Arc<Mock>>, body: Bytes) -> axum::response::Response {
@@ -2285,6 +2357,9 @@ async fn shares(h: &H, n: usize) -> Vec<ShareCall> {
 #[tokio::test]
 async fn a_pcm16_note_is_transcribed_posted_and_followed() {
     let h = harness().await;
+    // The answer comes on Lucina's timeline stream; the status says "processing" throughout.
+    h.mock.timeline.lock().unwrap().reply_after = Some(Duration::from_millis(300));
+    h.mock.share.lock().unwrap().processing = 1000;
     h.mock.say("Ricordami di comprare il latte");
     let mut ws = h.connect().await;
     send(
@@ -2358,8 +2433,10 @@ async fn a_pcm16_note_is_transcribed_posted_and_followed() {
     assert_eq!((stt.len(), stt[0].len), (1, audio.len()));
     assert!(h.mock.chats.lock().unwrap().is_empty() && h.mock.spoken().is_empty());
     // The status was read with the caller's credentials.
+    // Followed by event: one status read when the stream was open, not a poll every 250 ms.
     let polls = h.mock.share_polls.lock().unwrap().clone();
-    assert!(!polls.is_empty());
+    assert!((1..=2).contains(&polls.len()), "{polls:?}");
+    assert_eq!(*h.mock.stream_opens.lock().unwrap(), 1);
     assert!(polls.iter().all(|(id, a)| *id == turn && a.as_deref() == Some(format!("Bearer {}", h.token).as_str())));
     // The server keeps a record of the note's turn too.
     let path = format!("/v1/voice/devices/{}/status", h.dev_id);
@@ -2429,7 +2506,8 @@ async fn an_ima_adpcm_note_keeps_the_clients_blocks() {
 #[tokio::test]
 async fn a_new_start_is_accepted_while_a_notes_reply_is_pending() {
     let h = harness().await;
-    h.mock.share.lock().unwrap().processing = 8; // about two seconds of polling
+    h.mock.share.lock().unwrap().processing = 1000;
+    h.mock.timeline.lock().unwrap().reply_after = Some(Duration::from_millis(1500));
     h.mock.say(TWO);
     let mut ws = h.connect().await;
     send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
@@ -2583,29 +2661,61 @@ async fn at_most_four_notes_are_followed_and_the_oldest_is_dropped() {
     let h = harness().await;
     // Never answers within this test.
     h.mock.share.lock().unwrap().processing = usize::MAX;
+    h.mock.timeline.lock().unwrap().reply_after = Some(Duration::from_secs(3600));
     h.mock.say("Una nota");
     let mut ws = h.connect().await;
-    let mut ids = vec![];
     for _ in 0..5 {
         send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
         expect_listening(&mut ws).await;
         stream_audio(&mut ws, &tone(500)).await;
         send(&mut ws, json!({"type": "end"})).await;
         assert_eq!(recv_json(&mut ws).await["type"], "transcript");
-        let n = recv_json(&mut ws).await;
-        assert_eq!(n["type"], "note");
-        ids.push(n["shareId"].as_str().unwrap().to_owned());
+        assert_eq!(recv_json(&mut ws).await["type"], "note");
     }
-    // Let the fifth note's watcher poll, then watch the polls for a while: the first note is no
-    // longer read, the other four still are.
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    let mark = h.mock.share_polls.lock().unwrap().len();
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    let later: Vec<String> = h.mock.share_polls.lock().unwrap()[mark..].iter().map(|(i, _)| i.clone()).collect();
-    assert!(!later.contains(&ids[0]), "{later:?}");
-    for id in &ids[1..] {
-        assert!(later.contains(id), "{id} not polled: {later:?}");
+    // Each watcher holds a timeline stream: five were opened, the oldest watcher was dropped, so
+    // four are open now. No fast polling: one status read per note.
+    for _ in 0..100 {
+        if *h.mock.streams_open.lock().unwrap() == 4 && *h.mock.stream_opens.lock().unwrap() == 5 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert_eq!(*h.mock.stream_opens.lock().unwrap(), 5);
+    assert_eq!(*h.mock.streams_open.lock().unwrap(), 4);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(h.mock.share_polls.lock().unwrap().len(), 5);
+    drop(ws);
+    for _ in 0..100 {
+        if *h.mock.streams_open.lock().unwrap() == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("watchers outlived the connection");
+}
+
+#[tokio::test]
+async fn a_dropped_timeline_stream_is_reopened_once() {
+    let h = harness().await;
+    {
+        let mut t = h.mock.timeline.lock().unwrap();
+        t.reply_after = Some(Duration::from_millis(200));
+        t.drop_first = true;
+    }
+    h.mock.share.lock().unwrap().processing = 1000;
+    h.mock.say("Una nota");
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(500)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+    assert_eq!(recv_json(&mut ws).await["type"], "note");
+    let r = recv_json(&mut ws).await;
+    assert_eq!((r["type"].as_str(), r["itemId"].as_str()), (Some("reply"), Some("lci_42")), "{r}");
+    assert_eq!(recv_json(&mut ws).await["type"], "done");
+    assert_eq!(*h.mock.stream_opens.lock().unwrap(), 2);
+    assert!(h.mock.share_polls.lock().unwrap().len() <= 2);
 }
 
 #[tokio::test]

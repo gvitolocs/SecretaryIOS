@@ -9,23 +9,29 @@
 //!   caller: its `Cookie` plus `X-Secretary-CSRF: 1`). Fields: `shareId` (the turn id, a UUID),
 //!   `intent=ask`, `lang`, `sessionId`, `channel`, `source`, `replyTo`, the `file`, and `meta`
 //!   (`{"files":[{"index":0,"voice":true,"durationMs":…,"transcript"?:…}]}`).
-//! - **Watcher.** `GET <share url>/<shareId>` every [`WATCH_EVERY`] for at most [`WATCH_FOR`];
-//!   `done` sends `reply` and `done` with the `shareId`, `error` (or the end of the time) sends
-//!   `error lucina_unavailable`. Nothing of the audio, the text or the credentials is logged.
+//! - **Watcher.** By event, never by fast polling (each `GET <share url>/<shareId>` goes through
+//!   Caddy's forward_auth and counts against the device's request budget): Lucina's timeline stream
+//!   is opened first with the server's own credentials, ONE status read catches an answer written
+//!   before that, then the item that replies to the note's `userItemId` is the answer; at the
+//!   deadline ([`WATCH_FOR`]) one last status read. A dropped stream is reopened once, then the
+//!   status is read every [`FALLBACK_EVERY`]. An answer sends `reply` and `done` with the
+//!   `shareId`; status `error` (or the end of the time) sends `error lucina_unavailable`. Nothing of the audio, the text or the credentials is logged.
 
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::Message;
 use axum::http::{header, HeaderMap, StatusCode};
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use crate::notify::ingest::SseParser;
 use crate::AppState;
 
 /// Caddy's loopback site on p1: forward_auth against secretary-server, then lucina-rs.
 pub const DEFAULT_SHARE_URL: &str = "http://127.0.0.1:8801/v1/share";
-/// How often the share's status is read.
-pub const WATCH_EVERY: Duration = Duration::from_millis(250);
+/// How often the share's status is read when there is no timeline stream to follow.
+pub const FALLBACK_EVERY: Duration = Duration::from_secs(5);
 /// How long a note's answer is followed.
 pub const WATCH_FOR: Duration = Duration::from_secs(180);
 /// Answers followed at once per connection; the oldest is dropped beyond that.
@@ -238,15 +244,168 @@ fn text(v: &Value) -> Message {
     Message::Text(v.to_string().into())
 }
 
-/// Follow the share until Lucina has answered, then send `reply` and `done` (or `error`).
-/// `ms` are measured from the end of the recording: `stt` (if the server transcribed) and
-/// `note` (the share was accepted). Runs as a task owned by the connection.
+/// What one read of the share's status says.
+enum Status {
+    /// Lucina answered: her text and timeline id.
+    Done(String, Value),
+    /// The share ended in `error`.
+    Failed,
+    /// Not yet (or not readable).
+    Pending,
+}
+
+/// ONE `GET <share url>/<id>` through Caddy (it counts against the device's request budget, so the
+/// watcher makes few of them).
+async fn read_status(st: &AppState, creds: &HeaderMap, url: &str) -> Status {
+    let req = st.voice.share_client().get(url).timeout(POLL_TIMEOUT);
+    let Ok(resp) = crate::voice::with_creds(req, creds).send().await else {
+        return Status::Pending;
+    };
+    if !resp.status().is_success() {
+        return Status::Pending;
+    }
+    let v: Value = resp.json().await.unwrap_or(Value::Null);
+    match v["status"].as_str() {
+        Some("done") => Status::Done(
+            v["reply"].as_str().unwrap_or("").to_owned(),
+            v["lucinaItemId"].as_str().map_or(Value::Null, |s| json!(s)),
+        ),
+        Some("error") => Status::Failed,
+        _ => Status::Pending,
+    }
+}
+
+/// Lucina's timeline stream, opened with the server's own credentials (no device budget).
+struct Feed {
+    parser: SseParser,
+    body: futures_util::stream::BoxStream<'static, reqwest::Result<axum::body::Bytes>>,
+    last: Option<String>,
+}
+
+impl Feed {
+    async fn open(st: &AppState, last: Option<&str>) -> Option<Self> {
+        let resp = st.lucina().ok()?.timeline_stream(last).await.ok()?;
+        Some(Self {
+            parser: SseParser::default(),
+            body: resp.bytes_stream().boxed(),
+            last: last.map(str::to_owned),
+        })
+    }
+
+    /// The next item that answers `user_item_id` (role `lucina`, `replyTo` that id): its text and
+    /// id. `None` when the stream ended or failed.
+    async fn next_answer(&mut self, user_item_id: &str) -> Option<(String, Value)> {
+        loop {
+            let chunk = self.body.next().await?.ok()?;
+            for ev in self.parser.push(&chunk) {
+                if ev.id.is_some() {
+                    self.last = ev.id.clone();
+                }
+                if ev.event != "item" {
+                    continue;
+                }
+                let Ok(item) = serde_json::from_str::<Value>(&ev.data) else {
+                    continue;
+                };
+                let reply_to = match &item["replyTo"] {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => continue,
+                };
+                if item["role"] == "lucina" && reply_to == user_item_id {
+                    let id = match &item["id"] {
+                        Value::String(s) => json!(s),
+                        Value::Number(n) => json!(n.to_string()),
+                        _ => Value::Null,
+                    };
+                    return Some((item["text"].as_str().unwrap_or("").to_owned(), id));
+                }
+            }
+        }
+    }
+}
+
+/// What the watcher knows of the note, to report with.
+struct Report {
+    tx: mpsc::Sender<Message>,
+    share_id: String,
+    t0: Instant,
+    stt_ms: Option<u64>,
+    note_ms: u64,
+    device: String,
+}
+
+impl Report {
+    fn ms_since(&self) -> u64 {
+        u64::try_from(self.t0.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    async fn answered(&self, reply_text: &str, item_id: Value) {
+        let reply_ms = self.ms_since();
+        let reply = json!({
+            "type": "reply",
+            "shareId": self.share_id,
+            "text": reply_text,
+            "itemId": item_id,
+        });
+        let mut ms = json!({"note": self.note_ms, "reply": reply_ms});
+        if let Some(s) = self.stt_ms {
+            ms["stt"] = json!(s);
+        }
+        ms["total"] = json!(self.ms_since());
+        tracing::info!(device = %self.device, note_ms = self.note_ms, reply_ms, "voice note answered");
+        if self.tx.send(text(&reply)).await.is_err() {
+            return;
+        }
+        let _ = self
+            .tx
+            .send(text(&json!({"type": "done", "shareId": self.share_id, "ms": ms})))
+            .await;
+    }
+
+    async fn failed(&self, message: &str) {
+        tracing::warn!(device = %self.device, "voice note: no answer");
+        let _ = self
+            .tx
+            .send(text(&json!({
+                "type": "error",
+                "code": "lucina_unavailable",
+                "shareId": self.share_id,
+                "message": message,
+            })))
+            .await;
+    }
+
+    /// Act on a status read; `true` when the note is settled.
+    async fn settle(&self, s: Status) -> bool {
+        match s {
+            Status::Done(t, id) => {
+                self.answered(&t, id).await;
+                true
+            }
+            Status::Failed => {
+                self.failed("Lucina could not answer the note").await;
+                true
+            }
+            Status::Pending => false,
+        }
+    }
+}
+
+/// Follow the share until Lucina has answered, then send `reply` and `done` (or `error`). It
+/// follows by event, not by polling: Lucina's timeline stream is opened first, then ONE status
+/// read catches an answer written before it opened, and the answer is the item that replies to
+/// `user_item_id`. At the deadline one last status read. A stream that drops is reopened once with
+/// its last event id; after that the status is read every [`FALLBACK_EVERY`]. `ms` are measured
+/// from the end of the recording: `stt` (if the server transcribed) and `note` (the share was
+/// accepted). Runs as a task owned by the connection.
 #[allow(clippy::too_many_arguments)]
 pub async fn watch(
     st: AppState,
     creds: HeaderMap,
     tx: mpsc::Sender<Message>,
     share_id: String,
+    user_item_id: String,
     t0: Instant,
     stt_ms: Option<u64>,
     note_ms: u64,
@@ -257,76 +416,61 @@ pub async fn watch(
     };
     let url = format!("{}/{}", base.trim_end_matches('/'), share_id);
     let deadline = Instant::now() + WATCH_FOR;
-    let ms_since = |t: Instant| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let report = Report {
+        tx,
+        share_id,
+        t0,
+        stt_ms,
+        note_ms,
+        device,
+    };
+    // 1. The stream first (an answer after this point is not missed), 2. one status read.
+    let mut feed = if user_item_id.is_empty() {
+        None
+    } else {
+        Feed::open(&st, None).await
+    };
+    if report.settle(read_status(&st, &creds, &url).await).await {
+        return;
+    }
+    let mut reopened = feed.is_none();
+    // 3. Wait.
     loop {
-        let req = st.voice.share_client().get(&url).timeout(POLL_TIMEOUT);
-        let mut stop = false;
-        if let Ok(resp) = crate::voice::with_creds(req, &creds).send().await {
-            let status = resp.status();
-            if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                stop = true;
-            } else if status.is_success() {
-                let v: Value = resp.json().await.unwrap_or(Value::Null);
-                match v["status"].as_str() {
-                    Some("done") => {
-                        let reply_ms = ms_since(t0);
-                        let item = v["lucinaItemId"].as_str().map_or(Value::Null, |s| json!(s));
-                        let reply = json!({
-                            "type": "reply",
-                            "shareId": share_id,
-                            "text": v["reply"].as_str().unwrap_or(""),
-                            "itemId": item,
-                        });
-                        let mut ms = json!({"note": note_ms, "reply": reply_ms});
-                        if let Some(s) = stt_ms {
-                            ms["stt"] = json!(s);
-                        }
-                        ms["total"] = json!(ms_since(t0));
-                        tracing::info!(
-                            device = %device,
-                            note_ms,
-                            reply_ms,
-                            "voice note answered"
-                        );
-                        if tx.send(text(&reply)).await.is_err() {
-                            return;
-                        }
-                        let _ = tx
-                            .send(text(
-                                &json!({"type": "done", "shareId": share_id, "ms": ms}),
-                            ))
-                            .await;
-                        return;
-                    }
-                    Some("error") => {
-                        tracing::warn!(device = %device, "voice note: lucina ended the share in error");
-                        let _ = tx
-                            .send(text(&json!({
-                                "type": "error",
-                                "code": "lucina_unavailable",
-                                "shareId": share_id,
-                                "message": "Lucina could not answer the note",
-                            })))
-                            .await;
-                        return;
-                    }
-                    _ => {}
+        let now = Instant::now();
+        if now >= deadline {
+            // 4. One last status read, then give up.
+            if !report.settle(read_status(&st, &creds, &url).await).await {
+                report
+                    .failed("no answer to the note could be followed; it is in the chat")
+                    .await;
+            }
+            return;
+        }
+        let left = deadline - now;
+        match feed.as_mut() {
+            Some(f) => match tokio::time::timeout(left, f.next_answer(&user_item_id)).await {
+                Err(_) => {} // the deadline; the next turn of the loop ends it
+                Ok(Some((t, id))) => {
+                    report.answered(&t, id).await;
+                    return;
+                }
+                Ok(None) => {
+                    let last = f.last.clone();
+                    feed = if reopened {
+                        None
+                    } else {
+                        reopened = true;
+                        Feed::open(&st, last.as_deref()).await
+                    };
+                }
+            },
+            None => {
+                tokio::time::sleep(FALLBACK_EVERY.min(left)).await;
+                if report.settle(read_status(&st, &creds, &url).await).await {
+                    return;
                 }
             }
         }
-        if stop || Instant::now() >= deadline {
-            tracing::warn!(device = %device, stopped = stop, "voice note: no answer followed");
-            let _ = tx
-                .send(text(&json!({
-                    "type": "error",
-                    "code": "lucina_unavailable",
-                    "shareId": share_id,
-                    "message": "no answer to the note could be followed; it is in the chat",
-                })))
-                .await;
-            return;
-        }
-        tokio::time::sleep(WATCH_EVERY).await;
     }
 }
 
