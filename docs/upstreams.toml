@@ -495,6 +495,95 @@ relation = "reference"
 confidence = "confirmed"
 notes = "Test oracle for boot images, never vendored (references/upstream.lock)."
 
+# ───────────────────────── Juno with no C library (LucinaOS docs/research/juno-pure-rust.md) ─────────────────────────
+
+[[upstream]]
+id = "eyra"
+name = "Eyra"
+url = "https://github.com/sunfishcode/eyra"
+source = "github"
+repo = "sunfishcode/eyra"
+branch = "main"
+track = "commits"
+pin = "cfa264ee062277101fd54043d8edb337e5ff98c2"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/eyra-stack/eyra", base = "main" }]
+licence_upstream = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+licence_ours = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["std on the -gnu target with no C library", "extern crate eyra opt-in"]
+notes = "Archived upstream since 2025-04-30 (0.22.0): no new commits will come; kept here so the watch notices if it is ever unarchived. The vendored copy in LucinaOS is ours to maintain. Juno's programs opt in per crate (LucinaOS scripts/juno-nolibc.sh, pinned nightly)."
+
+[[upstream]]
+id = "c-ward"
+name = "c-ward (c-scape, c-gull)"
+url = "https://github.com/sunfishcode/c-ward"
+source = "github"
+repo = "sunfishcode/c-ward"
+branch = "main"
+track = "commits"
+pin = "ac7e0f124aa678a7045d549aceb7e28ac233fe0f"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/eyra-stack", base = "main" }]
+licence_upstream = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+licence_ours = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["libc ABI in Rust", "malloc", "pthread", "stdio", "getaddrinfo", "ioctl", "dl_iterate_phdr", "printf"]
+notes = "Archived upstream after 2026-06-15 (last commit: support nightlies after 2026-04-23, unreleased). Our changes, all in third_party/eyra-stack/c-scape: ioctl passes every request to the kernel (upstream panicked on all but five and took FIONREAD for FIONBIO), dl_iterate_phdr load bias as static musl (upstream's broke unwinding in non-PIE programs), dlopen/dlsym/dlerror as static musl (upstream panicked), mount/umount2/umount and rewinddir added, rustix 1.1.6 runtime rename, empty libgcc_eh. Nothing can go back: archived."
+
+[[upstream]]
+id = "origin"
+name = "origin (program and thread start in Rust)"
+url = "https://github.com/sunfishcode/origin"
+source = "github"
+repo = "sunfishcode/origin"
+branch = "main"
+track = "commits"
+pin = "00afc4488f81a6b2abbcd52856ee2fb4e44ac0cb"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/eyra-stack/origin", base = "main" }]
+licence_upstream = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+licence_ours = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["_start", "thread creation and TLS", "signals", "unwinding through the unwinding crate"]
+notes = "Archived upstream after 2026-02-17. Only change: rustix::runtime renamed to rustix::runtime_448b8ad740e2a26f (rustix 1.1.5 made the old path private)."
+
+[[upstream]]
+id = "posixutils-rs"
+name = "posixutils-rs (POSIX utilities in Rust)"
+url = "https://github.com/rustcoreutils/posixutils-rs"
+source = "github"
+repo = "rustcoreutils/posixutils-rs"
+branch = "main"
+track = "commits"
+pin = "505a1cba0d7a276841315342fc4a08f7c69f3e78"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/juno-pure-rust.md", base = "main" }]
+licence_upstream = "MIT"
+licence_ours = "MIT"
+relation = "reference"
+confidence = "likely"
+rely_on = ["sh", "awk", "grep", "sed", "cut", "head", "tail", "sort", "find", "xargs", "pax/tar", "vi", "ps", "kill", "date", "dd", "od"]
+notes = "Chosen 2026-11-08 as the base for BusyBox's tools on Juno (stage 3 of juno-pure-rust.md): minimalist and POSIX like BusyBox. Becomes 'vendored' per tool as each one replaces its BusyBox applet, checked against BusyBox 1.37.0 on the commands agents run. Pin is main on 2026-11-07, not yet built."
+
+[[upstream]]
+id = "brush-shell"
+name = "brush (Rust bash/POSIX shell)"
+url = "https://github.com/reubeno/brush"
+source = "github"
+repo = "reubeno/brush"
+track = "releases"
+pin = "brush-shell-v0.4.0"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/juno-pure-rust.md", base = "main" }]
+licence_upstream = "MIT"
+licence_ours = "MIT"
+relation = "reference"
+confidence = "likely"
+rely_on = ["POSIX sh", "set -e", "pipefail", "traps", "job control in a pty"]
+notes = "Candidate for Juno's /bin/sh against posixutils-rs sh; decided in stage 3 by running agents' commands on both and BusyBox ash."
+
 # ───────────────────────── Galaxy Book Go (gbgo) board ─────────────────────────
 
 [[upstream]]
