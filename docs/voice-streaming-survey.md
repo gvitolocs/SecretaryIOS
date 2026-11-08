@@ -73,4 +73,41 @@ Section 10 of the protocol, on the same socket:
 
 ## Measured after the change
 
-To be filled in once the clients run against the deployed server (the probe `tools/voice-probe` and each client's logged timings).
+Measured 2026-11-08 18:26-18:40 UTC against production (secretary-server and web 991d5e1d), from nezopt, with the
+same token and English Kokoro clips (`am_michael`: "What time is it?" 1.6 s, "Test. How are you doing today?" 2.1 s, a
+5.5 s test note). English, because Lucina's fast templates are English-only by the owner's rule (2026-11-02): an
+Italian "Che ore sono?" always takes the planner. The client is Juno's own code (`lucina-voice-stream`,
+`examples/wav_turn`, paced in real time), so its numbers include a real client's socket, TLS and framing. The
+English "before" rows were measured the same hour.
+
+| path | before | after (end of speech → …) |
+|---|---|---|
+| voice note: Lucina's reply in the chat | 92.3 s, 90.8 s, 91.1 s (share + Whisper large-v3) | transcript 0.37-0.62 s; note in the chat 0.53-1.04 s; **reply 2.4 s, 2.4 s, 2.7 s** |
+| command "What time is it?" (Jev fast path) | `/v1/chat` 1.9-2.0 s, MP3 complete 4.9-5.5 s, plus the app's 1.6 s silence timer | first text **0.47-0.49 s**; first audio **1.0 s, 2.8 s, 3.0 s** |
+| command, a chat question | as above | first text 1.75-2.1 s; first audio 2.4 s (one run 8.9 s: Kokoro took 6.8 s for the first sentence) |
+| **the real DSi** (Fortuna, IMA-ADPCM 10909 Hz, its first two streamed notes, 19:2x UTC) | share path ≈ 91 s, plus a new TLS handshake (about 6 s) when the kept-alive connection had dropped | 30.2 s note: in the chat 6.7 s, reply **8.9 s**; 2.2 s note: in the chat 4.0 s, reply **6.3 s**. Both paid a cold speech-to-text load (6.0 s and 3.3 s): fixed by warming on socket open (b84b353e) |
+| server spans (secretary-server log) | – | STT 199-345 ms; route 431-591 ms; Lucina's first text 458-2348 ms |
+
+What is left between the end of speech and the first sound is Lucina's own work (Jev about 0.2 s, the planner
+1-2 s when it runs) and Kokoro's first sentence (0.5 to 2.5 s, CPU image, once 6.8 s). The upload is gone from the
+critical path on every client.
+
+Two findings along the way:
+- **One old-style note stalls every note behind it.** The share worker processes one share at a time. A test note at
+  18:29 waited 80 s behind a DSi note that was still going through Whisper large-v3. Once the DSi streams too,
+  shares carry their transcript and skip Whisper.
+- **A 250 ms share-status poll exhausts a device's request budget** (60 a minute, counted at Caddy's forward_auth)
+  and makes the device's own requests fail with 429. The note watcher therefore follows Lucina's timeline stream with
+  the server's own credentials, and reads the share status at most twice per note.
+
+Per client:
+- **iOS** (main 991d5e1d, installed on the iPhone 18:34 UTC): chat mic notes and Lucina-tab commands stream over the
+  socket. The old AAC share upload and the SFSpeech + `/v1/chat` path remain as fallbacks. Not yet measured on the
+  phone; each socket turn leaves its server spans in the secretary-server log and in the device's voice record.
+- **Web and Mac** (web 991d5e1d deployed): chat mic notes and the Lucina panel's mic. The Mac app (Secretary Code)
+  bundles the web app, so it gets this on its next rebuild; its main view already grants audio-only mic access.
+- **Juno** (LucinaOS main 885d53c74d): Lucina chat Ctrl+M (note), Ctrl+T (talk); the link waits in poll(2) with no
+  idle wakes. The numbers above are its code on a host; the laptop run comes with the next generation.
+- **Fortuna**: the protocol (IMA-ADPCM 256-byte blocks at 10909 Hz, decoded sample-exact against ffmpeg) is handed to
+  the Fortuna chat session, which owns the DSi side.
+
