@@ -83,6 +83,10 @@ fn usage_limit_continues_on_the_next_agent_with_the_changes_in_place() {
     let new = all.iter().find(|a| a["provider"] == "mock-alt").expect("the continuation");
     let (old_id, new_id) = (old["id"].as_str().unwrap(), new["id"].as_str().unwrap());
     assert_eq!(run["agentId"], new_id);
+    // `run` came back only once the continuation had finished its turn, not while it was
+    // created but not yet started (live run 2303cb37 -> 622649a7, 2026-11-08).
+    assert_eq!(new["status"], "idle", "{new}");
+    assert!(d.lagent(&["logs", new_id]).stdout.lines().any(|l| !l.starts_with("[User]") && !l.trim().is_empty()), "the continuation answered");
 
     // Linked both ways; the stopped run is no longer a red error in the list.
     assert_eq!(old["status"], "error");
