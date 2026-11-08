@@ -283,6 +283,9 @@ pattern = '(?i)not logged in'
         assert!(matches!(class("vibe", vibe), Outcome::Quota(_)), "{:?}", class("vibe", vibe));
         let zcode = "[project-access-token] { family: 'zai', stage: 'resolve', code: 'project_token_login_failed' }";
         assert!(matches!(class("zcode", zcode), Outcome::Unavailable(_)));
+        // OpenCode's Zen free tier, as the ACP turn watch reports it (agent cc504145).
+        let zen = "AI_APICallError: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go\n[System Error] AI_APICallError: Free usage limit reached.\n\ncode: quota";
+        assert!(matches!(class("opencode", zen), Outcome::Quota(_)), "{:?}", class("opencode", zen));
         // A task's own failure is not a limit.
         assert_eq!(class("claude", "error[E0308]: mismatched types\n[System Error] build failed"), Outcome::Failed);
     }

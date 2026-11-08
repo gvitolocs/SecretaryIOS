@@ -15,15 +15,23 @@
 //!
 //! The client doesn't offer file system or terminal methods. Agents use their own
 //! tools.
+//!
+//! **Turn watch** ([`lucina_agents::turn_watch`]): a turn the agent never ends is ended
+//! as a quota stop when the agent's own error log reports a usage limit for the session
+//! (OpenCode on Zen's free tier: `Free usage limit reached`, then silence), or when it
+//! sends nothing for its stall time while no tool call and no permission request is open.
+//! The manager then hands the run on like any quota stop (`manager/handoff.rs`).
+//! `LUCINA_AGENTD_ACP_STALL_SECS` overrides every agent's stall time (0 = off).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use lucina_agents::permission::{ActionVariant, Behavior, PermissionAction, PermissionKind, PermissionRequest};
 use lucina_agents::timeline::{SearchDetail, TodoEntry, TodoStatus, ToolCall, ToolCallDetail, ToolCallStatus};
+use lucina_agents::turn_watch::{self, Verdict, WatchFacts};
 use lucina_agents::types::{AgentMode, Capabilities, PersistenceHandle, RuntimeInfo};
 use lucina_agents::{PermissionResponse, StreamEvent, TimelineItem};
 use serde::Deserialize;
@@ -48,6 +56,10 @@ pub struct AcpDef {
     pub args: &'static [&'static str],
     /// `clientCapabilities._meta` sent at `initialize`.
     pub client_meta: Option<&'static str>,
+    /// Seconds without output (nothing open) after which a turn counts as stalled.
+    pub stall_secs: Option<u64>,
+    /// The agent's own log, where it reports errors it never sends over ACP (`~` = home).
+    pub error_log: Option<&'static str>,
 }
 
 /// The ACP agents agentd knows (Paseo's built-in and plugin providers).
@@ -56,9 +68,10 @@ pub fn builtin() -> Vec<AcpDef> {
         // The parameterized picker exposes Cursor's model parameters (context,
         // reasoning effort, fast) as separate config options (Paseo
         // CURSOR_CLIENT_CAPABILITY_META); without it, `grok-4.7` resolves to fast=true.
-        AcpDef { id: "cursor", label: "Cursor", bin: "cursor-agent", args: &["--model", "{model}", "acp"], client_meta: Some(r#"{"parameterizedModelPicker":true}"#) },
-        AcpDef { id: "opencode", label: "OpenCode", bin: "opencode", args: &["acp"], client_meta: None },
-        AcpDef { id: "copilot", label: "Copilot", bin: "copilot", args: &["--acp"], client_meta: None },
+        AcpDef { id: "cursor", label: "Cursor", bin: "cursor-agent", args: &["--model", "{model}", "acp"], client_meta: Some(r#"{"parameterizedModelPicker":true}"#), stall_secs: Some(600), error_log: None },
+        // OpenCode logs Zen's "Free usage limit reached" and then never answers the prompt.
+        AcpDef { id: "opencode", label: "OpenCode", bin: "opencode", args: &["acp"], client_meta: None, stall_secs: Some(300), error_log: Some("~/.local/share/opencode/log/opencode.log") },
+        AcpDef { id: "copilot", label: "Copilot", bin: "copilot", args: &["--acp"], client_meta: None, stall_secs: Some(600), error_log: None },
     ]
 }
 
@@ -69,6 +82,12 @@ pub struct CustomAcp {
     #[serde(default)]
     pub label: Option<String>,
     pub command: Vec<String>,
+    /// The turn watch's stall time (none by default: a local model may queue for its GPU).
+    #[serde(default)]
+    pub stall_secs: Option<u64>,
+    /// The agent's own error log, for usage limits it never reports over ACP.
+    #[serde(default)]
+    pub error_log: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -101,6 +120,8 @@ pub fn custom(registry: &Registry) -> Vec<Arc<dyn Provider>> {
                 default_model: None,
                 client_meta: None,
                 registry: Some(registry.clone()),
+                stall: stall_override().unwrap_or(agent.stall_secs.map(Duration::from_secs)).filter(|d| !d.is_zero()),
+                error_log: agent.error_log.as_deref().map(expand_home),
             }) as Arc<dyn Provider>)
         })
         .collect()
@@ -114,6 +135,23 @@ pub struct AcpProvider {
     pub default_model: Option<String>,
     pub client_meta: Option<Value>,
     pub registry: Option<Registry>,
+    /// The turn watch's stall time; `None` = no stall rule.
+    pub stall: Option<Duration>,
+    /// The agent's own error log, tailed during a turn for usage limits.
+    pub error_log: Option<PathBuf>,
+}
+
+/// `LUCINA_AGENTD_ACP_STALL_SECS`: every agent's stall time (`Some(None)` when 0 = off).
+fn stall_override() -> Option<Option<Duration>> {
+    let secs: u64 = std::env::var("LUCINA_AGENTD_ACP_STALL_SECS").ok()?.trim().parse().ok()?;
+    Some((secs > 0).then(|| Duration::from_secs(secs)))
+}
+
+fn expand_home(p: &str) -> PathBuf {
+    match p.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(p),
+    }
 }
 
 /// Owner rule: Fast is never turned on. Any ACP agent that offers a `fast` config
@@ -130,6 +168,8 @@ impl AcpProvider {
             default_model,
             client_meta: def.client_meta.and_then(|m| serde_json::from_str(m).ok()),
             registry,
+            stall: stall_override().unwrap_or(def.stall_secs.map(Duration::from_secs)).filter(|d| !d.is_zero()),
+            error_log: def.error_log.map(expand_home),
         }
     }
 
@@ -207,6 +247,8 @@ impl AcpProvider {
             rpc: rpc.clone(),
             proc_: proc_.clone(),
             events: events.clone(),
+            stall: self.stall,
+            error_log: self.error_log.clone(),
             state: Arc::new(Mutex::new(State {
                 session_id: String::new(),
                 model: model.clone(),
@@ -217,6 +259,7 @@ impl AcpProvider {
                 permissions: HashMap::new(),
                 tools: HashMap::new(),
                 subs: Children::default(),
+                last_activity: Instant::now(),
             })),
         });
         session.clone().spawn_reader(incoming);
@@ -435,6 +478,8 @@ struct State {
     tools: HashMap<String, OpenTool>,
     /// Child sessions (OpenCode's `task` tool), each a provider subagent.
     subs: Children,
+    /// When the agent last sent anything (an update or a request), for the turn watch.
+    last_activity: Instant,
 }
 
 pub struct AcpSession {
@@ -443,6 +488,108 @@ pub struct AcpSession {
     proc_: Arc<tokio::sync::Mutex<Proc>>,
     events: EventSink,
     state: Arc<Mutex<State>>,
+    stall: Option<Duration>,
+    error_log: Option<PathBuf>,
+}
+
+/// The new lines of an agent's error log since a turn started.
+struct LogTail {
+    path: PathBuf,
+    offset: u64,
+    partial: String,
+}
+
+/// At most this much of the log is read per look.
+const LOG_READ_MAX: u64 = 4 << 20;
+
+impl LogTail {
+    fn start(path: &std::path::Path) -> LogTail {
+        let offset = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        LogTail { path: path.to_path_buf(), offset, partial: String::new() }
+    }
+
+    /// A usage limit for `session_id` among the lines written since the last look.
+    fn scan(&mut self, session_id: &str) -> Option<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(&self.path).ok()?;
+        let len = f.metadata().ok()?.len();
+        if len < self.offset {
+            // Rotated or truncated: start over.
+            self.offset = 0;
+            self.partial.clear();
+        }
+        f.seek(SeekFrom::Start(self.offset)).ok()?;
+        let mut buf = Vec::new();
+        f.take(LOG_READ_MAX).read_to_end(&mut buf).ok()?;
+        self.offset += buf.len() as u64;
+        self.partial.push_str(&String::from_utf8_lossy(&buf));
+        let mut hit = None;
+        let complete = match self.partial.rfind('\n') {
+            Some(i) => {
+                let rest = self.partial.split_off(i + 1);
+                std::mem::replace(&mut self.partial, rest)
+            }
+            None => return None,
+        };
+        for line in complete.lines() {
+            if hit.is_none() {
+                hit = turn_watch::limit_in_log_line(line, session_id);
+            }
+        }
+        hit
+    }
+}
+
+/// Watch a running turn until it is dead: `(verdict, error text)`. Never returns while
+/// the turn is alive or once it is no longer `turn_id` (the prompt's answer decides then).
+async fn watch_turn(
+    state: Arc<Mutex<State>>,
+    provider: String,
+    turn_id: String,
+    session_id: String,
+    stall: Option<Duration>,
+    mut log: Option<LogTail>,
+) -> (Verdict, String) {
+    if stall.is_none() && log.is_none() {
+        return std::future::pending().await;
+    }
+    let tick = stall.map(|s| (s / 4).clamp(Duration::from_millis(50), Duration::from_secs(2))).unwrap_or(Duration::from_secs(2));
+    let mut limit: Option<String> = None;
+    loop {
+        tokio::time::sleep(tick).await;
+        if limit.is_none() {
+            limit = log.as_mut().and_then(|t| t.scan(&session_id));
+        }
+        let facts = {
+            let st = state.lock().unwrap_or_else(|p| p.into_inner());
+            if st.turn_id.as_deref() != Some(turn_id.as_str()) {
+                None
+            } else {
+                Some(WatchFacts {
+                idle_ms: st.last_activity.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                stall_ms: stall.map(|d| d.as_millis().min(u64::MAX as u128) as u64),
+                open_tools: st.tools.len().min(u32::MAX as usize) as u32,
+                open_permissions: st.permissions.len().min(u32::MAX as usize) as u32,
+                log_limit: limit.is_some(),
+                })
+            }
+        };
+        let Some(facts) = facts else {
+            // The turn ended or was replaced: its prompt's answer decides.
+            return std::future::pending().await;
+        };
+        match turn_watch::verdict(&facts) {
+            Verdict::Wait => {}
+            Verdict::Limit => return (Verdict::Limit, limit.unwrap_or_default()),
+            Verdict::Stalled => {
+                let secs = facts.idle_ms / 1000;
+                return (
+                    Verdict::Stalled,
+                    format!("{provider} stalled: no output for {secs} s with no tool call or permission open; ended as a usage-limit stop"),
+                );
+            }
+        }
+    }
 }
 
 pub(super) fn s(v: &Value) -> Option<String> {
@@ -575,7 +722,8 @@ impl AcpSession {
                 match msg {
                     Incoming::Notification { method, params } if method == "session/update" => {
                         let (loading, own) = {
-                            let st = self.lock();
+                            let mut st = self.lock();
+                            st.last_activity = Instant::now();
                             (st.loading, st.session_id.clone())
                         };
                         let from = params["sessionId"].as_str().unwrap_or_default();
@@ -596,7 +744,10 @@ impl AcpSession {
                         }
                     }
                     Incoming::Notification { .. } => {}
-                    Incoming::Request { id, method, params } => self.on_request(id, &method, &params).await,
+                    Incoming::Request { id, method, params } => {
+                        self.lock().last_activity = Instant::now();
+                        self.on_request(id, &method, &params).await
+                    }
                     Incoming::Closed => {
                         let lost = self.lock().subs.turn_ended(&self.provider, Ended::Failed);
                         for e in lost {
@@ -743,8 +894,11 @@ impl Session for AcpSession {
             }
             st.turn_id = Some(turn.clone());
             st.reply.clear();
+            st.last_activity = Instant::now();
             st.session_id.clone()
         };
+        let log = self.error_log.as_deref().map(LogTail::start);
+        let stall = self.stall;
         self.emit(StreamEvent::TurnStarted { provider: self.provider.clone(), turn_id: Some(turn.clone()) });
         let rpc = self.rpc.clone();
         let events = self.events.clone();
@@ -754,9 +908,40 @@ impl Session for AcpSession {
         let prompt = prompt.to_string();
         let turn_id = turn.clone();
         tokio::spawn(async move {
-            let result = rpc
-                .request("session/prompt", json!({"sessionId": session_id, "prompt": [{"type": "text", "text": prompt}]}), TURN_TIMEOUT)
-                .await;
+            let watch = watch_turn(state.clone(), provider.clone(), turn_id.clone(), session_id.clone(), stall, log);
+            let request = rpc.request("session/prompt", json!({"sessionId": session_id, "prompt": [{"type": "text", "text": prompt}]}), TURN_TIMEOUT);
+            let result = tokio::select! {
+                r = request => r,
+                (verdict, why) = watch => {
+                    // The agent never ends this turn: stop it and report a quota stop.
+                    let ours = {
+                        let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+                        let ours = st.turn_id.as_deref() == Some(turn_id.as_str());
+                        if ours {
+                            st.turn_id = None;
+                            st.reply.clear();
+                        }
+                        ours
+                    };
+                    if !ours {
+                        return;
+                    }
+                    let _ = rpc.notify("session/cancel", json!({"sessionId": session_id})).await;
+                    let children = state.lock().unwrap_or_else(|p| p.into_inner()).subs.turn_ended(&provider, Ended::Failed);
+                    for e in children {
+                        let _ = events.send(e);
+                    }
+                    let what = if verdict == Verdict::Limit { "usage limit in the agent's log" } else { "stalled turn" };
+                    let _ = events.send(StreamEvent::TurnFailed {
+                        provider: provider.clone(),
+                        turn_id: Some(turn_id),
+                        error: why,
+                        code: Some("quota".into()),
+                        diagnostic: Some(format!("lucina-agentd turn watch: {what}")),
+                    });
+                    return;
+                }
+            };
             let (ours, reply) = {
                 let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
                 if st.turn_id.as_deref() == Some(turn_id.as_str()) {
