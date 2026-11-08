@@ -364,7 +364,7 @@ source = "github"
 repo = "verus-lang/verus"
 branch = "main"
 track = "releases"
-pin = "release/0.2026.10.26.d17fbd0"
+pin = "release/0.2026.11.02.8bf68ee"
 notify = "report"
 ours = [
   { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "verification", base = "main" },
@@ -377,6 +377,94 @@ confidence = "confirmed"
 rely_on = ["vstd", "verus syntax", "rust toolchain pin"]
 notes = "Toolchain, pinned per proof crate (references/upstream.lock). Rolling releases: report only, re-pin when a proof needs it."
 
+
+[[upstream]]
+id = "tla-mc"
+name = "tla-mc (TLA+ model checker in Rust)"
+url = "https://github.com/ddalton/tla-mc"
+source = "github"
+repo = "ddalton/tla-mc"
+track = "tags"
+pin = "v0.3.0"
+notify = "auto"
+ours = [ { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" } ]
+licence_upstream = "MIT"
+licence_ours = "unknown"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["exact TLC state counts", "invariants", "temporal properties", "TLC-format counterexamples", "-workers"]
+notes = "LucinaOS's primary TLA+ checker since 2026-11-08 (LucinaOS docs/research/tla-checkers.md): TLC's exact distinct-state counts on every config it runs (JunoIdleWake 3 CPUs: 53,613,540 in 192 s on the Mac), 6-8x faster than TLC. Gap: refuses P => <>[]Q temporal formulas (exit 2); run-lucina-checks falls back to tla-checker there. Installed with cargo install tla-mc --version 0.3.0 --locked on nezopt and the Mac. A new release: re-run userspace/formal/run-lucina-checks and the Juno models, compare counts before re-pinning."
+
+[[upstream]]
+id = "tla-checker"
+name = "tla-checker (tla-rs, TLA+ interpreter in Rust)"
+url = "https://github.com/fabracht/tla-rs"
+source = "github"
+repo = "fabracht/tla-rs"
+track = "tags"
+pin = "v0.24.11"
+notify = "auto"
+ours = [ { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" } ]
+licence_upstream = "MIT OR Apache-2.0"
+licence_ours = "unknown"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["--config TLC cfg", "--check-liveness", "--json status", "max-states/max-depth limits"]
+notes = "LucinaOS's second TLA+ checker (crate tla-checker, binary tla): for the temporal formulas tla-mc refuses. Known bugs at v0.24.11: an IF ... ELSE followed by an aligned /\\ line takes that conjunct into the ELSE (JunoIdleWake SoftIpi: type error); a continued infix \\/ is refused. Defaults stop at 1e6 states / depth 100 and a hit limit exits 1 like a violation; our scripts raise both and treat it as INCOMPLETE. About 450x slower than tla-mc on JunoIdleWake. Upstream reports for the two parser bugs: candidates, draft only."
+
+[[upstream]]
+id = "tlaplusplus"
+name = "tlaplusplus (scalable TLA+ runtime in Rust)"
+url = "https://github.com/zoratu/tlaplusplus"
+source = "github"
+repo = "zoratu/tlaplusplus"
+track = "tags"
+pin = "v1.2.34"
+notify = "report"
+ours = [ { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" } ]
+licence_upstream = "GPL-3.0-only"
+licence_ours = "unknown"
+relation = "reference"
+confidence = "confirmed"
+rely_on = []
+notes = "Rejected 2026-11-08 (LucinaOS docs/research/tla-checkers.md): on Minerva's BootGraph and OtaUpdate it explores 6-12 states, reports success and passes 11 witnesses that must fail (analyze-tla lists 13 unsupported features); on JunoIdleWake its counts are right but 35-60x slower than tla-mc. Revisit when analyze-tla reports no unsupported features for our specs. Built from source (not on crates.io)."
+
+[[upstream]]
+id = "tlc"
+name = "TLC (tla2tools.jar)"
+url = "https://github.com/tlaplus/tlaplus"
+source = "github"
+repo = "tlaplus/tlaplus"
+track = "releases"
+pin_date = "2026-09-25"
+notify = "report"
+ours = [ { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" } ]
+licence_upstream = "MIT"
+licence_ours = "unknown"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["TLC cfg format", "distinct-state counts", "counterexample format"]
+notes = "The cross-check, not the gate (CHECKER=tlc in run-lucina-checks, userspace/formal/tla-parity.sh). Builds in use: 2026.09.22.222048 (run-lucina-checks, deepseek-harness toolchain on nezopt) and 2026.09.25.163503 (~/tools/tla/tla2tools.jar, nezopt and the Mac)."
+
+[[upstream]]
+id = "stateright"
+name = "Stateright"
+url = "https://github.com/stateright/stateright"
+source = "github"
+repo = "stateright/stateright"
+track = "tags"
+pin = "v0.31.0"
+notify = "report"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "crates/lucina-models", base = "main" },
+  { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/crates/lucina-powerd", base = "main" },
+]
+licence_upstream = "MIT"
+licence_ours = "unknown"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["Model trait", "BFS checker", "Property::always/sometimes", "discovery paths"]
+notes = "Rust model checker for LucinaOS's layer (c)/(d) models (docs/design/lucinaos-correctness.md). Its eventually() misses cycles, so time bounds are always() properties over an explicit clock."
 [[upstream]]
 id = "uefi-rs"
 name = "uefi-rs"
