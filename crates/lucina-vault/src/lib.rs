@@ -14,6 +14,12 @@ pub mod scan;
 pub mod search;
 pub mod settings;
 pub mod vault;
+pub mod sync;
+pub mod sync_rules;
+#[cfg(test)]
+mod sync_tests;
+#[cfg(test)]
+mod sync_rules_tests;
 pub mod write;
 
 pub use vault::{Options, Vault};

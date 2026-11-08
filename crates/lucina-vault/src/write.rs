@@ -37,7 +37,7 @@ fn check_rel(rel: &str) -> Result<()> {
     Ok(())
 }
 
-fn no_symlink_below(root: &Path, rel: &str) -> Result<PathBuf> {
+pub(crate) fn no_symlink_below(root: &Path, rel: &str) -> Result<PathBuf> {
     let mut p = root.to_path_buf();
     for c in rel.split('/') {
         p.push(c);
@@ -53,7 +53,7 @@ fn no_symlink_below(root: &Path, rel: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
-fn sync_dir(dir: &Path) -> Result<()> {
+pub(crate) fn sync_dir(dir: &Path) -> Result<()> {
     // Not every platform can flush a folder (a FAT partition cannot), and the rename stands anyway.
     if let Ok(f) = fs::File::open(dir) {
         let _ = f.sync_all();
@@ -63,7 +63,7 @@ fn sync_dir(dir: &Path) -> Result<()> {
 
 /// Writes `bytes` beside `path` and renames over it, keeping its permissions. `check`
 /// runs last, after the slow flush, to narrow the window for losing a change made meanwhile.
-fn atomic_replace(path: &Path, bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<()> {
+pub(crate) fn atomic_replace(path: &Path, bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| Error::Invalid("no folder".into()))?;

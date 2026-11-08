@@ -27,6 +27,8 @@ lucina-memory = { path = "../lucina-memory" }
 lucina-flaws = { path = "../lucina-flaws" }
 lucina-ops = { path = "../lucina-ops" }
 lucina-vault-ingest = { path = "../lucina-vault-ingest" }
+# The owner vault for devices that sync it (src/vault_sync.rs): the sync module of the shared vault core.
+lucina-vault = { path = "../lucina-vault" }
 lucina-grocery = { path = "../lucina-grocery" }
 lucina-deals = { path = "../lucina-deals" }
 lucina-tools = { path = "../lucina-tools" }

@@ -3839,6 +3839,7 @@ dependencies = [
  "lucina-telegram",
  "lucina-tools",
  "lucina-upstream",
+ "lucina-vault",
  "lucina-vault-ingest",
  "lucina-vocab",
  "pdf-extract 0.10.0",
