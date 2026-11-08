@@ -67,6 +67,7 @@ pub mod upstream;
 pub mod video;
 pub mod voice;
 pub mod voice_learn;
+pub mod vault_sync;
 pub mod voice_thread;
 
 use std::collections::HashMap;

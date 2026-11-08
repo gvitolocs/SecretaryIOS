@@ -76,11 +76,11 @@ const PASS_BACK: [HeaderName; 5] = [
 
 /// The way to Lucina's notebooks.
 pub struct Notebooks {
-    http: reqwest::Client,
-    base: String,
-    auth: String,
+    pub(crate) http: reqwest::Client,
+    pub(crate) base: String,
+    pub(crate) auth: String,
     /// `SECRETARY_MCP_DEVICE_IDS`: devices whose token the MCP holds.
-    mcp_devices: Vec<String>,
+    pub(crate) mcp_devices: Vec<String>,
     streams: StreamSlots,
 }
 

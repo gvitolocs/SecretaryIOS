@@ -32,6 +32,7 @@ pub mod library;
 pub mod links;
 pub mod models;
 pub mod notebooks;
+pub mod vault;
 pub mod notes;
 pub mod notify;
 pub mod flaws;
@@ -407,6 +408,8 @@ pub fn app(state: AppState) -> Router {
         .merge(models::routes(state.clone()))
         .merge(agents::routes())
         .merge(notebooks::routes())
+        // The owner vault for devices that sync it (crate::vault), over the same way to Lucina.
+        .merge(vault::routes())
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),

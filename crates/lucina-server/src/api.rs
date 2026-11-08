@@ -467,6 +467,10 @@ async fn route(
         let body = if matches!(m.as_str(), "POST" | "PATCH") { Some(read_json(body, 16 * 1024).await?) } else { None };
         return Ok(ok(crate::about::route(st, &m, &rest, body).await?));
     }
+    // The owner vault for devices that sync it themselves (crate::vault_sync): manifest, file, trash.
+    if resource == Some("vault") {
+        return crate::vault_sync::route(method, uri, &parts[1..], body).await;
+    }
     // Lucina Notebooks (crate::notebooks): the lucina-notebooks router.
     if resource == Some("notebooks") {
         return Ok(crate::notebooks::route(st, method, uri, headers, body).await);

@@ -96,19 +96,79 @@ A copy and its golden hold private notes: they stay out of the repo.
 
 Every platform opens a vault read-only and asks before the first edit. The Mac page has no editing at all yet. No platform fetches a remote picture.
 
-## Sync: the proposal, not built
+## Sync
 
-Nothing here syncs yet: each device holds a copy put there by hand for the proof. What exists today:
+Built 2026-11-08 for Juno (and later the phones), after the vault moved to nezopt.
 
-- The Pi is canonical. Syncthing is installed on it (1.29.5) but disabled, so the Syncthing mesh is only nezopt and the Mac, for Lucina's separate ops record.
-- The Mac's `~/Documents/Obsidian` follows by `~/bin/pi-obsidian-sync`, a rsync by hand where the newer file wins and nothing warns. It has fallen behind: 1,110 notes against 2,446 on the Pi.
-- `lucina-media` (Drive) is built around hashes and dedupe, not paths, and the notes service is its own store. Neither keeps a vault's folders, so neither fits.
+### Where the copies are
 
-Proposal, using what is there:
+- **nezopt:** `/home/nez/mnt/mybook/Obsidian` holds the canonical vault. The Pi's `/home/nes/Obsidian` is a read-only backup.
+- **Mac:** the owner keeps no copy there (his word, 2026-11-08), so it has no Syncthing folder for the vault.
+- **Juno:** its own plain copy in `/data/vault`, kept in step by the code below.
 
-1. **Backbone: Syncthing on the Pi, turned on.** One folder between the Pi and nezopt, with staggered versions on the Pi, ignoring `.obsidian/workspace*` and `._*`. Syncthing's conflict files stay plain Markdown that Obsidian opens. nezopt holds a replica only, so the rule that notes live on the Pi stands. This needs the owner's OK, because it puts the vault on nezopt.
-2. **Mac: the same Syncthing folder**, replacing `pi-obsidian-sync` and its silent newer-wins. Ignore `Lucina/`, already a separate Syncthing folder inside it.
-3. **Phones and Juno: routes, not a service.** Syncthing has no official iOS client and none on Juno. Add `GET /v1/vault/manifest` (path, size, sha256), `GET /v1/vault/file` and `PUT /v1/vault/file` with the revision read, to the existing server, behind the device token, on nezopt's replica. A `sync` module in this crate pulls what differs into the device's plain folder with the same atomic writes.
-4. **Writes last, one at a time.** A `PUT` is this crate's compare-and-swap; a refused one becomes a conflict copy on the device. Pull-only comes first, and writing to the real vault needs the owner's go after a run on a copy.
+### How a device syncs
 
-`lucina-vault-ingest` already writes to the Pi by compare-and-swap over SSH, so it stays compatible.
+The device's folder and the server each list their files in a manifest: path, size and sha256. Then:
+
+- **Each file is decided against the base.** The base is the revision both sides had at the last sync, kept in a state
+  file outside the vault (Juno: `/data/lucina/vault/sync.json`). `crate::sync_rules::decide` makes the call.
+- **Every write is compare-and-swap on both sides.** It names the revision the manifest showed, so a file that changed
+  meanwhile is left alone and decided again.
+- **Conflict copies.** A conflict copy is `Note (conflict 2026-11-08 juno).md`, an ordinary note, and the next round
+  sends it to the server.
+- **Code.**
+  - `src/sync_rules.rs`: the decisions and the path rules, proved.
+  - `src/sync.rs`: `Folder` for both ends, `plan`, `run`, and the `Remote` trait.
+  - `src/sync_tests.rs`: two-folder runs, including a server change in the middle of a run.
+
+| Here | Server | Base | Act |
+|---|---|---|---|
+| same as server | | any | record |
+| changed | unchanged or gone | any | push (server copy expected) |
+| unchanged or gone | changed | any | pull (local copy expected) |
+| unchanged | gone | yes | to `.trash` here |
+| gone | unchanged | yes | to `.trash` on the server |
+| changed | changed differently | any, or none | keep this side's text as a conflict copy, then pull |
+
+### Paths
+
+- Only clean relative paths take part. These are skipped:
+  - dot names: `.trash`, `.stversions`, `.lucina-vault-*.tmp`, `._*`;
+  - control bytes and backslashes;
+  - an empty name;
+  - a name over 255 bytes or a path over 1024.
+- `.obsidian/<name>.json` comes from the server and never goes back. The server refuses to write it.
+- Files over 64 MB are left out.
+- Symlinks are never listed or followed.
+
+### Proof (Verus, D-011: the shipped file itself)
+
+- `scripts/verify-shipped.sh`: 8 verified, 0 errors.
+- `verification/vault-sync/mutants.sh`: 16 of 16 planted bugs refused. Those bugs are:
+  - an edit trashed, overwritten or pushed over;
+  - a deletion winning over an edit;
+  - a conflict settled by one side;
+  - dot names, backslashes, `//` or `.obsidian` folders let through;
+  - settings pushed back.
+- What the proof covers: an edit on either side is never lost, a deletion yields to an edit, and only an unchanged base
+  copy goes to the trash. Each act has what it needs.
+- What tests cover instead: that the facts match the revisions, and the compare-and-swap in `sync.rs`.
+
+### Routes
+
+- **Lucina (lucina-server `vault_sync.rs`).** `/api/secretary/vault/{manifest,file,trash}`, behind the Secretary bearer
+  like every `/api/secretary` route.
+  - `LUCINA_VAULT_SYNC_DIR` sets the folder, default `/home/nez/mnt/mybook/Obsidian`.
+  - If the folder is missing (MyBook not mounted) the answer is 503, never an empty manifest.
+- **secretary-server (`vault.rs`).** `/v1/vault/{manifest,file,trash}` for owner devices only (no MCP, no service
+  tokens), counted on the media limiter. Calls go over the Link like `/v1/notebooks`.
+
+### Syncthing
+
+Syncthing no longer carries this vault anywhere; the owner removed the Mac folder. If a Syncthing folder comes back on
+nezopt:
+- the server's writes are atomic renames from `.lucina-vault-*.tmp` names, which `.stignore` must ignore;
+- Syncthing's own trash versioning keeps what a millisecond race might replace.
+
+The ingest (`lucina-vault-ingest`) and lucina-memo write the same folder locally. They also write by compare-and-swap or
+create, so a device's push and their writes never overwrite each other silently.
