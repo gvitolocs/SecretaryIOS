@@ -285,6 +285,38 @@ pub enum AddItem {
     },
 }
 
+/// `(name, spec, quantity, unit)` per item to add. A plain string is split
+/// into its items (docs/design/shopping-labels.md: never one item made of a
+/// sentence, never command words); a detailed item is taken as given. This
+/// server has no catalog, so a catalog name with a conjunction in it ("sale e
+/// pepe") is split too; send it as a detailed item to keep it whole.
+pub(crate) fn expand_add_items(
+    items: &[AddItem],
+) -> Vec<(String, Option<String>, Option<f64>, Option<String>)> {
+    let mut out = Vec::new();
+    for it in items {
+        match it {
+            AddItem::Name(n) => {
+                let parts = shopping_text::split_items(n, |_| false);
+                if parts.is_empty() {
+                    // Empty or punctuation only: the name check reports it.
+                    out.push((n.clone(), None, None, None));
+                }
+                for p in parts {
+                    out.push((p.name, None, p.quantity.map(f64::from), p.unit));
+                }
+            }
+            AddItem::Detailed {
+                name,
+                spec,
+                quantity,
+                unit,
+            } => out.push((name.clone(), spec.clone(), *quantity, unit.clone())),
+        }
+    }
+    out
+}
+
 /// Arguments of `shopping_add`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ShoppingAddArgs {
@@ -1438,16 +1470,8 @@ impl Tools<'_> {
         }
         let mut ops = Vec::new();
         let mut names = Vec::new();
-        for (i, it) in a.items.iter().enumerate() {
-            let (name, spec, quantity, unit) = match it {
-                AddItem::Name(n) => (n.as_str(), None, None, None),
-                AddItem::Detailed {
-                    name,
-                    spec,
-                    quantity,
-                    unit,
-                } => (name.as_str(), spec.as_deref(), *quantity, unit.as_deref()),
-            };
+        for (i, (name, spec, quantity, unit)) in expand_add_items(&a.items).iter().enumerate() {
+            let (name, spec, quantity, unit) = (name.as_str(), spec.as_deref(), *quantity, unit.as_deref());
             let name = check_text(&format!("items[{i}].name"), name, 200)?;
             let op_id = uuid::Uuid::new_v4().to_string();
             let mut op = json!({"opId": op_id, "type": "add", "name": name});
@@ -2880,5 +2904,29 @@ mod decision_tests {
             ask_prefix_allow("claude-code", &[]),
             "[via Lucina MCP, from claude-code; allow=] "
         );
+    }
+}
+
+#[cfg(test)]
+mod shopping_add_tests {
+    use super::*;
+
+    #[test]
+    fn a_sentence_is_split_and_a_detailed_item_is_kept() {
+        let items: Vec<AddItem> = serde_json::from_value(json!([
+            "to shopping list patatine fritte, ricotta, redbull, mortadella e 4 baguettes",
+            {"name": "sale e pepe", "spec": "fino"},
+            "latte"
+        ]))
+        .unwrap();
+        let got = expand_add_items(&items);
+        let names: Vec<&str> = got.iter().map(|g| g.0.as_str()).collect();
+        assert_eq!(
+            names,
+            ["patatine fritte", "ricotta", "redbull", "mortadella", "baguettes", "sale e pepe", "latte"]
+        );
+        assert_eq!(got[4].2, Some(4.0));
+        assert_eq!(got[5].1.as_deref(), Some("fino"));
+        assert!(got.iter().all(|g| !g.0.contains("shopping list")));
     }
 }

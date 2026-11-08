@@ -58,9 +58,15 @@ impl Catalog {
         hits
     }
 
-    /// Section guess for a free-typed item (used when the user invents a name).
+    /// The section of the entry whose name equals `name` (case-insensitive,
+    /// trimmed). A free-typed name that is not exactly an entry has none: items
+    /// are labels, never sorted by a partial match (docs/design/shopping-labels.md).
     pub fn section_for(&self, name: &str) -> Option<String> {
-        self.search(name, 1).first().and_then(|e| e.section.clone())
+        let q = name.trim().to_lowercase();
+        self.entries
+            .iter()
+            .find(|e| e.name.trim().to_lowercase() == q)
+            .and_then(|e| e.section.clone())
     }
 }
 
@@ -97,6 +103,8 @@ mod tests {
         let cat = cat();
         assert!(cat.section_for("xylophone").is_none());
         assert_eq!(cat.section_for("butter"), None);
-        assert_eq!(cat.section_for("chocolate").as_deref(), Some("Sweets"));
+        assert_eq!(cat.section_for(" milk CHOCOLATE ").as_deref(), Some("Sweets"));
+        assert!(cat.section_for("chocolate").is_none(), "no substring match");
+        assert!(cat.section_for("milk").is_none(), "no prefix match");
     }
 }

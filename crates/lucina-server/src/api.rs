@@ -1405,23 +1405,48 @@ async fn shopping_legacy(
                 return Err(ApiError::bad_request("rawName is required"));
             }
             let product = optional_string(&body, "product", MAX_SHOPPING_NAME_CHARS)?;
-            let canonical = lucina_grocery::resolve_canonical_product(if product.is_empty() {
-                &raw
-            } else {
-                &product
-            });
             let lang = shopping_lang(uri, Some(&body))?;
-            let item = repo
-                .add_item_in(
-                    user,
-                    &canonical,
-                    &raw,
-                    shopping_channel(&body),
-                    lang.as_deref(),
-                )
-                .await
-                .map_err(grocery_error)?;
-            Ok(ok_status(201, json!({"item": item})))
+            // One row per item of the text (docs/design/shopping-labels.md): "latte, uova e
+            // 2 kg di farina" is three rows. `item` stays the first for old clients;
+            // `items` has every row.
+            let parts = if product.is_empty() {
+                crate::grocery_turn::shopping_parts(&repo.catalog_index(), &raw)
+            } else {
+                vec![lucina_grocery::ItemPart {
+                    name: raw.clone(),
+                    quantity: None,
+                    unit: None,
+                }]
+            };
+            let mut items = Vec::new();
+            for p in &parts {
+                let canonical = lucina_grocery::exact_canonical_product(if product.is_empty() {
+                    &p.name
+                } else {
+                    &product
+                });
+                let mut extra = json!({});
+                if let Some(q) = p.quantity {
+                    extra["quantity"] = json!(q);
+                }
+                if let Some(u) = &p.unit {
+                    extra["unit"] = json!(u);
+                }
+                items.push(
+                    repo.add_item_with(
+                        user,
+                        &canonical,
+                        &p.name,
+                        shopping_channel(&body),
+                        lang.as_deref(),
+                        &extra,
+                    )
+                    .await
+                    .map_err(grocery_error)?,
+                );
+            }
+            let first = items.first().cloned().unwrap_or(Value::Null);
+            Ok(ok_status(201, json!({"item": first, "items": items})))
         }
         ("PATCH", Some(id)) => {
             if !is_item_id(id) {
