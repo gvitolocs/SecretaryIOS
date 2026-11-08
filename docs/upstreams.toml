@@ -918,7 +918,7 @@ notes = "Copy in ~/Projects/Lucina/LucinaNet-swgl: only names the unknown shader
 
 [[upstream]]
 id = "brimstone"
-name = "Brimstone (Rust JavaScript engine under LucinaNet)"
+name = "Brimstone (upstream of LucinaJavascript, the Rust JavaScript engine under LucinaNet)"
 url = "https://github.com/Hans-Halverson/brimstone"
 source = "github"
 repo = "Hans-Halverson/brimstone"
@@ -935,7 +935,7 @@ licence_ours = "MIT"
 relation = "fork"
 confidence = "confirmed"
 rely_on = ["Value NaN-boxing (runtime/value.rs)", "PropertyKey (runtime/property_key.rs)", "semispace GC (gc/garbage_collector.rs)", "VirtualObject", "rust_runtime function registry", "TaskQueue", "ICU4X baked data"]
-notes = "Replaces SpiderMonkey in LucinaNet (owner go 2026-11-04). Verdict adapt: fork with an embedding API (embed/: non-moving host space for DOM objects, natives, proxies, roots), branch host-embedding; ICU data for ICU4X 2.1 (branch icu-2.1). The mozjs_sys boundary encodes values and ids as Brimstone does (LucinaNet-js mozjs-sys/src/boundary, Verus): a change to value.rs or property_key.rs must be ported there and the differential tests rerun. Choice rechecked against Boa, Nova, yavashark, jsse, stator, zuqe: LucinaNet-js docs/brimstone-backend.md. Single author upstream; we carry the fork."
+notes = "Upstream origin only: our engine is LucinaJavascript (LucinaJS for short; owner 2026-11-08: we changed it a lot), forked from Brimstone at the pin; crates and the fork repo keep the brimstone names until the rename after the YouTube work. Replaces SpiderMonkey in LucinaNet (owner go 2026-11-04). Verdict adapt: fork with an embedding API (embed/: non-moving host space for DOM objects, natives, proxies, roots), branch host-embedding; ICU data for ICU4X 2.1 (branch icu-2.1). The mozjs_sys boundary encodes values and ids as Brimstone does (LucinaNet-js mozjs-sys/src/boundary, Verus): a change to value.rs or property_key.rs must be ported there and the differential tests rerun. Choice rechecked against Boa, Nova, yavashark, jsse, stator, zuqe: LucinaNet-js docs/brimstone-backend.md. Single author upstream; we carry the fork."
 
 [[upstream]]
 id = "mozjs-sys"
@@ -1104,3 +1104,25 @@ relation = "vendored"
 confidence = "confirmed"
 rely_on = ["FrameDecoder::decode_from_to", "set_max_window_size", "content checksum getters"]
 notes = "Cargo dependency, unmodified, decoding only. Our crate servo-zstd adds the RFC 9659 window rule (Verus-checked, window.rs) and checksum/content-size checks; tests/parity.rs compares with libzstd. Four bit flips libzstd refuses are accepted by ruzstd and decode to the original content: a possible upstream report, draft only without the owner OK."
+
+[[upstream]]
+id = "javascriptcore"
+name = "JavaScriptCore (WebKit's JavaScript engine; LLInt is LucinaJavascript's model)"
+url = "https://github.com/WebKit/WebKit/tree/main/Source/JavaScriptCore"
+source = "github"
+repo = "WebKit/WebKit"
+branch = "main"
+track = "commits"
+pin = "eeb5ad7ee1d7a6f0430b515a0bdd3e6f68f59feb"
+pin_date = "2026-11-08"
+paths = ["Source/JavaScriptCore/llint", "Source/JavaScriptCore/bytecode", "Source/JavaScriptCore/heap", "Source/JavaScriptCore/runtime/CachedTypes.cpp"]
+notify = "report"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet-brimstone", path = "src/js", base = "main" },
+]
+licence_upstream = "BSD-2-Clause AND LGPL-2.0-or-later"
+licence_ours = "MIT"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["LLInt interpreter design (llint/)", "register bytecode and UnlinkedCodeBlock (bytecode/)", "MarkedSpace size-class heap and eden collection (heap/)", "bytecode cache (runtime/CachedTypes.cpp)"]
+notes = "Owner decision 2026-11-08: LucinaJavascript is interpreter-first with no JIT, modelled on JSC's LLInt ('this is our way to go'); V8 and SpiderMonkey are references for streaming parse and the code/stencil cache only. Records: adopt the LLInt design (register bytecode, cheap dispatch, inline caches on property access and calls, lazy UnlinkedFunctionExecutable re-parse, which LucinaJS already does since 2026-11-08); adapt the heap (non-moving MarkedSpace with size classes and an eden mode, to replace the copying semispace whose copy window is LucinaJS's memory gap); reference the bytecode cache (CachedTypes); reject the JITs (Baseline, DFG, FTL): no executable memory. Licences: llint/ and bytecode/ files are Apple BSD-2-Clause (reusable with notice); heap/, parser/ and most of runtime/ are LGPL-2.0-or-later (KJS heritage): copy behaviour, not code, from those. Ported as Rust, not C++/offlineasm."
