@@ -89,6 +89,24 @@ lanes in chain order only when lane's `[[detectors]]` classify the failure as qu
 real failure or on a quota stop that left changes (the same rules as `lane`). A contract test parses the real
 chains.toml so a schema change in lane breaks the build, not a run.
 
+**Quota hand-off (every run, 2026-11-08; owner: "then another agents should continue them").** A run that is not a
+`--chain` run and stops on a quota, usage or rate limit, or on an unavailable provider (lane's `[[detectors]]` for
+the lane its provider stands for, or a `code: quota` reply), continues as a new, linked agent
+(`crates/lucina-agentd/src/manager/handoff.rs`):
+- Next agent: the first lane of `deep-lucina` (claude, cursor, Mistral `vibe`, zcode, free Zen DeepSeek on
+  `opencode`) whose provider is registered and wasn't tried yet by this run or the runs it continues. Never Codex
+  and never the paid DeepSeek key. The pure decision is `lucina_agents::handoff` (Verus H1-H7,
+  `verification/verus/agent_handoff.rs`, six mutants killed by `scripts/verus-mutants-handoff.sh`).
+- The continuation keeps the cwd and workspace, uncommitted changes included (never reset), the title, the labels
+  (a reach thread's `reach` label too), and a no-ask mode when the old run had one and the new provider offers one.
+  It gets the chat history (the fork attachment) and a prompt with the workspace's `git status` and the original
+  task between `<original-task>` tags, so a second hand-off quotes the same task.
+- Links: `lucina.continued-on` / `lucina.continued-provider` on the old run (list bucket `done`, "Continued on …"),
+  `lucina.continued-from` on the new one; `lucina.handoff` is `pending` while deciding, `exhausted` when no agent
+  is left. `wait`, orchestration finish notices and Lucina's reach watcher follow the continuation, so a reach
+  thread still gets its reply.
+- A real failure stays a plain error.
+
 ### Agent lifecycle
 
 States: `initializing → idle ⇄ running → (idle | error)`, plus `closed` (provider process gone, resumable) and
