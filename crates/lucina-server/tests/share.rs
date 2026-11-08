@@ -217,7 +217,7 @@ async fn multipart_share_reads_everything_and_deduplicates_across_restart() {
     assert_eq!(lines[0]["channel"], "ios");
     assert_eq!(
         lines[0]["meta"],
-        json!({"kind":"share", "shareId":"share-integration-123", "intent":"ask"})
+        json!({"kind":"share", "shareId":"share-integration-123", "intent":"ask", "source":"ios-share"})
     );
     assert!(lines[0]["text"]
         .as_str()
