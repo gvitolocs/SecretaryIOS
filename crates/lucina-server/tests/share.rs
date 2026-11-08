@@ -1823,3 +1823,84 @@ async fn a_voice_share_creates_no_memo() {
         assert!(!text.contains("MemosTool"), "{file} uses the memos tool");
     }
 }
+
+/// Process-wide capture of the share's log lines (`share_level` is the only observable of the on-device level record).
+fn captured_logs() -> &'static Arc<Mutex<Vec<u8>>> {
+    use std::io::Write;
+    static BUF: std::sync::OnceLock<Arc<Mutex<Vec<u8>>>> = std::sync::OnceLock::new();
+    BUF.get_or_init(|| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        #[derive(Clone)]
+        struct W(Arc<Mutex<Vec<u8>>>);
+        impl Write for W {
+            fn write(&mut self, d: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(d);
+                Ok(d.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let w = W(buf.clone());
+        let sub = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || w.clone())
+            .finish();
+        let _ = tracing::subscriber::set_global_default(sub);
+        buf
+    })
+}
+
+/// The first captured `share_level` line with `on_device=true` that has every one of `needles`, waiting for the background task.
+async fn on_device_level_line(needles: &[&str]) -> String {
+    for _ in 0..100 {
+        let text = String::from_utf8_lossy(&captured_logs().lock().unwrap()).to_string();
+        if let Some(l) = text
+            .lines()
+            .find(|l| l.contains("share_level") && l.contains("on_device=true") && needles.iter().all(|n| l.contains(n)))
+        {
+            return l.to_owned();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no on-device share_level line with {needles:?}:\n{}", String::from_utf8_lossy(&captured_logs().lock().unwrap()));
+}
+
+#[tokio::test]
+async fn an_on_device_transcript_still_replies_and_its_level_is_recorded_off_the_critical_path() {
+    captured_logs();
+    let services = services().await;
+    let h = voice_setup(&services, false, "WHISPER_MUST_NOT_RUN").await;
+    // Quiet speech (about -41 dBFS peak): with a transcript, nothing is lifted or turned down, and Whisper is not asked.
+    let bytes = quiet_voice_bytes(&h, Some(0.07)).await;
+    assert_eq!(submit(&h, voice_form("voice-level-od1", bytes.clone(), Some(VOICE_TEXT), "")).await.status(), 202);
+    let done = finished(&h, "voice-level-od1").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["attachments"][0]["transcript"], VOICE_TEXT);
+    assert_ne!(done["reply"], "The recording was silent: check the microphone.");
+    assert!(!h.dir.path().join("whisper-test.calls").exists());
+    let stored = services.seen.stored.lock().unwrap().clone().expect("stored in the library");
+    assert_eq!(std::fs::read(stored).unwrap(), bytes);
+    // The level was measured anyway, for the record.
+    let line = on_device_level_line(&["silent=false", "gain_db=2", "in_peak_dbfs=-4"]).await;
+    assert!(line.contains("in_rms_dbfs=") && line.contains("speech_rms_dbfs="), "{line}");
+    // The work copy for the measurement is gone.
+    let dir = h.state.cfg.share.dir.join(chrono::Utc::now().format("%Y-%m").to_string()).join("voice-level-od1");
+    assert!(std::fs::read_dir(dir).unwrap().filter_map(Result::ok).all(|e| !e.path().to_string_lossy().ends_with(".level.src")));
+}
+
+#[tokio::test]
+async fn a_silent_recording_with_an_on_device_transcript_is_logged_silent_but_the_reply_is_unchanged() {
+    captured_logs();
+    let services = services().await;
+    let h = voice_setup(&services, false, "WHISPER_MUST_NOT_RUN").await;
+    let bytes = quiet_voice_bytes(&h, None).await;
+    assert_eq!(submit(&h, voice_form("voice-level-od2", bytes, Some(VOICE_TEXT), "")).await.status(), 202);
+    let done = finished(&h, "voice-level-od2").await;
+    assert_eq!(done["status"], "done", "{done}");
+    // The transcript proves there was speech: no silent reply, the attachment is not failed.
+    assert_ne!(done["reply"], "The recording was silent: check the microphone.");
+    assert_ne!(done["attachments"][0]["state"], "failed", "{done}");
+    on_device_level_line(&["silent=true"]).await;
+}

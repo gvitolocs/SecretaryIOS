@@ -712,9 +712,9 @@ impl Conn {
         // The level of the recording (protocol section 10.7), before any speech-to-text: a silent one stops here, quiet speech is
         // lifted on the copy that goes to the speech-to-text (the note's file stays as recorded).
         let samples = voice_level::samples_of(&pcm);
-        let analysis = voice_level::analyse(&samples);
-        let level = InputLevel::of(&analysis.level);
-        if analysis.level.silent {
+        let assessed = voice_telemetry::assess(&samples);
+        let level = assessed.level;
+        if assessed.silent {
             tracing::info!(
                 device = %self.ident.device_id,
                 in_peak_dbfs = level.in_peak_dbfs,
@@ -732,7 +732,7 @@ impl Conn {
             voice_telemetry::record_no_speech(&self.st, &self.ident, up_bytes);
             return;
         }
-        let stt_pcm = analysis.normalised(&samples).map_or_else(|| Bytes::from(pcm.clone()), |v| Bytes::from(voice_level::pcm_of(&v)));
+        let stt_pcm = assessed.lifted.map_or_else(|| Bytes::from(pcm.clone()), |v| Bytes::from(voice_level::pcm_of(&v)));
         drop(samples);
         let task = if opts.note {
             tokio::spawn(run_note(NoteRun {

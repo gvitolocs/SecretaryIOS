@@ -526,9 +526,7 @@ async fn level_wav(wav: &Path) -> anyhow::Result<()> {
     let Some((level, lifted)) = outcome else {
         return Ok(());
     };
-    let (peak, rms, speech, gain) = level.rounded();
-    tracing::info!(target: "lucina_server::share", event = "share_level", in_peak_dbfs = peak, in_rms_dbfs = rms,
-        speech_rms_dbfs = speech, gain_db = gain, silent = level.silent, "voice note level");
+    log_level(&level, false);
     if level.silent {
         return Err(Silent.into());
     }
@@ -536,6 +534,49 @@ async fn level_wav(wav: &Path) -> anyhow::Result<()> {
         tokio::fs::write(wav, wav_bytes).await?;
     }
     Ok(())
+}
+
+/// The `share_level` log line: numbers only, never audio or text. `on_device`: the note came with the phone's own transcript, so
+/// this is a record only and changed nothing.
+fn log_level(level: &crate::voice_level::Level, on_device: bool) {
+    let (peak, rms, speech, gain) = level.rounded();
+    tracing::info!(target: "lucina_server::share", event = "share_level", in_peak_dbfs = peak, in_rms_dbfs = rms,
+        speech_rms_dbfs = speech, gain_db = gain, silent = level.silent, on_device, "voice note level");
+}
+
+/// A voice note with an on-device transcript skips Whisper, and with it the level check. Measure it anyway, for the record only,
+/// off the critical path: the reply never waits for it and never changes because of it (the transcript proves there was speech).
+/// The file is hard-linked first, so the share's clean-up cannot take it away from the task; no link, no measurement.
+fn record_level_in_background(path: &Path) {
+    let link = path.with_extension("level.src");
+    let _ = std::fs::remove_file(&link);
+    if std::fs::hard_link(path, &link).is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let decoded = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            Command::new("ffmpeg")
+                .args(["-nostdin", "-loglevel", "error", "-i"])
+                .arg(&link)
+                .args(["-t", "600", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+        let _ = tokio::fs::remove_file(&link).await;
+        let Ok(Ok(out)) = decoded else { return };
+        if !out.status.success() {
+            return;
+        }
+        let level = tokio::task::spawn_blocking(move || {
+            crate::voice_level::analyse(&crate::voice_level::samples_of(&out.stdout)).level
+        })
+        .await;
+        if let Ok(level) = level {
+            log_level(&level, true);
+        }
+    });
 }
 
 /// 16 kHz mono WAV of the first ten minutes for voice notes, otherwise 30, then Whisper. A voice note is measured first: silent ->
@@ -596,10 +637,15 @@ async fn audio(
     let mut silent = false;
     let (transcript, source) = match on_device.filter(|t| !t.trim().is_empty()) {
         // The phone's own transcript gets the Voice Learn vocabulary like Whisper's does (lucina-memo).
-        Some(t) => (
+        Some(t) => {
+            if voice {
+                record_level_in_background(path);
+            }
+            (
             Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
             "on-device",
-        ),
+            )
+        }
         None => match transcribe(st, path, voice).await {
             Ok((t, _)) => (t, "whisper"),
             Err(e) => {

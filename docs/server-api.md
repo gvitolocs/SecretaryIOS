@@ -1406,7 +1406,10 @@ sent). Headers:
 Errors: `400 bad_request` (`lang`), `400 invalid_audio` (a `audio/wav` body
 that is not a PCM WAV), `401`, `413 payload_too_large`, `415
 unsupported_media_type`, `422 no_speech` (empty, under 0.3 s of audio, or an
-empty transcript), `429 rate_limited` (20 turns/minute per device, its own
+empty transcript), `422 silent` (the recording has no signal: peak under -60 dBFS or no
+frame above the noise gate; message "The recording was silent: check the microphone."; no
+speech-to-text or chat runs; quiet speech is otherwise lifted on the speech-to-text copy
+only, as on the socket), `429 rate_limited` (20 turns/minute per device, its own
 bucket), `429 voice_busy` (the device's previous turn is still running), `429
 transcription_provider_refused`, `502 transcription_failed` /
 `lucina_unreachable` / `lucina_error` / `tts_unavailable`, `503
@@ -2996,6 +2999,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
 | 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`, `POST /v1/voice`). |
 | 422 | `no_speech` | server | `POST /v1/voice`: empty or under 0.3 s of audio, or an empty transcript (on the socket: an `error` message). |
+| 422 | `silent` | server | `POST /v1/voice`: the recording is silent (peak under about -60 dBFS): check the microphone. |
 | 429 | `voice_busy` | server | `POST /v1/voice`: the device's previous turn is still running. |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |
