@@ -110,11 +110,26 @@ const HEADER_TEXT_BYTES: usize = 1000;
 pub const DEFAULT_STT_URL: &str = "http://127.0.0.1:8801/v1/memos/stt";
 /// Local speech-to-text deadline.
 const STT_TIMEOUT: Duration = Duration::from_secs(45);
+/// A voice note's upload (the loopback share endpoint accepts it at once).
+const SHARE_TIMEOUT: Duration = Duration::from_secs(120);
 /// A warm-up (or any answered local transcription) this recent means the
 /// engine is loaded: `start` on the socket does not warm it again.
 pub const WARM_FRESH: Duration = Duration::from_secs(60);
 /// What the warm-up sends: 0.5 s of silence at 16 kHz.
 const WARM_BYTES: usize = 16_000;
+
+/// The caller's own credentials on a loopback request through Caddy (the gateway checks them like
+/// it does for the app): `Authorization` unchanged, else the `Cookie` plus `X-Secretary-CSRF: 1`.
+pub(crate) fn with_creds(req: reqwest::RequestBuilder, headers: &HeaderMap) -> reqwest::RequestBuilder {
+    if let Some(auth) = headers.get(header::AUTHORIZATION) {
+        req.header(header::AUTHORIZATION, auth.clone())
+    } else if let Some(cookie) = headers.get(header::COOKIE) {
+        req.header(header::COOKIE, cookie.clone())
+            .header("x-secretary-csrf", "1")
+    } else {
+        req
+    }
+}
 
 /// Rate limit and the one-turn-at-a-time guard.
 pub struct Voice {
@@ -123,6 +138,9 @@ pub struct Voice {
     /// The local speech-to-text endpoint, if any.
     stt_url: Option<String>,
     stt: reqwest::Client,
+    /// Where voice notes are posted (`POST /v1/share`), if notes are on.
+    share_url: Option<String>,
+    share: reqwest::Client,
     warm: Mutex<Warm>,
 }
 
@@ -134,7 +152,7 @@ struct Warm {
 }
 
 impl Voice {
-    pub fn new(stt_url: Option<String>) -> anyhow::Result<Self> {
+    pub fn new(stt_url: Option<String>, share_url: Option<String>) -> anyhow::Result<Self> {
         Ok(Self {
             limiter: crate::ratelimit::RateLimiter::new(PER_MINUTE),
             busy: Mutex::new(HashSet::new()),
@@ -145,7 +163,22 @@ impl Voice {
                 .connect_timeout(Duration::from_secs(5))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
+            share_url,
+            share: reqwest::Client::builder()
+                .timeout(SHARE_TIMEOUT)
+                .connect_timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
         })
+    }
+
+    /// The share endpoint voice notes are posted to; `None` = notes are off.
+    pub fn share_url(&self) -> Option<&str> {
+        self.share_url.as_deref()
+    }
+
+    pub fn share_client(&self) -> &reqwest::Client {
+        &self.share
     }
 
     /// Ask the local engine. `Ok(heard)` (its text maybe empty) when it
@@ -167,20 +200,12 @@ impl Voice {
             Some(l) if !l.is_empty() => format!("{base}?lang={}", l.to_ascii_lowercase()),
             _ => base.to_owned(),
         };
-        let mut req = self
+        let req = self
             .stt
             .post(url)
             .header(header::CONTENT_TYPE, content_type)
             .body(audio);
-        // The caller's own credentials: the gateway checks them like it does for the app.
-        if let Some(auth) = headers.get(header::AUTHORIZATION) {
-            req = req.header(header::AUTHORIZATION, auth.clone());
-        } else if let Some(cookie) = headers.get(header::COOKIE) {
-            req = req
-                .header(header::COOKIE, cookie.clone())
-                .header("x-secretary-csrf", "1");
-        }
-        let resp = req.send().await.map_err(|e| {
+        let resp = with_creds(req, headers).send().await.map_err(|e| {
             if e.is_timeout() {
                 "timed out".to_owned()
             } else {
@@ -725,12 +750,7 @@ async fn voice(
     // The spoken reply, produced by a task that outlives this handler and
     // feeds the response body.
     let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(16);
-    let spec = Spec {
-        heard: heard.clone(),
-        lang,
-        ident: ident.clone(),
-        facts,
-    };
+    let spec = Spec::voice_thread(heard.clone(), lang, ident.clone(), facts);
     let task = tokio::spawn({
         let (st, shared) = (st.clone(), shared.clone());
         async move {
@@ -943,7 +963,7 @@ mod tests {
 
     #[test]
     fn one_turn_per_device() {
-        let v = Voice::new(None).unwrap();
+        let v = Voice::new(None, None).unwrap();
         assert!(v.claim("dev_a"));
         assert!(!v.claim("dev_a"));
         assert!(v.claim("dev_b"));

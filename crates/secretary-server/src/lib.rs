@@ -57,6 +57,8 @@ pub mod tts;
 pub mod upstream;
 pub mod voice;
 pub mod voice_filler;
+pub mod voice_frames;
+pub mod voice_note;
 pub mod voice_learn;
 pub mod voice_pipe;
 pub mod voice_split;
@@ -253,7 +255,7 @@ impl AppState {
             catalog_dir: cfg.catalog_dir.clone(),
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
-            voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
+            voice: voice::Voice::new(cfg.voice_stt_url.clone(), cfg.voice_share_url.clone())?,
             fillers: voice_filler::Fillers::new(),
             voice_vocab: voice_learn::VocabCache::new(),
             voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),

@@ -40,7 +40,8 @@ Client → server:
   nothing for it; frames, `end` and `cancel` with no turn running are ignored.
 
 Server → client:
-- `{"type":"listening"}`: reply to `start`.
+- `{"type":"listening"}`: reply to `start`. Since section 10 it also carries `purpose`, `codec`, `rate` and `turn`, for
+  every `start`, old-style ones included (10.1); a client that reads only `type` is not affected.
 - `{"type":"endpoint"}`: VAD found the end of speech (vad mode), or the 1 MiB (about 32 s) recording cap was hit (either
   mode). The client stops sending.
 - `{"type":"transcript","text":"…"}`
@@ -53,7 +54,7 @@ Server → client:
   and, when a filler phrase was played, `ack`; both are absent otherwise. When a filler is played, `first_audio` is
   the filler's and can be earlier than `tts_first`.
 - `{"type":"error","code":"…","message":"…"}`: the turn ended without (complete) audio. `no_speech`, `stt_unavailable`,
-  `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`. The socket stays open after an error.
+  `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`, and for notes `note_failed` (10.4). The socket stays open after an error.
 
 Server pipeline per turn: `start` warms STT (a background 0.5 s-silence call to the local STT, unless one ran in the
 last 60 s). PCM accumulates while an energy VAD watches it. On end-of-speech the server runs STT, then streaming chat
@@ -321,3 +322,134 @@ timeline `meta.voice`, the telemetry turn record), so the device page and the ch
   - Language: Whisper already detects it.
   - Reply length: the `voice: true` rule already sets it.
   - Filler decision: derived from the intent, with no extra call.
+
+## 10. Streaming input from every client: codecs, notes, text (2026-11-08)
+
+The owner asked (2026-11-08) that on every device the audio flows to the server *while* he talks, so the work
+overlaps his speech: the Secretary iOS app, the Mac app (Secretary Code, the web app in Electron), Juno and Fortuna
+(the DSi). They all use this socket. Section 2 stays valid word for word: a `start` without the new keys is exactly
+today's turn. The survey that led here is `docs/voice-streaming-survey.md`.
+
+### 10.1 `start`, new optional keys
+
+```json
+{"type":"start","mode":"ptt","lang":"it",
+ "purpose":"command"|"note", "codec":"pcm16"|"ima-adpcm", "rate":16000, "block":256,
+ "thread":"voice"|"main", "channel":"ios"|"web", "sessionId":"…", "replyTo":"…", "source":"ios-chat",
+ "text":false, "speak":true}
+```
+
+| key | default | meaning |
+|---|---|---|
+| `purpose` | `command` | `command`: a spoken (or shown) reply, today's turn. `note`: a voice note, a chat message with the audio file and its transcript, answered in the chat like a typed message; no speech is made for it. |
+| `codec` | `pcm16` | `pcm16`: s16le mono, as in section 2. `ima-adpcm`: IMA-ADPCM in the WAV (`adpcm_ima_wav`) block layout, mono (10.2). |
+| `rate` | 16000 | `pcm16`: 16000 only. `ima-adpcm`: 8000 to 22050 (Fortuna: 10909). |
+| `block` | – | `ima-adpcm` only, and required there: the block size in bytes (WAV `nBlockAlign`), 8 to 4096 (Fortuna: 256). |
+| `thread` | `voice` for a command | `voice`: the shared "Lucina Voice" thread (section 7). `main`: the owner's main chat, as `POST /v1/chat` would write it (the channel comes from the upgrade request's `X-Secretary-Client` header, else `channel`, else `web`, by the rule of `/v1/chat`). A note is always `main`; `thread: "voice"` with `purpose: "note"` is `bad_request`. |
+| `channel` | – | `ios` or `web`, used only when the upgrade had no `X-Secretary-Client` header (Fortuna and Juno send `web`). |
+| `sessionId` | – | the chat session for `thread: "main"`, the rule of `/v1/chat` (`[A-Za-z0-9_-]{0,64}`). |
+| `replyTo` | – | note only: the timeline id the note answers (swipe to reply), `[A-Za-z0-9_-]{1,64}`. |
+| `source` | `voice-ws` | note only: logged and stored as the media source, `[a-z0-9-]{1,32}` (`ios-chat`, `web-chat`, `juno-chat`, `fortuna-chat`). |
+| `text` | false | command only: also send the reply as text while it is written (`delta`, `answer`, 10.3), for a screen. |
+| `speak` | true | command only: false = no speech at all (no `audio` frames, no filler); the reply comes as text (`text` is implied). |
+
+A key the server does not know is ignored, as before. A bad value of a known key (wrong type included; `null` counts as
+absent) is `bad_request` and starts no turn. `mode: "vad"` with `purpose: "note"` is `bad_request` (a note ends when the
+owner lets go, never on a pause). `thread`, `channel` and `sessionId` matter only for `thread: "main"` and for notes, and
+`text` and `speak` only for commands; given anyway they are checked and then ignored. An empty `sessionId` is none. A
+`thread: "main"` start whose upgrade carries a bad `X-Secretary-Client` is `bad_request` (the `/v1/chat` rule refuses it).
+Voice notes can be switched off on the server (`SECRETARY_VOICE_SHARE_URL=off`): `start {purpose:"note"}` is then
+`bad_request` "voice notes are off".
+
+**Detecting the server.** `listening` now echoes what the server understood:
+`{"type":"listening","purpose":"note","codec":"ima-adpcm","rate":10909,"turn":"<turn id>"}`. The turn id is a UUID v4,
+unique per `start`; for a note it is the `shareId`. A server from before
+this section answers a bare `{"type":"listening"}`; a client that sent `ima-adpcm` or `note` and sees no `codec`
+key sends `cancel` and uses its old path.
+
+### 10.2 Audio frames
+
+- `pcm16`: as section 2 (binary frames of s16le, any size up to 8 KiB, a sample may be split between frames).
+- `ima-adpcm`: the byte stream of the WAV `data` chunk, cut anywhere (a frame need not hold whole blocks), at most
+  8 KiB per frame. Each block of `block` bytes is: bytes 0-1 the first sample (i16 LE), byte 2 the step index
+  (0..88; a larger value is taken as 88), byte 3 zero (ignored); then `block - 4` bytes of 4-bit codes, low nibble
+  first, one sample each. A block holds `2 * (block - 4) + 1` samples. This is ffmpeg's `adpcm_ima_wav` for one
+  channel; Fortuna's encoder (`fortuna-voice`, bit-exact with ffmpeg) writes it. At `end`, a last partial block of at
+  least 4 bytes is decoded for the codes it has; under 4 bytes it is dropped.
+- The server decodes as frames arrive and resamples to 16 kHz (linear) for the VAD and speech-to-text, so a
+  turn's work starts the moment the owner stops. The caps count decoded 16 kHz audio: a command keeps section 2's
+  1 MiB (about 32 s), a note up to 10 minutes. Reaching the cap sends `endpoint` and runs the turn, as before. A note
+  is never ended by a pause and never trimmed: the server runs no VAD on it.
+
+### 10.3 Command turns: text while it is written
+
+With `text: true` (or `speak: false`) a command turn also sends, before or between the audio frames:
+
+- `{"type":"delta","text":"<fragment>"}` as Lucina writes (her SSE `delta`s, section 1);
+- `{"type":"answer","text":"<the whole reply>","replaces":bool}` once, when Lucina has settled the reply (her
+  `reply` event). `replaces: true` means: show `text` instead of the deltas. A sensitive reply's text is the
+  fixed phrase, as for speech.
+
+`transcript`, `reply` and `done` stay as in section 2. With `speak: false` no `audio` frames come (and no filler, no
+Kokoro call); `reply.text` is then the whole settled reply, not cut at the 1200 characters speech is held to, and
+`done.ms` has `stt`, `lucina_first` and `total` (and `route`, when Lucina sent one) but no `tts_first`, `first_audio` or
+`ack`. An empty reply is the apology of section 2 in `answer` and `reply` alike, with `replaces: true`; a reply that
+reached the server only in Lucina's `done` (no `reply` event) is an `answer` with `replaces: true`. Lucina is asked in
+her spoken style (`voice: true`) either way.
+
+### 10.4 Note turns
+
+1. `start {purpose:"note"}` → `listening`. Frames stream in while the owner talks; nothing is stored yet.
+2. `end` (the owner let go) → the turn runs, t0 = that moment:
+   - **Transcript.** Recordings up to 120 s go to the same local speech-to-text as a command (lucina-memo, about
+     80 ms; Gemini as fallback); then `{"type":"transcript","text":"…"}`. Longer ones, or a failed or empty local
+     transcription, send no `transcript`: lucina-rs then transcribes the file itself (Whisper large-v3), as for any
+     shared voice note. Under 0.3 s of audio the note is `error no_speech` and nothing is posted.
+   - **The file.** `pcm16` becomes a 16 kHz PCM WAV; `ima-adpcm` becomes an IMA-ADPCM WAV of the client's own
+     blocks (the same file Fortuna used to upload). Name `voice-<UTC yyyymmddThhmmss>.wav`.
+   - **The share.** The server posts it as `POST /v1/share` (docs/share.md) through Caddy's loopback site
+     (`SECRETARY_VOICE_SHARE_URL`, default `http://127.0.0.1:8801/v1/share`) with the caller's own credentials (as
+     for speech-to-text): `shareId` = the turn id, `intent=ask`, `lang`, `sessionId`, `channel`, `source`,
+     `replyTo`, the file, and `meta={"files":[{"index":0,"voice":true,"durationMs":…,"transcript"?:…}]}`.
+     A non-empty transcript makes lucina-rs skip Whisper. Then `{"type":"note","shareId":"…","userItemId":"…"}`.
+3. **The device is free now.** After `note` a new `start` is accepted; the note is durable on the server and its
+   answer is followed in the background. When Lucina has answered, the server sends
+   `{"type":"reply","shareId":"…","text":"…","itemId":"<Lucina's timeline id>"}` and then
+   `{"type":"done","shareId":"…","ms":{"stt":…,"note":…,"reply":…,"total":…}}` (ms from t0; `stt` absent when the
+   server did not transcribe). The server follows the share by event, not by polling (each status read goes through
+   the gateway's auth and counts against the device's request budget): it opens Lucina's timeline stream with its own
+   credentials, makes ONE status read (`GET /v1/share/{id}`) to catch an answer written before the stream opened, and
+   takes the answer from the timeline item with `role` `lucina` and `replyTo` equal to the note's `userItemId`. At the
+   3-minute deadline it makes one last status read. A stream that drops is reopened once with its last event id; after
+   that the status is read every 5 s. This is done for at most 4 notes per connection; the oldest is dropped beyond that. When the socket
+   closes, watching stops; the note and its answer are in the chat anyway.
+4. Errors: before `note`, `error` as in section 2 plus `note_failed` (the share was refused; the message has the
+   status). After `note`, a share that ends in `error` sends `{"type":"error","code":"lucina_unavailable","shareId":…}`,
+   and so does one that has not answered at the 3-minute deadline (the note is in the chat anyway). A share's `error` is not on the timeline: the first or the deadline status read finds it, or the 5 s reads of a dropped stream.
+   `cancel` before `note` drops the recording (nothing is posted); after `note` it changes nothing. A `cancel` that
+   arrives while the share request is already on its way may come too late to stop it; the device then still gets `note`
+   if the share was accepted.
+5. The server keeps a record of a note's turn as it does for a command (section 5): `ok`, `err` (`note_failed`), the
+   `stt` and `total` spans, the audio bytes received, the transcript's length. It has no `first_audio`.
+
+Every message about a note after `note` carries its `shareId`, because a new turn may already be running.
+
+### 10.5 Clients
+
+- **Connect early, keep it.** A client opens the socket when its voice UI shows (the Lucina tab, the chat screen,
+  the DSi's Lucina tab), not when the owner presses; it keeps it while that UI is open and reopens with backoff.
+  For a new TLS session the DSi pays about 6 s, so it opens the socket the moment the Lucina tab opens and keeps it.
+- **Stream from the first sample.** `start` goes on press, then frames of 20 to 100 ms as the mic delivers them.
+- **Show and play as it comes.** `transcript` under the owner's bubble; `delta`/`answer` as text; `audio` frames into
+  the player at once.
+- **Measure.** Each client logs (never the audio, the text or a token) the time from `end` to `transcript`, to the
+  first `delta` or `answer`, and to the first `audio` frame.
+
+### 10.6 Not done, and why
+
+- **Partial transcripts while talking.** The local Whisper is not a streaming recognizer, and it answers about 80 ms
+  after the end of a command-length recording, so the gain is small. Measure before adding a sliding window.
+- **Opus.** Every client but the DSi has bandwidth to spare for 16 kHz PCM (32 KB/s), and the DSi has no Opus
+  encoder; the server would need libopus for nothing. Not added.
+- **Streaming the note's answer.** A note is answered by the share worker, which writes the reply when it is
+  settled; `reply` for a note therefore comes whole. A command can stream its text (10.3).
