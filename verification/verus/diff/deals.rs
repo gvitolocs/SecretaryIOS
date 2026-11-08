@@ -358,33 +358,54 @@ fn alert_selection_and_acknowledgment_refine_the_kernel() {
                         p.notification.body
                     );
                 }
-                // acknowledge = spec `ack` of every active deal's keys (overwrite), in order.
-                let mut reference: HashMap<String, f64> = HashMap::new();
+                // acknowledge = spec `ack_run` of the delivered best offers' keys (F2), each
+                // kept at the lower of the old and the new price (`kept`, F3); every other
+                // entry (the alternatives' too) is unchanged.
+                let mut reference: HashMap<String, Option<f64>> = HashMap::new();
                 for it in &items {
                     for d in &it.deals {
                         for k in deal_keys(d) {
-                            reference.insert(format!("{}|{k}", it.rule_id), d.price_dkk);
+                            let id = format!("{}|{k}", it.rule_id);
+                            reference.insert(id.clone(), state.notified_price(&id));
                         }
+                    }
+                }
+                for (it, sel) in items.iter().zip(&selected) {
+                    if !sel {
+                        continue;
+                    }
+                    let best = &it.deals[0];
+                    for k in deal_keys(best) {
+                        let id = format!("{}|{k}", it.rule_id);
+                        let old = reference[&id];
+                        let kept = match old {
+                            Some(o) if o < best.price_dkk => o,
+                            _ => best.price_dkk,
+                        };
+                        reference.insert(id, Some(kept));
                     }
                 }
                 acknowledge(&mut state, &p);
                 for (id, price) in &reference {
-                    assert_eq!(state.notified_price(id), Some(*price));
+                    assert_eq!(state.notified_price(id), *price, "case {case}: {id}");
                 }
-                // Idempotence and strict cheaper (lemma_ack_idempotent / _strict_cheaper_is_new).
-                for it in &items {
-                    for d in &it.deals {
-                        for (q, new) in [
-                            (d.price_dkk, false),
-                            (d.price_dkk + 1.0, false),
-                            (d.price_dkk - 0.5, true),
-                        ] {
-                            let mut again = d.clone();
-                            again.price_dkk = q;
-                            let single = result(vec![item(&it.name, vec![again])]);
-                            let c = compose(WatchKind::Alerts, &state, &single, now(), &settings());
-                            assert_eq!(matches!(c, Composed::Ready(_)), new);
-                        }
+                // Idempotence and strict cheaper (lemma_ack_idempotent / _strict_cheaper_is_new)
+                // on the delivered best offers.
+                for (it, sel) in items.iter().zip(&selected) {
+                    if !sel {
+                        continue;
+                    }
+                    let d = &it.deals[0];
+                    for (q, new) in [
+                        (d.price_dkk, false),
+                        (d.price_dkk + 1.0, false),
+                        (d.price_dkk - 0.5, true),
+                    ] {
+                        let mut again = d.clone();
+                        again.price_dkk = q;
+                        let single = result(vec![item(&it.name, vec![again])]);
+                        let c = compose(WatchKind::Alerts, &state, &single, now(), &settings());
+                        assert_eq!(matches!(c, Composed::Ready(_)), new);
                     }
                 }
             }
@@ -601,8 +622,9 @@ fn dedup_key_is_kind_date_and_delivered_offers() {
     assert_ne!(a.notification.dedup_key, d.notification.dedup_key);
 }
 
-/// D-a (send/save gap): a run delivers, dies before saving; the retry sees one more
-/// offer, so its key is new and the owner gets the first offer again.
+/// D-a (send/save gap, DW1): a retry that composes again sees one more offer, so its key
+/// is new and the server would not suppress it. F1 therefore re-sends the pending message
+/// itself (`failed_send_acknowledges_nothing_and_the_cap_stops_runs` below).
 #[test]
 fn retry_after_unsaved_send_repeats_with_a_new_key() {
     let state = WatchState::empty();
@@ -620,10 +642,11 @@ fn retry_after_unsaved_send_repeats_with_a_new_key() {
     }
 }
 
-/// D-b (price bounce): notified at 10, a later delivered run acknowledges it at 12,
-/// then the offer at 10 is alerted again (lemma_overwrite_forgets_cheaper).
+/// D-b (price bounce, DW2, fixed by F3): notified at 10, a later digest shows it at 12;
+/// the notified price stays 10, so the offer at 10 is not alerted again
+/// (lemma_min_keeps_cheaper, lemma_received_stays_old).
 #[test]
-fn price_bounce_alerts_a_received_price_again() {
+fn price_bounce_keeps_the_cheaper_price() {
     let mut state = WatchState::empty();
     let s = settings();
     let p = ready(compose(
@@ -638,24 +661,24 @@ fn price_bounce_alerts_a_received_price_again() {
         item("Mælk", vec![deal("tjek:1", "mælk", 12.0)]),
         item("Brød", vec![deal("tjek:2", "brød", 12.0)]),
     ]);
-    let p = ready(compose(WatchKind::Alerts, &state, &up, now(), &s));
-    assert!(!p.notification.body.contains("Mælk: "));
+    let p = ready(compose(WatchKind::Digest, &state, &up, now() + DAY, &s));
+    assert!(p.notification.body.contains("Mælk: "));
     acknowledge(&mut state, &p);
-    assert_eq!(state.notified_price("mælk|tjek:1"), Some(12.0));
-    let again = ready(compose(
+    assert_eq!(state.notified_price("mælk|tjek:1"), Some(10.0));
+    let again = compose(
         WatchKind::Alerts,
         &state,
         &result(vec![item("Mælk", vec![deal("tjek:1", "mælk", 10.0)])]),
-        now(),
+        now() + DAY,
         &s,
-    ));
-    assert!(again.notification.body.contains("Mælk: "));
+    );
+    assert_eq!(again, Composed::Skip("no new or cheaper matches"));
 }
 
-/// D-c (alternatives): an alert shows the best offer only but acknowledges the
-/// alternative too; when the best goes away the alternative is never alerted.
+/// D-c (alternatives, DW3, fixed by F2): an alert shows the best offer only and
+/// acknowledges only it; when the best goes away the alternative is alerted.
 #[test]
-fn alternative_acknowledged_without_delivery() {
+fn alternative_is_alerted_when_it_becomes_best() {
     let mut state = WatchState::empty();
     let s = settings();
     let p = ready(compose(
@@ -670,15 +693,16 @@ fn alternative_acknowledged_without_delivery() {
     ));
     assert!(!p.notification.body.contains("12"));
     acknowledge(&mut state, &p);
-    assert_eq!(state.notified_price("mælk|tjek:2"), Some(12.0));
-    let later = compose(
+    assert_eq!(state.notified_price("mælk|tjek:1"), Some(10.0));
+    assert_eq!(state.notified_price("mælk|tjek:2"), None);
+    let later = ready(compose(
         WatchKind::Alerts,
         &state,
         &result(vec![item("Mælk", vec![deal("tjek:2", "mælk", 12.0)])]),
         now(),
         &s,
-    );
-    assert_eq!(later, Composed::Skip("no new or cheaper matches"));
+    ));
+    assert!(later.notification.body.contains("12.00 DKK"));
 }
 
 /// The digest is a summary: it lists acknowledged offers (only its fingerprint skips it).
@@ -716,10 +740,12 @@ impl Deliver for Outcome {
     }
 }
 
-/// A failed send (also an admitted send whose response was lost) writes nothing; the
-/// daily cap stops a run before polling.
+/// A failed send (also an admitted send whose response was lost) acknowledges nothing
+/// (`acked_only_after_admission`) and leaves the message pending (F1, `Claim`); the next
+/// run re-sends it with the same key, then acknowledges it. The daily cap stops a run
+/// before polling.
 #[tokio::test]
-async fn failed_send_writes_nothing_and_the_cap_stops_runs() {
+async fn failed_send_acknowledges_nothing_and_the_cap_stops_runs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("deal-watch.json");
     let s = WatchSettings {
@@ -736,21 +762,28 @@ async fn failed_send_writes_nothing_and_the_cap_stops_runs() {
         "owner",
     )
     .with_clock(fixed_clock(now()));
-    assert_eq!(
-        failing.run_alerts(false).await.unwrap().reason,
-        "send failed"
-    );
-    assert!(!path.exists());
+    let failed = failing.run_alerts(false).await.unwrap();
+    assert_eq!(failed.reason, "send failed");
+    let state = WatchState::load(&path).unwrap();
+    assert_eq!(state.notified_price("mælk|tjek:1"), None);
+    assert!(state.pending().is_some());
     let ok = DealWatch::new(
         s.clone(),
-        Arc::new(Matches(r.clone())),
+        Arc::new(Matches(MatchResult {
+            items: Vec::new(),
+            ..r.clone()
+        })),
         Arc::new(Outcome(Delivery::Delivered)),
         "owner",
     )
     .with_clock(fixed_clock(now()));
-    assert!(ok.run_alerts(false).await.unwrap().sent);
+    // The re-send needs no poll: the sources now have nothing, the message is the same.
+    let resent = ok.run_alerts(false).await.unwrap();
+    assert!(resent.sent);
+    assert_eq!(resent.text, failed.text);
     let state = WatchState::load(&path).unwrap();
     assert_eq!(state.notified_price("mælk|tjek:1"), Some(10.0));
+    assert!(state.pending().is_none());
     let date = lucina_deals::format::local_date(now(), s.zone);
     std::fs::write(&path, json!({"alertCounts": {date: 4}}).to_string()).unwrap();
     let before = std::fs::read_to_string(&path).unwrap();

@@ -76,6 +76,7 @@ fn deals_cap_failed_send_and_duplicate_retry() {
         fix_pending: false,
         fix_ack_delivered: false,
         fix_min_price: false,
+        fix_drop: false,
         max_runs: 6,
         max_edits: 2,
         max_faults: 2,
@@ -130,6 +131,61 @@ fn deals_cap_failed_send_and_duplicate_retry() {
         [1, 2, 0],
         "acknowledge records the alternative too"
     );
+}
+
+/// The fixed watcher's drops: a message refused for good, or still pending on a later
+/// day, is acknowledged without being sent (and recorded in the `dropped` ghost).
+#[test]
+fn deals_drops_acknowledge_without_sending() {
+    use stateright::Model;
+    use verification_models::deals::{Action, Deals, Kind, Outcome, Phase, State, RUST};
+    let m = Deals {
+        node: false,
+        overlap: false,
+        dedup: true,
+        fix_pending: true,
+        fix_ack_delivered: true,
+        fix_min_price: true,
+        fix_drop: true,
+        max_runs: 6,
+        max_edits: 2,
+        max_faults: 2,
+    };
+    let step = |s: &State, a: Action| m.next_state(s, a).expect("enabled");
+    let alert = |s: &State, outcome: Outcome| {
+        let mut s = s.clone();
+        for a in [
+            Action::Load(RUST, Kind::Alert),
+            Action::Poll(RUST, 0),
+            Action::Decide(RUST),
+            Action::Claim(RUST),
+            Action::Send(RUST, outcome),
+        ] {
+            s = step(&s, a);
+        }
+        s
+    };
+    let mut start = m.init_states().remove(0);
+    start = step(&start, Action::Tick);
+    // Refused: not on the server, not received, acknowledged, nothing pending.
+    let rejected = alert(&start, Outcome::Rejected);
+    assert!(rejected.server.is_empty());
+    assert_eq!(rejected.recv, [0; 3]);
+    assert_eq!(rejected.file.pending, None);
+    assert_eq!(rejected.file.notified, [1, 0, 0]);
+    assert_eq!(rejected.dropped, [2, 0, 0]);
+    // Down, then the day ends with the message pending: the next day's load drops it.
+    let mut s = alert(&start, Outcome::Down);
+    assert!(s.file.pending.is_some());
+    for _ in 0..3 {
+        s = step(&s, Action::Tick);
+    }
+    s = step(&s, Action::Load(RUST, Kind::Alert));
+    assert_eq!(s.file.pending, None);
+    assert_eq!(s.file.notified, [1, 0, 0]);
+    assert_eq!(s.dropped, [2, 0, 0]);
+    assert!(s.server.is_empty());
+    assert_eq!(s.run[RUST].phase, Phase::Loaded, "the run goes on");
 }
 
 #[test]
