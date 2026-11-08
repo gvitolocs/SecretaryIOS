@@ -1,17 +1,17 @@
 //! Jev's check of every item Lucina puts on the shopping list.
 //!
-//! One TypeSafe Jev call per item decides, as typed answers:
-//! - is it something for the home shopping list (food, drinks, household
-//!   consumables, personal care, baby and pet supplies) at all;
-//! - its catalog section;
-//! - which catalog item it is, if any. Catalog ids are also the keys of the
-//!   item illustrations (`assets/icons/items/<id>.svg`), so a bound item gets
-//!   its picture in every client.
+//! An exact catalog name or alias is bound to its catalog item (its id is also
+//! the key of the item illustration, `assets/icons/items/<id>.svg`) and needs
+//! no call. Anything else is a plain label (docs/design/shopping-labels.md):
+//! never bound to a catalog item or put in a section by a guess.
 //!
-//! An exact catalog name or alias needs no call. An implausible item is not
-//! added: Lucina asks, and offers the closest catalog item ("Lavatrici" →
-//! "Detersivo per lavatrice?"). When Jev is off or failing, items are added
-//! as before.
+//! One TypeSafe Jev call per other item asks only whether it is something for
+//! the home shopping list (food, drinks, household consumables, personal care,
+//! baby and pet supplies) at all. An implausible item is not added: Lucina
+//! asks, and offers the closest catalog item ("Lavatrici" → "Detersivo per
+//! lavatrice?"); the owner's answer decides. The section and item answers
+//! only feed that suggestion. When Jev is off or failing, items are added as
+//! labels.
 
 use lucina_grocery::catalog::{fold, CatalogIndex};
 use lucina_jev::{Jev, Question};
@@ -19,10 +19,6 @@ use serde_json::{json, Value};
 
 /// Below this "is it a shopping item?" probability Lucina asks instead of adding.
 pub const PLAUSIBLE_MIN: f64 = 0.4;
-/// A free-text item is bound to a catalog item from this confidence up.
-pub const BIND_MIN: f64 = 0.75;
-/// A section is set from this confidence up.
-pub const SECTION_MIN: f64 = 0.5;
 /// An implausible item Jev reads as a chore from this probability up is offered as a reminder or task.
 pub const CHORE_MIN: f64 = 0.5;
 /// A closest item is suggested from this confidence up.
@@ -31,7 +27,9 @@ pub const SUGGEST_MIN: f64 = 0.3;
 /// What to do with one item.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Gate {
-    /// Add it, bound to a catalog item and/or in a section when known.
+    /// Add it: bound to a catalog item only on an exact name or alias
+    /// (`by: "catalog"`); `section` stays `None` (kept for callers that set one
+    /// the owner chose).
     Add {
         catalog_id: Option<String>,
         section: Option<String>,
@@ -180,12 +178,7 @@ pub fn decide(
     lang: &str,
 ) -> Gate {
     let plausible = d.yes("plausible").unwrap_or(1.0);
-    let section = d.choice("section");
-    // Binding uses the item of the section Jev picked; a suggestion for a
-    // mis-heard word takes the surest item over every section.
-    let item = section
-        .and_then(|(s, _)| d.choice(&item_question(s)))
-        .filter(|(id, _)| *id != "none");
+    // A suggestion for a mis-heard word takes the surest item over every section.
     let closest = idx
         .sections()
         .iter()
@@ -209,13 +202,11 @@ pub fn decide(
             suggestion,
         };
     }
+    // A plausible item is added as the owner's label: Jev's item and section
+    // answers never link it (docs/design/shopping-labels.md).
     Gate::Add {
-        catalog_id: item
-            .filter(|(_, c)| *c >= BIND_MIN)
-            .map(|(id, _)| id.to_owned()),
-        section: section
-            .filter(|(_, c)| *c >= SECTION_MIN)
-            .map(|(s, _)| s.to_owned()),
+        catalog_id: None,
+        section: None,
         by: "jev",
     }
 }
@@ -332,26 +323,22 @@ mod tests {
     }
 
     #[test]
-    fn a_plausible_item_is_bound_only_when_jev_is_sure() {
-        let g = decide(&idx(), &decision(0.95, ("laundry-detergent", 0.9)), "Pastiglie bucato", "it");
+    fn a_plausible_item_is_a_label_even_when_jev_is_sure() {
+        // docs/design/shopping-labels.md: Jev's item and section answers never link a text.
+        let g = decide(&idx(), &decision(0.95, ("laundry-detergent", 0.99)), "Pastiglie bucato", "it");
         assert_eq!(
             g,
             Gate::Add {
-                catalog_id: Some("laundry-detergent".into()),
-                section: Some("household".into()),
+                catalog_id: None,
+                section: None,
                 by: "jev"
             }
         );
         let op = g.add_op("Pastiglie bucato").unwrap();
-        assert_eq!(op["catalogId"], "laundry-detergent");
-        assert!(op.get("icon").is_none(), "no svg: icon is written");
         assert_eq!(op["text"], "Pastiglie bucato");
-        assert!(op.get("section").is_none(), "the catalog item brings its section");
-
-        let g = decide(&idx(), &decision(0.95, ("sponges", 0.5)), "Panni microfibra", "it");
-        let op = g.add_op("Panni microfibra").unwrap();
-        assert!(op.get("catalogId").is_none());
-        assert_eq!(op["section"], "household");
+        for k in ["catalogId", "section", "icon"] {
+            assert!(op.get(k).is_none(), "{k}");
+        }
     }
 
     #[test]
@@ -431,5 +418,10 @@ mod tests {
         );
         let g = check(&off, &idx(), "Lavatrici", "it").await;
         assert!(matches!(g, Gate::Add { by: "fallback", .. }));
+        // Exact only: a longer text or a plural is not the catalog item.
+        for t in ["detersivo lavatrice bio", "crudo di Parma", "Spugnes"] {
+            let g = check(&off, &idx(), t, "it").await;
+            assert_eq!(g, Gate::Add { catalog_id: None, section: None, by: "fallback" }, "{t}");
+        }
     }
 }
