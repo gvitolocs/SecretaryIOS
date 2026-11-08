@@ -1463,19 +1463,9 @@ fn shopping_list_reply(names: &[String], lang: &str) -> String {
     }
     let shown = &names[..names.len().min(SPOKEN_ITEMS_LIST)];
     let more = names.len() - shown.len();
+    // English or Danish, never Italian (owner rule 2026-11-02, as `shopping_reply`); the item
+    // names stay in the message's language.
     match lang {
-        "it" => {
-            let list = join_names(shown, "e");
-            if more == 0 {
-                format!("Nella lista della spesa hai {list}.")
-            } else {
-                format!(
-                    "Nella lista della spesa hai {} e altre {} cose.",
-                    shown.join(", "),
-                    it_num(more as u32)
-                )
-            }
-        }
         "da" => {
             if more == 0 {
                 format!("Du har {} på indkøbslisten.", join_names(shown, "og"))
@@ -1721,7 +1711,8 @@ mod tests {
         let names: Vec<String> = ["latte", "uova", "pane"].map(String::from).to_vec();
         assert_eq!(
             shopping_list_reply(&names, "it"),
-            "Nella lista della spesa hai latte, uova e pane."
+            "You have latte, uova and pane on your shopping list.",
+            "Italian messages get an English reply (owner rule 2026-11-02)"
         );
         assert_eq!(
             shopping_list_reply(&names, "en"),
@@ -1734,7 +1725,7 @@ mod tests {
         let many: Vec<String> = (0..11).map(|i| format!("x{i}")).collect();
         assert_eq!(
             shopping_list_reply(&many, "it"),
-            "Nella lista della spesa hai x0, x1, x2, x3, x4, x5, x6, x7 e altre tre cose."
+            "You have x0, x1, x2, x3, x4, x5, x6, x7 and 3 more things on your shopping list."
         );
     }
 

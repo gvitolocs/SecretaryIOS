@@ -798,7 +798,7 @@ async fn the_shopping_list_is_read_and_changed_through_the_grocery_path() {
         "Added Latte and Uova to your shopping list."
     );
     let (s, _) = stream(&h, chat_body("cosa c'è nella lista della spesa?")).await;
-    assert_eq!(s.find("reply").data["text"], "Shopping list: Latte, Uova.");
+    assert_eq!(s.find("reply").data["text"], "You have Latte and Uova on your shopping list.");
     let (s, _) = stream(&h, chat_body("togli il latte e le uova dalla lista della spesa")).await;
     assert_eq!(
         s.find("reply").data["text"],
