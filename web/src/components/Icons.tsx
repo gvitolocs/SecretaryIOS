@@ -571,12 +571,6 @@ export function EditIcon() {
   );
 }
 
-/** Editor rail: the figure. */
-export function BodyIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="4.8" r="2.3" />
-      <path d="M7 9.5h10M12 8.5v6M12 14.5l-3 6M12 14.5l3 6M7 9.5l-1.5 5M17 9.5l1.5 5" />
 export function BookIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -585,12 +579,6 @@ export function BookIcon() {
   );
 }
 
-/** Editor rail: the face. */
-export function FaceIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 3.5c4.2 0 7 3.2 7 7.6 0 4.9-3.4 9.4-7 9.4s-7-4.5-7-9.4c0-4.4 2.8-7.6 7-7.6z" />
-      <path d="M9 11.2h.01M15 11.2h.01M9.8 15.6c1.3.9 3.1.9 4.4 0" />
 export function PagesIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -600,12 +588,6 @@ export function PagesIcon() {
   );
 }
 
-/** Editor rail: the eyes. */
-export function EyeIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
-      <circle cx="12" cy="12" r="3.2" />
 export function FilmIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -615,12 +597,6 @@ export function FilmIcon() {
   );
 }
 
-/** Editor rail: skin and makeup (lips). */
-export function LipsIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 12c2.2-3.6 4.6-5 6.4-5 1.1 0 1.9.6 2.6 1.3.7-.7 1.5-1.3 2.6-1.3 1.8 0 4.2 1.4 6.4 5-2.6 3.4-5.6 5-9 5s-6.4-1.6-9-5z" />
-      <path d="M3 12h18" />
 export function FolderIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -629,12 +605,6 @@ export function FolderIcon() {
   );
 }
 
-/** Editor rail: accessories (a gem). */
-export function GemIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M7 4.5h10l3.5 5L12 20 3.5 9.5z" />
-      <path d="M3.5 9.5h17M9.5 4.5 8 9.5l4 10.5 4-10.5-1.5-5" />
 export function FileIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -644,11 +614,6 @@ export function FileIcon() {
   );
 }
 
-export function UndoIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M9 7 4.5 11.5 9 16" />
-      <path d="M4.5 11.5h10a5 5 0 0 1 0 10H12" />
 export function DownloadIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -657,11 +622,6 @@ export function DownloadIcon() {
   );
 }
 
-export function RedoIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M15 7l4.5 4.5L15 16" />
-      <path d="M19.5 11.5h-10a5 5 0 0 0 0 10H12" />
 export function ShareIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -671,12 +631,6 @@ export function ShareIcon() {
   );
 }
 
-/** Randomise: a die. */
-export function DiceIcon() {
-  return (
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="4" y="4" width="16" height="16" rx="3.5" />
-      <path d="M8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01" />
 export function ExternalIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -800,6 +754,84 @@ export function PasteIcon() {
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
       <rect x="6" y="4.5" width="12" height="16" rx="2" />
       <path d="M9.5 4.5V3.8c0-.7.6-1.3 1.3-1.3h2.4c.7 0 1.3.6 1.3 1.3v.7M9.5 10h5M9.5 13.5h5M9.5 17h3" />
+    </svg>
+  );
+}
+
+/** Editor rail: the figure. */
+export function BodyIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="4.8" r="2.3" />
+      <path d="M7 9.5h10M12 8.5v6M12 14.5l-3 6M12 14.5l3 6M7 9.5l-1.5 5M17 9.5l1.5 5" />
+    </svg>
+  );
+}
+
+/** Editor rail: the face. */
+export function FaceIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5c4.2 0 7 3.2 7 7.6 0 4.9-3.4 9.4-7 9.4s-7-4.5-7-9.4c0-4.4 2.8-7.6 7-7.6z" />
+      <path d="M9 11.2h.01M15 11.2h.01M9.8 15.6c1.3.9 3.1.9 4.4 0" />
+    </svg>
+  );
+}
+
+/** Editor rail: the eyes. */
+export function EyeIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="3.2" />
+    </svg>
+  );
+}
+
+/** Editor rail: skin and makeup (lips). */
+export function LipsIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 12c2.2-3.6 4.6-5 6.4-5 1.1 0 1.9.6 2.6 1.3.7-.7 1.5-1.3 2.6-1.3 1.8 0 4.2 1.4 6.4 5-2.6 3.4-5.6 5-9 5s-6.4-1.6-9-5z" />
+      <path d="M3 12h18" />
+    </svg>
+  );
+}
+
+/** Editor rail: accessories (a gem). */
+export function GemIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 4.5h10l3.5 5L12 20 3.5 9.5z" />
+      <path d="M3.5 9.5h17M9.5 4.5 8 9.5l4 10.5 4-10.5-1.5-5" />
+    </svg>
+  );
+}
+
+export function UndoIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 7 4.5 11.5 9 16" />
+      <path d="M4.5 11.5h10a5 5 0 0 1 0 10H12" />
+    </svg>
+  );
+}
+
+export function RedoIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M15 7l4.5 4.5L15 16" />
+      <path d="M19.5 11.5h-10a5 5 0 0 0 0 10H12" />
+    </svg>
+  );
+}
+
+/** Randomise: a die. */
+export function DiceIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="16" rx="3.5" />
+      <path d="M8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01" />
     </svg>
   );
 }
