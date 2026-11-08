@@ -850,14 +850,17 @@ async fn a_shopping_sentence_with_several_products_is_split_by_the_slots_layer()
         (slots["verdict"].as_str(), slots["used"].clone()),
         (Some("several"), json!(true))
     );
-    assert_eq!(reply, "Ho aggiunto latte e uova alla lista della spesa.");
+    // English or Danish, never Italian (owner rule 2026-11-02).
+    assert_eq!(reply, "Added latte and uova to your shopping list.");
     assert!(
         listed.contains("Latte") && listed.contains("Uova"),
         "{listed}"
     );
-    // One product with an "e" in its name: the sentence goes through as before.
+    // Jev reads one product: the slots layer stays out, and the grocery path still splits a text that
+    // is not exactly a catalog term (docs/design/shopping-labels.md: never one item made of a sentence).
     let (route, _, listed, _) = run(("one", 0.95)).await;
     assert_eq!(route["fast"], true);
     assert_eq!(layer(&route["layers"], "slots").unwrap()["used"], false);
-    assert!(listed.to_lowercase().contains("latte e uova"), "{listed}");
+    assert!(!listed.to_lowercase().contains("latte e uova"), "{listed}");
+    assert!(listed.contains("Latte") && listed.contains("Uova"), "{listed}");
 }
