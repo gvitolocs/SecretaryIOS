@@ -584,6 +584,87 @@ confidence = "likely"
 rely_on = ["POSIX sh", "set -e", "pipefail", "traps", "job control in a pty"]
 notes = "Candidate for Juno's /bin/sh against posixutils-rs sh; decided in stage 3 by running agents' commands on both and BusyBox ash."
 
+[[upstream]]
+id = "rustix"
+name = "rustix (Linux system calls in Rust)"
+url = "https://github.com/bytecodealliance/rustix"
+source = "github"
+repo = "bytecodealliance/rustix"
+track = "releases"
+pin = "v1.1.6"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/eyra-stack", base = "main" }]
+licence_upstream = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+licence_ours = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["linux_raw backend", "runtime_448b8ad740e2a26f (the hidden runtime module origin and c-scape use)", "vDSO clock_gettime", "netlink", "mount"]
+notes = "Adopted unchanged at 1.1.6 (Cargo.lock), the system-call layer under the vendored Eyra stack and lucina-remote. Maintained upstream, so not forked: a fork comes the day we change it. rustix 1.1.5 made `runtime` private; our origin and c-scape call `runtime_448b8ad740e2a26f` instead, so a rustix release that renames that module again breaks the Juno build (scripts/juno-nolibc.sh)."
+
+[[upstream]]
+id = "rustix-dlmalloc"
+name = "rustix-dlmalloc (malloc for Eyra programs)"
+url = "https://github.com/sunfishcode/rustix-dlmalloc"
+source = "github"
+repo = "sunfishcode/rustix-dlmalloc"
+track = "commits"
+pin_date = "2025-04-29"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/eyra-stack/c-scape", base = "main" }]
+licence_upstream = "MIT OR Apache-2.0"
+licence_ours = "MIT OR Apache-2.0"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["malloc, free, realloc, memalign for every Eyra program"]
+notes = "Adopted unchanged at 0.2.2. Candidate for a fork tuned against glibc's and musl's allocators when the coordinator's libc benchmark (LucinaOS docs/research/rust-libc-bench.md) shows malloc slower; Verus on its size classes then."
+
+[[upstream]]
+id = "unwinding"
+name = "unwinding (panic unwinding in Rust)"
+url = "https://github.com/nbdd0121/unwinding"
+source = "github"
+repo = "nbdd0121/unwinding"
+track = "releases"
+pin = "v0.2.11"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/eyra-stack/origin", base = "main" }]
+licence_upstream = "MIT OR Apache-2.0"
+licence_ours = "MIT OR Apache-2.0"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["_Unwind_RaiseException", "fde-phdr-dl through dl_iterate_phdr"]
+notes = "Adopted unchanged at 0.2.11 for Eyra programs (the kernel pins 0.2.10, patch 1092). Unwinding in static non-PIE programs needed our dl_iterate_phdr fix in c-scape."
+
+[[upstream]]
+id = "printf-compat"
+name = "printf-compat (printf in Rust)"
+url = "https://github.com/lights0123/printf-compat"
+source = "github"
+repo = "lights0123/printf-compat"
+track = "releases"
+pin = "0.4.0"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/eyra-stack/c-scape", base = "main" }]
+licence_upstream = "MIT OR Apache-2.0"
+licence_ours = "MIT OR Apache-2.0"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["printf family for Eyra programs"]
+notes = "Adopted unchanged at 0.4.0. 0.5.0 needs rustc 1.99 and the renamed VaList::next_arg; move together with the pinned nightly."
+
+[[upstream]]
+id = "uutils-coreutils"
+name = "uutils coreutils"
+url = "https://github.com/uutils/coreutils"
+source = "github"
+repo = "uutils/coreutils"
+track = "releases"
+pin = "0.12.0"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/juno-pure-rust.md", base = "main" }]
+licence_upstream = "MIT"
+licence_ours = "MIT"
+relation = "reference"
+confidence = "likely"
+rely_on = ["coreutils where posixutils-rs lacks a tool BusyBox gave Juno"]
+notes = "Fallback per tool behind posixutils-rs for Juno's BusyBox replacement (stage 3 of juno-pure-rust.md). Vendored per tool when stage 3 takes one, checked against BusyBox 1.37.0 on the commands agents run."
+
+
 # ───────────────────────── Galaxy Book Go (gbgo) board ─────────────────────────
 
 [[upstream]]
