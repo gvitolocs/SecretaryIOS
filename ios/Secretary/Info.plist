@@ -51,10 +51,6 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>comgooglemaps</string>
-	</array>
 	<key>NSAlarmKitUsageDescription</key>
 	<string>Lucina sets alarms and timers for you when you ask.</string>
 	<key>NSAppTransportSecurity</key>
@@ -74,6 +70,10 @@
 	<string>Your weigh-ins and gym workouts are saved to Apple Health.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>To notice when you arrive at or leave a place, even when Secretary is closed.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>comgooglemaps</string>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Lucina learns which places you visit, so she can remind you of things where they matter.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -94,8 +94,6 @@
 	</array>
 	<key>SecretaryAPNsEnabled</key>
 	<true/>
-	<key>SecretaryBuildCommit</key>
-	<string>unknown</string>
 	<key>SecretaryKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)tech.getsecretary.shared</string>
 	<key>UIApplicationSceneManifest</key>
