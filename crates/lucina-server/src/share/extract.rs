@@ -524,12 +524,21 @@ pub(super) async fn transcribe(
         ],
     )
     .await?;
-    let cfg = &st.cfg.share.whisper;
-    let duration = lucina_memo::transcribe::duration(cfg, &wav).await?;
+    let share = &st.cfg.share;
+    let duration = lucina_memo::transcribe::duration(&share.whisper, &wav).await?;
+    // A short clip (a voice note, chat voice) takes the small, quick Whisper when one is set up: it must not
+    // wait out the long GPU lease the big model needs while Qwen holds the card.
+    let cfg = match &share.whisper_short {
+        Some(short) if duration <= share.whisper_short_secs => short,
+        _ => &share.whisper,
+    };
     let work = path.with_extension("whisper-work");
     tokio::fs::create_dir_all(&work).await?;
+    let started = std::time::Instant::now();
     let transcript =
         lucina_memo::transcribe::transcribe(cfg, &wav, &work, duration, cfg.gpu_wait).await?;
+    tracing::info!(target: "lucina_server::share", event = "share_stt", short = !std::ptr::eq(cfg, &share.whisper),
+        clip_s = duration, ms = started.elapsed().as_millis() as u64, chars = transcript.text().chars().count(), "share transcribed");
     Ok((transcript.text(), duration))
 }
 async fn audio(
