@@ -6,76 +6,16 @@
 // Latency: every 100 ms chunk's send time is kept by its end sample, so a verdict about
 // audio up to `audioMs` shows how long after that speech the point was crossed out.
 
+import { openMicrophone as openMic, SAMPLE_RATE, type Microphone } from "./micCapture";
 import type { Candidate, Verdict } from "./prompterTake";
 
-export const SAMPLE_RATE = 16_000;
-const CHUNK = SAMPLE_RATE / 10;
-
-// Downsamples the device rate (44.1/48 kHz) to 16 kHz by averaging, and posts 100 ms
-// chunks of signed 16-bit PCM plus their level. Inline, so no extra file is served.
-const WORKLET = `
-class PrompterTap extends AudioWorkletProcessor {
-  constructor(o) { super(); this.ratio = sampleRate / ${SAMPLE_RATE}; this.acc = 0; this.n = 0; this.pos = 0;
-    this.out = new Int16Array(${CHUNK}); this.k = 0; this.sq = 0; }
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (!ch) return true;
-    for (let i = 0; i < ch.length; i++) {
-      this.acc += ch[i]; this.n++; this.pos++;
-      if (this.pos >= this.ratio) {
-        this.pos -= this.ratio;
-        const v = Math.max(-1, Math.min(1, this.acc / this.n));
-        this.acc = 0; this.n = 0; this.sq += v * v;
-        this.out[this.k++] = v < 0 ? v * 0x8000 : v * 0x7fff;
-        if (this.k === ${CHUNK}) {
-          this.port.postMessage({ pcm: this.out.buffer, level: Math.sqrt(this.sq / ${CHUNK}) }, [this.out.buffer]);
-          this.out = new Int16Array(${CHUNK}); this.k = 0; this.sq = 0;
-        }
-      }
-    }
-    return true;
-  }
-}
-registerProcessor("prompter-tap", PrompterTap);
-`;
-
-export interface Microphone {
-  stop(): void;
-}
+// The microphone capture (16 kHz s16le worklet) is shared with the voice socket: micCapture.ts.
+export const PROMPTER_CHUNK_MS = 100;
+export { SAMPLE_RATE, type Microphone };
 
 /** Open the microphone; `onChunk` gets 100 ms of 16 kHz PCM and its level (0..1). */
-export async function openMicrophone(onChunk: (pcm: ArrayBuffer, level: number) => void): Promise<Microphone> {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-  });
-  const ctx = new AudioContext();
-  const url = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
-  try {
-    await ctx.audioWorklet.addModule(url);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-  const src = ctx.createMediaStreamSource(stream);
-  const tap = new AudioWorkletNode(ctx, "prompter-tap", {
-    numberOfInputs: 1,
-    numberOfOutputs: 0,
-  });
-  tap.port.onmessage = (e: MessageEvent<{ pcm: ArrayBuffer; level: number }>) => onChunk(e.data.pcm, e.data.level);
-  src.connect(tap);
-  if (ctx.state === "suspended") await ctx.resume();
-  return {
-    stop() {
-      tap.port.onmessage = null;
-      src.disconnect();
-      stream.getTracks().forEach((t) => t.stop());
-      void ctx.close();
-    },
-  };
+export function openMicrophone(onChunk: (pcm: ArrayBuffer, level: number) => void): Promise<Microphone> {
+  return openMic(onChunk, { chunkMs: PROMPTER_CHUNK_MS });
 }
 
 export interface VerdictsMessage {

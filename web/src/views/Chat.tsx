@@ -24,6 +24,8 @@ import {
   SpeakerIcon,
 } from "../components/Icons";
 import { ShareComposer } from "../components/ShareComposer";
+import { VoiceNoteButton } from "../components/VoiceNoteButton";
+import { pendingNotes, stillPending } from "../state/voiceNotes";
 import { secretsApi, type SecretProject } from "../api/secrets";
 import {
   commandArgIndex,
@@ -631,6 +633,11 @@ export default function ChatView() {
   // A turn's tool calls fold into one line between the messages.
   const toolRuns = new Map<string, ToolRun>();
   const rows = createMemo(() => chatRows(visible(), toolRuns));
+  // Voice notes sent, whose timeline item has not arrived yet (state/voiceNotes.ts).
+  const waitingNotes = createMemo(() => {
+    const have = new Set(chat.messages.map((m) => m.itemId));
+    return stillPending(pendingNotes(), (id) => have.has(id));
+  });
   const position = createMemo(() => new Map(visible().map((m, i) => [m.key, i])));
   const filterLabel = () => {
     const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;
@@ -1172,6 +1179,15 @@ export default function ChatView() {
               </>
             )}
           </For>
+          <For each={waitingNotes()}>
+            {(p) => (
+              <div class="msg msg--user">
+                <div class="bubble bubble--pending-note" role="status">
+                  <span aria-hidden="true">🎙</span> {p.transcript ?? t("voiceIn.transcribing")}
+                </div>
+              </div>
+            )}
+          </For>
           <Show when={sending()}>
             <div class="msg msg--lucina">
               <div class="bubble bubble--thinking">
@@ -1322,6 +1338,7 @@ export default function ChatView() {
             {draft().length}/{CHAT_MAX_CHARS}
           </span>
         </Show>
+        <VoiceNoteButton />
         <button class="send-btn" type="submit" disabled={!canSend()} aria-label={t("chat.send")}>
           <SendIcon />
         </button>
