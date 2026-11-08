@@ -1,6 +1,11 @@
 import type { Framing, StudioExtras, Voice, WardrobeStage } from "@secretary/lucina-stage";
 import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { speechLang, t } from "../i18n";
+import { locale, speechLang, t } from "../i18n";
+import { chatSessionId } from "../lib/ids";
+import { PcmPlayer } from "../lib/pcmPlayer";
+import { useVoiceSocket } from "../lib/useVoiceSocket";
+import { runCommand, type CommandFailure, type CommandRun } from "../lib/voiceCommand";
+import "../styles/voicein.css";
 import { readString, writeString } from "../lib/storage";
 import { loadStage, type StageModule } from "../lib/stageLoader";
 import { isFaceTrackingSupported, startFaceTracking, type FaceTracker, type FaceTrackError } from "../lib/faceTrack";
@@ -123,6 +128,21 @@ export function LucinaPanel(props: {
   let ttsCtrl: AbortController | null = null;
   let hintTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
+  // Streaming voice (lib/voiceCommand.ts): the mic goes up the voice socket as it is captured, her
+  // reply text and voice come back as they are written. Older servers: the Web Speech path below.
+  const { socket } = useVoiceSocket();
+  let command: CommandRun | null = null;
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
+  const [working, setWorking] = createSignal(false);
+  const [liveText, setLiveText] = createSignal("");
+  const player = new PcmPlayer({
+    onPlaying: (playing) => {
+      const s = stage;
+      if (!s) return;
+      if (playing) s.setState("speaking");
+      else if (s.state === "speaking") s.setState(props.thinking || working() ? "thinking" : "idle");
+    },
+  });
 
   function showHintOnce() {
     if (readString("local", HINT_KEY)) return;
@@ -198,6 +218,10 @@ export function LucinaPanel(props: {
     disposed = true;
     stopFace();
     clearTimeout(hintTimer);
+    clearTimeout(liveTimer);
+    command?.cancel();
+    command = null;
+    player.dispose();
     listenCtrl?.abort();
     ttsCtrl?.abort();
     extrasRef()?.dispose();
@@ -315,6 +339,7 @@ export function LucinaPanel(props: {
     if (next) {
       ttsCtrl?.abort();
       stage?.stopSpeaking();
+      player.stop();
     } else {
       // Inside the click: lets iOS start audio output later.
       void stage?.unlockAudio().catch(() => {});
@@ -407,13 +432,106 @@ export function LucinaPanel(props: {
     }
   }
 
-  async function talk() {
+  const COMMAND_NOTES: Record<CommandFailure, Parameters<typeof t>[0]> = {
+    offline: "voiceIn.offline",
+    busy: "voiceIn.busy",
+    oldServer: "voiceIn.oldServer",
+    micBlocked: "shell.micBlocked",
+    failed: "shell.voiceFailed",
+    tooShort: "voiceIn.tooShort",
+    noSpeech: "shell.noSpeech",
+  };
+
+  /** Back to rest after a voice command ends, however it ends. */
+  function commandOver() {
+    command = null;
+    setListening(false);
+    setWorking(false);
+    if (stage && (stage.state === "listening" || stage.state === "thinking") && !props.thinking) stage.setState("idle");
+  }
+
+  function clearLiveSoon() {
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(() => setLiveText(""), 6_000);
+  }
+
+  /** Stop the command and her voice (a press while she answers, or the mute button). */
+  function stopCommand() {
+    command?.cancel();
+    player.stop();
+    setLiveText("");
+    commandOver();
+  }
+
+  /** Streaming voice command. False when the socket cannot take it (use the Web Speech path). */
+  function startCommand(): boolean {
+    if (disposed || socket.oldServer || socket.status !== "open") return false;
+    clearTimeout(liveTimer);
+    setNote(null);
+    setLiveText("");
+    // Inside the press: lets iOS and Safari start audio output later.
+    void player.unlock().catch(() => {});
+    const run = runCommand(
+      { socket, player },
+      { speak: !muted(), sessionId: chatSessionId(), lang: locale() === "it" || locale() === "en" ? locale() : undefined },
+      {
+        onProgress: () => {},
+        onTranscript: () => {},
+        onText: (text) => setLiveText(text),
+        onSpoken: () => {
+          setListening(false);
+          setWorking(true);
+          stage?.setState("thinking");
+        },
+        onStopped: () => setListening(false),
+        onFinished: () => {
+          commandOver();
+          clearLiveSoon();
+        },
+        onFailure: (why) => {
+          setLiveText("");
+          commandOver();
+          if (why === "oldServer") {
+            // Older server: the browser's own speech recognition, then the note.
+            void talkLegacy().then(() => setNote(t("voiceIn.oldServer")));
+            setNote(t("voiceIn.oldServer"));
+          } else setNote(t(COMMAND_NOTES[why]));
+        },
+      },
+    );
+    if (typeof run === "string") {
+      if (run === "busy") {
+        setNote(t("voiceIn.busy"));
+        return true;
+      }
+      return false;
+    }
+    command = run;
+    setListening(true);
+    stage?.setState("listening");
+    return true;
+  }
+
+  function talk() {
     setHint(false);
+    if (command) {
+      // A second press: while recording it ends the command; while she answers it stops her.
+      if (listening()) command.finish();
+      else stopCommand();
+      return;
+    }
     if (listening()) {
       listenCtrl?.abort();
       return;
     }
     if (props.thinking) return;
+    if (startCommand()) return;
+    void talkLegacy().then(() => {
+      if (socket.oldServer) setNote(t("voiceIn.oldServer"));
+    });
+  }
+
+  async function talkLegacy() {
     if (!voice || !voice.listenSupported) {
       setNote(t("shell.voiceUnavailable"));
       props.onTypeInstead();
@@ -446,7 +564,9 @@ export function LucinaPanel(props: {
     }
   }
 
-  const activity = (): LucinaActivity => (listening() ? "listening" : mode() === "ready" ? lucinaActivity() : props.thinking ? "thinking" : "idle");
+  const activity = (): LucinaActivity =>
+    listening() ? "listening" : mode() === "ready" ? lucinaActivity() : props.thinking || working() ? "thinking" : "idle";
+  const pillText = () => (liveText() ? liveText().slice(-240) : (note() ?? (hint() ? t("shell.lucinaHint") : null)));
 
   return (
     <section
@@ -605,9 +725,9 @@ export function LucinaPanel(props: {
           {t("shell.lucinaListening")}
         </span>
       </Show>
-      <Show when={activity() !== "listening" && (note() ?? (hint() ? t("shell.lucinaHint") : null))}>
+      <Show when={activity() !== "listening" && pillText()}>
         {(text) => (
-          <span class="stage-pill stage-pill--note" role="status">
+          <span class="stage-pill stage-pill--note" classList={{ "stage-pill--live": !!liveText() }} role="status">
             {text()}
           </span>
         )}
