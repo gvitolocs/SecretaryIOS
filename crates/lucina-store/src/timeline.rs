@@ -122,6 +122,15 @@ pub struct Meta {
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
+    /// The client that started the owner turn this item belongs to (`ios-chat`, `fortuna-chat`,
+    /// `juno-chat`, `web-chat`, `ios-share`, …): on his item and on every item Lucina writes in that
+    /// turn. secretary-server's notifier routes the reply by it (docs/notifications.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The authenticated Secretary device that started the turn. Shares carry no `device` (that would
+    /// move them into the device's conversation); this only says who asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_device: Option<String>,
     /// With `kind: "avatar_outfit"`: the outfit Lucina put on (none = back to automatic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outfit: Option<String>,
@@ -192,6 +201,8 @@ impl Meta {
             && self.decision_id.is_none()
             && self.device.is_none()
             && self.device_name.is_none()
+            && self.source.is_none()
+            && self.from_device.is_none()
             && self.command_id.is_none()
             && self.transcript.is_none()
             && self.voice_reply.is_none()
@@ -239,6 +250,8 @@ impl Meta {
             decision_id,
             device,
             device_name,
+            source,
+            from_device,
             command_id,
             transcript,
             outfit,
@@ -381,6 +394,16 @@ pub struct NewItem {
     pub attachments: Vec<Attachment>,
     pub meta: Option<Meta>,
     pub backfilled: bool,
+}
+
+/// A turn's `source` as stored: trimmed, 1..=64 of `[A-Za-z0-9._-]`; anything else is dropped.
+pub fn clean_source(v: Option<String>) -> Option<String> {
+    let v = v?;
+    let v = v.trim();
+    (!v.is_empty()
+        && v.len() <= 64
+        && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
+    .then(|| v.to_owned())
 }
 
 fn clean_string(value: Option<&str>, max: usize) -> Option<String> {
@@ -587,6 +610,8 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
             let clean: String = v.chars().filter(|c| !c.is_control()).collect();
             clean_string(Some(&clean), 64)
         }),
+        source: clean_source(m.source),
+        from_device: m.from_device.filter(|v| valid_device(v)),
         outfit: s(m.outfit),
         hair: s(m.hair),
         slug: s(m.slug),
@@ -1718,6 +1743,33 @@ mod tests {
         let after = s.after(&ids[1], 500).unwrap();
         assert_eq!(after.len(), 3);
         assert_eq!(after[0].id, ids[2]);
+    }
+
+    #[test]
+    fn turn_marks_round_trip_and_bad_ones_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), DEFAULT_MAX_BYTES);
+        let mark = |source: &str, from: &str| {
+            s.append(NewItem {
+                meta: Some(Meta {
+                    source: Some(source.into()),
+                    from_device: Some(from.into()),
+                    ..Meta::default()
+                }),
+                ..item("ciao")
+            })
+            .unwrap()
+        };
+        let good = mark(" fortuna-chat ", "dev_1PIYOXSE72o");
+        let meta = good.meta.clone().unwrap();
+        assert_eq!(meta.source.as_deref(), Some("fortuna-chat"));
+        assert_eq!(meta.from_device.as_deref(), Some("dev_1PIYOXSE72o"));
+        let line = fs::read_to_string(dir.path().join("timeline.jsonl")).unwrap();
+        assert!(line.contains("\"source\":\"fortuna-chat\",\"fromDevice\":\"dev_1PIYOXSE72o\""), "{line}");
+        let bad = mark("bad source!", "x y");
+        assert!(bad.meta.is_none());
+        assert_eq!(clean_source(Some("a".repeat(65))), None);
+        assert_eq!(clean_source(Some("ios-share".into())).as_deref(), Some("ios-share"));
     }
 
     #[test]

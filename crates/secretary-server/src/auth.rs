@@ -216,11 +216,26 @@ async fn authorize(
     }
     let id = ident.device_id.clone();
     req.extensions_mut().insert(ident);
+    // The notifier's "is the asking client still there" (notify::reply_route): a request's start and end.
+    st.notify.saw(&id);
     let mut resp = next.run(req).await;
+    st.notify.saw(&id);
+    // Caddy's forward_auth copies these onto the requests it lets through to lucina-rs (`/v1/share`):
+    // who asked, and whether that device is a test client. Always set, so a client's own copy never passes.
+    if let Ok(v) = header::HeaderValue::from_str(&id) {
+        resp.headers_mut().insert(DEVICE_HEADER, v);
+    }
+    let test = if st.devices.is_test(&id) { "1" } else { "0" };
+    resp.headers_mut().insert(TEST_HEADER, header::HeaderValue::from_static(test));
     // For the access log (the id is not a secret).
     resp.extensions_mut().insert(DeviceId(id));
     Ok(resp)
 }
+
+/// The authenticated device, on every device-authenticated answer (see [`authorize`]).
+pub const DEVICE_HEADER: header::HeaderName = header::HeaderName::from_static("x-secretary-device");
+/// `1` when that device is flagged `test` in the registry, else `0`.
+pub const TEST_HEADER: header::HeaderName = header::HeaderName::from_static("x-secretary-test");
 
 /// Client IP for the login rate limit. With `SECRETARY_TRUST_PROXY=1` the
 /// right-most `X-Forwarded-For` entry (the one our own proxy appended) is

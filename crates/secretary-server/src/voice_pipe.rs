@@ -659,6 +659,9 @@ async fn speak_inner(
         device_name: Some(ident.device_name.clone()),
         reply_to: None,
         voice_meta: Some(voice_meta(&turn_id, shared.stt(), &facts)),
+        source: None,
+        // A test device's turns run in Lucina's self-test conversation (never his chat, never a push).
+        conversation: st.devices.is_test(&ident.device_id).then(|| "selftest".to_owned()),
     };
     let lucina = st.lucina().map_err(PipeError::Lucina)?;
     let mut events = lucina
@@ -915,6 +918,9 @@ async fn text_inner(
         device_name: Some(ident.device_name.clone()),
         reply_to: None,
         voice_meta: Some(voice_meta(&turn_id, shared.stt(), &facts)),
+        source: None,
+        // A test device's turns run in Lucina's self-test conversation (never his chat, never a push).
+        conversation: st.devices.is_test(&ident.device_id).then(|| "selftest".to_owned()),
     };
     let lucina = st.lucina().map_err(PipeError::Lucina)?;
     let mut events = lucina

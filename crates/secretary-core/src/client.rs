@@ -640,6 +640,12 @@ impl Call {
         if let Some(r) = req.reply_to.as_deref() {
             validate::timeline_ref("replyTo", r)?;
         }
+        if let Some(s) = req.source.as_deref() {
+            validate::session_id("source", s)?;
+        }
+        if let Some(c) = req.conversation.as_deref() {
+            validate::session_id("conversation", c)?;
+        }
         if let Some(m) = req.voice_meta.as_ref() {
             if !m.is_object() || m.to_string().len() > MAX_VOICE_META_BYTES {
                 return Err(Error::Invalid {
@@ -2169,6 +2175,8 @@ mod tests {
             device_name: None,
             reply_to: None,
             voice_meta: None,
+            source: None,
+            conversation: None,
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -2192,6 +2200,8 @@ mod tests {
                 device_name: None,
                 reply_to: None,
                 voice_meta: None,
+                source: None,
+                conversation: None,
             })
         };
         assert!(chat("ios").is_ok());
@@ -2206,6 +2216,8 @@ mod tests {
                 device_name: None,
                 reply_to: Some(id.into()),
                 voice_meta: None,
+                source: None,
+                conversation: None,
             })
         };
         assert_eq!(
@@ -2235,6 +2247,8 @@ mod tests {
                 device_name: None,
                 reply_to: None,
                 voice_meta: None,
+                source: None,
+                conversation: None,
             })
             .unwrap()
             .timeout_class(),

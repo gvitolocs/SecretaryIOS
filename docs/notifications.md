@@ -26,7 +26,7 @@ private.
 
 | Source | Category | How |
 |---|---|---|
-| Lucina's timeline (any channel) | `lucina_message` | The server keeps one SSE stream open to Lucina (`notify::ingest`) with its own token; every `role: lucina` item becomes a notification unless the owner has the app in front, or it is her chat with an agent (below). |
+| Lucina's timeline (any channel) | `lucina_message` | The server keeps one SSE stream open to Lucina (`notify::ingest`) with its own token; every `role: lucina` item becomes a notification unless the owner has the app in front, it is her chat with an agent, or it answers a turn he made on another client that shows it (below). |
 | Delivered reminder | `reminder` | Timeline items with `meta.kind: "reminder"`, and Lucina's `POST /v1/notify` when `LUCINA_APP_NOTIFY=true` (deduplicated: same timeline id, or `reminder:<id>`). |
 | Device command that needs a tap | `device_confirm` | Timeline items with `meta.kind: "device_command"` and `meta.command.requiresConfirmation` (else the iOS rule: deletes and calendar changes). |
 | Coding agent finished, needs permission, or the Infisical broker asks | `agent` | lucina-agentd's `POST /v1/notify` (`data: {kind, agentId or permissionId, reason, requestId, actions}`); while an app is in front it stays in the inbox without a push (Paseo's rule). |
@@ -47,6 +47,57 @@ A coding agent's finish pushes only for a run he started on one of his devices (
 `lucina.started-on-device`, set by lucina-agentd from the caller's origin); any other run, whichever provider
 and whoever started it, is quiet. A job or delegation an agent asked for pushes nothing either. Permission
 requests always do.
+
+**A reply goes where he asked** (owner, 2026-11-08: the iPhone buzzed for every answer he got on the DSi and
+Juno). Before the pipeline below, each timeline item passes `notify::reply_route`. lucina-rs marks every item of
+an owner turn with the client that asked: `meta.source` (`ios-chat`, `fortuna-chat`, `juno-chat`, `web-chat`,
+`ios-share`, …) and the device (`meta.device` on chat turns, `meta.fromDevice` on shares); Lucina's reply also
+carries the turn's item id as its top-level `replyTo`, and its `channel` is the turn's. The notifier decides from
+those marks, not from timing:
+
+| item kind ↓ / turn → | none (Lucina on her own) | agent | test | Telegram, Discord, Alexa, speaker | push device, app in front | push device, app away | other Secretary client | no device, no source |
+|---|---|---|---|---|---|---|---|---|
+| message | push | none | none | none | none | push | after grace | push |
+| shopping change | push | push | none | none | none | push | after grace | push |
+| reminder | push | push | none | push | push | push | push | push |
+| device confirm | push | push | none | push | push | push | push | push |
+
+- *push device*: the asking device holds a push subscription itself (today only the iPhone app,
+  `dev_6uJCAexoApw`). *In front*: its presence heartbeat is fresh.
+- *other Secretary client*: the DSi (Fortuna), Juno, the Mac app, the web app. Its reply waits 20 s
+  (`reply_route::GRACE`) and is pushed only if that client is gone by then: no open timeline stream or voice
+  socket, and no authenticated request since the reply was written (a 1 s clock slack). A client that polls
+  (the DSi's share status, Juno's timeline) or got the answer in its `POST /v1/chat` response counts as there.
+- *test*: a `source` starting with `probe` or `test`, `meta.test: true`, or a device flagged `test` in
+  `devices.json`. Test traffic should not reach the owner's timeline at all (below); this is the belt.
+- "push" still passes the pipeline below: the category switches, the app-in-front rule, quiet hours, DND.
+- A reply held for its grace is in memory only: a restart in those 20 s drops its push (it stays in the chat).
+
+| case | expected | test (`crates/secretary-server/src/notify/mod.rs`) |
+|---|---|---|
+| DSi turn, DSi connected | no push | `dsi_turn_stays_on_the_dsi_while_it_is_connected` |
+| Juno turn, Juno polled after the reply | no push | `juno_turn_stays_on_juno_when_it_polled_after_the_reply` |
+| iPhone turn, app in front | no push | `iphone_turn_in_front_is_silent_and_in_background_pushes` |
+| iPhone turn, app in the background | push at once | same |
+| asking client gone (socket closed, no request) | push after the grace | `asking_client_gone_gets_the_push_after_the_grace` |
+| `source=probe`, test device, `test-…` source | nothing, not even a reminder | `probe_test_and_agent_traffic_never_notifies` |
+| agent turn (`meta.via`) | nothing | same |
+| reminder, proactive message, reminder in a DSi turn | push (settings respected) | `reminders_and_proactive_messages_still_push` |
+| Telegram turn | none (Telegram shows it) | `telegram_replies_stay_on_telegram` |
+
+The table itself: `notify::reply_route` unit tests; Verus kernel `verification/verus/reply_route.rs` with its
+mutants (`scripts/verus-mutants-reply-route.sh`) and the differential test `tests/verus_reply_route.rs`.
+
+**Test traffic stays out of his chat.** Lucina runs a turn in her self-test conversation
+(`selftest-timeline.jsonl`: not his chat, not the stream the notifier reads, no memory write) when:
+- the device is flagged test: `secretary-server token test <dev_id> on` (secretary-server then sends
+  `conversation: "selftest"` on its chats and voice notes, and answers `X-Secretary-Test: 1` to Caddy's
+  forward_auth, which copies it onto `/v1/share`);
+- the client says so: chat `"conversation": "selftest"` or a message starting `[selftest]`, share field
+  `conversation=selftest`, or a `source` starting with `probe` or `test` (chat body, share field, voice socket
+  `start`).
+Agents' probes use a test device (the voice probe `dev_T4gP5p4xAA0` is one). A session testing on his real DSi or
+Juno marks its turns with one of the client-side switches.
 
 **Pipeline** (`Notifier::publish`): dedup (explicit `dedupKey`, or `tl:<timeline id>`)
 → category switch → presence (a Lucina message while any app reported itself in

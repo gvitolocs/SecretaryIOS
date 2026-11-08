@@ -77,6 +77,16 @@ async fn chat(
     JsonBody(mut req): JsonBody<ChatRequest>,
 ) -> ApiResult {
     req.channel = Some(chat_channel(&headers, req.channel.as_deref())?);
+    // The client's own label (`fortuna-chat`, `juno-chat`, …) is kept only when well formed: a bad
+    // one is dropped, not refused, so an old client never loses a message over it.
+    req.source = req
+        .source
+        .take()
+        .filter(|s| secretary_core::validate::session_id("source", s).is_ok());
+    // A test device's turns run in Lucina's self-test conversation: never his chat, never a push.
+    if st.devices.is_test(&ident.device_id) {
+        req.conversation = Some("selftest".into());
+    }
     req.device = Some(ident.device_id);
     req.device_name = Some(ident.device_name);
     forward(&st, Call::chat(&req)?).await

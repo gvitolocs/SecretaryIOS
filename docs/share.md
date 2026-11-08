@@ -182,6 +182,19 @@ the form field `replyTo` = that message's timeline id, as `POST /v1/chat` does
 - A malformed `replyTo` is `400`; an id that names no stored item is ignored and the share is
   processed as usual.
 
+## Who asked, and test shares (2026-11-08)
+
+- **Who asked.** Caddy's `forward_auth` copies `X-Secretary-Device` and `X-Secretary-Test` from
+  secretary-server's device check onto the request (secretary-server sets both on every device-authenticated
+  answer, so a client's own copy never passes). lucina-rs writes the device as `meta.fromDevice` and the form's
+  `source` as `meta.source` on the owner's item and on every item Lucina writes in that share turn (not
+  `meta.device`, which would move the share into that device's conversation). secretary-server's notifier sends
+  the reply where he asked from these marks (docs/notifications.md, "A reply goes where he asked").
+- **Test shares** run in Lucina's self-test conversation (`selftest-timeline.jsonl`: not his chat, no push, no
+  "About you" observation) when the device is flagged test (`X-Secretary-Test: 1`), the form has
+  `conversation=selftest` (or `diagnostic`), or `source` starts with `probe` or `test`.
+- Test: `crates/lucina-server/tests/share.rs` `shares_carry_who_asked_and_test_shares_stay_out_of_his_chat`.
+
 ## Server implementation and configuration
 
 Both lucina-rs binds expose the routes. The server checks `X-Share-Gateway` against the trimmed

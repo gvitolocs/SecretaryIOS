@@ -334,6 +334,12 @@ async fn handle_chat_turn(
     let device_meta = Meta {
         device: body["device"].as_str().map(str::to_owned),
         device_name: body["deviceName"].as_str().map(str::to_owned),
+        // Who asked, on every item of the turn: the notifier sends the reply where he asked (docs/notifications.md).
+        source: lucina_store::timeline::clean_source(body["source"].as_str().map(str::to_owned)),
+        from_device: body["device"]
+            .as_str()
+            .filter(|d| lucina_store::timeline::valid_device(d))
+            .map(str::to_owned),
         voice: voice_base(&body).filter(|_| channel == VOICE_CHANNEL),
         ..Meta::default()
     };
@@ -875,6 +881,12 @@ pub(crate) async fn share_turn(
     let surface =
         crate::surface::chat_surface(&st.cfg, Some(BearerVerified::checked()), &channel, None);
     let reply_to = input.item.reply_to.clone();
+    // Who asked (the share's `source` and device), on every item the turn writes.
+    let mark = Meta {
+        source: input.reply_meta.source.clone(),
+        from_device: input.reply_meta.from_device.clone(),
+        ..Meta::default()
+    };
     run_turn_inner(
         st,
         message,
@@ -886,7 +898,7 @@ pub(crate) async fn share_turn(
         Some(input),
         None,
         reply_to,
-        Meta::default(),
+        mark,
     )
     .await
 }

@@ -848,7 +848,8 @@ async fn agent_chat_makes_no_push_and_messages_to_him_do() {
     send("01JB0000000000000000000002", "Giuseppe should see this", json!({"via": "mcp", "caller": "some-new-provider"}));
     send("01JB0000000000000000000003", "💬 Claude replied", json!({"kind": "reach", "tool": "reach_claude"}));
     // A message to him, after them: its push is the first one, so nothing above got through.
-    send("01JB0000000000000000000004", "Ciao Giuseppe", json!({"device": "dev_1"}));
+    // (Lucina on her own: a reply to a turn on a client without pushes would wait for that client, notify::reply_route.)
+    send("01JB0000000000000000000004", "Ciao Giuseppe", json!({"kind": "proactive"}));
     let d = h.wait_delivered(1).await;
     assert_eq!(d[0].payload["body"], "Ciao Giuseppe");
     let b = h.inbox().await;

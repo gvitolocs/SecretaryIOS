@@ -336,6 +336,8 @@ enum Ctl {
         stt_ms: Option<u64>,
         note_ms: u64,
         t0: Instant,
+        /// A test note: it went to Lucina's self-test conversation, so its answer is followed by status reads.
+        test: bool,
     },
 }
 
@@ -373,6 +375,8 @@ async fn connection(
     });
     let device = ident.device_id.clone();
     let _online = ConnGuard::open(&st, &ident);
+    // The notifier's "connected" (notify::reply_route): a reply to this device's turn reaches it here.
+    let _link = st.notify.link(&ident.device_id);
     let mut shutdown = st.shutdown.subscribe();
     let (ctl, mut ctl_rx) = mpsc::unbounded_channel::<Ctl>();
     let mut conn = Conn {
@@ -749,6 +753,7 @@ impl Conn {
                 stt_ms,
                 note_ms,
                 t0,
+                test,
             } => {
                 // The device is free now (if the phase still is that note's turn).
                 if matches!(&self.phase, Phase::Processing { id: p, .. } if *p == id)
@@ -767,7 +772,9 @@ impl Conn {
                     self.creds.clone(),
                     self.tx.clone(),
                     id,
-                    user_item_id,
+                    // A test note's answer is not on the owner's timeline stream: an empty id makes the
+                    // watcher read the share's status instead.
+                    if test { String::new() } else { user_item_id },
                     t0,
                     stt_ms,
                     note_ms,
@@ -1018,8 +1025,15 @@ async fn run_note(n: NoteRun) {
             stt_ms,
             note_ms,
             t0: n.t0,
+            test: note_is_test(&n.st, &n.ident.device_id, &n.opts.source),
         });
     }
+}
+
+/// A test note (a test device, or a `probe…`/`test…` source): it goes to Lucina's self-test
+/// conversation, never the owner's chat, and never notifies (docs/notifications.md).
+fn note_is_test(st: &AppState, device: &str, source: &str) -> bool {
+    st.devices.is_test(device) || crate::notify::reply_route::is_test_source(source)
 }
 
 /// Transcribe (up to 120 s), post the share. `Some((userItemId, stt ms, note ms))` once posted.
@@ -1067,6 +1081,7 @@ async fn note_steps(
             session_id: n.opts.session_id.as_deref(),
             channel: &n.channel,
             source: &n.opts.source,
+            conversation: note_is_test(&n.st, &n.ident.device_id, &n.opts.source).then_some("selftest"),
             reply_to: n.opts.reply_to.as_deref(),
             duration_ms: n.pcm.len() as u64 / 32,
             transcript: transcript.as_deref(),
