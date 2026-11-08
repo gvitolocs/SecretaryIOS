@@ -439,6 +439,8 @@ Every message about a note after `note` carries its `shareId`, because a new tur
 - **Connect early, keep it.** A client opens the socket when its voice UI shows (the Lucina tab, the chat screen,
   the DSi's Lucina tab), not when the owner presses; it keeps it while that UI is open and reopens with backoff.
   For a new TLS session the DSi pays about 6 s, so it opens the socket the moment the Lucina tab opens and keeps it.
+  The server warms its speech-to-text when a socket opens (its engine loads in about 3 s and stops after 90 s
+  idle), so opening early also takes that load off the first turn.
 - **Stream from the first sample.** `start` goes on press, then frames of 20 to 100 ms as the mic delivers them.
 - **Show and play as it comes.** `transcript` under the owner's bubble; `delta`/`answer` as text; `audio` frames into
   the player at once.

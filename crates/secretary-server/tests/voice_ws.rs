@@ -865,7 +865,7 @@ async fn a_push_to_talk_turn_streams_two_sentences_in_order() {
     );
     assert_eq!(calls[0].content_type, "audio/x-s16le;rate=16000");
     assert_eq!(calls[0].len, 32_000);
-    // `start` warmed the engine with 0.5 s of silence, once.
+    // Opening the socket (then `start`) warmed the engine with 0.5 s of silence, once in all.
     let warm: Vec<_> = h
         .mock
         .stt_calls
@@ -910,6 +910,36 @@ async fn a_push_to_talk_turn_streams_two_sentences_in_order() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn opening_the_socket_warms_speech_to_text() {
+    let h = harness().await;
+    let _ws = h.connect().await;
+    // No `start`: the open alone warms the engine with the caller's own credentials.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let warm = loop {
+        let warm: Vec<_> = h
+            .mock
+            .stt_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.silence)
+            .cloned()
+            .collect();
+        if !warm.is_empty() || Instant::now() > deadline {
+            break warm;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(warm.len(), 1);
+    assert_eq!(warm[0].len, 16_000);
+    assert_eq!(
+        warm[0].auth.as_deref(),
+        Some(format!("Bearer {}", h.token).as_str())
+    );
+    assert!(h.mock.real_stt_calls().is_empty());
 }
 
 #[tokio::test]

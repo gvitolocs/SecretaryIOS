@@ -37,9 +37,10 @@
 //! stored and never answered ([`crate::voice_telemetry`]); so is the server's
 //! own record of every turn. Both are read through `GET /v1/voice/devices*`.
 //!
-//! **Turn.**
-//! 1. `start` → `listening`; the local speech-to-text is warmed in the
-//!    background ([`crate::voice::Voice::warm_stt`]).
+//! **Turn.** The local speech-to-text is warmed in the background when the
+//! socket opens and again on `start` ([`crate::voice::Voice::warm_stt`]; a
+//! warm-up fresher than [`crate::voice::WARM_FRESH`] is not repeated).
+//! 1. `start` → `listening`.
 //! 2. PCM is collected (at most [`crate::voice::MAX_BODY`] bytes, about 32 s)
 //!    and watched by the energy VAD ([`crate::voice_vad`]). In `vad` mode, the
 //!    end of speech sends `endpoint` and starts the turn; in `ptt` mode the VAD
@@ -385,6 +386,13 @@ async fn connection(
         notes: VecDeque::new(),
     };
     tracing::info!(device = %device, "voice socket open");
+    // Clients open the socket when their voice screen shows, seconds before the owner speaks: warm the
+    // local speech-to-text now, so its cold load (about 3 s; it stops after 90 s idle) is not paid after
+    // the end of a short recording. `start` warms again if this one has gone stale.
+    {
+        let (st, creds) = (conn.st.clone(), conn.creds.clone());
+        tokio::spawn(async move { st.voice.warm_stt(&creds, None).await });
+    }
 
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
