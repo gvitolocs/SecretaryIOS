@@ -75,3 +75,10 @@ and iOS implementations must pass every case.
 Implementations: Rust `crates/shopping-text` (pure, no deps; Verus model
 `verification/verus/shopping_text.rs`), web `web/src/lib/shoppingText.ts`, iOS
 `ios/Secretary/Features/Shopping/ShoppingText.swift`.
+
+## Runtime catalog
+
+Lucina reads `data/shopping-catalog.v1.json` before the repo asset. `deploy/lucina-rs/install.sh` installs this
+commit's `assets/catalog/catalog.v1.json` there on every lucina-rs deploy, and `deploy/targets.tsv` lists
+`assets/catalog` under lucina-rs, so a catalog change ships to Lucina too. A copy from 2026-10-21 left there made
+Red Bull unknown to Lucina after the apps already had `energy-drink` (2026-11-08).
