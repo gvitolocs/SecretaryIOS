@@ -108,6 +108,10 @@ async fn local_stt(
     headers: HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    // The warm-up the voice socket sends when it opens (0.5 s of zeros, b84b353e) is not a call these tests count.
+    if body.iter().all(|b| *b == 0) {
+        return Json(json!({"text": "", "language": "da", "ms": 1, "mode": "gpu"})).into_response();
+    }
     m.stt_calls.lock().unwrap().push((
         headers.get("cookie").map(|v| v.to_str().unwrap().to_owned()),
         headers

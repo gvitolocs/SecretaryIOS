@@ -81,6 +81,9 @@ struct Mock {
     /// Timeline streams opened so far, and open now.
     stream_opens: Mutex<usize>,
     streams_open: Mutex<usize>,
+    /// Every request to any mock whose path names the memo API, other than the speech-to-text call `/v1/memos/stt`
+    /// (chat voice is never a memo: no memo, summary or brief is made from it).
+    memo_calls: Mutex<Vec<String>>,
 }
 
 /// The mock Lucina's `GET /api/secretary/timeline/stream`: off (404) unless `reply_after` is set.
@@ -170,6 +173,7 @@ async fn share(
     headers: HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    m.note_memo_path(&format!("share {}", uri.path()), uri.path());
     let script = m.share.lock().unwrap().clone();
     let hdr = |k: &str| headers.get(k).map(|v| v.to_str().unwrap().to_owned());
     if method == axum::http::Method::POST && uri.path() == "/v1/share" {
@@ -227,9 +231,18 @@ struct SttCall {
     csrf: Option<String>,
     len: usize,
     silence: bool,
+    /// The largest absolute sample of the body, read as s16le.
+    peak: i32,
 }
 
 impl Mock {
+    /// Remember a request that names the memo API, `/v1/memos/stt` aside.
+    fn note_memo_path(&self, what: &str, path: &str) {
+        if path.contains("memo") && path != "/v1/memos/stt" {
+            self.memo_calls.lock().unwrap().push(what.to_owned());
+        }
+    }
+
     fn say(&self, text: &str) {
         *self.transcript.lock().unwrap() = text.to_owned();
     }
@@ -261,6 +274,14 @@ async fn local_stt(
     body: Bytes,
 ) -> axum::response::Response {
     let silence = body.iter().all(|b| *b == 0);
+    m.note_memo_path(&format!("{} {}", "STT", uri.path()), uri.path());
+    let peak = body
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i32::from(i16::from_le_bytes(*b)).abs())
+        .max()
+        .unwrap_or(0);
     m.stt_calls.lock().unwrap().push(SttCall {
         auth: headers
             .get("authorization")
@@ -278,6 +299,7 @@ async fn local_stt(
             .map(|v| v.to_str().unwrap().to_owned()),
         len: body.len(),
         silence,
+        peak,
     });
     if *m.stt_fails.lock().unwrap() {
         return (AxumStatus::INTERNAL_SERVER_ERROR, "boom").into_response();
@@ -328,6 +350,7 @@ async fn lucina(
     headers: HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    m.note_memo_path(&format!("lucina {}", uri.path()), uri.path());
     if uri.path() == "/api/secretary/timeline/stream" {
         return timeline_stream(m).await;
     }
@@ -623,6 +646,15 @@ async fn harness() -> H {
 }
 
 async fn harness_with(tweak: impl FnOnce(&mut Config)) -> H {
+    harness_inner(tweak, false).await
+}
+
+/// The speaker's device is flagged `test` in devices.json (`secretary-server token test <id> on`).
+async fn harness_test_device() -> H {
+    harness_inner(|_| {}, true).await
+}
+
+async fn harness_inner(tweak: impl FnOnce(&mut Config), test_device: bool) -> H {
     let mock = Arc::new(Mock::default());
     let share_url = spawn(
         Router::new()
@@ -642,6 +674,9 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> H {
     cfg.voice_share_url = Some(format!("http://{share_url}/v1/share"));
     tweak(&mut cfg);
     let (dev, token) = DeviceStore::new(&cfg.data_dir).issue("Speaker").unwrap();
+    if test_device {
+        DeviceStore::new(&cfg.data_dir).set_test(&dev.id, true).unwrap().unwrap();
+    }
     let st = AppState::new(&cfg).unwrap();
     let addr = spawn(app(st.clone())).await;
     H {
@@ -785,6 +820,39 @@ fn tone(ms: usize) -> Vec<u8> {
 
 fn silence(ms: usize) -> Vec<u8> {
     vec![0; 32 * ms]
+}
+
+/// s16le 16 kHz: `ms` of deterministic hiss, samples evenly in `-amp..=amp`.
+fn hiss(ms: usize, amp: i16) -> Vec<u8> {
+    let mut seed: u32 = 7;
+    (0..16 * ms)
+        .flat_map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let v = ((seed >> 16) as i32 % (2 * i32::from(amp) + 1)) - i32::from(amp);
+            (v as i16).to_le_bytes()
+        })
+        .collect()
+}
+
+/// Speech-like and quiet (the DSi's): bursts of 400 ms of a 440 Hz tone of amplitude `amp`, 400 ms of room hiss (+-3) between.
+fn quiet_speech(ms: usize, amp: f32) -> Vec<u8> {
+    let room = hiss(ms, 3);
+    (0..16 * ms)
+        .flat_map(|i| {
+            let burst = (i / 6400) % 2 == 0;
+            let v = if burst {
+                (amp * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin()) as i16
+            } else {
+                i16::from_le_bytes([room[2 * i], room[2 * i + 1]])
+            };
+            v.to_le_bytes()
+        })
+        .collect()
+}
+
+/// The largest absolute sample of s16le bytes.
+fn peak_of(pcm: &[u8]) -> i32 {
+    pcm.as_chunks::<2>().0.iter().map(|b| i32::from(i16::from_le_bytes(*b)).abs()).max().unwrap_or(0)
 }
 
 /// Stream `audio` like the speaker: ~32 ms (1024-byte) frames.
@@ -1206,7 +1274,8 @@ async fn vad_mode_without_speech_is_no_speech() {
     let mut ws = h.connect().await;
     send(&mut ws, json!({"type": "start", "mode": "vad"})).await;
     assert_eq!(recv_json(&mut ws).await["type"], "listening");
-    stream_audio(&mut ws, &silence(1500)).await;
+    // A steady noise (-35 dBFS RMS) is neither silent (the level rules) nor speech (the VAD wants 3x its own floor).
+    stream_audio(&mut ws, &hiss(1500, 1000)).await;
     send(&mut ws, json!({"type": "end"})).await;
     let e = recv_json(&mut ws).await;
     assert_eq!(e["code"], "no_speech");
@@ -2978,4 +3047,190 @@ async fn the_command_cap_counts_decoded_audio() {
     assert_eq!(json_of(&out, "done")["type"], "done", "{out:?}");
     let calls = h.mock.real_stt_calls();
     assert_eq!(calls[0].len, 1024 * 1024);
+}
+
+// -- quiet input (protocol section 10.7) -----------------------------------------------------------------------------------
+
+const SILENT_MESSAGE: &str = "The recording was silent: check the microphone.";
+
+#[tokio::test]
+async fn a_silent_command_turn_is_error_silent_and_runs_no_stt_or_chat() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    // Digital silence, and a hiss at -70 dBFS (peak 8): both are silent. The hiss is not all zeros, so a speech-to-text call
+    // would show up in `real_stt_calls`.
+    for audio in [silence(1500), hiss(1500, 8)] {
+        start_ptt(&mut ws).await;
+        stream_audio(&mut ws, &audio).await;
+        send(&mut ws, json!({"type": "end"})).await;
+        let e = recv_json(&mut ws).await;
+        assert_eq!(e, json!({"type": "error", "code": "silent", "message": SILENT_MESSAGE}));
+    }
+    assert!(h.mock.real_stt_calls().is_empty());
+    assert!(h.mock.chats.lock().unwrap().is_empty() && h.mock.spoken().is_empty());
+    // The socket and the device are free: a real turn runs next.
+    let out = say_ptt(&mut ws, 800).await;
+    assert_eq!(json_of(&out, "done")["type"], "done", "{out:?}");
+    // The server's record of the silent turn: the error and the level, numbers only.
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h.wait_for(&h.token, &path, |v| v["turns"].as_array().is_some_and(|t| t.len() == 3)).await;
+    let silent = &v["turns"][2];
+    assert_eq!(silent["err"], "silent");
+    for k in ["in_peak_dbfs", "in_rms_dbfs", "speech_rms_dbfs", "gain_db"] {
+        assert!(silent[k].is_f64(), "{k}: {silent}");
+    }
+    assert_eq!(silent["gain_db"], 0.0);
+}
+
+#[tokio::test]
+async fn a_silent_note_is_not_posted() {
+    let h = harness().await;
+    h.mock.say("Una nota");
+    let mut ws = h.connect().await;
+    for audio in [silence(2000), hiss(2000, 8)] {
+        send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+        expect_listening(&mut ws).await;
+        stream_audio(&mut ws, &audio).await;
+        send(&mut ws, json!({"type": "end"})).await;
+        let e = recv_json(&mut ws).await;
+        assert_eq!(e, json!({"type": "error", "code": "silent", "message": SILENT_MESSAGE}));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(h.mock.shares.lock().unwrap().is_empty());
+    assert!(h.mock.real_stt_calls().is_empty());
+}
+
+#[tokio::test]
+async fn quiet_speech_is_lifted_for_the_stt_and_the_note_file_stays_as_recorded() {
+    let h = harness().await;
+    h.mock.share.lock().unwrap().processing = 1000;
+    h.mock.say("Ricordami di comprare il latte");
+    let mut ws = h.connect().await;
+    // About -33 dBFS speech and a -30 dBFS peak: the DSi's note, a little louder.
+    let quiet = quiet_speech(4000, 1000.0);
+    let before = peak_of(&quiet);
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &quiet).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+    assert_eq!(recv_json(&mut ws).await["type"], "note");
+
+    // The speech-to-text got more than 3x the peak, never past -1 dBFS; the same length.
+    let stt = h.mock.real_stt_calls();
+    assert_eq!(stt.len(), 1);
+    assert_eq!(stt[0].len, quiet.len());
+    assert!(stt[0].peak > 3 * before, "{} vs {before}", stt[0].peak);
+    assert!(stt[0].peak <= 29_205, "{}", stt[0].peak);
+    // The file posted is the recording exactly as it was.
+    let c = &shares(&h, 1).await[0];
+    assert_eq!(c.file[44..], quiet[..]);
+    // The record says what was measured and applied.
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h.wait_for(&h.token, &path, |v| v["turns"][0]["ok"] == true).await;
+    let t = &v["turns"][0];
+    assert!((t["in_peak_dbfs"].as_f64().unwrap() + 30.0).abs() < 1.0, "{t}");
+    assert!(t["in_rms_dbfs"].as_f64().unwrap() < -35.0, "{t}");
+    let speech = t["speech_rms_dbfs"].as_f64().unwrap();
+    assert!(speech > -35.0 && speech < -30.0, "{t}");
+    let gain = t["gain_db"].as_f64().unwrap();
+    assert!(gain > 10.0 && gain <= 30.0, "{t}");
+}
+
+#[tokio::test]
+async fn a_quiet_command_turn_is_lifted_too_and_loud_speech_is_left_alone() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    start_ptt(&mut ws).await;
+    let quiet = quiet_speech(3000, 1000.0);
+    stream_audio(&mut ws, &quiet).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    assert_eq!(json_of(&out, "done")["type"], "done", "{out:?}");
+    let stt = h.mock.real_stt_calls();
+    assert!(stt[0].peak > 3 * peak_of(&quiet) && stt[0].peak <= 29_205, "{}", stt[0].peak);
+
+    // A tone at -12 dBFS is already above the target: not touched.
+    let out = say_ptt(&mut ws, 800).await;
+    assert_eq!(json_of(&out, "done")["type"], "done");
+    let stt = h.mock.real_stt_calls();
+    assert_eq!(stt[1].peak, peak_of(&tone(800)));
+}
+
+// -- chat voice is never a memo (owner rule) ---------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn command_and_note_turns_make_no_memo_request_but_the_stt() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 800).await;
+    assert_eq!(json_of(&out, "done")["type"], "done");
+    h.mock.say("Ricordami di comprare il latte");
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(1200)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+    assert_eq!(recv_json(&mut ws).await["type"], "note");
+    shares(&h, 1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Every call to the memo API was the speech-to-text; the mock records any other one.
+    assert!(h.mock.memo_calls.lock().unwrap().is_empty(), "{:?}", h.mock.memo_calls.lock().unwrap());
+    assert!(!h.mock.stt_calls.lock().unwrap().is_empty());
+    // And the only thing posted to the share is the note itself (no memo, no summary, no brief).
+    assert_eq!(h.mock.shares.lock().unwrap().len(), 1);
+}
+
+// -- test devices (protocol section 10.8): main's path, the devices.json `test` flag ---------------------------------------
+
+#[tokio::test]
+async fn a_command_turn_of_a_test_device_runs_in_the_self_test_conversation() {
+    let h = harness_test_device().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 800).await;
+    assert_eq!(json_of(&out, "done")["type"], "done", "{out:?}");
+    // The text-only pipeline too (`speak: false`).
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "speak": false})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    turn_output(&mut ws).await;
+    let chats = h.mock.chats.lock().unwrap().clone();
+    assert_eq!(chats.len(), 2);
+    for (body, _) in &chats {
+        assert_eq!(body["conversation"], "selftest", "{body}");
+    }
+}
+
+#[tokio::test]
+async fn a_command_turn_of_an_ordinary_device_is_not_a_self_test() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    say_ptt(&mut ws, 800).await;
+    let chats = h.mock.chats.lock().unwrap().clone();
+    assert!(chats[0].0.get("conversation").is_none(), "{}", chats[0].0);
+    assert_eq!(chats[0].0["sessionId"], "lucinavoice");
+}
+
+#[tokio::test]
+async fn notes_of_a_test_device_post_conversation_selftest_and_others_do_not() {
+    for test in [true, false] {
+        let h = if test { harness_test_device().await } else { harness().await };
+        h.mock.share.lock().unwrap().processing = 1000;
+        h.mock.say("Una nota");
+        let mut ws = h.connect().await;
+        send(&mut ws, json!({"type": "start", "purpose": "note", "source": "ios-chat"})).await;
+        expect_listening(&mut ws).await;
+        stream_audio(&mut ws, &tone(1000)).await;
+        send(&mut ws, json!({"type": "end"})).await;
+        assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+        assert_eq!(recv_json(&mut ws).await["type"], "note");
+        let c = &shares(&h, 1).await[0];
+        assert_eq!(c.field("conversation"), test.then_some("selftest"), "{:?}", c.fields);
+    }
 }

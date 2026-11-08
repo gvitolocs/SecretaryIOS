@@ -1476,7 +1476,11 @@ Gemini both failed), `lucina_unavailable` (including an SSE `error` event),
 `tts_failed`, `busy` (a turn is already running on this connection or for
 this device), `rate_limited`, `bad_request` (bad `mode`/`lang` or a bad key of
 section 10.1, unknown `type`, not JSON), `note_failed` (a voice note's share was
-refused or unreachable).
+refused or unreachable), `silent` (the recording had no signal: peak under -60 dBFS or no
+frame above the noise gate; "The recording was silent: check the microphone."; nothing
+ran, no note was posted). Quiet speech is lifted towards -20 dBFS before speech-to-text
+(at most +30 dB; protocol section 10.7), and a device flagged `test` (`secretary-server token test <id> on`)
+runs its turns in Lucina's self-test conversation, out of the owner's chat (section 10.8).
 
 Pipeline per turn:
 
@@ -1485,7 +1489,7 @@ Pipeline per turn:
    `max(200 RMS, 3 × floor)`, end of speech after 700 ms of silence. In `vad`
    mode the end of speech is the endpoint; in `ptt` mode the VAD only trims
    trailing silence (keeping 200 ms) and `end` is the endpoint. A `ptt`
-   recording of at least 0.3 s always goes to speech-to-text.
+   recording of at least 0.3 s goes to speech-to-text unless it is silent (`silent`).
 2. Speech-to-text: the local engine first, Gemini as fallback, as for
    `POST /v1/voice`.
 3. Streaming chat (`POST {lucina}/api/secretary/chat`, `Accept:

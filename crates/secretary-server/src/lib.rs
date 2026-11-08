@@ -58,6 +58,7 @@ pub mod upstream;
 pub mod voice;
 pub mod voice_filler;
 pub mod voice_frames;
+pub mod voice_level;
 pub mod voice_note;
 pub mod voice_learn;
 pub mod voice_pipe;

@@ -62,7 +62,11 @@ extended (all new fields optional, old readers ignore them):
   original at `/v1/media/items/{id}/original`, both with the device token).
 - Links carry `url` (`name` = page title once fetched, else the host).
 - Text snippets are not attachments: they go into the user item text (quoted) if short, else `kind:"text"` with the first 80 chars as `name`.
-- The user item `text` is the owner's `note`, or a short default (e.g. "📎 IMG_1.jpg") when there is none.
+- The user item `text` is the owner's `note`, or a short default (e.g. "📎 IMG_1.jpg") when there is none. A **voice note never
+  contributes its file name** to that default: the item shows only the voice note (play control, duration, waveform). A share made
+  only of voice parts, with no note, gets an empty `text`; voice and a PDF gives "📎 contract.pdf". The attachment keeps its
+  `name` (data, not a label), and no other text (the later `mediaId` update, `GET /v1/share/{id}`, Lucina's reply and its meta)
+  ever says it.
 - User item `meta.kind = "share"`, `meta.shareId`, `meta.intent`.
 
 ## Intents
@@ -128,7 +132,7 @@ Voice audio is decoded for at most ten minutes and never gets a long-document su
 The single append-only user item carries what was known at receipt:
 
 ```json
-{"role":"user","channel":"ios","text":"📎 note.m4a","meta":{"kind":"share","shareId":"voice-note-0001","intent":"ask"},"attachments":[{"kind":"voice","name":"note.m4a","mime":"audio/mp4","mediaId":"itm_…","bytes":12345,"durationMs":4200,"waveform":"AAEC/w==","transcript":"ricordami di comprare il latte"}]}
+{"role":"user","channel":"ios","text":"","meta":{"kind":"share","shareId":"voice-note-0001","intent":"ask"},"attachments":[{"kind":"voice","name":"note.m4a","mime":"audio/mp4","mediaId":"itm_…","bytes":12345,"durationMs":4200,"waveform":"AAEC/w==","transcript":"ricordami di comprare il latte"}]}
 ```
 
 Attachment `transcript` is included only if known at receipt; it is trimmed and clipped
@@ -140,8 +144,17 @@ planner with the transcript itself as the user message. A short system addition 
 Lucina to answer normally in the spoken language, without describing the audio. A caption
 or other shared parts keep the ordinary share turn, with the transcript in Shared content
 and voice guidance. The transcript is remembered as handler `audio`, subtype `voice`.
-If transcription fails or is empty, a single reply in the device language asks the owner
+If transcription fails or is empty, a single reply in the owner's language (English or Danish, never Italian) asks him
 to repeat, without calling the chat model.
+
+**Quiet voice notes.** Before Whisper a voice note without an on-device transcript is measured (its 16 kHz decode: peak, overall
+RMS, and the RMS of the 20 ms frames above a noise gate; the pure rules are `crates/secretary-server/src/voice_rules.rs`, Verus-checked,
+and shared by path; protocol section 10.7 of `docs/lucinavoice-protocol.md`). Speech more than 3 dB under -20 dBFS is lifted
+towards -20 dBFS (at most +30 dB, no gain on the frames under the noise gate, a limiter at -1 dBFS) on the copy Whisper reads; the stored original
+is never changed. A recording whose peak is under -60 dBFS, or with no frame above the gate, is **silent**: Whisper is not
+asked, and the single reply is "The recording was silent: check the microphone." (Danish: "Optagelsen var tavs: tjek mikrofonen."),
+not "I couldn't hear you". The log line `share_level` carries `in_peak_dbfs`, `in_rms_dbfs`, `speech_rms_dbfs`, `gain_db`
+(numbers only).
 
 The single reply item adds (other reply metadata may also be present):
 

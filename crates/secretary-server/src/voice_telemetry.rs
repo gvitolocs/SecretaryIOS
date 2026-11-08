@@ -25,7 +25,8 @@
 //! `intent`, `confidence`, `jev_ms`, `fast` and `source` (never text). Layered Jev
 //! decisions (protocol section 9) add `layers: [{layer, verdict, confidence, ms, used}]`,
 //! and Voice Learn adds the counts `stt_corrections` and `stt_ambiguous` (only when
-//! above zero; never the words or the transcript).
+//! above zero; never the words or the transcript). The level of the recording before speech-to-text
+//! (protocol section 10.7) adds `in_peak_dbfs`, `in_rms_dbfs`, `speech_rms_dbfs` and `gain_db` (numbers, 0.1 dB).
 //!
 //! **Storage**, under `SECRETARY_DATA_DIR/voice/<device id>/` (0700/0600):
 //! - `events.jsonl`: one JSON object per line, `{"at", "k", "t"?, ...}`:
@@ -339,6 +340,34 @@ pub struct TurnRecord {
     /// How many Voice Learn matches were ambiguous (a count).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub stt_ambiguous: u32,
+    /// The level of the recording before speech-to-text (dBFS numbers, never audio); absent for a turn rejected before it was measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<InputLevel>,
+}
+
+/// The level of a turn's recording (protocol section 10.7), in dBFS and dB, rounded to 0.1.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct InputLevel {
+    /// The largest sample.
+    pub in_peak_dbfs: f64,
+    /// The RMS of the whole recording.
+    pub in_rms_dbfs: f64,
+    /// The RMS of the frames above the noise gate.
+    pub speech_rms_dbfs: f64,
+    /// The gain applied to the speech-to-text copy (0 = none).
+    pub gain_db: f64,
+}
+
+impl InputLevel {
+    pub fn of(level: &crate::voice_level::Level) -> Self {
+        let (p, r, s, g) = level.rounded();
+        Self {
+            in_peak_dbfs: p,
+            in_rms_dbfs: r,
+            speech_rms_dbfs: s,
+            gain_db: g,
+        }
+    }
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1095,6 +1124,12 @@ fn put_voice_learn(v: &mut Value, rec: &TurnRecord) {
     if rec.stt_ambiguous > 0 {
         v["stt_ambiguous"] = json!(rec.stt_ambiguous);
     }
+    if let Some(l) = &rec.level {
+        v["in_peak_dbfs"] = json!(l.in_peak_dbfs);
+        v["in_rms_dbfs"] = json!(l.in_rms_dbfs);
+        v["speech_rms_dbfs"] = json!(l.speech_rms_dbfs);
+        v["gain_db"] = json!(l.gain_db);
+    }
 }
 
 /// What the caller knows of a finished turn; the rest is in [`Shared`].
@@ -1109,6 +1144,8 @@ pub struct TurnInfo {
     /// Words Voice Learn replaced in the transcript, and ambiguous matches (counts only).
     pub stt_corrections: u32,
     pub stt_ambiguous: u32,
+    /// The recording's level before speech-to-text.
+    pub level: Option<InputLevel>,
 }
 
 /// Record a finished turn for `ident`'s device.
@@ -1138,6 +1175,24 @@ pub fn finish_turn(st: &AppState, ident: &Identity, shared: &Shared, info: TurnI
             layers: shared.layers(),
             stt_corrections: info.stt_corrections,
             stt_ambiguous: info.stt_ambiguous,
+            level: info.level,
+        },
+    );
+}
+
+/// A recording the socket turned down as silent (protocol section 10.7): its level, no work done.
+pub fn record_silent(st: &AppState, ident: &Identity, up_bytes: u64, level: InputLevel) {
+    st.voice_log.record_turn(
+        &ident.device_id,
+        &ident.device_name,
+        TurnRecord {
+            at_ms: wall_ms_ago(0),
+            ok: false,
+            err: Some("silent".into()),
+            speech_ms: up_bytes / 32,
+            up_bytes,
+            level: Some(level),
+            ..TurnRecord::default()
         },
     );
 }
@@ -1369,6 +1424,7 @@ mod tests {
             layers: Vec::new(),
             stt_corrections: 0,
             stt_ambiguous: 0,
+            level: None,
         }
     }
 

@@ -383,6 +383,297 @@ pub fn audio_room(have: usize, incoming: usize, cap: usize) -> (usize, bool) //@
     (take, incoming >= room)
 }
 
+// -- the level of a recording ---------------------------------------------------------------------------------------------
+//
+// Quiet input (docs/lucinavoice-protocol.md section 10.7): the DSi's notes arrive about 30 dB too quiet. Before speech-to-text the
+// recording is measured, and quiet speech is lifted towards -20 dBFS (RMS of the speech frames), on the copy that goes to the
+// speech-to-text only. The rules below are integer-only: frames of 20 ms, their mean squares, a noise gate from the quietest tenth
+// of the frames, a gain in Q8 (256 = 1.0), and a limiter per frame. The dBFS numbers for logs are in `voice_level.rs`.
+//
+// Proved: a gain is never above +30 dB and never below 1.0; a silent recording (peak under -60 dBFS, no frame, or no frame above the
+// gate) and a recording with no speech energy get the gain 1.0; speech already within 3 dB of the target, or above it, gets 1.0; the
+// limiter never lets a sample past -1 dBFS; the output has the input's length; every index is in bounds and nothing overflows.
+
+/// 20 ms of 16 kHz audio.
+pub const FRAME: usize = 320;
+/// Gain 1.0 in Q8.
+pub const UNITY_Q8: u32 = 256;
+/// +30 dB as a Q8 amplitude: 10^(30/20) = 31.62, 8094 / 256 = 31.617 (29.9996 dB).
+pub const MAX_GAIN_Q8: u32 = 8094;
+/// -1 dBFS: 32768 * 10^(-1/20) = 29205.
+pub const CEILING: i32 = 29205;
+/// A peak under -60 dBFS is silence: 32768 * 0.001 = 32.8, so under 33.
+pub const SILENT_PEAK: u32 = 33;
+/// The speech RMS the gain aims at, -20 dBFS: (32768 * 0.1)^2 as a mean square.
+pub const TARGET_MS: u64 = 10_737_418;
+/// Speech whose mean square is at least this is within 3 dB of the target (or above it): no gain. TARGET_MS / 10^0.3.
+pub const NO_GAIN_MS: u64 = 5_381_462;
+/// The gate never goes under -60 dBFS RMS: (32768 * 0.001)^2.
+pub const GATE_MIN_MS: u64 = 1_074;
+/// The gate never goes over -45 dBFS RMS, (32768 * 0.0056)^2: a frame louder than that is not room noise, whatever the floor
+/// (a steady loud sound has no quiet frames to take a floor from).
+pub const GATE_MAX_MS: u64 = 33_499;
+
+/// The largest absolute sample of `s[start..end]` (-32768 counts as 32768).
+pub fn peak_of_range(s: &[i16], start: usize, end: usize) -> u32 //@ret
+//@ requires start <= end <= s@.len(),
+//@ ensures ret <= 32768, forall |k: int| start <= k < end ==> -(ret as int) <= #[trigger] s@[k] as int && s@[k] as int <= ret as int,
+{
+    let mut p: u32 = 0;
+    let mut i = start;
+    while i < end
+    //@ invariant start <= i <= end, end <= s@.len(), p <= 32768,
+    //@     forall |k: int| start <= k < i ==> -(p as int) <= #[trigger] s@[k] as int && s@[k] as int <= p as int,
+    //@ decreases end - i,
+    {
+        let v = s[i] as i32;
+        let a = if v < 0 { (-v) as u32 } else { v as u32 };
+        if a > p {
+            p = a;
+        }
+        i += 1;
+    }
+    p
+}
+
+/// Sum of the squares of `s[start..end]`, at most 320 samples: never above `2^30` each.
+pub fn sumsq(s: &[i16], start: usize, end: usize) -> u64 //@ret
+//@ requires start <= end <= s@.len(), end - start <= 320,
+//@ ensures ret <= (end - start) as u64 * 1073741824,
+{
+    let mut acc: u64 = 0;
+    let mut i = start;
+    while i < end
+    //@ invariant start <= i <= end, end <= s@.len(), end - start <= 320, acc <= (i - start) as u64 * 1073741824,
+    //@ decreases end - i,
+    {
+        let v = s[i] as i64;
+        //@ assert(0 <= v * v <= 1073741824) by (nonlinear_arith) requires -32768 <= v <= 32767;
+        acc += (v * v) as u64;
+        i += 1;
+    }
+    acc
+}
+
+/// The mean square of every whole frame of 320 samples (a partial last frame is left out).
+pub fn frame_energies(s: &[i16]) -> Vec<u64> //@ret
+//@ requires s@.len() <= 100000000,
+//@ ensures ret@.len() == s@.len() / 320, forall |k: int| 0 <= k < ret@.len() ==> #[trigger] ret@[k] <= 1073741824,
+{
+    let n = s.len() / FRAME;
+    let mut out: Vec<u64> = Vec::new();
+    let mut f = 0;
+    while f < n
+    //@ invariant f <= n, n == s@.len() / 320, out@.len() == f, s@.len() <= 100000000,
+    //@     forall |k: int| 0 <= k < out@.len() ==> #[trigger] out@[k] <= 1073741824,
+    //@ decreases n - f,
+    {
+        //@ assert(f * 320 + 320 <= s@.len()) by (nonlinear_arith) requires f < n, n == s@.len() / 320;
+        let start = f * 320;
+        let sq = sumsq(s, start, start + 320);
+        //@ assert(sq / 320 <= 1073741824) by (nonlinear_arith) requires sq <= 320 * 1073741824u64;
+        out.push(sq / 320);
+        f += 1;
+    }
+    out
+}
+
+/// How many of `ms` are below `p`.
+pub fn count_below(ms: &[u64], p: u64) -> usize //@ret
+//@ ensures ret <= ms@.len(),
+{
+    let mut c: usize = 0;
+    let mut i = 0;
+    while i < ms.len()
+    //@ invariant i <= ms@.len(), c <= i,
+    //@ decreases ms@.len() - i,
+    {
+        if ms[i] < p {
+            c += 1;
+        }
+        i += 1;
+    }
+    c
+}
+
+/// The noise floor: the smallest power of two that more than a tenth of the frames are under (the quietest tenth sits below it).
+pub fn noise_floor(ms: &[u64]) -> u64 //@ret
+//@ requires ms@.len() <= 10000000,
+//@ ensures 1 <= ret <= 8589934592,
+{
+    let mut p: u64 = 1;
+    while p < 4294967296
+    //@ invariant 1 <= p <= 8589934592, ms@.len() <= 10000000,
+    //@ decreases 8589934592 - p,
+    {
+        let c = count_below(ms, p);
+        if c * 10 >= ms.len() {
+            break;
+        }
+        p *= 2;
+    }
+    p
+}
+
+/// The largest Q8 gain in `256..=8094` that brings a speech mean square of `speech_ms` to at most the target. None for speech
+/// already within 3 dB of the target (or above it), and none for no energy at all. Never above +30 dB.
+#[allow(clippy::manual_div_ceil)]
+pub fn choose_gain_q8(speech_ms: u64) -> u32 //@ret
+//@ ensures 256 <= ret <= 8094, speech_ms == 0 ==> ret == 256, speech_ms >= 5381462 ==> ret == 256,
+{
+    if speech_ms == 0 || speech_ms >= NO_GAIN_MS {
+        return UNITY_Q8;
+    }
+    let want: u64 = TARGET_MS * 65536;
+    let mut lo: u32 = UNITY_Q8;
+    let mut hi: u32 = MAX_GAIN_Q8;
+    while lo < hi
+    //@ invariant 256 <= lo <= hi <= 8094, speech_ms < 5381462,
+    //@ decreases hi - lo,
+    {
+        let mid = lo + (hi - lo + 1) / 2;
+        let m = mid as u64;
+        //@ assert(m * m <= 65512836) by (nonlinear_arith) requires m <= 8094;
+        //@ assert(m * m * speech_ms <= 65512836 * 5381462) by (nonlinear_arith) requires m * m <= 65512836, speech_ms < 5381462;
+        if m * m * speech_ms <= want {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    lo
+}
+
+/// What the level of a recording says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] //@omit
+pub struct Plan {
+    /// Nothing to hear: the peak is under -60 dBFS, or no frame is above the gate.
+    pub silent: bool,
+    /// The Q8 gain for the frames above the gate (256 = none).
+    pub gain_q8: u32,
+    /// Frames whose mean square is at most this are not boosted.
+    pub gate_ms: u64,
+    /// The mean of the mean squares of the frames above the gate.
+    pub speech_ms: u64,
+}
+
+/// The plan for a recording from its frames' mean squares `ms` and its peak. The gate is the noise floor (the quietest tenth of
+/// the frames) plus 6 dB, never under -60 dBFS and never over -45 dBFS. A silent recording gets no gain.
+pub fn plan(ms: &[u64], peak: u32) -> Plan //@ret
+//@ requires ms@.len() <= 10000000, peak <= 32768, forall |k: int| 0 <= k < ms@.len() ==> #[trigger] ms@[k] <= 1073741824,
+//@ ensures 256 <= ret.gain_q8 <= 8094, ret.silent ==> ret.gain_q8 == 256, peak < 33 ==> ret.silent, ret.gate_ms <= 33499,
+//@     ret.speech_ms == 0 ==> ret.gain_q8 == 256, ret.speech_ms >= 5381462 ==> ret.gain_q8 == 256,
+{
+    if ms.len() == 0 || peak < SILENT_PEAK {
+        return Plan { silent: true, gain_q8: UNITY_Q8, gate_ms: 0, speech_ms: 0 };
+    }
+    let floor = noise_floor(ms);
+    let wide = floor * 4;
+    let low = if wide > GATE_MIN_MS { wide } else { GATE_MIN_MS };
+    let gate = if low > GATE_MAX_MS { GATE_MAX_MS } else { low };
+    let mut sum: u64 = 0;
+    let mut cnt: u64 = 0;
+    let mut i = 0;
+    while i < ms.len()
+    //@ invariant i <= ms@.len(), ms@.len() <= 10000000, cnt <= i as u64, sum <= cnt * 1073741824,
+    //@     forall |k: int| 0 <= k < ms@.len() ==> #[trigger] ms@[k] <= 1073741824,
+    //@ decreases ms@.len() - i,
+    {
+        if ms[i] > gate {
+            sum += ms[i];
+            cnt += 1;
+        }
+        i += 1;
+    }
+    if cnt == 0 {
+        return Plan { silent: true, gain_q8: UNITY_Q8, gate_ms: gate, speech_ms: 0 };
+    }
+    let speech = sum / cnt;
+    Plan { silent: false, gain_q8: choose_gain_q8(speech), gate_ms: gate, speech_ms: speech }
+}
+
+/// The gain for a frame whose largest sample is `frame_peak`: `g`, or less when `g` would take the frame past -1 dBFS.
+pub fn limit_gain_q8(g: u32, frame_peak: u32) -> u32 //@ret
+//@ requires g <= 8094, frame_peak <= 32768,
+//@ ensures ret <= g, frame_peak as int * ret as int <= 29205 * 256, frame_peak == 0 ==> ret == g,
+{
+    if frame_peak == 0 {
+        return g;
+    }
+    let cap = (29205u32 * 256) / frame_peak;
+    //@ assert(cap as int * frame_peak as int <= 29205 * 256) by (nonlinear_arith) requires cap as int == 7476480int / (frame_peak as int), frame_peak > 0;
+    if g < cap {
+        //@ assert(g as int * frame_peak as int <= cap as int * frame_peak as int) by (nonlinear_arith) requires g < cap, frame_peak > 0;
+        g
+    } else {
+        cap
+    }
+}
+
+/// `v * g / 256`: with `|v| * g` within the ceiling's room, the result stays within `-CEILING..=CEILING`.
+pub fn scale_sample(v: i16, g: u32) -> i16 //@ret
+//@ requires -(29205 * 256) <= v as int * g as int <= 29205 * 256, g <= 8094,
+//@ ensures -29205 <= ret <= 29205,
+{
+    let prod = (v as i64) * (g as i64);
+    (prod / 256) as i16
+}
+
+/// Push `s[start..end]` times the gain `g` (Q8) onto `out`; every sample of the range is within `peak`, and `peak * g` is within
+/// the ceiling's room.
+#[allow(unused_variables)]
+pub fn push_scaled(s: &[i16], start: usize, end: usize, g: u32, peak: u32, out: &mut Vec<i16>)
+//@ requires start <= end <= s@.len(), g <= 8094, peak <= 32768, peak as int * g as int <= 29205 * 256,
+//@     forall |k: int| start <= k < end ==> -(peak as int) <= #[trigger] s@[k] as int && s@[k] as int <= peak as int,
+//@     forall |k: int| 0 <= k < old(out)@.len() ==> -29205 <= #[trigger] old(out)@[k] <= 29205,
+//@ ensures final(out)@.len() == old(out)@.len() + (end - start),
+//@     forall |k: int| 0 <= k < final(out)@.len() ==> -29205 <= #[trigger] final(out)@[k] <= 29205,
+{
+    let mut i = start;
+    while i < end
+    //@ invariant start <= i <= end, end <= s@.len(), g <= 8094, peak as int * g as int <= 29205 * 256, peak <= 32768,
+    //@     forall |k: int| start <= k < end ==> -(peak as int) <= #[trigger] s@[k] as int && s@[k] as int <= peak as int,
+    //@     out@.len() == old(out)@.len() + (i - start),
+    //@     forall |k: int| 0 <= k < out@.len() ==> -29205 <= #[trigger] out@[k] <= 29205,
+    //@ decreases end - i,
+    {
+        //@ assert(-(29205 * 256) <= s@[i as int] as int * g as int <= 29205 * 256) by (nonlinear_arith) requires -(peak as int) <= s@[i as int] as int <= peak as int, peak as int * g as int <= 29205 * 256, g >= 0, peak >= 0;
+        out.push(scale_sample(s[i], g));
+        i += 1;
+    }
+}
+
+/// The recording with the plan's gain on the frames above the gate, and unity on the rest; every frame (and the partial tail) is
+/// limited to -1 dBFS. `ms` are the frame energies of `s`. The output is as long as the input and never passes the ceiling.
+pub fn apply_plan(s: &[i16], ms: &[u64], gate_ms: u64, gain_q8: u32) -> Vec<i16> //@ret
+//@ requires ms@.len() == s@.len() / 320, gain_q8 <= 8094, s@.len() <= 100000000,
+//@ ensures ret@.len() == s@.len(), forall |k: int| 0 <= k < ret@.len() ==> -29205 <= #[trigger] ret@[k] <= 29205,
+{
+    let mut out: Vec<i16> = Vec::new();
+    let n = ms.len();
+    let mut f = 0;
+    while f < n
+    //@ invariant f <= n, n == ms@.len(), n == s@.len() / 320, gain_q8 <= 8094, out@.len() == f * 320, s@.len() <= 100000000,
+    //@     forall |k: int| 0 <= k < out@.len() ==> -29205 <= #[trigger] out@[k] <= 29205,
+    //@ decreases n - f,
+    {
+        //@ assert(f * 320 + 320 <= s@.len()) by (nonlinear_arith) requires f < n, n == s@.len() / 320;
+        let start = f * 320;
+        let end = start + 320;
+        let peak = peak_of_range(s, start, end);
+        let want = if ms[f] > gate_ms { gain_q8 } else { UNITY_Q8 };
+        let g = limit_gain_q8(want, peak);
+        push_scaled(s, start, end, g, peak, &mut out);
+        f += 1;
+    }
+    //@ assert(n * 320 <= s@.len()) by (nonlinear_arith) requires n == s@.len() / 320;
+    let start = n * 320;
+    let peak = peak_of_range(s, start, s.len());
+    let g = limit_gain_q8(UNITY_Q8, peak);
+    push_scaled(s, start, s.len(), g, peak, &mut out);
+    out
+}
+
 // -- the turn phase --------------------------------------------------------------------------------------------------------
 
 /// Where one connection's turn is.

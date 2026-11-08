@@ -46,6 +46,10 @@ const PART_TEXT_MAX: usize = 12_000;
 /// Longest read of one file that is not audio or video: above `vision_budget` (360 s by default), so an
 /// image whose vision is slow still comes back with its OCR text.
 const READ_LIMIT_SECS: u64 = 420;
+/// Lucina's reply to a voice note whose recording was silent (peak under -60 dBFS, or no frame above the noise gate), English
+/// and Danish; never Italian. The same text as the voice socket's `silent` error.
+pub const SILENT_REPLY: &str = "The recording was silent: check the microphone.";
+pub const SILENT_REPLY_DA: &str = "Optagelsen var tavs: tjek mikrofonen.";
 
 #[derive(Clone, Debug)]
 pub struct ShareConfig {
@@ -784,7 +788,8 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             "📎 {}",
             parts
                 .iter()
-                .filter(|p| p.text.is_none())
+                // A voice note shows only the voice note (play control, duration, waveform), never its file name.
+                .filter(|p| p.text.is_none() && p.attachment.kind != "voice")
                 .map(|p| p.attachment.name.as_deref().unwrap_or("file"))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -1381,6 +1386,8 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
     save(dir, job).await?;
     let mut content = String::new();
     let mut voice_transcripts = Vec::new();
+    // A voice note whose recording was silent (peak under -60 dBFS): it gets its own reply, not "I couldn't hear you".
+    let mut silent_voice = false;
     let mut budget = TURN_TEXT_BUDGET;
     let has_voice = job.parts.iter().any(|p| p.attachment.kind == "voice");
     let voice_only = job.parts.len() == 1 && has_voice && job.note.trim().is_empty();
@@ -1450,6 +1457,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             }
             if part.attachment.transcript.is_none() {
                 part.state = "failed".into();
+                silent_voice |= x.structured["silent"] == true;
             }
         }
         part.handler = Some(x.kind.into());
@@ -1511,8 +1519,11 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .iter()
             .any(|p| p.attachment.kind == "voice" && p.attachment.transcript.is_none())
     {
-        let reply = match owner_language(st, &job.session, &job.note).reply().code() {
-            "da" => "Jeg kunne ikke høre dig. Kan du gentage det?",
+        let silent = silent_voice && voice_transcripts.is_empty();
+        let reply = match (owner_language(st, &job.session, &job.note).reply().code(), silent) {
+            ("da", true) => SILENT_REPLY_DA,
+            (_, true) => SILENT_REPLY,
+            ("da", false) => "Jeg kunne ikke høre dig. Kan du gentage det?",
             _ => "I couldn't hear you. Could you repeat that?",
         };
         let item = st.timeline_for(&job.session).append(NewItem {

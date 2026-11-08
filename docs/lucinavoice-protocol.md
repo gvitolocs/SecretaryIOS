@@ -54,7 +54,7 @@ Server → client:
   and, when a filler phrase was played, `ack`; both are absent otherwise. When a filler is played, `first_audio` is
   the filler's and can be earlier than `tts_first`.
 - `{"type":"error","code":"…","message":"…"}`: the turn ended without (complete) audio. `no_speech`, `stt_unavailable`,
-  `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`, and for notes `note_failed` (10.4). The socket stays open after an error.
+  `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`, `silent` (the recording had no signal: 10.7, message "The recording was silent: check the microphone."), and for notes `note_failed` (10.4). The socket stays open after an error.
 
 Server pipeline per turn: `start` warms STT (a background 0.5 s-silence call to the local STT, unless one ran in the
 last 60 s). PCM accumulates while an energy VAD watches it. On end-of-speech the server runs STT, then streaming chat
@@ -455,3 +455,42 @@ Every message about a note after `note` carries its `shareId`, because a new tur
   encoder; the server would need libopus for nothing. Not added.
 - **Streaming the note's answer.** A note is answered by the share worker, which writes the reply when it is
   settled; `reply` for a note therefore comes whole. A command can stream its text (10.3).
+
+### 10.7 Quiet input: level, lift, `silent` (2026-11-08)
+
+The DSi's notes arrived about 30 dB too quiet (peak -29.6 dBFS, RMS -41.5 dBFS): the speech-to-text returned nothing and Lucina
+said "I couldn't hear you". Before any speech-to-text the server measures the recording (the 16 kHz decode of a command or a
+note; the pure rules are `crates/secretary-server/src/voice_rules.rs`, Verus-checked, with `voice_level.rs` as the glue; the
+same code runs in lucina-rs for `/v1/share` voice notes, docs/share.md):
+
+- **Measure.** Frames of 20 ms. The noise floor is the quietest tenth of the frames (a power of two over their mean
+  squares); the gate is the floor plus 6 dB, never under -60 dBFS RMS and never over -45 dBFS RMS. Speech RMS is the RMS of the frames above the gate.
+  Reported in dBFS: the peak, the overall RMS, the speech RMS.
+- **Silent.** A peak under -60 dBFS, or no frame above the gate, or no whole frame: the socket answers
+  `{"type":"error","code":"silent","message":"The recording was silent: check the microphone."}` and runs no speech-to-text and no chat; a
+  note is not posted. (Before the VAD's `no_speech` check, so a dead microphone says so; a recording under 0.3 s is still `no_speech`.)
+- **Lift.** Speech more than 3 dB under the target of -20 dBFS speech RMS gets the gain that brings it to the target, at most **+30 dB**; speech within
+  3 dB of the target, or above it, gets none. Frames at or under the gate are not boosted (room noise and the gaps stay as they
+  were). A limiter follows: no sample goes past -1 dBFS (the gain of a frame is cut so that its peak fits), so nothing clips.
+- **Where.** Only the audio sent to the speech-to-text (and its Gemini fallback). A note's file, posted to `/v1/share`, is exactly
+  as recorded; so is anything stored.
+- **Logs and records.** The turn's log line and the server's record of the turn (`GET /v1/voice/devices/{id}/status`, `turns[]`)
+  carry `in_peak_dbfs`, `in_rms_dbfs`, `speech_rms_dbfs`, `gain_db` (numbers, 0.1 dB; `gain_db` 0 = none). A silent turn's record
+  has `err: "silent"` and the same numbers. Never audio or text.
+
+### 10.8 Test devices (2026-11-08)
+
+Agents measure the voice pipeline with a real device token, and their turns must reach neither the owner's chat nor his phone nor
+his memory. This is main's test path (docs/notifications.md), nothing extra for voice: mark the device with
+`secretary-server token test <id> on` (the `test` flag in devices.json). Then:
+
+- **Command turns** from that device go to Lucina with `conversation: "selftest"` (`voice_pipe`, both the spoken and the text-only
+  pipeline), so they run in Lucina's self-test conversation: its own session, timeline (`selftest-timeline.jsonl`) and no memory write.
+- **Note turns** post the share with the form field `conversation=selftest`, and the gateway adds `X-Secretary-Device` and
+  `X-Secretary-Test: 1` for the flagged device, so lucina-rs runs the share in the self-test conversation. A `probe…`/`test…` `source` does the same. The
+  note's answer is not on the owner's timeline stream, so the watcher follows it by status reads.
+- Nothing of this changes the level rules (10.7) or the messages the agent sees.
+
+Chat voice is never a memo: a voice message on this socket (command or note) is ordinary talk. The server calls lucina-memo only to
+transcribe (`/v1/memos/stt`); nothing here, and nothing in lucina-rs's share path, makes a memo, a summary, an Obsidian note or a brief.
+Memos come from the memo and meeting recorders (`/v1/memos`).
