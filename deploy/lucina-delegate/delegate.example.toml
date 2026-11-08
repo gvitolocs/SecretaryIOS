@@ -1,0 +1,78 @@
+# Lucina delegation policy: ~/.config/lucina-rs/delegate.toml on nezopt
+# (LUCINA_DELEGATE_CONFIG; delegation itself is switched on by LUCINA_DELEGATE=true).
+# Every key is optional; the values below are the defaults.
+# NO SECRETS in this file: API keys are a secrets-skill setting or a key file.
+# See docs/lucina-rust/DELEGATION.md.
+
+enabled = true
+# Hard limit: a delegated agent never delegates again (values above 1 are clamped).
+max_depth = 1
+# A chat turn waits this long for a quick answer, then says "I'll tell you".
+inline_wait_secs = 20
+# Longer answers are saved as a note; the chat gets a 2-3 sentence summary.
+note_threshold_chars = 1200
+sandbox_root = "/home/nez/scratch/lucina-delegate"
+# Code tasks may name a repo only under these roots (it is cloned into the sandbox,
+# work happens on branch lucina/<job>, which is fetched back; never main, never pushed).
+allowed_repo_roots = ["/home/nez/Projects"]
+# "bwrap" (bubblewrap) or "none" (tests only; code tasks are refused without bwrap).
+isolation = "bwrap"
+# Lucina's self-review before each call (one JSON-mode DeepSeek call).
+judge = true
+judge_timeout_secs = 25
+# state_path / jobs_path / audit_path default to <LUCINA_DATA_DIR>/lucina-rs/delegate-*.
+
+# A silent runaway guard, not an approval gate: hitting a cap pauses delegation
+# (that agent, or all of it) until midnight and tells the owner once.
+[budget]
+total_calls_per_day = 200
+
+[budget.claude]
+calls_per_day = 80
+wall_minutes_per_day = 480
+turns_per_day = 1500
+
+[budget.grok]
+calls_per_day = 80
+wall_minutes_per_day = 240
+
+[budget.chatgpt]
+calls_per_day = 80
+wall_minutes_per_day = 240
+
+# The owner's rule: Opus 5.5 at medium effort; never silently changed, never Fast.
+[claude]
+bin = "/home/nez/.local/bin/claude"
+model = "claude-opus-5-5"
+effort = "medium"
+max_turns_per_job = 40
+timeout_secs = 900
+code_timeout_secs = 2700
+
+[grok]
+# "auto": the Grok Bot desktop session through gbot when it is signed in, else the xAI API.
+backend = "auto"
+gbot_bin = "/home/nez/.local/bin/gbot"
+bot = "Grok Bot"
+xai_url = "https://api.x.ai"
+xai_model = "grok-4"
+# secrets.toml [refs]: "delegate.xai_api_key" = "secret://lucina/prod/lucina#XAI_API_KEY"
+xai_key_setting = "delegate.xai_api_key"
+# or: xai_key_file = "/home/nez/.config/lucina-rs/xai.key"   (one line, 0600)
+timeout_secs = 900
+poll_secs = 5
+quiet_secs = 25
+
+[chatgpt]
+# "auto": the OpenAI API when a key is configured, else the Codex CLI (the owner's ChatGPT account).
+backend = "auto"
+codex_bin = "/home/nez/.local/bin/codex"
+codex_auth = "/home/nez/.codex/auth.json"
+codex_model = "gpt-6.1-sol"
+codex_effort = "medium"
+openai_url = "https://api.openai.com"
+openai_model = "gpt-5.5"
+# secrets.toml [refs]: "delegate.openai_api_key" = "secret://lucina/prod/lucina#OPENAI_API_KEY"
+openai_key_setting = "delegate.openai_api_key"
+# or: openai_key_file = "/home/nez/.config/lucina-rs/openai.key"
+timeout_secs = 900

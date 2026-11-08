@@ -361,3 +361,65 @@ fn timed_and_distance_exercises_validate_their_own_fields() {
         .ok
     );
 }
+
+#[test]
+fn routines_can_be_renamed_and_their_exercises_replaced() {
+    let mut e = Engine::in_memory();
+    // A routine saved from a workout, so its bench press is tuned (5 reps at 60 kg).
+    let set = start(&mut e);
+    assert!(edit(&mut e, &set, "60", 5).ok);
+    ok(&mut e, json!({"type":"add_exercise","exercise_id":"squat"}));
+    ok(
+        &mut e,
+        json!({"type":"save_routine","name":"Push","from_active":true}),
+    );
+    ok(&mut e, json!({"type":"cancel_workout"}));
+    let id = e.state().routines.last().unwrap().id.clone();
+    let routine = |e: &Engine| {
+        e.state()
+            .routines
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .clone()
+    };
+
+    ok(
+        &mut e,
+        json!({"type":"update_routine","routine_id":id,"name":"  Push day "}),
+    );
+    assert_eq!(routine(&e).name, "Push day");
+    assert_eq!(routine(&e).exercises.len(), 2);
+
+    ok(
+        &mut e,
+        json!({"type":"update_routine","routine_id":id,"exercise_ids":["plank","bench-press"]}),
+    );
+    let r = routine(&e);
+    assert_eq!(r.name, "Push day");
+    let ids: Vec<_> = r.exercises.iter().map(|x| x.exercise_id.as_str()).collect();
+    assert_eq!(ids, ["plank", "bench-press"]);
+    // The kept exercise keeps its tuning.
+    assert_eq!(
+        (r.exercises[1].reps, r.exercises[1].weight_grams),
+        (5, 60_000)
+    );
+    assert_eq!((r.exercises[0].sets, r.exercises[0].reps), (3, 8));
+
+    assert!(!send(&mut e, json!({"type":"update_routine","routine_id":id})).ok);
+    assert!(
+        !send(
+            &mut e,
+            json!({"type":"update_routine","routine_id":id,"name":"   "})
+        )
+        .ok
+    );
+    assert!(
+        !send(
+            &mut e,
+            json!({"type":"update_routine","routine_id":"nope","name":"X"})
+        )
+        .ok
+    );
+    assert_eq!(routine(&e).name, "Push day");
+}

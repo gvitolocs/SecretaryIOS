@@ -588,9 +588,7 @@ async fn oauth_connect(
         Some("ios") => "ios",
         Some(_) => return Err(crate::links::bad("client: web or ios")),
     };
-    let mut raw = [0u8; 32];
-    let _ = getrandom::fill(&mut raw);
-    let state = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw);
+    let state = crate::links::random_secret()?;
     let url = st.tasks.client.authorize_url(&state).ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,

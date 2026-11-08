@@ -8,7 +8,8 @@
 //!   that header without a CORS preflight, and the server sends no CORS
 //!   headers. Bearer requests are exempt.
 //! - `/v1/session` (login/status/logout) and `/v1/auth/device` are public;
-//!   logins are rate limited per client IP. Login is a device token
+//!   logins are rate limited per client IP. QR sign-in (a signed-in phone
+//!   approves a new browser) is in [`crate::qr_login`]. Login is a device token
 //!   (`{token}`) or the single owner account (`{email, password}`, see
 //!   [`crate::owner`]; password logins also lock out after repeated failures).
 
@@ -284,7 +285,11 @@ fn account_locked(wait: std::time::Duration) -> ApiError {
 
 /// Check the owner's email + password off the async runtime.
 /// `Ok(())`, 401 `invalid_credentials` or 429 `account_locked`.
-async fn check_password(st: &AppState, email: String, password: String) -> Result<(), ApiError> {
+pub(crate) async fn check_password(
+    st: &AppState,
+    email: String,
+    password: String,
+) -> Result<(), ApiError> {
     let store = st.owner.clone();
     let verdict = tokio::task::spawn_blocking(move || store.verify(&email, &password))
         .await
@@ -297,7 +302,7 @@ async fn check_password(st: &AppState, email: String, password: String) -> Resul
     }
 }
 
-fn login_ip_check(st: &AppState, req: &Request) -> Result<(), ApiError> {
+pub(crate) fn login_ip_check(st: &AppState, req: &Request) -> Result<(), ApiError> {
     let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -306,26 +311,48 @@ fn login_ip_check(st: &AppState, req: &Request) -> Result<(), ApiError> {
     st.login_limiter.check(&ip).map_err(ApiError::rate_limited)
 }
 
-async fn new_session(st: &AppState, ident: Identity) -> Result<Response, ApiError> {
+/// Start a browser session for `ident`; returns its `Set-Cookie` value.
+pub(crate) async fn session_cookie(st: &AppState, ident: &Identity) -> Result<String, ApiError> {
     let store = st.sessions.store().clone();
     let did = ident.device_id.clone();
     let sid = tokio::task::spawn_blocking(move || store.create(&did))
         .await
         .map_err(|_| ApiError::internal("session store failed"))?
         .map_err(|e| registry_error(&e))?;
+    Ok(set_cookie(&sid))
+}
+
+async fn new_session(st: &AppState, ident: Identity) -> Result<Response, ApiError> {
+    let cookie = session_cookie(st, &ident).await?;
     let mut resp = session_json(Some(&ident)).into_response();
     resp.extensions_mut().insert(DeviceId(ident.device_id));
-    Ok(with_cookie(resp, &set_cookie(&sid)))
+    Ok(with_cookie(resp, &cookie))
+}
+
+/// The owner's browser device (`web_login`, created on first use): the
+/// device behind password and QR sign-ins.
+pub(crate) async fn web_login_identity(st: &AppState) -> Result<Identity, ApiError> {
+    let devices = st.devices.store().clone();
+    let dev = tokio::task::spawn_blocking(move || devices.ensure_web_login())
+        .await
+        .map_err(|_| ApiError::internal("device store failed"))?
+        .map_err(|e| registry_error(&e))?;
+    Ok(Identity {
+        device_id: dev.id,
+        device_name: dev.name,
+        via: Via::Cookie,
+    })
 }
 
 fn session_json(ident: Option<&Identity>) -> Json<serde_json::Value> {
     Json(json!({
         "authenticated": ident.is_some(),
+        "deviceId": ident.map(|i| i.device_id.clone()),
         "deviceName": ident.map(|i| i.device_name.clone()),
     }))
 }
 
-fn with_cookie(mut resp: Response, cookie: &str) -> Response {
+pub(crate) fn with_cookie(mut resp: Response, cookie: &str) -> Response {
     if let Ok(v) = HeaderValue::from_str(cookie) {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
@@ -349,16 +376,7 @@ async fn login(State(st): State<AppState>, req: Request) -> Result<Response, Api
             ..
         } => {
             check_password(&st, email, password).await?;
-            let devices = st.devices.store().clone();
-            let dev = tokio::task::spawn_blocking(move || devices.ensure_web_login())
-                .await
-                .map_err(|_| ApiError::internal("device store failed"))?
-                .map_err(|e| registry_error(&e))?;
-            let ident = Identity {
-                device_id: dev.id,
-                device_name: dev.name,
-                via: Via::Cookie,
-            };
+            let ident = web_login_identity(&st).await?;
             return new_session(&st, ident).await;
         }
         _ => {
@@ -390,16 +408,15 @@ async fn login(State(st): State<AppState>, req: Request) -> Result<Response, Api
     new_session(&st, ident).await
 }
 
-/// `POST /v1/auth/device {email, password, deviceName}`: native apps trade
-/// the owner's password for a new device token (shown once).
-async fn device_login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    login_ip_check(&st, &req)?;
-    let JsonBody(body) =
-        <JsonBody<DeviceLoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
-            .await?;
-    check_password(&st, body.email, body.password).await?;
+/// Register a new device and return it with its token (shown once). A bad
+/// name is a 400 (`deviceName: …`). Also raises the `system` notification
+/// (off by default) that a new device signed in. Used by `POST
+/// /v1/auth/device` and by the QR sign-in of a headless device.
+pub(crate) async fn mint_device(
+    st: &AppState,
+    name: String,
+) -> Result<(crate::devices::Device, String), ApiError> {
     let devices = st.devices.store().clone();
-    let name = body.device_name;
     let issued = tokio::task::spawn_blocking(move || devices.issue(&name))
         .await
         .map_err(|_| ApiError::internal("device store failed"))?;
@@ -414,7 +431,6 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
         }
         Err(e) => return Err(registry_error(&e)),
     };
-    // `system` notification (off by default): a new device signed in.
     let notifier = st.notify.clone();
     let lang = notifier.settings.read(|s| s.language.clone());
     let notice = crate::notify::NewNotification::new(
@@ -424,6 +440,18 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
     tokio::spawn(async move {
         let _ = notifier.publish(notice).await;
     });
+    Ok((dev, token))
+}
+
+/// `POST /v1/auth/device {email, password, deviceName}`: native apps trade
+/// the owner's password for a new device token (shown once).
+async fn device_login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
+    login_ip_check(&st, &req)?;
+    let JsonBody(body) =
+        <JsonBody<DeviceLoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
+            .await?;
+    check_password(&st, body.email, body.password).await?;
+    let (dev, token) = mint_device(&st, body.device_name).await?;
     let mut resp = (
         StatusCode::CREATED,
         Json(json!({"token": token, "deviceId": dev.id, "deviceName": dev.name})),
@@ -491,7 +519,7 @@ pub fn account_routes() -> Router<AppState> {
     Router::new().route("/v1/session/password", post(change_password))
 }
 
-/// `GET /v1/session`: `{authenticated, deviceName}`; never 401.
+/// `GET /v1/session`: `{authenticated, deviceId, deviceName}`; never 401.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let ident = identify(&st, &headers)?.ok();
     Ok(session_json(ident.as_ref()).into_response())
@@ -520,4 +548,87 @@ pub fn session_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/session", get(status).post(login).delete(logout))
         .route("/v1/auth/device", post(device_login))
+}
+
+/// `GET|HEAD /v1/auth/owner`: the forward_auth target of the owner-only
+/// plugins (Instagram, Pixiv, NClient) behind Caddy.
+///
+/// - 204: a device session (Bearer device token or `sec_session` cookie).
+/// - 401: no or bad credentials, a revoked device.
+/// - 403 `owner_only`: Lucina's service token. She reaches the plugin
+///   services on loopback with their own gateway secret, never through p1.
+///
+/// Unlike [`require_device`] this route has its own, larger bucket
+/// (`SECRETARY_OWNER_AUTH_PER_MINUTE`, per device): Caddy asks once per
+/// plugin API call, and those must not eat the 60/min the app's own
+/// requests share. No CSRF check: Caddy turns the subrequest into a GET and
+/// gates the real method itself.
+pub fn owner_routes() -> Router<AppState> {
+    Router::new()
+        .route("/v1/auth/owner", get(owner_check))
+        .route("/v1/auth/media", get(media_check))
+}
+
+/// `GET|HEAD /v1/auth/media`: the forward_auth target of `/v1/media` behind
+/// Caddy. 204 for a device session or Lucina's service token, 401 otherwise.
+///
+/// Caddy asks once per media request, and a screen of the Gallery is dozens of
+/// thumbnails: in the app's 60/min bucket, scrolling refused the thumbnails,
+/// the next page and the app's own requests. So it has its own, much larger
+/// bucket (`SECRETARY_MEDIA_AUTH_PER_MINUTE`). No CSRF check: Caddy turns the
+/// subrequest into a GET and gates the real method itself.
+async fn media_check(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let svc = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, t)| t.trim())
+        .filter(|t| t.starts_with(crate::service::SERVICE_PREFIX));
+    let key = match svc {
+        Some(token) => match &st.service_token {
+            Some(expected) if expected.matches(token) => crate::service::RATE_KEY.to_owned(),
+            _ => return Err(ApiError::unauthorized("unknown service token")),
+        },
+        None => {
+            identify(&st, &headers)?
+                .map_err(ApiError::unauthorized)?
+                .device_id
+        }
+    };
+    st.media_limiter
+        .check(&key)
+        .map_err(ApiError::rate_limited)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn owner_check(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let svc = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, t)| t.trim())
+        .filter(|t| t.starts_with(crate::service::SERVICE_PREFIX));
+    if let Some(token) = svc {
+        return match &st.service_token {
+            Some(expected) if expected.matches(token) => Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "owner_only",
+                "this is for the owner's devices, not Lucina's service token",
+            )),
+            _ => Err(ApiError::unauthorized("unknown service token")),
+        };
+    }
+    let ident = identify(&st, &headers)?.map_err(ApiError::unauthorized)?;
+    st.owner_limiter
+        .check(&ident.device_id)
+        .map_err(ApiError::rate_limited)?;
+    Ok(StatusCode::NO_CONTENT)
 }

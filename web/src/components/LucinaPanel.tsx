@@ -152,7 +152,9 @@ export function LucinaPanel(props: {
       }
       stage = s;
       setStageRef(s);
-      // Hands, poses, props, camera roll and filters, flick ring… (packages/lucina-stage/src/studio2).
+      // Keep Lucina's original procedural stage and model; the studio extras (hands, poses, props,
+      // camera roll and filters, flick ring: packages/lucina-stage/src/studio2) sit on top of it.
+      s.setBackground("default");
       const ex = mod.attachStudioExtras?.(s, { propsUrl: PROPS_URL, flickLabels: flickLabels() }) ?? null;
       setExtrasRef(ex);
       restoreStudio(s, ex);

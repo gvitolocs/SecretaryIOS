@@ -1,9 +1,12 @@
+import { openSecretSheet } from "../state/secretSheet";
+import { tidyDecisionText } from "../lib/decisionText";
 import { useNavigate } from "@solidjs/router";
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { t } from "../i18n";
 import { LIST_VISIBLE, typingDelay, type RichAction, type RichBlock, type RichMessage } from "../lib/rich";
 import {
   bumpReveal,
+  cardClosed,
   chooseAction,
   chosenAction,
   requestPrefill,
@@ -12,6 +15,8 @@ import {
   type ChatMessage,
 } from "../state/chat";
 import { InlineMarkdown, Markdown } from "./Markdown";
+import { PlaceCard } from "./PlaceCard";
+import { SecretCard } from "./SecretCard";
 
 // Lucina message format v1 in the web chat (docs/lucina-message-format.md):
 // bubbles one by one with a typing pause, then widgets, then buttons. All text
@@ -59,6 +64,31 @@ function ListWidget(props: { block: RichBlock & { type: "list" } }) {
         </button>
       </Show>
     </section>
+  );
+}
+
+/** A picture from this server (a map PNG): same-origin, so the session cookie loads it; a tap opens it full size. */
+function ImageWidget(props: { block: RichBlock & { type: "image" } }) {
+  const [failed, setFailed] = createSignal(false);
+  return (
+    <figure class="rw rw-image">
+      <Show when={!failed()} fallback={<p class="rw-image-error">{t("chat.richImageUnavailable")}</p>}>
+        <a href={props.block.src} target="_blank" rel="noopener noreferrer" aria-label={t("chat.richImageOpen", { title: props.block.alt })}>
+          <img
+            src={props.block.src}
+            alt={props.block.alt}
+            width={props.block.width}
+            height={props.block.height}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailed(true)}
+          />
+        </a>
+      </Show>
+      <Show when={props.block.caption}>
+        <figcaption>{props.block.caption}</figcaption>
+      </Show>
+    </figure>
   );
 }
 
@@ -180,6 +210,9 @@ function Widget(props: { block: RichBlock }) {
           </figure>
         )}
       </Match>
+      <Match when={props.block.type === "place" && props.block}>
+        {(b) => <PlaceCard place={b()} class="rw-place" />}
+      </Match>
       <Match when={props.block.type === "link_preview" && props.block}>
         {(b) => (
           <a
@@ -199,6 +232,7 @@ function Widget(props: { block: RichBlock }) {
           </a>
         )}
       </Match>
+      <Match when={props.block.type === "image" && props.block}>{(b) => <ImageWidget block={b()} />}</Match>
     </Switch>
   );
 }
@@ -219,12 +253,13 @@ function sendsMessage(a: RichAction): boolean {
   return false;
 }
 
-function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?: string }) {
+function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?: string; readOnly?: boolean }) {
   const navigate = useAppNavigate();
   const chosen = () => chosenAction(props.message) ?? props.inferred;
+  const closed = () => !!chosen() || cardClosed(props.message);
 
   function run(a: RichAction) {
-    if (chosen() || (sending() && sendsMessage(a))) return;
+    if (props.readOnly || closed() || (sending() && sendsMessage(a))) return;
     switch (a.kind) {
       case "reply":
         if (a.payload.prefill) requestPrefill(a.payload.text);
@@ -238,6 +273,10 @@ function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?
         navigate(a.payload.path);
         break;
       case "dismiss":
+        break;
+      case "secret":
+        // Names only; the sheet asks for the value (or sends the held id).
+        openSecretSheet(a.payload);
         break;
     }
     chooseAction(props.message, a.id);
@@ -254,7 +293,7 @@ function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?
               class="rich-action"
               classList={{ "rich-action--chosen": isChosen(), [`rich-action--${a.kind}`]: true }}
               data-answer={a.kind === "confirm" ? a.payload.answer : undefined}
-              disabled={!!chosen() || (sending() && sendsMessage(a))}
+              disabled={props.readOnly || closed() || (sending() && sendsMessage(a))}
               aria-pressed={isChosen() ? "true" : undefined}
               aria-label={isChosen() ? t("chat.richChosen", { label: a.label }) : undefined}
               onClick={() => run(a)}
@@ -282,7 +321,11 @@ export function RichReply(props: {
   rich: RichMessage;
   onBubbleClick?: (e: MouseEvent) => void;
   inferredChoice?: string;
+  readOnly?: boolean;
 }) {
+  // A request in the secret queue: the card says it all, and the bubble stays for older clients.
+  const secretAction = () =>
+    props.readOnly ? undefined : props.rich.actions.find((a): a is RichAction & { kind: "secret" } => a.kind === "secret" && !!a.payload.request);
   const total = () => props.rich.bubbles.length;
   const animate = !!props.message.reveal && !prefersReducedMotion() && total() > 1;
   const [shown, setShown] = createSignal(animate ? 1 : total());
@@ -310,15 +353,40 @@ export function RichReply(props: {
   onCleanup(() => timers.forEach(clearTimeout));
 
   return (
+    <Show
+      when={secretAction()}
+      fallback={<RichBody {...props} shown={shown()} typing={typing()} done={done()} animate={animate} />}
+    >
+      {(a) => (
+        <div class="rich-reply" lang={props.rich.lang}>
+          <SecretCard request={a().payload.request!} autoFocus={!!props.message.reveal} fallback={a().payload.name ?? a().label} />
+        </div>
+      )}
+    </Show>
+  );
+}
+
+function RichBody(props: {
+  message: ChatMessage;
+  rich: RichMessage;
+  onBubbleClick?: (e: MouseEvent) => void;
+  inferredChoice?: string;
+  readOnly?: boolean;
+  shown: number;
+  typing: boolean;
+  done: boolean;
+  animate: boolean;
+}) {
+  return (
     <div class="rich-reply" lang={props.rich.lang}>
-      <For each={props.rich.bubbles.slice(0, shown())}>
+      <For each={props.rich.bubbles.slice(0, props.shown)}>
         {(b) => (
           <div class="bubble bubble--rich" onClick={(e) => props.onBubbleClick?.(e)}>
-            <Markdown text={b} class="md--chat" />
+            <Markdown text={tidyDecisionText(b)} class="md--chat" />
           </div>
         )}
       </For>
-      <Show when={typing()}>
+      <Show when={props.typing}>
         <div class="bubble bubble--typing" role="status" aria-label={t("chat.richTyping")}>
           <span class="typing" aria-hidden="true">
             <span />
@@ -327,14 +395,14 @@ export function RichReply(props: {
           </span>
         </div>
       </Show>
-      <Show when={done()}>
+      <Show when={props.done}>
         <Show when={props.rich.blocks.length}>
-          <div class="rich-blocks" classList={{ "rich-in": animate }}>
+          <div class="rich-blocks" classList={{ "rich-in": props.animate }}>
             <For each={props.rich.blocks}>{(b) => <Widget block={b} />}</For>
           </div>
         </Show>
         <Show when={props.rich.actions.length}>
-          <Actions message={props.message} actions={props.rich.actions} inferred={props.inferredChoice} />
+          <Actions readOnly={props.readOnly} message={props.message} actions={props.rich.actions} inferred={props.inferredChoice} />
         </Show>
       </Show>
     </div>

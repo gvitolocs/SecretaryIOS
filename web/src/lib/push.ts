@@ -8,8 +8,8 @@
 
 import { notificationsApi } from "../api/notifications";
 
-export type PushSupport = "supported" | "needs-install" | "unsupported";
-export type PushState = "on" | "off" | "denied" | "needs-install" | "unsupported";
+export type PushSupport = "supported" | "needs-install" | "unsupported" | "desktop-app";
+export type PushState = "on" | "off" | "denied" | "needs-install" | "unsupported" | "desktop-app";
 
 export const SW_URL = "/sw.js";
 
@@ -33,7 +33,17 @@ export function isStandalone(): boolean {
   }
 }
 
+/**
+ * Secretary Code (the Mac app) runs this page in Electron, which has no push service: Web Push registration
+ * fails there ("push service not available"). The app shows Lucina's notifications as Mac notifications itself.
+ */
+export function isDesktopApp(n: Navigator | null = nav()): boolean {
+  if (typeof window !== "undefined" && window.secretaryShell) return true;
+  return /\bElectron\//.test(n?.userAgent ?? "");
+}
+
 export function pushSupport(): PushSupport {
+  if (isDesktopApp()) return "desktop-app";
   const n = nav();
   const hasSw = !!n && "serviceWorker" in n;
   const hasPush = typeof window !== "undefined" && "PushManager" in window && "Notification" in window;
@@ -83,13 +93,35 @@ export function urlBase64ToBytes(s: string): Uint8Array<ArrayBuffer> {
 
 let registration: Promise<ServiceWorkerRegistration | null> | null = null;
 
-/** Register /sw.js once (on app start). Never throws. */
+/**
+ * Register /sw.js once (on app start). Never throws. Not inside Secretary Code: the app ships this UI itself, and a
+ * worker there answered page loads with an older cached shell, whose routes point at chunks the new build no longer
+ * has (the rail's Gallery and Films did nothing, 2026-10-29) and whose CSP is old. There any worker goes instead.
+ */
 export function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (registration) return registration;
   const n = nav();
   if (!n || !("serviceWorker" in n)) return (registration = Promise.resolve(null));
+  if (isDesktopApp(n)) return (registration = dropServiceWorkers(n).then(() => null));
   registration = n.serviceWorker.register(SW_URL, { scope: "/" }).catch(() => null);
   return registration;
+}
+
+/** Unregisters every service worker of this origin and deletes their static caches. Never throws. */
+async function dropServiceWorkers(n: Navigator): Promise<void> {
+  try {
+    const registrations = await n.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((r) => r.unregister().catch(() => false)));
+  } catch {
+    // Nothing registered, or the API is unavailable.
+  }
+  try {
+    if (typeof caches === "undefined") return;
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k.startsWith("secretary-static-")).map((k) => caches.delete(k)));
+  } catch {
+    // Cache storage blocked: nothing to delete.
+  }
 }
 
 async function readyRegistration(): Promise<ServiceWorkerRegistration | null> {

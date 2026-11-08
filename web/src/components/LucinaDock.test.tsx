@@ -52,8 +52,8 @@ function renderShell(path = "/") {
     <MemoryRouter history={history} root={(p) => <Shell>{p.children}</Shell>}>
       <Route path="/" component={ChatView} />
       <Route path="/shopping" component={() => <p>Shopping page</p>} />
-      <Route path="/gym" component={() => <p>Gym page</p>} />
-      <Route path="/weight" component={() => <p>Weight page</p>} />
+      <Route path="/training" component={() => <p>Training page</p>} />
+      <Route path="/plugins" component={() => <p>Plugins page</p>} />
     </MemoryRouter>
   ));
 }
@@ -87,15 +87,42 @@ describe("Lucina in the shell", () => {
     viewport(true);
     serve();
     const stage = await mounted();
-    for (const page of ["Shopping", "Gym", "Weight", "Chat", "Gym"]) {
+    for (const page of ["Shopping", "Training", "Plugins", "Chat", "Training"]) {
       go(page);
       await waitFor(() => expect(dock()).not.toBeNull());
     }
-    expect(await screen.findByText("Gym page")).toBeInTheDocument();
+    expect(await screen.findByText("Training page")).toBeInTheDocument();
     expect(loadStage).toHaveBeenCalledTimes(1);
     expect(fake.stages).toHaveLength(1);
     expect(stage.dispose).not.toHaveBeenCalled();
     expect(document.querySelectorAll("canvas.stage-canvas")).toHaveLength(1);
+  });
+
+  it("inside Secretary Code: hidden on plugin pages, the stage still mounted", async () => {
+    viewport(true);
+    serve();
+    window.secretaryShell = { version: 1, showCode: vi.fn() };
+    try {
+      const stage = await mounted("/shopping");
+      expect(dock()).toHaveAttribute("hidden");
+      expect(dock()).toHaveClass("dock--offstage");
+      expect(stage.dispose).not.toHaveBeenCalled();
+    } finally {
+      delete window.secretaryShell;
+    }
+  });
+
+  it("inside Secretary Code: on stage in the chat", async () => {
+    viewport(true);
+    serve();
+    window.secretaryShell = { version: 1, showCode: vi.fn() };
+    try {
+      await mounted("/");
+      expect(dock()).not.toHaveAttribute("hidden");
+      expect(dock()).not.toHaveClass("dock--offstage");
+    } finally {
+      delete window.secretaryShell;
+    }
   });
 
   it("desktop: a full-body column beside the page, which keeps its own column", async () => {

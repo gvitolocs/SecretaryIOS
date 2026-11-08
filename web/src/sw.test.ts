@@ -3,6 +3,7 @@
 // pushes and open only app routes.
 
 import { describe, expect, it, vi } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
 import SOURCE from "../public/sw.js?raw";
 
 const ORIGIN = "https://getsecretary.tech";
@@ -45,7 +46,20 @@ function load(opts: { online?: boolean; windows?: Array<{ url: string }> } = {})
     },
     navigator: {},
   };
-  new Function("self", "caches", "fetch", SOURCE)(self, caches, fetchMock);
+  const indexedDB = new IDBFactory();
+  new Function("self", "caches", "fetch", "indexedDB", SOURCE)(self, caches, fetchMock, indexedDB);
+  async function inbox() {
+    return new Promise<Array<{ id: string; createdAt: number; title: string; text: string[]; url: string[]; files: File[] }>>((resolve, reject) => {
+      const open = indexedDB.open("secretary-share", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction("inbox", "readonly");
+        const req = tx.objectStore("inbox").getAll();
+        tx.oncomplete = () => { db.close(); resolve(req.result); };
+      };
+    });
+  }
 
   function dispatch(type: string, fields: Record<string, unknown>) {
     let responded: Promise<Response> | null = null;
@@ -64,7 +78,7 @@ function load(opts: { online?: boolean; windows?: Array<{ url: string }> } = {})
     return req;
   }
 
-  return { dispatch, request, fetchMock, cache, putKeys, shown, self, windows };
+  return { dispatch, request, inbox, fetchMock, cache, putKeys, shown, self, windows };
 }
 
 describe("service worker", () => {
@@ -107,6 +121,19 @@ describe("service worker", () => {
     expect(sw.windows[0]!.postMessage).toHaveBeenCalledWith({ type: "push", id: "n_1", category: "reminder" });
   });
 
+  it("preserves decision routes through push and notification clicks", async () => {
+    const route = "/decisions/dc-0123456789ab";
+    const sw = load();
+    await sw.dispatch("push", { data: { json: () => ({ route, title: "Decision" }) } }).done;
+    expect(sw.shown[0]!.options.data).toMatchObject({ route });
+    const notification = { close: vi.fn(), data: { route } };
+    await sw.dispatch("notificationclick", { notification }).done;
+    expect(sw.self.clients.openWindow).toHaveBeenCalledWith(route);
+    const open = load({ windows: [{ url: ORIGIN + "/" }] });
+    await open.dispatch("notificationclick", { notification }).done;
+    expect(open.windows[0]!.postMessage).toHaveBeenCalledWith({ type: "open", route, id: null });
+  });
+
   it("opens the route on click: focuses a window or opens one", async () => {
     const closed = vi.fn();
     const notification = { close: closed, data: { id: "n_9", route: "/shopping" } };
@@ -120,5 +147,52 @@ describe("service worker", () => {
     expect(open.windows[0]!.focus).toHaveBeenCalled();
     expect(open.windows[0]!.postMessage).toHaveBeenCalledWith({ type: "open", route: "/shopping", id: "n_9" });
     expect(open.self.clients.openWindow).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("service worker share target", () => {
+  it("stores multipart text, links and file blobs before redirecting to the app", async () => {
+    const sw = load();
+    // A real multipart request exercises Request.formData(), including file parsing.
+    const boundary = "secretary-share-test";
+    const fields = [["title", "A photo"], ["text", "One"], ["text", "Two"], ["url", "https://example.com/"]];
+    const body = fields.map(([key, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`).join("")
+      + `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="photo.jpg"\r\nContent-Type: image/jpeg\r\n\r\npixels\r\n--${boundary}--\r\n`;
+    const request = new Request(ORIGIN + "/share-target", {
+      method: "POST", headers: { "content-type": `multipart/form-data; boundary=${boundary}` }, body,
+    });
+    const response = await sw.dispatch("fetch", { request }).responded!;
+    expect(response.status).toBe(303);
+    const [entry] = await sw.inbox();
+    expect(entry).toMatchObject({ title: "A photo", text: ["One", "Two"], url: ["https://example.com/"] });
+    expect(entry!.files[0]!.size).toBe(6);
+    expect(entry!.files[0]!.type).toBe("image/jpeg");
+    expect(response.headers.get("location")).toBe(`${ORIGIN}/?share=${entry!.id}`);
+    expect(sw.fetchMock).not.toHaveBeenCalled();
+    expect(sw.putKeys).toEqual([]);
+  });
+
+  it("stores GET query values and redirects with only the new inbox id", async () => {
+    const sw = load();
+    const response = await sw.dispatch("fetch", { request: sw.request("/share-target?title=Page&text=Words&url=https%3A%2F%2Fexample.com") }).responded!;
+    const [entry] = await sw.inbox();
+    expect(entry).toMatchObject({ title: "Page", text: ["Words"], url: ["https://example.com"], files: [] });
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(`${ORIGIN}/?share=${entry!.id}`);
+  });
+
+  it("prunes only entries older than seven days on activation", async () => {
+    const sw = load();
+    const now = Date.now();
+    const time = vi.spyOn(Date, "now");
+    time.mockReturnValue(now - 8 * 24 * 60 * 60 * 1000);
+    await sw.dispatch("fetch", { request: sw.request("/share-target?text=Old") }).responded!;
+    time.mockReturnValue(now);
+    await sw.dispatch("fetch", { request: sw.request("/share-target?text=New") }).responded!;
+    await sw.dispatch("activate", {}).done;
+    expect((await sw.inbox()).map((e) => e.text)).toEqual([["New"]]);
+    expect(sw.self.clients.claim).toHaveBeenCalled();
+    time.mockRestore();
   });
 });

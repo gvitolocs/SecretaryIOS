@@ -1,0 +1,932 @@
+[
+   {
+      "bone" : "Bip01 Neck",
+      "control" : "KubiScl",
+      "kind" : "position",
+      "max" : [
+         1.05,
+         1,
+         1
+      ],
+      "min" : [
+         0.95,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Head",
+      "control" : "KubiScl",
+      "kind" : "position",
+      "max" : [
+         1.2,
+         1,
+         1
+      ],
+      "min" : [
+         0.8,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L UpperArm",
+      "control" : "UdeScl",
+      "kind" : "scale",
+      "max" : [
+         1.15,
+         1,
+         1
+      ],
+      "min" : [
+         0.85,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R UpperArm",
+      "control" : "UdeScl",
+      "kind" : "scale",
+      "max" : [
+         1.15,
+         1,
+         1
+      ],
+      "min" : [
+         0.85,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Eyepos_L",
+      "control" : "EyeSclX",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1,
+         1.08
+      ],
+      "min" : [
+         1,
+         1,
+         0.92
+      ]
+   },
+   {
+      "bone" : "Eyepos_R",
+      "control" : "EyeSclX",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1,
+         1.08
+      ],
+      "min" : [
+         1,
+         1,
+         0.92
+      ]
+   },
+   {
+      "bone" : "Eyepos_L",
+      "control" : "EyeSclY",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.08,
+         1
+      ],
+      "min" : [
+         1,
+         0.92,
+         1
+      ]
+   },
+   {
+      "bone" : "Eyepos_R",
+      "control" : "EyeSclY",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.08,
+         1
+      ],
+      "min" : [
+         1,
+         0.92,
+         1
+      ]
+   },
+   {
+      "bone" : "Eyepos_R",
+      "control" : "EyePosX",
+      "kind" : "position",
+      "max" : [
+         1,
+         1,
+         1.1
+      ],
+      "min" : [
+         1,
+         1,
+         0.9
+      ]
+   },
+   {
+      "bone" : "Eyepos_L",
+      "control" : "EyePosX",
+      "kind" : "position",
+      "max" : [
+         1,
+         1,
+         1.1
+      ],
+      "min" : [
+         1,
+         1,
+         0.9
+      ]
+   },
+   {
+      "bone" : "Eyepos_R",
+      "control" : "EyePosY",
+      "kind" : "position",
+      "max" : [
+         1,
+         1.07,
+         1
+      ],
+      "min" : [
+         1,
+         0.93,
+         1
+      ]
+   },
+   {
+      "bone" : "Eyepos_L",
+      "control" : "EyePosY",
+      "kind" : "position",
+      "max" : [
+         1,
+         1.07,
+         1
+      ],
+      "min" : [
+         1,
+         0.93,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Head",
+      "control" : "HeadX",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.1,
+         1.2
+      ],
+      "min" : [
+         1,
+         0.9,
+         0.8
+      ]
+   },
+   {
+      "bone" : "Bip01 Head",
+      "control" : "HeadY",
+      "kind" : "scale",
+      "max" : [
+         1.2,
+         1.1,
+         1
+      ],
+      "min" : [
+         0.8,
+         0.9,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1,
+         1,
+         1.06
+      ],
+      "min" : [
+         1,
+         1,
+         0.94
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine0a",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1.12,
+         1,
+         1
+      ],
+      "min" : [
+         0.88,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine1",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1.12,
+         1,
+         1
+      ],
+      "min" : [
+         0.88,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine1a",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1.12,
+         1,
+         1
+      ],
+      "min" : [
+         0.88,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Neck",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         0.97,
+         1,
+         1
+      ],
+      "min" : [
+         1.03,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Calf",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Calf",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Foot",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Foot",
+      "control" : "DouPer",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Thigh_SCL_",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Thigh_SCL_",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "momotwist_L",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "momotwist_R",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Calf_SCL_",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Calf_SCL_",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L UpperArm",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.02,
+         1,
+         1
+      ],
+      "min" : [
+         0.98,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R UpperArm",
+      "control" : "DouPer",
+      "kind" : "scale",
+      "max" : [
+         1.02,
+         1,
+         1
+      ],
+      "min" : [
+         0.98,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1,
+         1,
+         1.15
+      ],
+      "min" : [
+         1,
+         1,
+         0.85
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine0a",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.12,
+         1,
+         1
+      ],
+      "min" : [
+         0.88,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine1",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.12,
+         1,
+         1
+      ],
+      "min" : [
+         0.88,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine1a",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.12,
+         1,
+         1
+      ],
+      "min" : [
+         0.88,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Neck",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.03,
+         1,
+         1
+      ],
+      "min" : [
+         0.97,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Head",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.1,
+         1,
+         1
+      ],
+      "min" : [
+         0.9,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Calf",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Calf",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Foot",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Foot",
+      "control" : "sintyou",
+      "kind" : "position",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L UpperArm",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.1,
+         1,
+         1
+      ],
+      "min" : [
+         0.9,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R UpperArm",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.1,
+         1,
+         1
+      ],
+      "min" : [
+         0.9,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Thigh_SCL_",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Thigh_SCL_",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "momotwist_L",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "momotwist_R",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 L Calf_SCL_",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 R Calf_SCL_",
+      "control" : "sintyou",
+      "kind" : "scale",
+      "max" : [
+         1.13,
+         1,
+         1
+      ],
+      "min" : [
+         0.87,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Bip01 Pelvis_SCL_",
+      "control" : "koshi",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.2,
+         1.08
+      ],
+      "min" : [
+         1,
+         0.8,
+         0.92
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine_SCL_",
+      "control" : "koshi",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1,
+         1
+      ],
+      "min" : [
+         1,
+         1,
+         1
+      ]
+   },
+   {
+      "bone" : "Hip_L",
+      "control" : "koshi",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.04,
+         1.1
+      ],
+      "min" : [
+         1,
+         0.96,
+         0.9
+      ]
+   },
+   {
+      "bone" : "Hip_R",
+      "control" : "koshi",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.04,
+         1.1
+      ],
+      "min" : [
+         1,
+         0.96,
+         0.9
+      ]
+   },
+   {
+      "bone" : "Skirt",
+      "control" : "koshi",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.2,
+         1.12
+      ],
+      "min" : [
+         1,
+         0.85,
+         0.88
+      ]
+   },
+   {
+      "bone" : "Bip01 L Clavicle",
+      "control" : "kata",
+      "kind" : "position",
+      "max" : [
+         1.02,
+         1,
+         1.5
+      ],
+      "min" : [
+         0.98,
+         1,
+         0.5
+      ]
+   },
+   {
+      "bone" : "Bip01 R Clavicle",
+      "control" : "kata",
+      "kind" : "position",
+      "max" : [
+         1.02,
+         1,
+         1.5
+      ],
+      "min" : [
+         0.98,
+         1,
+         0.5
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine1a_SCL_",
+      "control" : "kata",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1,
+         1.05
+      ],
+      "min" : [
+         1,
+         1,
+         0.95
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine_SCL_",
+      "control" : "west",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.05,
+         1.1
+      ],
+      "min" : [
+         1,
+         0.95,
+         0.9
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine0a_SCL_",
+      "control" : "west",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.15,
+         1.3
+      ],
+      "min" : [
+         1,
+         0.85,
+         0.7
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine1_SCL_",
+      "control" : "west",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.1,
+         1.15
+      ],
+      "min" : [
+         1,
+         0.9,
+         0.85
+      ]
+   },
+   {
+      "bone" : "Bip01 Spine1a_SCL_",
+      "control" : "west",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.05,
+         1.05
+      ],
+      "min" : [
+         1,
+         0.95,
+         0.95
+      ]
+   },
+   {
+      "bone" : "Skirt",
+      "control" : "west",
+      "kind" : "scale",
+      "max" : [
+         1,
+         1.08,
+         1.12
+      ],
+      "min" : [
+         1,
+         0.92,
+         0.88
+      ]
+   }
+]

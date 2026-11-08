@@ -1,0 +1,31 @@
+# COM3D2 fitting room for the Wardrobe's "COM3D2 body (beta)" switch (crates/secretary-avatar-com3d2):
+# Lucina on the COM3D2 body, part-by-part outfits, body sliders, Rust physics. User unit on nezopt,
+# installed by deploy/lucina-com3d2/install.sh.
+#
+# It serves the owner's private wardrobe root (game assets from their own copy, converted on nezopt;
+# never in git, never in a public path). It listens on the tailnet address only. ufw does not filter
+# tailnet traffic on nezopt, so every request must carry the key p1's Caddy adds after the session
+# check (X-Com3d2-Gateway-Key), with the Host Caddy sets.
+[Unit]
+Description=Lucina COM3D2 fitting room on 100.107.164.33:8885
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+Environment=COM3D2_LISTEN=100.107.164.33:8885
+Environment=COM3D2_HOSTS=com3d2.internal
+Environment=COM3D2_ORIGINS=https://getsecretary.tech,https://secretary-p1.tail75dcfc.ts.net
+Environment=COM3D2_GATEWAY_KEY_FILE=%h/.config/lucina-com3d2/gateway.key
+ExecStart=%h/.local/bin/com3d2-native serve %h/.local/state/lucina-nte-preview/wardrobe-native-v3 %h/.local/share/lucina-com3d2/stage.js
+Restart=on-failure
+RestartSec=5
+# Composing a new look converts game files on the CPU: keep it below the builds and renders.
+Nice=10
+CPUQuota=200%
+MemoryMax=6G
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

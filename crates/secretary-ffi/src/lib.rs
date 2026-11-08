@@ -9,6 +9,9 @@ use std::{
     sync::Mutex,
 };
 
+/// The image viewer core (secretary-image): its own binary entry points, not a JSON engine.
+pub mod image;
+
 thread_local! {
     static OPEN_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
@@ -162,8 +165,53 @@ macro_rules! module {
     };
 }
 
+/// The chat engine's pure kernel (secretary-chat): merge, sync cursor loop, pagination. One JSON request in, one
+/// JSON response out, no handle and no state: see `secretary_chat::request` and `docs/server-api.md`.
+///
+/// # Safety
+/// `json` must be a valid NUL-terminated UTF-8 string for this call, or NULL (answered with an error).
+#[no_mangle]
+pub unsafe extern "C" fn secretary_chat_request(json: *const c_char) -> *mut c_char {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if json.is_null() {
+            return chat_error("Missing command");
+        }
+        match CStr::from_ptr(json).to_str() {
+            Ok(input) => secretary_chat::handle(input),
+            Err(_) => chat_error("Command must be UTF-8"),
+        }
+    }));
+    output(result.unwrap_or_else(|_| chat_error("Rust core rejected an internal failure")))
+}
+
+fn chat_error(error: &str) -> String {
+    serde_json::json!({ "error": error }).to_string()
+}
+
+/// An Obsidian vault (lucina-vault): `path` is the vault's folder. Requests and answers are its protocol: docs/lucina-vault.md.
+/// Opens read-only; `{"op":"set_writable","writable":true}` says otherwise.
+pub struct VaultEngine(lucina_vault::protocol::Session);
+
+impl VaultEngine {
+    fn open(path: &str) -> std::result::Result<Self, String> {
+        lucina_vault::protocol::Session::open(path)
+            .map(VaultEngine)
+            .map_err(|e| e.to_string())
+    }
+    fn handle(&mut self, json: &str) -> serde_json::Value {
+        serde_json::from_str(&self.0.request(json)).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+module!(
+    VaultEngine,
+    secretary_vault_open,
+    secretary_vault_request,
+    secretary_vault_close
+);
+
 /// Module names reported by `secretary_version`.
-pub const MODULES: &[&str] = &["gym", "body"];
+pub const MODULES: &[&str] = &["gym", "body", "player", "image", "chat", "vault"];
 
 module!(
     secretary_gym::Engine,
@@ -176,6 +224,12 @@ module!(
     secretary_body_open,
     secretary_body_request,
     secretary_body_close
+);
+module!(
+    secretary_player::Engine,
+    secretary_player_open,
+    secretary_player_request,
+    secretary_player_close
 );
 
 /// Alias of `secretary_open_error` for the SwiftUI port.

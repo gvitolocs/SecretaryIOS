@@ -2,11 +2,13 @@ import { A } from "@solidjs/router";
 import { createMemo, For, Show } from "solid-js";
 import type { GymView, Workout } from "../../api/gym";
 import { formatDate } from "../../lib/units";
+import { JournalDesk } from "./DeskViews";
 import { ArrowUpRightIcon, BookIcon } from "./icons";
 import { EmptyCard, exerciseById, GymPage, JOURNAL_HREF, setsText } from "./shared";
 import { gt } from "./strings";
 
-// Journal (HistoryView.swift): finished workouts, newest first.
+// Journal (HistoryView.swift): finished workouts, newest first. On a desktop-wide
+// page it is DeskViews.tsx `JournalDesk`, under the Gym header row.
 
 function JournalItem(props: { view: GymView; workout: Workout }) {
   const label = () => props.view.workout_labels[props.workout.id];
@@ -42,8 +44,8 @@ function JournalItem(props: { view: GymView; workout: Workout }) {
 export default function JournalView() {
   return (
     <GymPage>
-      {(view) => (
-        <>
+      {(view, wide) => (
+        <Show when={!wide()} fallback={<JournalDesk view={view()} />}>
           <h1 class="view-title gym-title">{gt("journal")}</h1>
           <Show
             when={view().state.history.length > 0}
@@ -59,7 +61,7 @@ export default function JournalView() {
               <For each={view().state.history}>{(workout) => <JournalItem view={view()} workout={workout} />}</For>
             </ul>
           </Show>
-        </>
+        </Show>
       )}
     </GymPage>
   );

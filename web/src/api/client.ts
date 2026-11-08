@@ -8,13 +8,16 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly retryAfterSeconds: number | null;
+  /** The parsed error body, for endpoints whose errors carry more than a code (api/sheet.ts). */
+  readonly body: unknown;
 
-  constructor(status: number, code: string, message: string, retryAfterSeconds: number | null = null) {
+  constructor(status: number, code: string, message: string, retryAfterSeconds: number | null = null, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.body = body;
   }
 
   /** Lucina (the AI backend behind the server) is offline or timed out. */
@@ -40,6 +43,8 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** Extra request headers (e.g. X-Secretary-Client). */
   headers?: Record<string, string>;
+  /** A raw body (an uploaded file) instead of JSON; `contentType` is sent as its Content-Type. */
+  raw?: { body: Blob | ArrayBuffer; contentType: string };
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -90,7 +95,11 @@ export async function request<T>(method: Method, path: string, opts: RequestOpti
   const headers: Record<string, string> = { Accept: "application/json", ...(opts.headers ?? {}) };
   if (method !== "GET") headers["X-Secretary-CSRF"] = "1";
   let body: string | undefined;
-  if (opts.body !== undefined) {
+  let rawBody: Blob | ArrayBuffer | undefined;
+  if (opts.raw) {
+    headers["Content-Type"] = opts.raw.contentType;
+    rawBody = opts.raw.body;
+  } else if (opts.body !== undefined) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(opts.body);
   }
@@ -103,7 +112,7 @@ export async function request<T>(method: Method, path: string, opts: RequestOpti
     res = await fetch(path, {
       method,
       headers,
-      body,
+      body: rawBody ?? body,
       credentials: "same-origin",
       cache: "no-store",
       signal: controller.signal,
@@ -143,7 +152,7 @@ export async function request<T>(method: Method, path: string, opts: RequestOpti
     }
     if (typeof body.code === "string" && body.code) code = body.code;
   }
-  const err = new ApiError(res.status, code, message, parseRetryAfter(res.headers.get("Retry-After")));
+  const err = new ApiError(res.status, code, message, parseRetryAfter(res.headers.get("Retry-After")), data);
 
   // /v1/session* answers 401 for wrong credentials; that is not a lost session.
   if (res.status === 401 && !path.startsWith("/v1/session")) onUnauthorized?.();

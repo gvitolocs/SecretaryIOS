@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 
-use crate::model::{Item, Moment};
+use crate::model::{normalize_alarms, Item, Moment, MAX_TRAVEL_MIN};
 
 /// A Google `EventDateTime` (`{date}` or `{dateTime, timeZone?}`).
 pub fn moment(v: &Value, calendar_tz: &str) -> Option<Moment> {
@@ -44,10 +44,71 @@ fn text(v: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// `hangoutLink`, else the first video entry point of `conferenceData`
+/// (https only).
+fn conference_url(ev: &Value) -> Option<String> {
+    let https = |s: &str| s.starts_with("https://") && s.len() <= 500;
+    if let Some(u) = text(ev, "hangoutLink").filter(|u| https(u)) {
+        return Some(u);
+    }
+    ev.pointer("/conferenceData/entryPoints")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|p| p.get("entryPointType").and_then(Value::as_str) == Some("video"))
+        .find_map(|p| text(p, "uri").filter(|u| https(u)))
+}
+
+/// A private extended property (Google stores them as strings).
+fn private_prop<'a>(ev: &'a Value, key: &str) -> Option<&'a str> {
+    ev.pointer("/extendedProperties/private")?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+}
+
+/// `reminders`: the override minutes, and whether the calendar's defaults
+/// apply (also when the event has no `reminders`, as Lucina's older events).
+fn reminders(ev: &Value) -> (Vec<i64>, bool) {
+    let Some(r) = ev.get("reminders") else {
+        return (Vec::new(), true);
+    };
+    let default = r
+        .get("useDefault")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let overrides = r
+        .get("overrides")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|o| o.get("minutes").and_then(Value::as_i64))
+        .collect();
+    (normalize_alarms(overrides), default)
+}
+
+/// Google's `defaultReminders` (of an `events.list` response) as minutes.
+pub fn default_reminders(list: &Value) -> Option<Vec<i64>> {
+    let arr = list.get("defaultReminders")?.as_array()?;
+    Some(normalize_alarms(
+        arr.iter()
+            .filter_map(|o| o.get("minutes").and_then(Value::as_i64))
+            .collect(),
+    ))
+}
+
 /// One Google event → an item (`None` without an id).
 pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
     let uid = text(ev, "id")?;
+    let (alarms, alarms_default) = reminders(ev);
     let mut item = Item {
+        attendees: ev
+            .get("attendees")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|a| text(a, "displayName").or_else(|| text(a, "email")))
+            .take(30)
+            .collect(),
         uid,
         cancelled: ev.get("status").and_then(Value::as_str) == Some("cancelled"),
         title: text(ev, "summary").unwrap_or_default(),
@@ -60,6 +121,22 @@ pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
         original: ev
             .get("originalStartTime")
             .and_then(|s| moment(s, calendar_tz)),
+        conference_url: conference_url(ev),
+        added_by: ev
+            .pointer("/extendedProperties/private/addedBy")
+            .and_then(Value::as_str)
+            .or_else(|| ev.pointer("/creator/displayName").and_then(Value::as_str))
+            .or_else(|| ev.pointer("/creator/email").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.chars().take(120).collect()),
+        alarms,
+        alarms_default,
+        free: ev.get("transparency").and_then(Value::as_str) == Some("transparent"),
+        travel_min: private_prop(ev, "travelMin")
+            .and_then(|m| m.parse::<u32>().ok())
+            .filter(|m| (1..=MAX_TRAVEL_MIN).contains(m)),
+        leave_alert: matches!(private_prop(ev, "leaveAlert"), Some("1" | "true")),
         ..Item::default()
     };
     for line in ev
@@ -206,5 +283,93 @@ mod tests {
         );
         let d = Moment::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap());
         assert_eq!(instance_id("abc", &d, chrono_tz::UTC), "abc_20261022");
+    }
+
+    #[test]
+    fn attendees() {
+        let ev = json!({
+            "id": "m1", "status": "confirmed", "summary": "Sync",
+            "start": {"dateTime": "2026-10-27T09:00:00+01:00"}, "end": {"dateTime": "2026-10-27T10:00:00+01:00"},
+            "attendees": [{"displayName": "Anna Rossi", "email": "anna@x.it"}, {"email": "bo@y.dk"}, {}]
+        });
+        let item = to_item(&ev, "Europe/Copenhagen").unwrap();
+        assert_eq!(
+            item.attendees,
+            vec!["Anna Rossi".to_owned(), "bo@y.dk".to_owned()]
+        );
+        let none = to_item(
+            &json!({"id": "m2", "summary": "Gym", "start": {"date": "2026-10-27"}}),
+            "UTC",
+        )
+        .unwrap();
+        assert!(none.attendees.is_empty());
+    }
+
+    #[test]
+    fn maps_alerts_show_as_and_travel() {
+        let tz = "Europe/Copenhagen";
+        let e = json!({"id": "a", "summary": "x", "start": {"date": "2026-11-02"},
+            "reminders": {"useDefault": false, "overrides": [
+                {"method": "popup", "minutes": 1440}, {"method": "email", "minutes": 60},
+                {"method": "popup", "minutes": 60}, {"method": "popup", "minutes": -5}]},
+            "transparency": "transparent",
+            "extendedProperties": {"private": {"travelMin": "25", "leaveAlert": "1"}}});
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.alarms, vec![60, 1440]);
+        assert!(!i.alarms_default);
+        assert!(i.free);
+        assert_eq!(i.travel_min, Some(25));
+        assert!(i.leave_alert);
+
+        let plain = to_item(
+            &json!({"id": "b", "start": {"date": "2026-11-02"},
+            "reminders": {"useDefault": true}, "transparency": "opaque",
+            "extendedProperties": {"private": {"travelMin": "99999"}}}),
+            tz,
+        )
+        .unwrap();
+        assert!(plain.alarms.is_empty() && plain.alarms_default && !plain.free);
+        assert_eq!(plain.travel_min, None);
+        // Lucina's older events have no `reminders`: the defaults apply.
+        assert!(
+            to_item(&json!({"id": "c", "start": {"date": "2026-11-02"}}), tz)
+                .unwrap()
+                .alarms_default
+        );
+        assert_eq!(
+            default_reminders(
+                &json!({"defaultReminders": [{"method": "popup", "minutes": 30}, {"method": "email", "minutes": 10}]})
+            ),
+            Some(vec![10, 30])
+        );
+    }
+
+    #[test]
+    fn maps_video_link_and_who_added_it() {
+        let tz = "Europe/Copenhagen";
+        let base = json!({"id": "a", "summary": "x", "start": {"date": "2026-11-01"}});
+        let mut e = base.clone();
+        e["hangoutLink"] = json!("https://meet.google.com/abc-defg-hij");
+        e["creator"] = json!({"email": "owner@example.com"});
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.conference_url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+        assert_eq!(i.added_by.as_deref(), Some("owner@example.com"));
+
+        let mut e = base.clone();
+        e["conferenceData"] = json!({"entryPoints": [
+            {"entryPointType": "phone", "uri": "tel:+45"},
+            {"entryPointType": "video", "uri": "https://zoom.us/j/1"}
+        ]});
+        e["creator"] = json!({"email": "owner@example.com", "displayName": "Giuseppe"});
+        e["extendedProperties"] = json!({"private": {"addedBy": "Lucina"}});
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.conference_url.as_deref(), Some("https://zoom.us/j/1"));
+        assert_eq!(i.added_by.as_deref(), Some("Lucina"));
+
+        let mut e = base;
+        e["hangoutLink"] = json!("javascript:alert(1)");
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.conference_url, None);
+        assert_eq!(i.added_by, None);
     }
 }

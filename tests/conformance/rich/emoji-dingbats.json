@@ -1,0 +1,18 @@
+{
+  "name": "emoji-dingbats",
+  "about": "Every client keeps emoji as text, both the U+1F000-1FAFF ones and the U+2600-27BF ones rich.rs sends (flaw: emoji rendering as boxes). Whether a font draws them is a rendering check on each client.",
+  "input": {
+    "format": "v1",
+    "lang": "it",
+    "bubbles": ["Fatto ✅ e 🔎 controllato", "Da rivedere ✏️ oppure ✖️ o ⚠️"],
+    "actions": [
+      { "id": "ok", "label": "Va bene", "emoji": "✅", "kind": "reply", "payload": { "text": "Va bene ✅" } }
+    ]
+  },
+  "expect": {
+    "bubbles": ["Fatto ✅ e 🔎 controllato", "Da rivedere ✏️ oppure ✖️ o ⚠️"],
+    "blocks": [],
+    "actions": ["ok"],
+    "speech": "Fatto ✅ e 🔎 controllato Da rivedere ✏️ oppure ✖️ o ⚠️"
+  }
+}

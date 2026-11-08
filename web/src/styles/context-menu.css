@@ -1,0 +1,157 @@
+/* The context menu (components/ContextMenu.tsx): a popover at the pointer, or a bottom sheet on a phone. The surface is
+   the shared opaque raised surface (styles/ui.css); this file only lays out the rows. Above the photo viewer (2000). */
+
+.cm-menu {
+  position: fixed;
+  z-index: 2100;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: var(--lu-radius-glass, 14px);
+  color: var(--lu-text, #fff);
+  font-family: var(--lu-font, inherit);
+  font-size: var(--lu-type-subheadline, 15px);
+}
+
+.cm-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The keyboard's row and the mouse's (only where there is a real hover: a tap must not leave a row lit). */
+.cm-item:focus {
+  outline: none;
+}
+
+.cm-item:focus-visible {
+  background: var(--lu-accent-fill, #4a5bb5);
+  color: var(--lu-on-accent, #fff);
+}
+
+@media (hover: hover) {
+  .cm-item:hover:not(:disabled) {
+    background: var(--lu-accent-fill, #4a5bb5);
+    color: var(--lu-on-accent, #fff);
+  }
+}
+
+.cm-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cm-item--danger {
+  color: var(--lu-danger, #ff453a);
+}
+
+.cm-item--danger:focus-visible {
+  background: var(--lu-danger, #ff453a);
+  color: #fff;
+}
+
+@media (hover: hover) {
+  .cm-item--danger:hover:not(:disabled) {
+    background: var(--lu-danger, #ff453a);
+    color: #fff;
+  }
+}
+
+.cm-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.cm-icon :is(svg, .icon) {
+  width: 18px;
+  height: 18px;
+}
+
+.cm-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--lu-separator, rgb(84 84 88 / 45%));
+}
+
+/* Phone: a bottom sheet over a dim backdrop, full-width rows, Cancel last. */
+.cm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: flex-end;
+  background: rgb(0 0 0 / 35%);
+}
+
+.cm-sheet {
+  width: 100%;
+  max-height: 80dvh;
+  overflow-y: auto;
+  padding: 8px 8px max(8px, env(safe-area-inset-bottom));
+  border-radius: var(--lu-radius-glass, 16px) var(--lu-radius-glass, 16px) 0 0;
+  color: var(--lu-text, #fff);
+  font-family: var(--lu-font, inherit);
+  font-size: var(--lu-type-body, 17px);
+}
+
+.cm-sheet .cm-item {
+  min-height: 48px;
+  padding: 10px 14px;
+  border-radius: 10px;
+}
+
+.cm-title {
+  margin: 4px 14px 8px;
+  color: var(--lu-text-secondary, #8e8e93);
+  font-size: var(--lu-type-footnote, 13px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-cancel {
+  justify-content: center;
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+/* The media menu's note (components/MediaMenu): "Image copied." at the bottom, over everything; its surface is ui.css's shared floating one. */
+.mm-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 2200;
+  margin: 0;
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+
+:root:root .mm-toast.mm-toast--error {
+  color: var(--danger-text);
+}

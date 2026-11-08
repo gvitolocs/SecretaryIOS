@@ -1,0 +1,23 @@
+[package]
+name = "ink-kindle-hal"
+description = "Display/input/power traits for the Lucina Ink reader, an E Ink simulator, and the Kindle (i.MX6 EPDC) backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Real-device backend (mxcfb ioctls on /dev/fb0, evdev touch). Only compiled on Linux.
+kindle = ["dep:libc"]
+
+[dependencies]
+thiserror.workspace = true
+# Already in Cargo.lock (via zip); used for the dependency-free PNG writer in `sim::dump`.
+flate2 = "1.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[[bin]]
+name = "ink-kindle-probe"
+path = "src/bin/ink-kindle-probe.rs"
+required-features = ["kindle"]

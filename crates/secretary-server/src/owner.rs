@@ -102,7 +102,7 @@ pub fn hash_password(password: &str) -> io::Result<String> {
         .map_err(|e| io::Error::other(e.to_string()))
 }
 
-fn verify_hash(password: &str, phc: &str) -> bool {
+pub(crate) fn verify_hash(password: &str, phc: &str) -> bool {
     PasswordHash::new(phc).is_ok_and(|h| {
         Argon2::default()
             .verify_password(password.as_bytes(), &h)

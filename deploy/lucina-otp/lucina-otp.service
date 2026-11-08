@@ -1,0 +1,30 @@
+[Unit]
+Description=Lucina Rust event-driven OTP relay
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=lucina-otp
+Group=lucina-otp
+ExecStart=/usr/local/bin/lucina-otp-relay
+Environment=LUCINA_OTP_STATE_DIR=/var/lib/lucina-otp
+StateDirectory=lucina-otp
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=3
+MemoryMax=64M
+TasksMax=32
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+[Install]
+WantedBy=multi-user.target

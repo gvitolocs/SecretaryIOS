@@ -46,14 +46,14 @@ async fn token_issue_list_revoke() {
     let grok = out.trim().to_owned();
 
     // the running server picks up the new tokens without a restart
-    assert_eq!(h.tool_names(&token).await.len(), 20);
+    assert_eq!(h.tool_names(&token).await.len(), 55);
     let (e, text) = h
         .call(&grok, "ask_lucina", json!({"message": "ciao"}))
         .await;
     assert!(!e && text.contains("from grok"), "{text}");
     assert_eq!(
         h.tool_names(&grok).await.len(),
-        11,
+        38,
         "default scopes are read,chat"
     );
 
@@ -84,7 +84,7 @@ async fn token_issue_list_revoke() {
     );
     assert_eq!(
         h.tool_names(&grok).await.len(),
-        11,
+        38,
         "other tokens keep working"
     );
     let (code, out, _) = cli(&dir, &["token", "list"]);
@@ -116,4 +116,40 @@ async fn token_issue_list_revoke() {
     let (code, out, _) = cli(&dir, &["oauth", "list"]);
     assert_eq!(code, 0);
     assert!(out.contains("active grants: 0"), "{out}");
+}
+
+#[tokio::test]
+async fn token_add_scope_gives_the_computer_tools() {
+    let h = start().await;
+    let dir = h.data_dir();
+    let (code, out, err) = cli(
+        &dir,
+        &[
+            "token",
+            "issue",
+            "--name",
+            "grok",
+            "--scopes",
+            "read,chat,write",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let grok = out.trim().to_owned();
+    assert!(!h
+        .tool_names(&grok)
+        .await
+        .iter()
+        .any(|n| n == "computer_task"));
+    let (code, out, err) = cli(&dir, &["token", "add-scope", "grok", "computer"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("scopes=read,chat,write,computer"), "{out}");
+    assert!(h
+        .tool_names(&grok)
+        .await
+        .iter()
+        .any(|n| n == "computer_task"));
+    let (code, _, _) = cli(&dir, &["token", "add-scope", "nobody", "computer"]);
+    assert_eq!(code, 1);
+    let (code, _, _) = cli(&dir, &["token", "add-scope", "grok", "admin"]);
+    assert_ne!(code, 0, "unknown scopes are refused");
 }

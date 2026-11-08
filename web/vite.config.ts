@@ -43,7 +43,8 @@ const apiTarget =
   process.env.SECRETARY_API ?? `http://127.0.0.1:${process.env.MOCK_PORT ?? "8791"}`;
 
 const proxy = {
-  "/v1": { target: apiTarget, changeOrigin: false },
+  // ws: the live view sockets (Cua viewer, LucinaDesk) go through the same proxy.
+  "/v1": { target: apiTarget, changeOrigin: false, ws: true },
 };
 
 export default defineConfig({
@@ -54,6 +55,8 @@ export default defineConfig({
   server: { port: 5173, strictPort: true, proxy, fs: { allow: [".."] } },
   preview: { port: 4173, strictPort: true, proxy },
   build: {
+    // The server's CSP serves fonts and icons from this origin, without data:.
+    assetsInlineLimit: 0,
     outDir: "dist",
     assetsDir: "assets",
     target: "es2022",

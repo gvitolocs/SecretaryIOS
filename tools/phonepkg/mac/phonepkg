@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# phonepkg on the Mac: runs ~/.local/bin/phonepkg on nezopt over ssh.
+# `install <apk>`: a path under the nezopt mount is rewritten to nezopt's own path;
+# any other APK is copied to nezopt's ~/scratch/phonepkg/ and removed after the run.
+set -euo pipefail
+
+host=nezopt; nc -z -G 2 nezopt.fritz.box 22 >/dev/null 2>&1 || host=nezopt-remote
+
+mount_prefix=/Users/giuseppe/mnt/nezopt/
+remote_scratch=/home/nez/scratch/phonepkg
+
+args=("$@")
+remote_copy=
+
+if [ "${1:-}" = install ]; then
+  # The APK is the first non-option argument after `install`.
+  i=1 apk_index=
+  while [ "$i" -lt "${#args[@]}" ]; do
+    a=${args[$i]}
+    case $a in
+      --wait) i=$((i + 2)); continue ;;
+      -*) ;;
+      *) apk_index=$i; break ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ -n "$apk_index" ]; then
+    apk=${args[apk_index]}
+    case $apk in /*) ;; *) apk=$PWD/$apk ;; esac
+    case $apk in
+      "$mount_prefix"*)
+        args[apk_index]=/home/nez/${apk#"$mount_prefix"}
+        ;;
+      *)
+        [ -f "$apk" ] || { echo "phonepkg: $apk is not a file" >&2; exit 1; }
+        base=$(basename "$apk")
+        base=${base//[^A-Za-z0-9._-]/_}
+        remote_copy=$remote_scratch/$base
+        # shellcheck disable=SC2029
+        ssh "$host" "mkdir -p $(printf %q "$remote_scratch")"
+        trap 'ssh "$host" "rm -f $(printf %q "$remote_copy")" || true' EXIT
+        scp -q "$apk" "$host:$remote_copy"
+        args[apk_index]=$remote_copy
+        ;;
+    esac
+  fi
+fi
+
+# The tilde and the quoted words expand on nezopt, on purpose.
+# shellcheck disable=SC2088
+cmd='~/.local/bin/phonepkg'
+for a in ${args[@]+"${args[@]}"}; do
+  cmd+=" $(printf %q "$a")"
+done
+
+# A terminal gets a remote tty, so Ctrl-C reaches phonepkg (which then kills its adb server).
+tty=()
+if [ -t 0 ] && [ -t 1 ]; then tty=(-t); fi
+
+rc=0
+# shellcheck disable=SC2029
+ssh ${tty[@]+"${tty[@]}"} "$host" "$cmd" || rc=$?
+exit "$rc"

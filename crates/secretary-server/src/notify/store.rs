@@ -104,6 +104,13 @@ pub struct CalendarEvent {
     pub title: String,
     /// Epoch ms.
     pub start: i64,
+    /// The event's own alerts (epoch ms). `None`: the owner's
+    /// `calendarLeadMinutes`; empty: no alert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<Vec<i64>>,
+    /// A "time to leave" alert (epoch ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leave_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -153,6 +160,15 @@ impl Inbox {
                 let victim = items.iter().position(|i| i.read).unwrap_or(0);
                 items.remove(victim);
             }
+        })
+    }
+
+    /// Drop every notification whose dedup key is `key`; returns how many.
+    pub fn remove_key(&self, key: &str) -> io::Result<usize> {
+        self.file.update(|items| {
+            let before = items.len();
+            items.retain(|n| n.dedup_key.as_deref() != Some(key));
+            before - items.len()
         })
     }
 

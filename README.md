@@ -92,7 +92,7 @@ web/                       SolidJS frontend
   /v1/reminders/{id}`, `GET /v1/agenda`, `GET|POST /v1/shopping`, `PATCH
   /v1/shopping/{id}`, `GET /v1/gym/state|clock`, `POST /v1/gym/command`,
   `GET /v1/body/state`, `POST /v1/body/command`, `GET /v1/insights/summary`,
-  `GET /v1/assets/{name}`, `POST /v1/tts`, `GET|POST|DELETE /v1/session`,
+  `GET /v1/assets/{name}`, `POST /v1/tts`, `POST /v1/voice`, `GET|POST|DELETE /v1/session`,
   `POST /v1/session/password`, `POST /v1/auth/device`, and, when
   configured, the old shopping upstream routes under `/v1/upstream/`.
 - **Errors:** `{"error":{"code","message"}}`; the module routes answer with
@@ -123,7 +123,7 @@ cargo fmt --check
 
 formal/run-quint    # primary: Quint simulator, Rust backend (4 checks)
 formal/run-checks   # reference: exhaustive bounded TLC, pinned toolchain (4 checks)
-scripts/verify-verus.sh   # every verification/verus/*.rs (sync, gym kernel + lifecycle, body kernel)
+scripts/verify-verus.sh   # every verification/verus/*.rs (sync, gym kernel + lifecycle, body kernel, memory surfaces)
 bash -n scripts/build-ios-core.sh   # the iOS build itself runs on the Mac
 
 # static release binary for p1 (see deploy/README.md)

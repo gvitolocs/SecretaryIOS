@@ -99,8 +99,8 @@ pub fn chat_reply(r: &Value) -> String {
     let action = s(r, "action").unwrap_or("reply");
     if let Some(job) = r.get("job").filter(|j| j.is_object()) {
         out.push_str(&format!(
-            "\n\n[Lucina started a background job: {action}, id {}. Its result will appear in lucina_timeline.]",
-            scalar(job.get("id"))
+            "\n\n[Lucina started a background job: {action}, id {}. Follow it with lucina_job_status {{\"job_id\": \"{}\"}}; the result also appears in lucina_timeline.]",
+            scalar(job.get("id")), scalar(job.get("id"))
         ));
     } else if action != "reply" {
         out.push_str(&format!("\n\n[action: {action}]"));
@@ -113,10 +113,78 @@ pub fn chat_reply(r: &Value) -> String {
             s(rem, "dueAt").unwrap_or("?")
         ));
     }
+    if r.get("consult").and_then(Value::as_bool) == Some(true) {
+        if let Some(not_run) = s(r, "notRun") {
+            let hint = s(r, "hint").map(|h| format!(" {h}")).unwrap_or_default();
+            out.push_str(&format!("\n\n[Lucina only answered: this is a consult turn, so she did not run {not_run}.{hint}]"));
+        }
+    }
     if r.get("duplicate").and_then(Value::as_bool) == Some(true) {
         out.push_str("\n[duplicate: this is the earlier answer to the same message]");
     }
     out
+}
+
+/// The answer to `secret_request`: names only (Lucina's answer never holds a value).
+pub fn secret_request(r: &Value) -> String {
+    let name = s(r, "name").unwrap_or("?");
+    let place = format!(
+        "{} / {} / {}",
+        s(r, "project").unwrap_or("?"),
+        s(r, "environment").unwrap_or("?"),
+        s(r, "path").unwrap_or("/")
+    );
+    let head = if s(r, "status") == Some("already_asked") {
+        format!("Already asked: the owner has (or just answered) a card for `{name}` in {place}.")
+    } else if s(r, "status") == Some("queued") {
+        format!("Queued: the owner answers one card at a time; the card for `{name}` in {place} follows the one he has open.")
+    } else {
+        format!("Asked the owner for `{name}` in {place}: a card in his Lucina chat and a push to his phone.")
+    };
+    let project = if r["createProject"] == Value::Bool(true) {
+        " The card also offers to create the project, which may not exist yet."
+    } else {
+        ""
+    };
+    format!(
+        "{head}{project} The value never comes back here: once he saves it, lucina_timeline shows a receipt \"Saved `{name}` in …\"; read it with your own broker caller after he gives that caller access."
+    )
+}
+
+/// Contract decision summary followed by the complete record.
+pub fn decision(r: &Value) -> String {
+    let id = s(r, "decision_id").unwrap_or("?");
+    let reason = s(r, "reason").unwrap_or("");
+    let line = match s(r, "status").unwrap_or("") {
+        "pending" => format!("Pending: Lucina asked the owner on his phone (decision {id}). Do not act on this yet; check with lucina_decision_status {{\"decision_id\": \"{id}\"}}."),
+        "expired" => format!("Expired: the owner did not answer within 24 h (decision {id}). Ask again or leave it."),
+        "withdrawn" => format!("Withdrawn: decision {id} needs no answer. {reason}"),
+        _ if s(r, "decision") == Some("owner_reply") => format!("The owner answered: \"{reason}\""),
+        _ => {
+            let who = if s(r, "decided_by") == Some("owner") { "The owner" } else { "Lucina" };
+            let choice = s(r, "chosen_option").unwrap_or("");
+            let action = if s(r, "decision") == Some("change") { "CHANGE to" } else { "GO with" };
+            let confidence = r.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
+            format!("{who} decided: {action} \"{choice}\" (confidence {confidence:.2}). Reason: {reason}  Decision {id}")
+        }
+    };
+    // Keep the human summary on one line even when the owner replies with newlines.
+    format!(
+        "{}\n\n```json\n{}\n```",
+        line.replace(['\n', '\r'], " "),
+        serde_json::to_string_pretty(r).unwrap_or_default()
+    )
+}
+
+/// Job summary and full payload, including result/error and lifecycle timestamps.
+pub fn job(r: &Value) -> String {
+    format!(
+        "Job {}: {}, action {}.\n\n```json\n{}\n```",
+        scalar(r.get("id")),
+        s(r, "status").unwrap_or("?"),
+        s(r, "action").unwrap_or("?"),
+        serde_json::to_string_pretty(r).unwrap_or_default()
+    )
 }
 
 // -- timeline ------------------------------------------------------------------------
@@ -142,7 +210,26 @@ pub fn timeline(page: &Value, channel: Option<&str>, limit: usize, tz: Tz) -> St
             break;
         }
         last_id = Some(scalar(it.get("id")));
-        let who = if role == "user" { "owner" } else { "Lucina" };
+        let who =
+            if role == "user" && it.pointer("/meta/via").and_then(Value::as_str) == Some("mcp") {
+                let caller = it
+                    .pointer("/meta/caller")
+                    .and_then(Value::as_str)
+                    .filter(|c| !c.trim().is_empty())
+                    .unwrap_or("mcp");
+                match it
+                    .pointer("/meta/conversation")
+                    .and_then(Value::as_str)
+                    .filter(|c| !c.is_empty())
+                {
+                    Some(c) => format!("{caller} ({c})"),
+                    None => caller.to_owned(),
+                }
+            } else if role == "user" {
+                "owner".to_owned()
+            } else {
+                "Lucina".to_owned()
+            };
         let mut text = clip(s(it, "text").unwrap_or(""), MAX_ITEM_TEXT).replace('\n', " ⏎ ");
         if let Some(att) = it
             .get("attachments")
@@ -158,8 +245,16 @@ pub fn timeline(page: &Value, channel: Option<&str>, limit: usize, tz: Tz) -> St
         if it.pointer("/meta/kind").and_then(Value::as_str) == Some("reminder") {
             text.push_str(" [reminder delivery]");
         }
+        let source = if it.pointer("/meta/via").and_then(Value::as_str) == Some("mcp") {
+            match it.pointer("/meta/caller").and_then(Value::as_str) {
+                Some(caller) if !caller.trim().is_empty() => format!("mcp:{caller}"),
+                _ => "mcp".to_owned(),
+            }
+        } else {
+            ch.to_owned()
+        };
         lines.push(format!(
-            "[{} · {ch}] {who}: {text}",
+            "[{} · {source}] {who}: {text}",
             local_time(it.get("ts"), tz)
         ));
     }
@@ -311,6 +406,73 @@ pub fn ops_result(verb: &str, names: &[String], list_id: &str, r: &Value) -> Str
     }
     if let Some(n) = needed {
         out.push_str(&format!(" The list now has {n} item(s) to buy."));
+    }
+    out
+}
+
+/// The answer to a `shopping_add` batch. `items` pairs each op's `opId` with
+/// the name shown to the caller. Ops in `applied` or `duplicates` count as
+/// added; `rejected` ones are named with their reason, and Lucina's question
+/// (`needs_confirmation`) is passed on for the owner.
+pub fn add_result(items: &[(String, String)], list_id: &str, r: &Value) -> String {
+    let ids = |k: &str| -> Vec<&str> {
+        r.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    };
+    let (applied, dups) = (ids("applied"), ids("duplicates"));
+    let added: Vec<&str> = items
+        .iter()
+        .filter(|(op, _)| applied.contains(&op.as_str()) || dups.contains(&op.as_str()))
+        .map(|(_, n)| n.as_str())
+        .collect();
+    let mut out = if added.is_empty() {
+        format!("Nothing was added to list {list_id}.")
+    } else {
+        format!("Added on list {list_id}: {}.", added.join(", "))
+    };
+    let dup = items
+        .iter()
+        .filter(|(op, _)| dups.contains(&op.as_str()))
+        .count();
+    if dup > 0 {
+        out.push_str(&format!(" ({dup} already applied before.)"));
+    }
+    let needed = r.get("items").and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter(|i| s(i, "status") == Some("needed"))
+            .count()
+    });
+    if let Some(n) = needed {
+        out.push_str(&format!(" The list now has {n} item(s) to buy."));
+    }
+    for rej in r
+        .get("rejected")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let op = s(rej, "opId").unwrap_or_default();
+        let name = items
+            .iter()
+            .find(|(id, _)| id == op)
+            .map(|(_, n)| n.as_str())
+            .or_else(|| s(rej, "text"))
+            .unwrap_or(op);
+        let error = s(rej, "error").unwrap_or("rejected");
+        match (error, s(rej, "question")) {
+            ("needs_confirmation", Some(q)) => {
+                out.push_str(&format!("\nNot added: {name}. Lucina asks: {q} "));
+                match s(rej, "suggestion").filter(|x| !x.trim().is_empty()) {
+                    Some(sug) => out.push_str(&format!(
+                        "Ask the owner; if they agree, call shopping_add again with the suggested item ({sug})."
+                    )),
+                    None => out.push_str("Ask the owner what they meant."),
+                }
+            }
+            _ => out.push_str(&format!("\nNot added: {name} ({error}).")),
+        }
     }
     out
 }
@@ -650,6 +812,7 @@ pub fn status(
         app.cfg.timezone.name(),
         now_line(app.cfg.timezone)
     ));
+    out.push_str("\nUse lucina_decide for go-aheads; ask_lucina is answers-only for agents.");
     out
 }
 
@@ -721,44 +884,191 @@ pub fn calendar(r: &Value, tz: Tz) -> String {
 
 // -- notes -------------------------------------------------------------------------
 
-fn note_head(n: &Value, tz: Tz) -> String {
-    let tags = n
-        .get("tags")
-        .and_then(Value::as_array)
-        .map(|t| {
-            t.iter()
-                .filter_map(Value::as_str)
-                .map(|t| format!("#{t}"))
-                .collect::<Vec<_>>()
-                .join(" ")
+/// "3/7 done" for checklist items (`{text, checked, indent}`).
+pub fn progress(items: &[Value]) -> String {
+    let done = items
+        .iter()
+        .filter(|i| i.get("checked").and_then(Value::as_bool) == Some(true))
+        .count();
+    format!("{done}/{} done", items.len())
+}
+
+/// Numbered checklist lines, as note_update's `check` / `uncheck` / `removeItems` count them.
+pub fn checklist(items: &[Value]) -> String {
+    let mut out: Vec<String> = items
+        .iter()
+        .enumerate()
+        .take(300)
+        .map(|(i, it)| {
+            let mark = if it.get("checked").and_then(Value::as_bool) == Some(true) {
+                "x"
+            } else {
+                " "
+            };
+            let indent = if it.get("indent").and_then(Value::as_u64).unwrap_or(0) > 0 {
+                "   "
+            } else {
+                ""
+            };
+            format!(
+                "{indent}{}. [{mark}] {}",
+                i + 1,
+                s(it, "text").unwrap_or("")
+            )
         })
+        .collect();
+    if items.len() > 300 {
+        out.push(format!("… and {} more items.", items.len() - 300));
+    }
+    out.join("\n")
+}
+
+fn flag(n: &Value, key: &str) -> bool {
+    n.get(key).and_then(Value::as_bool) == Some(true)
+}
+
+fn byte_size(b: u64) -> String {
+    match b {
+        0..=1023 => format!("{b} B"),
+        1024..=1_048_575 => format!("{} KB", b / 1024),
+        _ => format!("{:.1} MB", b as f64 / 1_048_576.0),
+    }
+}
+
+/// The reminder of a note or summary: `2026-11-03 09:00 (weekly)`.
+fn reminder_text(n: &Value, tz: Tz) -> Option<String> {
+    let (at, rec) = match n.get("reminder").filter(|r| r.is_object()) {
+        Some(r) => (r.get("at"), s(r, "recurrence")),
+        None => (n.get("reminderAt").filter(|v| !v.is_null()), None),
+    };
+    let at = at?;
+    let mut t = local_time(Some(at), tz);
+    if let Some(rec) = rec {
+        t.push_str(&format!(" ({rec})"));
+    }
+    Some(t)
+}
+
+/// Checklist progress of a summary (`itemsTotal`, `itemsDone`) or a full note (`items`).
+fn list_progress(n: &Value) -> Option<String> {
+    if let Some(items) = n.get("items").and_then(Value::as_array) {
+        return Some(progress(items));
+    }
+    if flag(n, "isList") {
+        let total = n.get("itemsTotal").and_then(Value::as_u64).unwrap_or(0);
+        let done = n.get("itemsDone").and_then(Value::as_u64).unwrap_or(0);
+        return Some(format!("{done}/{total} done"));
+    }
+    None
+}
+
+fn note_head(n: &Value, tz: Tz) -> String {
+    // Display names (`labels`) when the answer has them, else the stored tags.
+    let labels: Vec<&str> = ["labels", "tags"]
+        .iter()
+        .find_map(|k| n.get(*k).and_then(Value::as_array))
+        .map(|t| t.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
+    let title = s(n, "title").filter(|t| !t.trim().is_empty());
     let mut line = format!(
         "\"{}\" (slug {}, id {})",
-        s(n, "title").unwrap_or("untitled"),
+        title.unwrap_or("untitled"),
         s(n, "slug").unwrap_or("?"),
         s(n, "id").unwrap_or("?"),
     );
-    if n.get("pinned").and_then(Value::as_bool) == Some(true) {
+    if flag(n, "pinned") {
         line.push_str(" [pinned]");
+    }
+    if flag(n, "archived") {
+        line.push_str(" [archived]");
+    }
+    if n.get("deletedAt").is_some_and(|d| !d.is_null()) {
+        line.push_str(" [in the trash]");
     }
     line.push_str(&format!(
         " · by {} · updated {}",
         s(n, "source").unwrap_or("owner"),
         local_time(n.get("updatedAt"), tz)
     ));
-    if !tags.is_empty() {
-        line.push_str(&format!(" · {tags}"));
+    if let Some(c) = s(n, "color").filter(|c| *c != "default") {
+        line.push_str(&format!(" · colour {c}"));
+    }
+    if !labels.is_empty() {
+        line.push_str(&format!(" · labels: {}", labels.join(", ")));
+    }
+    if let Some(p) = list_progress(n) {
+        line.push_str(&format!(" · checklist {p}"));
+    }
+    if let Some(r) = reminder_text(n, tz) {
+        line.push_str(&format!(" · reminder {r}"));
     }
     line
 }
 
-/// One note with its content from `offset` (characters), at most `max`.
+/// Attachments, links and collaborators of a full note, one line each.
+fn note_extras(n: &Value) -> String {
+    let mut out = String::new();
+    let list = |k: &str| {
+        n.get(k)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let atts = list("attachments");
+    if !atts.is_empty() {
+        let parts: Vec<String> = atts
+            .iter()
+            .map(|a| {
+                format!(
+                    "{} ({}, {})",
+                    s(a, "name").or_else(|| s(a, "file")).unwrap_or("file"),
+                    s(a, "mimetype").unwrap_or("?"),
+                    byte_size(a.get("size").and_then(Value::as_u64).unwrap_or(0))
+                )
+            })
+            .collect();
+        out.push_str(&format!("\nAttachments: {}", parts.join("; ")));
+    }
+    let links = list("annotations");
+    if !links.is_empty() {
+        let parts: Vec<String> = links
+            .iter()
+            .map(|l| match s(l, "title").filter(|t| !t.is_empty()) {
+                Some(t) => format!("{t} <{}>", s(l, "url").unwrap_or("?")),
+                None => format!("<{}>", s(l, "url").unwrap_or("?")),
+            })
+            .collect();
+        out.push_str(&format!("\nLinks: {}", parts.join("; ")));
+    }
+    let people: Vec<String> = list("collaborators")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    if !people.is_empty() {
+        out.push_str(&format!("\nShared with: {}", people.join(", ")));
+    }
+    out
+}
+
+/// One note with its content from `offset` (characters), at most `max`. A
+/// checklist note shows its numbered items instead of the derived content.
 pub fn note(n: &Value, offset: usize, max: usize, tz: Tz) -> String {
+    let mut out = format!("Note {}", note_head(n, tz));
+    out.push_str(&note_extras(n));
+    if let Some(items) = n.get("items").and_then(Value::as_array) {
+        out.push_str(&format!("\nChecklist, {}:\n", progress(items)));
+        if items.is_empty() {
+            out.push_str("(no items)");
+        } else {
+            out.push_str(&checklist(items));
+        }
+        return out;
+    }
     let content = s(n, "content").unwrap_or("");
     let total = content.chars().count();
     let part: String = content.chars().skip(offset).take(max).collect();
-    let mut out = format!("Note {}\n{total} characters.", note_head(n, tz));
+    out.push_str(&format!("\n{total} characters."));
     if offset > 0 || offset + max < total {
         let end = (offset + max).min(total);
         out.push_str(&format!(" Showing characters {offset}-{end}."));
@@ -780,19 +1090,13 @@ pub fn note(n: &Value, offset: usize, max: usize, tz: Tz) -> String {
     out
 }
 
-/// `GET /v1/notes` answer as a list.
-pub fn notes_list(v: &Value, q: Option<&str>, tag: Option<&str>, tz: Tz) -> String {
+/// `GET /v1/notes` answer as a list; `what` describes the filters (" matching \"x\"").
+pub fn notes_list(v: &Value, what: &str, tz: Tz) -> String {
     let notes = v
         .get("notes")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let what = match (q, tag) {
-        (Some(q), Some(t)) => format!(" matching {q:?} tagged #{t}"),
-        (Some(q), None) => format!(" matching {q:?}"),
-        (None, Some(t)) => format!(" tagged #{t}"),
-        (None, None) => String::new(),
-    };
     if notes.is_empty() {
         return format!("No notes{what}.");
     }
@@ -800,11 +1104,34 @@ pub fn notes_list(v: &Value, q: Option<&str>, tag: Option<&str>, tz: Tz) -> Stri
     for n in &notes {
         let size = n.get("size").and_then(Value::as_u64).unwrap_or(0);
         out.push_str(&format!("- {} · {size} bytes\n", note_head(n, tz)));
-        if let Some(e) = s(n, "excerpt") {
+        if let Some(e) = s(n, "excerpt").filter(|e| !e.is_empty()) {
             out.push_str(&format!("  {}\n", clip(e, 240)));
         }
     }
     out.push_str("Read one with note_get (slug or id).");
+    out
+}
+
+/// `GET /v1/notes/labels`.
+pub fn note_labels(v: &Value) -> String {
+    let labels = v
+        .get("labels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if labels.is_empty() {
+        return "No labels yet.".to_owned();
+    }
+    let mut out = format!("{} label(s):\n", labels.len());
+    for l in &labels {
+        let n = l.get("count").and_then(Value::as_u64).unwrap_or(0);
+        out.push_str(&format!(
+            "- {} ({n} note{})\n",
+            s(l, "name").or_else(|| s(l, "tag")).unwrap_or("?"),
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    out.push_str("Find a label's notes with notes_search label=<name>.");
     out
 }
 
@@ -1049,6 +1376,286 @@ pub fn task_completed(r: &Value, id: &str) -> String {
     }
 }
 
+// -- notebooks ---------------------------------------------------------------------
+
+/// Characters of a passage shown in a citation or a search hit.
+const MAX_EXCERPT: usize = 240;
+/// Characters of an insight's text shown in a listing.
+const MAX_INSIGHT: usize = 3000;
+
+fn items<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+    v.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+}
+
+fn noun(n: u64, one: &str) -> String {
+    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+}
+
+fn mmss(secs: f64) -> String {
+    let t = secs.max(0.0).round() as u64;
+    format!("{}:{:02}", t / 60, t % 60)
+}
+
+fn nb_counts(n: &Value) -> String {
+    let get = |k: &str| n.get("counts").and_then(|c| c.get(k)).and_then(Value::as_u64).unwrap_or(0);
+    format!(
+        "{}, {}, {}, {}",
+        noun(get("sources"), "source"),
+        noun(get("notes"), "note"),
+        noun(get("chats"), "chat"),
+        noun(get("podcasts"), "podcast")
+    )
+}
+
+/// `GET /v1/notebooks`.
+pub fn notebooks(v: &Value) -> String {
+    let list = items(v, "notebooks");
+    if list.is_empty() {
+        return "No notebooks. Create one with notebook_create.".to_owned();
+    }
+    let mut out = format!("{} notebook(s):\n", list.len());
+    for n in list {
+        let archived = if n.get("archived").and_then(Value::as_bool) == Some(true) { " [archived]" } else { "" };
+        out.push_str(&format!(
+            "- {} · {}{archived} · {}\n",
+            s(n, "id").unwrap_or("?"),
+            s(n, "name").unwrap_or("(unnamed)"),
+            nb_counts(n)
+        ));
+        if let Some(d) = s(n, "description") {
+            out.push_str(&format!("  {}\n", clip(d, 160)));
+        }
+    }
+    out.push_str("Open one with notebook_get.");
+    out
+}
+
+fn source_line(src: &Value) -> String {
+    let status = s(src, "status").unwrap_or("?");
+    let mut line = format!(
+        "- {} · {} · {} · {status}",
+        s(src, "id").unwrap_or("?"),
+        s(src, "kind").unwrap_or("?"),
+        s(src, "title").unwrap_or("(untitled)")
+    );
+    if status == "failed" {
+        if let Some(e) = s(src, "error") {
+            line.push_str(&format!(" ({})", clip(e, 120)));
+        }
+    }
+    let num = |k: &str| src.get(k).and_then(Value::as_u64);
+    let mut facts = Vec::new();
+    if let Some(p) = num("pages") {
+        facts.push(noun(p, "page"));
+    }
+    if let Some(c) = num("chunks") {
+        facts.push(noun(c, "passage"));
+    }
+    if let Some(d) = src.get("duration_s").and_then(Value::as_f64) {
+        facts.push(mmss(d));
+    }
+    if let Some(c) = s(src, "context") {
+        facts.push(format!("context {c}"));
+    }
+    if !facts.is_empty() {
+        line.push_str(&format!(" · {}", facts.join(", ")));
+    }
+    line
+}
+
+/// `GET /v1/notebooks/{nb}` as compact text: the notebook with its sources, notes, chats and podcasts.
+pub fn notebook(v: &Value, tz: Tz) -> String {
+    let archived = if v.get("archived").and_then(Value::as_bool) == Some(true) { " [archived]" } else { "" };
+    let mut out = format!("{} ({}){archived}\n{}", s(v, "name").unwrap_or("(unnamed)"), s(v, "id").unwrap_or("?"), nb_counts(v));
+    if v.get("updated_at").is_some() {
+        out.push_str(&format!(" · updated {}", local_time(v.get("updated_at"), tz)));
+    }
+    if let Some(d) = s(v, "description") {
+        out.push_str(&format!("\n{d}"));
+    }
+    let sources = items(v, "sources");
+    if sources.is_empty() {
+        out.push_str("\n\nNo sources yet: add one with notebook_add_source.");
+    } else {
+        out.push_str(&format!("\n\nSources ({}):", sources.len()));
+        for src in sources {
+            out.push_str(&format!("\n{}", source_line(src)));
+        }
+    }
+    let notes = items(v, "notes");
+    if !notes.is_empty() {
+        out.push_str(&format!("\n\nNotes ({}):", notes.len()));
+        for n in notes {
+            let indexed = if n.get("indexed").and_then(Value::as_bool) == Some(false) { " (not indexed yet)" } else { "" };
+            out.push_str(&format!("\n- {} · {}{indexed}", s(n, "slug").unwrap_or("?"), s(n, "title").unwrap_or("(untitled)")));
+        }
+    }
+    let chats = items(v, "chats");
+    if !chats.is_empty() {
+        out.push_str(&format!("\n\nChats ({}):", chats.len()));
+        for c in chats {
+            let n = c.get("messages").and_then(Value::as_u64).unwrap_or(0);
+            out.push_str(&format!("\n- {} · {} · {}", s(c, "id").unwrap_or("?"), s(c, "title").unwrap_or("(untitled)"), noun(n, "message")));
+        }
+    }
+    let podcasts = items(v, "podcasts");
+    if !podcasts.is_empty() {
+        out.push_str(&format!("\n\nPodcasts ({}):", podcasts.len()));
+        for p in podcasts {
+            out.push_str(&format!("\n- {}", podcast_head(p)));
+        }
+    }
+    out.push_str("\n\nAsk it with notebook_ask; answers cite [source:<source id>-<n>].");
+    out
+}
+
+/// `POST /v1/notebooks/{nb}/sources` (202).
+pub fn notebook_source_added(v: &Value) -> String {
+    format!(
+        "Added source {} ({}, {}): {}. It is read in the background (extract, split, embed); \
+         notebook_get shows when it is ready, and questions can use it from then on.",
+        s(v, "id").unwrap_or("?"),
+        s(v, "kind").unwrap_or("?"),
+        s(v, "title").unwrap_or("untitled"),
+        s(v, "status").unwrap_or("queued")
+    )
+}
+
+/// One citation of an answer, as a line of the numbered list.
+fn citation_line(n: usize, c: &Value) -> String {
+    let rf = s(c, "ref").map(str::to_owned).unwrap_or_else(|| match (s(c, "source_id"), c.get("chunk").and_then(Value::as_u64)) {
+        (Some(id), Some(k)) => format!("source:{id}-{k}"),
+        _ => s(c, "kind").unwrap_or("?").to_owned(),
+    });
+    let mut line = format!("{n}. [{rf}] {}", s(c, "title").unwrap_or("(untitled)"));
+    if let Some(p) = c.get("page").and_then(Value::as_u64) {
+        line.push_str(&format!(", page {p}"));
+    }
+    if let Some(t) = c.get("start_s").and_then(Value::as_f64) {
+        line.push_str(&format!(", at {}", mmss(t)));
+    }
+    if let Some(e) = s(c, "excerpt") {
+        line.push_str(&format!(": \"{}\"", clip(&e.split_whitespace().collect::<Vec<_>>().join(" "), MAX_EXCERPT)));
+    }
+    line
+}
+
+/// The `reply` of `POST /v1/notebooks/chats/{c}/messages`: the answer, its numbered citations and the chat to continue.
+pub fn notebook_answer(chat_id: &str, reply: &Value) -> String {
+    let mut out = s(reply, "text").unwrap_or("(the notebook gave no answer)").trim().to_owned();
+    let cites = items(reply, "citations");
+    if cites.is_empty() {
+        out.push_str("\n\nNo citations.");
+    } else {
+        out.push_str("\n\nCitations:");
+        for (i, c) in cites.iter().enumerate() {
+            out.push_str(&format!("\n{}", citation_line(i + 1, c)));
+        }
+    }
+    out.push_str(&format!("\n\nChat {chat_id}: pass it as chat_id to ask a follow-up."));
+    out
+}
+
+/// `GET /v1/notebooks/{nb}/search` (or `/search` for every notebook).
+pub fn notebook_hits(v: &Value, query: &str) -> String {
+    let hits = items(v, "hits");
+    if hits.is_empty() {
+        return format!("Nothing in the notebooks matches \"{query}\".");
+    }
+    let mut out = format!("{} hit(s) for \"{query}\":\n", hits.len());
+    for h in hits {
+        let score = h.get("score").and_then(Value::as_f64).map(|x| format!(" · score {x:.2}")).unwrap_or_default();
+        let nb = s(h, "notebook_id").map(|n| format!(" · notebook {n}")).unwrap_or_default();
+        out.push_str(&format!("- [{}] {}{score}{nb}\n", s(h, "ref").unwrap_or("?"), s(h, "title").unwrap_or("(untitled)")));
+        if let Some(e) = s(h, "excerpt") {
+            out.push_str(&format!("  {}\n", clip(&e.split_whitespace().collect::<Vec<_>>().join(" "), MAX_EXCERPT)));
+        }
+    }
+    out.push_str("Ask a question over the sources with notebook_ask.");
+    out
+}
+
+/// An insight as the one line `notebook_transform` answers, plus its text once ready.
+pub fn notebook_insight(i: &Value) -> String {
+    let mut out = format!(
+        "Insight {} ({}, transformation {}) on source {}: {}.",
+        s(i, "id").unwrap_or("?"),
+        s(i, "title").unwrap_or("untitled"),
+        s(i, "transformation_id").unwrap_or("?"),
+        s(i, "source_id").unwrap_or("?"),
+        s(i, "status").unwrap_or("?")
+    );
+    match s(i, "text") {
+        Some(t) => out.push_str(&format!("\n\n{}", clip(t.trim(), MAX_INSIGHT))),
+        None if matches!(s(i, "status"), Some("queued" | "running")) => out.push_str(" Call notebook_transform with this source_id again to read it when it is ready."),
+        None => {}
+    }
+    out
+}
+
+/// `GET /v1/notebooks/transformations`.
+pub fn notebook_transformations(v: &Value) -> String {
+    let list = items(v, "transformations");
+    if list.is_empty() {
+        return "No transformations are defined.".to_owned();
+    }
+    let mut out = String::from("Transformations (pass the id as transformation_id):\n");
+    for t in list {
+        let default = if t.get("apply_default").and_then(Value::as_bool) == Some(true) { " [applied to new sources]" } else { "" };
+        out.push_str(&format!("- {} · {}{default}", s(t, "id").unwrap_or("?"), s(t, "name").unwrap_or("?")));
+        if let Some(d) = s(t, "description") {
+            out.push_str(&format!(": {}", clip(d, 160)));
+        }
+        out.push('\n');
+    }
+    out.trim_end().to_owned()
+}
+
+/// `GET /v1/notebooks/sources/{src}/insights`.
+pub fn notebook_insights(v: &Value) -> String {
+    let list = items(v, "insights");
+    if list.is_empty() {
+        return "No insights on this source yet.".to_owned();
+    }
+    list.iter().map(notebook_insight).collect::<Vec<_>>().join("\n\n")
+}
+
+fn podcast_head(p: &Value) -> String {
+    let mut line = format!("{} · {} · {}", s(p, "id").unwrap_or("?"), s(p, "title").unwrap_or("(untitled)"), s(p, "status").unwrap_or("?"));
+    if let Some(d) = p.get("duration_s").and_then(Value::as_f64) {
+        line.push_str(&format!(" · {}", mmss(d)));
+    }
+    line
+}
+
+/// A podcast: where it stands, what it covers, and whether the audio can be played.
+pub fn notebook_podcast(p: &Value) -> String {
+    let mut out = format!("Podcast {}", podcast_head(p));
+    if let (Some(e), Some(sp)) = (s(p, "episode_profile"), s(p, "speaker_profile")) {
+        out.push_str(&format!("\n{e}, voices {sp}"));
+    }
+    if s(p, "status") == Some("failed") {
+        out.push_str(&format!("\nFailed: {}", s(p, "error").unwrap_or("no reason given")));
+    }
+    let outline = items(p, "outline");
+    if !outline.is_empty() {
+        out.push_str("\nOutline:");
+        for (i, o) in outline.iter().enumerate() {
+            out.push_str(&format!("\n{}. {}", i + 1, s(o, "name").unwrap_or("?")));
+        }
+    }
+    let lines = items(p, "transcript").len();
+    if lines > 0 {
+        out.push_str(&format!("\nScript: {}.", noun(lines as u64, "line")));
+    }
+    out.push_str(match (s(p, "status"), p.get("audio").and_then(Value::as_bool)) {
+        (_, Some(true)) => "\nThe audio is ready: the owner plays it in the Secretary app.",
+        (Some("failed"), _) => "",
+        _ => "\nNot ready yet: call notebook_podcast with this podcast_id again in a minute or two.",
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,6 +1698,27 @@ mod tests {
     }
 
     #[test]
+    fn timeline_mcp_sources_keep_stored_channel_filter() {
+        let page = json!({"items": [
+            {"id": "a", "channel": "web", "role": "user", "text": "Hi", "meta": {"via": "mcp", "caller": "claude-code"}},
+            {"id": "b", "channel": "web", "role": "lucina", "text": "Hello", "meta": {"via": "mcp", "caller": "www"}},
+            {"id": "c", "channel": "web", "role": "lucina", "text": "Missing", "meta": {"via": "mcp"}},
+            {"id": "d", "channel": "web", "role": "user", "text": "Empty", "meta": {"via": "mcp", "caller": "  "}},
+            {"id": "e", "channel": "web", "role": "user", "text": "App", "meta": {"caller": "test"}}
+        ]});
+        let t = timeline(&page, Some("web"), 20, chrono_tz::UTC);
+        assert!(t.contains(" · mcp:claude-code] claude-code: Hi"), "{t}");
+        assert!(t.contains(" · mcp:www] Lucina: Hello"), "{t}");
+        assert!(t.contains(" · mcp] Lucina: Missing"), "{t}");
+        assert!(t.contains(" · mcp] mcp: Empty"), "{t}");
+        assert!(t.contains(" · web] owner: App"), "{t}");
+        assert_eq!(
+            timeline(&page, Some("mcp"), 20, chrono_tz::UTC),
+            "No messages."
+        );
+    }
+
+    #[test]
     fn timeline_render() {
         let tz: Tz = "Europe/Rome".parse().unwrap();
         let page = json!({"items": [
@@ -1111,5 +1739,146 @@ mod tests {
             !t.contains("telegram") && t.ends_with("next_before: tl_1"),
             "{t}"
         );
+    }
+
+    #[test]
+    fn add_result_names_added_and_rejected_items() {
+        let items: Vec<(String, String)> = [("o1", "latte"), ("o2", "lavatrici"), ("o3", "pane")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let r = json!({
+            "applied": ["o1"], "duplicates": ["o3"],
+            "rejected": [{"opId": "o2", "error": "needs_confirmation", "text": "lavatrici",
+                          "question": "Intendevi Detersivo per lavatrice?",
+                          "suggestion": "Detersivo per lavatrice"}],
+            "items": [{"status": "needed"}, {"status": "needed"}, {"status": "recent"}]
+        });
+        assert_eq!(
+            add_result(&items, "default", &r),
+            "Added on list default: latte, pane. (1 already applied before.) \
+             The list now has 2 item(s) to buy.\n\
+             Not added: lavatrici. Lucina asks: Intendevi Detersivo per lavatrice? \
+             Ask the owner; if they agree, call shopping_add again with the suggested item \
+             (Detersivo per lavatrice)."
+        );
+
+        // null suggestion, other codes, nothing added
+        let r = json!({
+            "applied": [],
+            "rejected": [
+                {"opId": "o1", "error": "duplicate_item"},
+                {"opId": "o2", "error": "needs_confirmation", "text": "lavatrici",
+                 "question": "Cosa intendevi?", "suggestion": null},
+                {"opId": "o3", "error": "item_not_found"},
+            ],
+            "items": []
+        });
+        assert_eq!(
+            add_result(&items, "l2", &r),
+            "Nothing was added to list l2. The list now has 0 item(s) to buy.\n\
+             Not added: latte (duplicate_item).\n\
+             Not added: lavatrici. Lucina asks: Cosa intendevi? Ask the owner what they meant.\n\
+             Not added: pane (item_not_found)."
+        );
+
+        // no rejected key (older Lucina): plain success
+        let r = json!({"applied": ["o1", "o2", "o3"], "duplicates": []});
+        assert_eq!(
+            add_result(&items, "default", &r),
+            "Added on list default: latte, lavatrici, pane."
+        );
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn contract_answer_text() {
+        let mut r = json!({"decision_id":"dc-012345abcdef","status":"decided","decision":"go","chosen_option":"Ship","confidence":0.86,"reason":"Small fix","decided_by":"lucina"});
+        for (by, choice, expected) in [
+            ("lucina", "go", "Lucina decided: GO with \"Ship\" (confidence 0.86). Reason: Small fix  Decision dc-012345abcdef"),
+            ("lucina", "change", "Lucina decided: CHANGE to \"Ship\" (confidence 0.86). Reason: Small fix  Decision dc-012345abcdef"),
+            ("owner", "go", "The owner decided: GO with \"Ship\" (confidence 0.86). Reason: Small fix  Decision dc-012345abcdef"),
+            ("owner", "owner_reply", "The owner answered: \"Small fix\""),
+        ] {
+            r["decided_by"] = json!(by);
+            r["decision"] = json!(choice);
+            assert_eq!(decision(&r), format!("{expected}\n\n```json\n{}\n```", serde_json::to_string_pretty(&r).unwrap()));
+        }
+        r["status"] = json!("pending");
+        assert_eq!(decision(&r).lines().next().unwrap(), "Pending: Lucina asked the owner on his phone (decision dc-012345abcdef). Do not act on this yet; check with lucina_decision_status {\"decision_id\": \"dc-012345abcdef\"}.");
+        r["status"] = json!("expired");
+        assert_eq!(decision(&r).lines().next().unwrap(), "Expired: the owner did not answer within 24 h (decision dc-012345abcdef). Ask again or leave it.");
+        r["status"] = json!("withdrawn");
+        r["reason"] = json!("Withdrawn by the asker: settled\nelsewhere");
+        assert_eq!(decision(&r).lines().next().unwrap(), "Withdrawn: decision dc-012345abcdef needs no answer. Withdrawn by the asker: settled elsewhere");
+    }
+
+    #[test]
+    fn consult_and_job_lines() {
+        assert_eq!(chat_reply(&json!({"reply":"Hello","consult":true,"notRun":"research","hint":"Use agent_run."})), "Hello\n\n[Lucina only answered: this is a consult turn, so she did not run research. Use agent_run.]");
+        assert_eq!(
+            chat_reply(&json!({"reply":"Hello","consult":true,"notRun":"research"})),
+            "Hello\n\n[Lucina only answered: this is a consult turn, so she did not run research.]"
+        );
+        assert_eq!(chat_reply(&json!({"reply":"Started","action":"research","job":{"id":"j1"}})), "Started\n\n[Lucina started a background job: research, id j1. Follow it with lucina_job_status {\"job_id\": \"j1\"}; the result also appears in lucina_timeline.]");
+    }
+
+    #[test]
+    fn mcp_conversation_speaker() {
+        let r = json!({"items":[{"role":"user","channel":"web","text":"Hi","meta":{"via":"mcp","caller":"claude-code","conversation":"coordinator"}}, {"role":"user","channel":"web","text":"Hi","meta":{"via":"mcp","caller":"claude-code","conversation":""}}]});
+        let text = timeline(&r, None, 20, chrono_tz::UTC);
+        assert!(text.contains("mcp:claude-code] claude-code (coordinator): Hi"));
+        assert!(text.contains("mcp:claude-code] claude-code: Hi"));
+    }
+
+    #[test]
+    fn notebook_texts() {
+        assert_eq!(notebooks(&json!({"notebooks": []})), "No notebooks. Create one with notebook_create.");
+        let n = json!({"id": "nb1", "name": "Old", "archived": true, "counts": {"sources": 1, "notes": 0, "chats": 0, "podcasts": 0}});
+        assert_eq!(
+            notebooks(&json!({"notebooks": [n]})),
+            "1 notebook(s):\n- nb1 · Old [archived] · 1 source, 0 notes, 0 chats, 0 podcasts\nOpen one with notebook_get."
+        );
+        let tz: Tz = "Europe/Rome".parse().unwrap();
+        let empty = notebook(&json!({"id": "nb2", "name": "New", "updated_at": "2026-10-29T13:05:00Z"}), tz);
+        assert!(empty.starts_with("New (nb2)\n0 sources, 0 notes, 0 chats, 0 podcasts · updated 2026-10-29 14:05"), "{empty}");
+        assert!(empty.contains("No sources yet: add one with notebook_add_source."), "{empty}");
+        let failed = source_line(&json!({"id": "s1", "kind": "audio", "status": "failed", "error": "no speech found", "duration_s": 75.0}));
+        assert_eq!(failed, "- s1 · audio · (untitled) · failed (no speech found) · 1:15");
+    }
+
+    #[test]
+    fn notebook_citations() {
+        let reply = json!({"text": "Yes [source:s1-2].", "citations": [
+            {"kind": "source", "source_id": "s1", "chunk": 2, "title": "Book", "excerpt": "a\n  b   c"},
+            {"ref": "insight:i1", "kind": "insight", "title": "Summary"}]});
+        assert_eq!(
+            notebook_answer("c1", &reply),
+            "Yes [source:s1-2].\n\nCitations:\n1. [source:s1-2] Book: \"a b c\"\n2. [insight:i1] Summary\n\nChat c1: pass it as chat_id to ask a follow-up."
+        );
+        let bare = notebook_answer("c1", &json!({"text": "I cannot tell."}));
+        assert!(bare.starts_with("I cannot tell.\n\nNo citations."), "{bare}");
+        let long = json!({"text": "t", "citations": [{"ref": "source:s-1", "title": "T", "excerpt": "x".repeat(500)}]});
+        assert!(notebook_answer("c", &long).contains(&format!("\"{}…\"", "x".repeat(MAX_EXCERPT))));
+    }
+
+    #[test]
+    fn notebook_insights_and_podcasts() {
+        let queued = json!({"id": "i1", "source_id": "s1", "transformation_id": "t-a", "title": "A", "status": "queued", "text": null});
+        assert!(notebook_insight(&queued).ends_with("queued. Call notebook_transform with this source_id again to read it when it is ready."));
+        let ready = json!({"id": "i1", "source_id": "s1", "transformation_id": "t-a", "title": "A", "status": "ready", "text": " Body "});
+        assert!(notebook_insight(&ready).ends_with("ready.\n\nBody"));
+        assert_eq!(notebook_insights(&json!({"insights": []})), "No insights on this source yet.");
+        assert_eq!(notebook_transformations(&json!({"transformations": []})), "No transformations are defined.");
+        let failed = json!({"id": "p1", "title": "T", "status": "failed", "error": "kokoro is down"});
+        assert_eq!(notebook_podcast(&failed), "Podcast p1 · T · failed\nFailed: kokoro is down");
+        let running = json!({"id": "p1", "title": "T", "status": "voicing", "audio": false});
+        assert!(notebook_podcast(&running).ends_with("Not ready yet: call notebook_podcast with this podcast_id again in a minute or two."));
+        assert_eq!(notebook_hits(&json!({"hits": []}), "ring"), "Nothing in the notebooks matches \"ring\".");
     }
 }
