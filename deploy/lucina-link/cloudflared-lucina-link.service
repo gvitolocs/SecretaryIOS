@@ -1,0 +1,14 @@
+[Unit]
+Description=Lucina Link: Cloudflare tunnel for remote shells (kindle-ssh, nezopt-ssh .getsecretary.tech)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --metrics 127.0.0.1:20249 run --token-file %h/.config/cloudflared/lucina-link.token
+Restart=always
+RestartSec=5
+MemoryMax=96M
+Nice=5
+
+[Install]
+WantedBy=default.target

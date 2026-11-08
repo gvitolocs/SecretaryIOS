@@ -131,6 +131,12 @@ export interface LucinaStageOptions {
   physics?: boolean | (PhysicsVariantSelection & { quality?: StageQualitySetting });
   /** Studio-extras hooks (src/studio2/); the wardrobe shares one object across its stages. */
   hooks?: StageHooks;
+  /**
+   * Called with every loaded model (not the placeholder) after its materials are set up and before
+   * her first frame, in the rest pose: the character editor puts the current look on here
+   * (src/editor/). Awaited; a failure is logged and the model shows as loaded.
+   */
+  prepareModel?: (model: Object3D) => void | Promise<void>;
 }
 
 /** A tap on her body and what she did about it. */
@@ -270,6 +276,8 @@ export interface LucinaStage {
   readonly faceDriven: boolean;
   /** Frame and gaze hooks for the studio extras (src/studio2/). */
   readonly hooks: StageHooks;
+  /** Re-measures her and re-frames the camera after the editor changed her proportions. */
+  refit(): void;
   /** Escape hatches for debugging. */
   readonly three: { renderer: WebGLRenderer; scene: Scene; camera: PerspectiveCamera; model: Object3D };
 }
@@ -481,6 +489,13 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       scene.userData.toonBloom = toon.config.bloom;
     }
   }
+  if (!placeholder && options.prepareModel) {
+    try {
+      await options.prepareModel(model);
+    } catch (e) {
+      console.warn('[lucina-stage] prepareModel failed:', e);
+    }
+  }
 
   // Physics binds to the bind pose: before any clip or procedural pose touches the skeleton.
   let physics: PhysicsRig | null = null;
@@ -538,7 +553,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   container.updateMatrixWorld(true);
   const bbox = new Box3().setFromObject(container);
   const size = bbox.getSize(new Vector3());
-  const height = size.y || 1.6;
+  let height = size.y || 1.6;
   const headPos =
     rig.bonePosition('head') ?? new Vector3((bbox.min.x + bbox.max.x) / 2, bbox.max.y - height * 0.12, (bbox.min.z + bbox.max.z) / 2);
   const eyePos = (() => {
@@ -670,6 +685,23 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   function computeFraming(): void {
     shotFor(framing, camGoal);
     if (orbit) orbit.setShots(allShots(), bodyBounds);
+  }
+
+  /** Re-measures her (the editor changed height or proportions) and re-frames the camera. */
+  function refit(): void {
+    container.updateMatrixWorld(true);
+    bbox.setFromObject(container);
+    bbox.getSize(size);
+    height = size.y || 1.6;
+    const h = rig.bonePosition('head');
+    if (h) headPos.copy(h);
+    const l = rig.bonePosition('eye_l');
+    const r = rig.bonePosition('eye_r');
+    if (l && r) eyePos.copy(l.add(r).multiplyScalar(0.5));
+    faceCenter.set(headPos.x, (headPos.y + eyePos.y) / 2 + height * 0.02, Math.max(headPos.z, eyePos.z));
+    Object.assign(bodyBounds, { min: { x: bbox.min.x, y: bbox.min.y, z: bbox.min.z }, max: { x: bbox.max.x, y: bbox.max.y, z: bbox.max.z }, height });
+    computeFraming();
+    kick();
   }
 
   function applyCamera(dt: number, snap: boolean): void {
@@ -1385,6 +1417,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     setStateClips(map) {
       player?.setStateClips(map);
     },
+    refit,
     dispose,
     stats,
     physics,

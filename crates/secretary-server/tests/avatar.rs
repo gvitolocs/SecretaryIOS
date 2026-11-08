@@ -279,7 +279,7 @@ async fn any_well_formed_id_without_a_wardrobe() {
         (s, v),
         (
             StatusCode::OK,
-            json!({"outfits": [], "hairstyles": [], "colors": []})
+            json!({"outfits": [], "hairstyles": [], "colors": [], "accessories": [], "parts": []})
         )
     );
     let (s, v) = h.put(json!({"outfit": "pirate"})).await;
@@ -372,4 +372,142 @@ async fn auth_csrf_and_the_service_token() {
         .send(h.req(Method::GET, "/v1/gym/state").bearer_auth(&h.service))
         .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// The character editor's saved looks: save, list, pick by id or name (Lucina
+/// says "serata"), delete, limits and shape checks, persistence, and the
+/// wardrobe's accessory and part lists.
+#[tokio::test]
+async fn saved_looks_and_editor_catalog() {
+    let mut h = H::new(true).await;
+    let (_, v) = h.get("/v1/avatar").await;
+    assert_eq!(
+        (v["looks"].clone(), v["current"].clone()),
+        (json!([]), Value::Null)
+    );
+
+    let evening = json!({"v": 1, "body": {"height": 60}, "face": {"eyeSize": 70},
+        "eyes": {"iris": "#d24a6b", "highlight": true}, "makeup": {"lipstick": {"color": "#b5294a", "amount": 60}},
+        "accessories": {"neck": "pendant"}, "tiara": false, "outfit": {"id": "maid", "parts": {}}});
+    let (s, v) = h
+        .put(json!({"saveLook": {"name": "Look serata", "look": evening}}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["looks"][0]["id"], "look-serata", "an id from the name");
+    assert_eq!(v["looks"][0]["name"], "Look serata");
+    assert_eq!(v["looks"][0]["look"], evening);
+    assert!(v["looks"][0]["updatedMs"].as_u64().unwrap() > 0);
+    assert_eq!(v["current"], Value::Null, "saving does not wear it");
+
+    let (s, v) = h
+        .put(json!({"saveLook": {"name": "Palestra", "look": {"body": {"legLength": 55}}}, "current": "palestra"}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["looks"].as_array().unwrap().len(), 2);
+    assert_eq!(v["current"], "palestra");
+
+    // Replace by id, keep the order.
+    let (s, v) = h
+        .put(json!({"saveLook": {"id": "look-serata", "name": "Serata", "look": {"body": {"height": 65}}}}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["looks"][0]["name"], "Serata");
+    assert_eq!(v["looks"][0]["look"]["body"]["height"], 65);
+
+    // Lucina picks a look by its name, with the service token.
+    let (s, v) = h
+        .send(
+            h.req(Method::PUT, "/v1/avatar")
+                .bearer_auth(&h.service)
+                .json(&json!({"current": "serata"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["current"].as_str(), v["updatedBy"].as_str()),
+        (Some("look-serata"), Some("lucina"))
+    );
+    let (s, v) = h.put(json!({"current": "the pirate one"})).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_look"))
+    );
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("Serata"),
+        "{v}"
+    );
+
+    // Shape checks.
+    for bad in [
+        json!({"saveLook": {"name": "x", "look": {"body": {"height": 200}}}}),
+        json!({"saveLook": {"name": "x", "look": {"evil": true}}}),
+        json!({"saveLook": {"name": "", "look": {}}}),
+        json!({"saveLook": {"id": "Bad Id", "name": "x", "look": {}}}),
+        json!({"saveLook": {"name": "x", "look": {}, "extra": 1}}),
+        json!({"saveLook": {"name": "x", "look": {"hair": {"style": "x".repeat(9000)}}}}),
+    ] {
+        let (s, v) = h.put(bad.clone()).await;
+        assert!(
+            s == StatusCode::BAD_REQUEST || s == StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad} -> {s} {v}"
+        );
+    }
+
+    // Persistence; deleting the current look clears it.
+    h.restart().await;
+    let (_, v) = h.get("/v1/avatar").await;
+    assert_eq!(v["current"], "look-serata");
+    assert_eq!(v["looks"].as_array().unwrap().len(), 2);
+    let (s, v) = h.put(json!({"deleteLook": "look-serata"})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["current"].clone(), v["looks"].as_array().unwrap().len()),
+        (Value::Null, 1)
+    );
+
+    // At most 20 looks; replacing the whole list works and checks duplicates.
+    let many: Vec<Value> = (0..20)
+        .map(|i| json!({"name": format!("Look {i}"), "look": {}}))
+        .collect();
+    let (s, v) = h.put(json!({"looks": many})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["looks"].as_array().unwrap().len(), 20);
+    let (s, _) = h
+        .put(json!({"saveLook": {"name": "One more", "look": {}}}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = h
+        .put(json!({"looks": [{"id": "a", "name": "A", "look": {}}, {"id": "a", "name": "B", "look": {}}]}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v) = h.put(json!({"looks": []})).await;
+    assert_eq!((s, v["looks"].clone()), (StatusCode::OK, json!([])));
+
+    // The wardrobe serves the editor's accessories and parts, valid ones only.
+    std::fs::write(
+        h.cfg.private_assets_dir.join("wardrobe.json"),
+        r##"{"outfits": [{"id": "base", "name": {"en": "Base"}, "glb": "lucina-g-base.glb", "tags": ["base"]}],
+        "accessories": [
+          {"id": "beret", "slot": "head", "glb": "acc-beret.glb", "thumbnail": "acc-beret.png", "name": {"it": "Basco"}, "hideTiara": true},
+          {"id": "tail", "slot": "tail", "glb": "acc-tail.glb"},
+          {"id": "evil", "slot": "head", "glb": "../x.glb"}
+        ],
+        "parts": [
+          {"id": "maid-onepiece", "outfit": "maid", "slot": "onepiece", "glb": "lucina-maid-onepiece.glb", "hides": ["Body_chest", "Body_hips"], "occupies": ["top", "bottom"], "toon": {"materials": {}}},
+          {"id": "bad-region", "outfit": "maid", "slot": "top", "glb": "lucina-maid-top.glb", "hides": ["Hair"]},
+          {"id": "bad-slot", "outfit": "maid", "slot": "hat", "glb": "lucina-maid-hat.glb"}
+        ]}"##,
+    )
+    .unwrap();
+    let (s, v) = h.get("/v1/avatar/wardrobe").await;
+    assert_eq!(s, StatusCode::OK);
+    let ids = |k: &str| -> Vec<String> {
+        v[k].as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids("accessories"), ["beret"]);
+    assert_eq!(ids("parts"), ["maid-onepiece"]);
 }

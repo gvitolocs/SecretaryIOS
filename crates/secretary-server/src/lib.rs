@@ -12,6 +12,7 @@ pub mod au;
 pub mod callers;
 pub mod auth;
 pub mod avatar;
+pub mod avatar_looks;
 pub mod calendar;
 pub mod calls;
 pub mod cli;

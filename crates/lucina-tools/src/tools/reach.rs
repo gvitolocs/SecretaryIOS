@@ -1611,15 +1611,36 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
     ) {
         let me = self.clone();
         tokio::spawn(async move {
-            let deadline = tokio::time::Instant::now() + limit;
+            let mut agent = agent;
+            let mut after_seq = after_seq;
+            let mut hops = 0u32;
+            let mut deadline = tokio::time::Instant::now() + limit;
             // Let the run start before the first look.
             tokio::time::sleep(me.cfg.poll).await;
             loop {
-                let status = me
-                    .agentd("GET", &format!("/agents/{agent}"), None)
-                    .await
-                    .ok()
-                    .and_then(|v| v["status"].as_str().map(str::to_owned));
+                let snapshot = me.agentd("GET", &format!("/agents/{agent}"), None).await.ok();
+                let status = snapshot.as_ref().and_then(|v| v["status"].as_str().map(str::to_owned));
+                // agentd hands a run that hit a usage limit on to another agent: follow it.
+                match snapshot.as_ref().map(after_stop) {
+                    Some(AfterStop::Wait) if tokio::time::Instant::now() < deadline => {
+                        tokio::time::sleep(me.cfg.poll).await;
+                        continue;
+                    }
+                    Some(AfterStop::Follow(next)) if hops < MAX_FOLLOWS => {
+                        hops += 1;
+                        tracing::info!(%thread, from = %agent, to = %next, "reach: the agent's run continues on another agent");
+                        if let Some(mut t) = me.get(&thread) {
+                            t.detail = Some(next.clone());
+                            me.save(&t);
+                        }
+                        agent = next;
+                        after_seq = 0;
+                        deadline = tokio::time::Instant::now() + limit;
+                        tokio::time::sleep(me.cfg.poll).await;
+                        continue;
+                    }
+                    _ => {}
+                }
                 match status.as_deref() {
                     Some("running") | Some("initializing") | Some("starting") | None
                         if tokio::time::Instant::now() < deadline =>
@@ -1675,6 +1696,35 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
     /// One request to lucina-agentd on its socket, as `service:lucina`.
     pub async fn agentd(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
         agentd_request(&self.cfg.agentd_socket, method, path, body).await
+    }
+}
+
+/// At most this many continuations are followed for one thread (agentd's chain is shorter).
+const MAX_FOLLOWS: u32 = 8;
+
+/// What the watcher does with an agent's snapshot, given agentd's quota hand-off labels
+/// (`lucina-agentd/src/manager/handoff.rs`).
+#[derive(Debug, PartialEq, Eq)]
+enum AfterStop {
+    /// Stopped on a limit, the hand-off is being decided: keep waiting.
+    Wait,
+    /// Stopped on a limit and continued on this agent: watch that one.
+    Follow(String),
+    /// Anything else: as before.
+    AsIs,
+}
+
+fn after_stop(v: &Value) -> AfterStop {
+    if v["status"] != "error" {
+        return AfterStop::AsIs;
+    }
+    let labels = &v["labels"];
+    if labels["lucina.handoff"] == "pending" {
+        return AfterStop::Wait;
+    }
+    match labels["lucina.continued-on"].as_str().filter(|s| !s.is_empty()) {
+        Some(next) => AfterStop::Follow(next.to_owned()),
+        None => AfterStop::AsIs,
     }
 }
 
@@ -2356,6 +2406,18 @@ impl Tool for ReachThreadsTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_watcher_follows_a_handed_on_run() {
+        let v = |status: &str, labels: Value| json!({"status": status, "labels": labels});
+        assert_eq!(after_stop(&v("error", json!({"lucina.handoff": "pending"}))), AfterStop::Wait);
+        assert_eq!(after_stop(&v("error", json!({"lucina.continued-on": "abc"}))), AfterStop::Follow("abc".into()));
+        assert_eq!(after_stop(&v("error", json!({"lucina.handoff": "exhausted"}))), AfterStop::AsIs);
+        assert_eq!(after_stop(&v("error", json!({}))), AfterStop::AsIs);
+        // Only a stopped run: a running or finished one is read as before.
+        assert_eq!(after_stop(&v("running", json!({"lucina.handoff": "pending"}))), AfterStop::AsIs);
+        assert_eq!(after_stop(&v("idle", json!({"lucina.continued-on": "abc"}))), AfterStop::AsIs);
+    }
 
     #[test]
     fn link_tokens_are_masked() {

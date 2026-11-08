@@ -6,7 +6,8 @@ import { WIDE_QUERY } from "../lib/media";
 import { chat, reloadChatFromStorage } from "../state/chat";
 import { reloadStageFromStorage } from "../state/stage";
 import { deferred, stubFetch, type Call, type Handler } from "../test/fetch";
-import { fake, FakeVoiceError, loadStage, resetFakeStage } from "../test/stage";
+import { fake, fakeApplyLook, FakeVoiceError, loadStage, resetFakeStage } from "../test/stage";
+import { loadAvatar } from "../state/wardrobe";
 import ChatView from "../views/Chat";
 import Shell from "../views/Shell";
 import { bubbleDuration } from "./LucinaDock";
@@ -81,6 +82,25 @@ describe("Lucina in the shell", () => {
     reloadChatFromStorage();
     reloadStageFromStorage();
     resetFakeStage();
+  });
+
+  it("wears her saved look: dressed before her first frame, re-dressed when it changes", async () => {
+    const look = { body: { height: 70 }, eyes: { iris: "#d24a6b" } };
+    stubFetch((c) => {
+      if (c.url.startsWith("/v1/timeline")) return { body: { items: [], nextBefore: null } };
+      if (c.url === "/v1/health") return { body: { ok: true, lucina: { reachable: true } } };
+      if (c.url === "/v1/avatar") return { body: { auto: true, looks: [{ id: "serata", name: "Serata", look, updatedMs: 1 }], current: "serata" } };
+      return { status: 404 };
+    });
+    const stage = await mounted();
+    expect(typeof (stage.options as { prepareModel?: unknown }).prepareModel).toBe("function");
+    fakeApplyLook.mockClear();
+    await loadAvatar();
+    await waitFor(() => expect(fakeApplyLook).toHaveBeenCalled());
+    const worn = fakeApplyLook.mock.calls.at(-1)![1] as { body: Record<string, number>; eyes: { iris: string } };
+    expect(worn.body.height).toBe(70);
+    expect(worn.eyes.iris).toBe("#d24a6b");
+    expect(screen.getAllByRole("button", { name: "Edit Lucina" }).length).toBeGreaterThan(0);
   });
 
   it("keeps one stage for the whole session while navigating", async () => {

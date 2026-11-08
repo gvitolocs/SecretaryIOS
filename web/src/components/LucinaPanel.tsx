@@ -11,16 +11,20 @@ import { ASSET_BASE } from "../lib/wardrobe";
 import {
   avatarReady,
   currentHair,
+  currentLook,
   currentHairColor,
   currentOutfit,
+  openEditor,
   openWardrobe,
   outfitChanging,
   setOutfitChanging,
+  wardrobeAccessories,
   wardrobeColors,
   wardrobeHairstyles,
   wardrobeOutfits,
+  wardrobeParts,
 } from "../state/wardrobe";
-import { CloseIcon, CollapseIcon, HangerIcon, MicIcon, SparkleIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
+import { CloseIcon, CollapseIcon, EditIcon, HangerIcon, MicIcon, SparkleIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
 import { LucinaStudio, restoreStudio, savePhoto } from "./LucinaStudio";
 import { decoratorLabels, flickLabels } from "./LucinaStudioExtras";
 
@@ -38,6 +42,16 @@ export const TTS_URL = "/v1/tts";
 /** The studio's starter props (original art, public): web/public/studio/. */
 export const PROPS_URL = "/studio/lucina-props.glb";
 const AUTH: RequestInit = { credentials: "include", headers: { "X-Secretary-CSRF": "1" } };
+
+/** Where the editor's props and parts load from, and the catalogue it may use. */
+function editorContext() {
+  return { assetBase: ASSET_BASE, fetchInit: AUTH, catalog: { accessories: wardrobeAccessories(), parts: wardrobeParts() } };
+}
+
+/** The saved look she wears now, normalized by the stage (the model as authored when none). */
+function wornLook(mod: StageModule) {
+  return mod.normalizeLook?.(currentLook() ?? {}) ?? null;
+}
 
 /** Muted unless the owner has unmuted before: sound must never come as a surprise. */
 export function storedMuted(): boolean {
@@ -145,6 +159,8 @@ export function LucinaPanel(props: {
         environment: { quality: stageQuality(), theme: effectiveTheme() },
         // Drag turns her, pinch/wheel zooms, double-tap resets, taps on her body react.
         interactive: true,
+        // Her saved look (body, face, colours, accessories) on every model the wardrobe loads.
+        prepareModel: mod.editorPrepareModel?.(() => wornLook(mod!), editorContext),
       });
       if (disposed) {
         s.dispose();
@@ -211,6 +227,21 @@ export function LucinaPanel(props: {
     on(
       () => [currentOutfit()?.id, currentHair(), currentHairColor(), wardrobeOutfits(), wardrobeHairstyles(), wardrobeColors()] as const,
       () => stage && dress(stage),
+    ),
+  );
+
+  // A different saved look (picked in the editor, or by Lucina): sliders, colours and props change
+  // in place; the outfit, hairstyle and hair colour it sets go through `dress` above.
+  createEffect(
+    on(
+      () => [currentLook(), wardrobeAccessories(), wardrobeParts()] as const,
+      () => {
+        const s = stage;
+        const look = mod ? wornLook(mod) : null;
+        if (!s || !mod?.applyLook || !look) return;
+        void mod.applyLook(s.three.model, look, editorContext()).then(() => s.refit?.());
+      },
+      { defer: true },
     ),
   );
 
@@ -481,6 +512,11 @@ export function LucinaPanel(props: {
             title={t("studio.title")}
           >
             <SparkleIcon />
+          </button>
+        </Show>
+        <Show when={mode() === "ready"}>
+          <button type="button" class="icon-btn stage-btn" onClick={openEditor} aria-label={t("avatarEditor.open")} title={t("avatarEditor.open")}>
+            <EditIcon />
           </button>
         </Show>
         <button

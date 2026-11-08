@@ -400,7 +400,15 @@ impl Manager {
             sub.seen_active = true;
             return Outcome::Wait { changed };
         }
-        let busy = matches!(child.k.status, AgentStatus::Running | AgentStatus::Initializing) || child.chain_active || child.gate_pending;
+        // A child handed on to another agent (manager/handoff.rs): follow the continuation.
+        if child.k.status == AgentStatus::Error {
+            if let Some(next) = child.record.labels.get(super::CONTINUED_ON_LABEL).filter(|n| agents.contains_key(n.as_str())) {
+                sub.child_agent_id = next.clone();
+                return Outcome::Wait { changed: true };
+            }
+        }
+        let handing_off = child.k.status == AgentStatus::Error && child.record.labels.get(super::HANDOFF_LABEL).is_some_and(|v| v == "pending");
+        let busy = matches!(child.k.status, AgentStatus::Running | AgentStatus::Initializing) || child.chain_active || child.gate_pending || handing_off;
         if busy {
             let changed = !sub.seen_active || !sub.notified.is_empty();
             sub.seen_active = true;

@@ -22,11 +22,13 @@ import { startDecisions } from "../state/decisions";
 import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
-import { setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
+import { editorOpen, setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
 import "../styles/character-shell.css";
 
 // The Wardrobe panel is only fetched the first time it opens.
 const Wardrobe = lazy(() => import("../components/Wardrobe"));
+// "Edit Lucina" (the character editor) likewise.
+const LucinaEditor = lazy(() => import("../components/LucinaEditor"));
 
 // The owner's sections: Chat, Calendar (2026-10-30), Shopping, Training + Weight, Plugins. All but Calendar are
 // also the iPhone tabs (2026-10-24). Everything else is a plugin card on /plugins.
@@ -240,6 +242,11 @@ export default function Shell(props: { children?: JSX.Element }) {
       <Show when={wardrobeLoaded()}>
         <Suspense>
           <Wardrobe />
+        </Suspense>
+      </Show>
+      <Show when={editorOpen()}>
+        <Suspense>
+          <LucinaEditor />
         </Suspense>
       </Show>
       <SecretSheet />

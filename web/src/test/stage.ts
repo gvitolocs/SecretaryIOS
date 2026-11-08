@@ -2,6 +2,8 @@
 //   vi.mock("../lib/stageLoader", () => import("../test/stage"));
 
 import type { ListenOptions, LucinaStageOptions, StageState, VoiceErrorCode } from "@secretary/lucina-stage";
+import * as real from "@secretary/lucina-stage";
+import { Group } from "three";
 import { vi } from "vitest";
 import type { StageModule } from "../lib/stageLoader";
 
@@ -88,7 +90,15 @@ export class FakeStage {
   });
   hair = "natural";
   hairColor: string | null = null;
-  readonly setHairstyles = vi.fn();
+  hairstyles: unknown[] = [];
+  readonly setHairstyles = vi.fn((list: unknown[]) => {
+    this.hairstyles = list;
+  });
+  readonly onHairChange = vi.fn(() => () => {});
+  readonly onOutfitChange = vi.fn(() => () => {});
+  // The editor (src/editor/) works on a real, empty three.js model.
+  readonly three = { model: new Group() };
+  readonly refit = vi.fn();
   readonly setHair = vi.fn(async (id: string | null) => {
     this.hair = id ?? "natural";
   });
@@ -276,6 +286,9 @@ const createStage = async (canvas: HTMLCanvasElement, options: LucinaStageOption
   return s;
 };
 
+/** The panel re-dresses her through this when the worn look changes. */
+export const fakeApplyLook = vi.fn(async (_model: unknown, _look: unknown, _ctx?: unknown) => {});
+
 const module = {
   createLucinaStage: createStage,
   createWardrobeStage: createStage,
@@ -295,6 +308,22 @@ const module = {
     fake.extras.push(x);
     return x;
   },
+  // The character editor: the real pure code (looks, sliders, catalogue parsing, the editing
+  // session), on the fake stage. applyLook is spied so tests can see the panel re-dress her.
+  defaultLook: real.defaultLook,
+  normalizeLook: real.normalizeLook,
+  parseAccessories: real.parseAccessories,
+  parseParts: real.parseParts,
+  resolveParts: real.resolveParts,
+  createAvatarEditor: real.createAvatarEditor,
+  editorPrepareModel: real.editorPrepareModel,
+  applyLook: fakeApplyLook,
+  BODY_SLIDERS: real.BODY_SLIDERS,
+  FACE_SLIDERS: real.FACE_SLIDERS,
+  MAKEUP_LAYERS: real.MAKEUP_LAYERS,
+  ACCESSORY_SLOTS: real.ACCESSORY_SLOTS,
+  PART_SLOTS: real.PART_SLOTS,
+  SWATCHES: real.SWATCHES,
 } as unknown as StageModule;
 
 export const loadStage = vi.fn(async (): Promise<StageModule> => module);

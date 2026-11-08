@@ -11,7 +11,8 @@
 //                          deal is the representative, later members add their key
 //   is_new / new_exec  <-> watch.rs::compose alert filter: new iff no key of the best offer
 //                          is notified at a price <= the offer's price
-//   ack / ack_run      <-> watch.rs::acknowledge + WatchState::set_notified (overwrite)
+//   ack / ack_run      <-> watch.rs::acknowledge (F2: the delivered best offers' keys) +
+//                          WatchState::set_notified (F3: keeps a lower notified price)
 //   score / term_score_exec, deal_score / match_deal_exec
 //                      <-> matcher.rs::term_score and match_deal over normalized tokens
 //                          (matcher::tokens; per-character \p{L} flags)
@@ -30,10 +31,13 @@
 //       group (with the member -> group index as a witness),
 //       deal_keys_exec keeps the key and every related key, lemma_group_ack_covers_members.
 //   (c) lemma_ack_run_value, lemma_ack_idempotent (a run's acknowledged deals, at the same or
-//       a higher price, are never new), lemma_strict_cheaper_is_new, lemma_alert_guard
-//       (select_exec picks exactly the new offers), lemma_overwrite_forgets_cheaper (a later
-//       acknowledgment at a higher price makes the earlier, cheaper price new again: the
-//       price-bounce repeat of the model, G0).
+//       a higher price, are never new), lemma_strict_cheaper_is_new (an offer that was new
+//       and is strictly cheaper than the acknowledged price stays new), lemma_alert_guard
+//       (select_exec picks exactly the new offers), lemma_ack_never_raises and
+//       lemma_received_stays_old / lemma_received_stays_old_run (F3: once an offer reached
+//       the owner at <= q it is never new again at q, whatever is acknowledged later),
+//       lemma_min_keeps_cheaper (the G0 price bounce of bug DW2 is gone; before F3 the
+//       overwrite made the cheaper price new again).
 //   (d) lemma_no_suffix_no_match, lemma_prefix_only_examples (skinkepizza, skinkeschnitzler,
 //       rugbrødschips, mælkechokolade), lemma_single_term_needs_suffix (a one-word term
 //       scores only on an equal token or a head-final compound with a >= 2-letter prefix),
@@ -516,20 +520,29 @@ pub open spec fn is_new(keys: Set<int>, m: Map<int, int>, price: int) -> bool {
     forall|k: int| keys.contains(k) && m.dom().contains(k) ==> m[k] > price
 }
 
-/// `set_notified(id, price)` for every key (an overwrite, also with a higher price).
+/// The price `set_notified(id, price)` records over `m` (F3: a lower notified price stays).
+pub open spec fn kept(m: Map<int, int>, k: int, price: int) -> int {
+    if m.dom().contains(k) && m[k] < price {
+        m[k]
+    } else {
+        price
+    }
+}
+
+/// `set_notified(id, price)` for every key.
 pub open spec fn ack(keys: Set<int>, m: Map<int, int>, price: int) -> Map<int, int> {
     Map::new(
         keys.union(m.dom()),
         |k: int|
             if keys.contains(k) {
-                price
+                kept(m, k, price)
             } else {
                 m[k]
             },
     )
 }
 
-/// `acknowledge` of one run: every (keys, price) of the run, in order.
+/// `acknowledge` of one run: every (keys, price) it delivered (F2), in order.
 pub open spec fn ack_run(acks: Seq<(Set<int>, int)>, m: Map<int, int>) -> Map<int, int>
     decreases acks.len(),
 {
@@ -549,6 +562,26 @@ pub open spec fn disjoint(acks: Seq<(Set<int>, int)>) -> bool {
             ==> !acks[b].0.contains(k)
 }
 
+/// A key no acknowledgment of the run names keeps its entry (or its absence).
+proof fn lemma_ack_run_untouched(acks: Seq<(Set<int>, int)>, m: Map<int, int>, k: int)
+    requires
+        forall|a: int| 0 <= a < acks.len() ==> !acks[a].0.contains(k),
+    ensures
+        ack_run(acks, m).dom().contains(k) == m.dom().contains(k),
+        m.dom().contains(k) ==> ack_run(acks, m)[k] == m[k],
+    decreases acks.len(),
+{
+    if acks.len() > 0 {
+        let rest = acks.drop_last();
+        assert forall|a: int| 0 <= a < rest.len() implies !rest[a].0.contains(k) by {
+            assert(rest[a] == acks[a]);
+        }
+        lemma_ack_run_untouched(rest, m, k);
+        assert(!acks[acks.len() - 1].0.contains(k));
+    }
+}
+
+/// The run's acknowledged price of `k`, kept lower by F3 when it was notified cheaper.
 proof fn lemma_ack_run_value(acks: Seq<(Set<int>, int)>, m: Map<int, int>, j: int, k: int)
     requires
         disjoint(acks),
@@ -556,11 +589,17 @@ proof fn lemma_ack_run_value(acks: Seq<(Set<int>, int)>, m: Map<int, int>, j: in
         acks[j].0.contains(k),
     ensures
         ack_run(acks, m).dom().contains(k),
-        ack_run(acks, m)[k] == acks[j].1,
+        ack_run(acks, m)[k] == kept(m, k, acks[j].1),
+        ack_run(acks, m)[k] <= acks[j].1,
     decreases acks.len(),
 {
     let last = acks.len() - 1;
     if j == last {
+        let rest = acks.drop_last();
+        assert forall|a: int| 0 <= a < rest.len() implies !rest[a].0.contains(k) by {
+            assert(rest[a] == acks[a]);
+        }
+        lemma_ack_run_untouched(rest, m, k);
     } else {
         let rest = acks.drop_last();
         assert(!acks[last].0.contains(k));
@@ -598,7 +637,8 @@ proof fn lemma_ack_idempotent(
     lemma_ack_run_value(acks, m, j, k);
 }
 
-/// Strictly cheaper than the acknowledged price (on every key of the offer) is new.
+/// An offer that was new at `q` and is strictly cheaper than the acknowledged price (on
+/// every key of the offer) is still new.
 proof fn lemma_strict_cheaper_is_new(
     acks: Seq<(Set<int>, int)>,
     m: Map<int, int>,
@@ -611,6 +651,7 @@ proof fn lemma_strict_cheaper_is_new(
         0 <= j < acks.len(),
         keys.subset_of(acks[j].0),
         q < acks[j].1,
+        is_new(keys, m, q),
     ensures
         is_new(keys, ack_run(acks, m), q),
 {
@@ -640,21 +681,59 @@ proof fn lemma_group_ack_covers_members(
         !is_new(later, ack(group, m, p), q),
 {
     assert(ack(group, m, p).dom().contains(member));
+    assert(ack(group, m, p)[member] == kept(m, member, p));
 }
 
-/// The code overwrites: notified at 1, then acknowledged again at 2 (the offer was active
-/// at 2 in a later delivered run), and the same offer at 1 is new again.
-proof fn lemma_overwrite_forgets_cheaper()
+/// F3: an acknowledgment never raises a notified price.
+proof fn lemma_ack_never_raises(keys: Set<int>, m: Map<int, int>, p: int, k: int)
+    requires
+        m.dom().contains(k),
+    ensures
+        ack(keys, m, p).dom().contains(k),
+        ack(keys, m, p)[k] <= m[k],
+{
+}
+
+/// F3: an offer that is not new at `q` (a key reached the owner at <= q) stays not new
+/// after any acknowledgment.
+proof fn lemma_received_stays_old(keys: Set<int>, m: Map<int, int>, p: int, later: Set<int>, q: int)
+    requires
+        !is_new(later, m, q),
+    ensures
+        !is_new(later, ack(keys, m, p), q),
+{
+    let k = choose|k: int| later.contains(k) && m.dom().contains(k) && m[k] <= q;
+    lemma_ack_never_raises(keys, m, p, k);
+}
+
+/// The same over a whole run's acknowledgments.
+proof fn lemma_received_stays_old_run(acks: Seq<(Set<int>, int)>, m: Map<int, int>, later: Set<int>, q: int)
+    requires
+        !is_new(later, m, q),
+    ensures
+        !is_new(later, ack_run(acks, m), q),
+    decreases acks.len(),
+{
+    if acks.len() > 0 {
+        let rest = acks.drop_last();
+        lemma_received_stays_old_run(rest, m, later, q);
+        lemma_received_stays_old(acks.last().0, ack_run(rest, m), acks.last().1, later, q);
+    }
+}
+
+/// The G0 price bounce (bug DW2) is gone: notified at 1, acknowledged again at 2 (the
+/// offer was active at 2 in a later delivered run), the same offer at 1 is not new.
+proof fn lemma_min_keeps_cheaper()
     ensures
         !is_new(set![0int], ack(set![0int], Map::<int, int>::empty(), 1), 1),
-        is_new(set![0int], ack(set![0int], ack(set![0int], Map::<int, int>::empty(), 1), 2), 1),
+        !is_new(set![0int], ack(set![0int], ack(set![0int], Map::<int, int>::empty(), 1), 2), 1),
 {
     let m1 = ack(set![0int], Map::<int, int>::empty(), 1);
     assert(m1.dom().contains(0));
+    assert(m1[0] == 1);
     let m2 = ack(set![0int], m1, 2);
-    assert forall|k: int| set![0int].contains(k) && m2.dom().contains(k) implies m2[k] > 1 by {
-        assert(k == 0);
-    }
+    assert(m2.dom().contains(0));
+    assert(m2[0] == 1);
 }
 
 /// One alert candidate's keys and their notified prices (`notified_price`, aligned).

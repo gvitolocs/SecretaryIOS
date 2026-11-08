@@ -1653,7 +1653,7 @@ function statFile(file) {
 }
 
 function findAsset(rel) {
-  for (const dir of [WARDROBE_DIR, ASSETS_DIR]) {
+  for (const dir of [WARDROBE_DIR, ASSETS_DIR, EDITOR_DIR]) {
     const file = resolve(dir, `.${sep}${rel}`);
     if (!file.startsWith(dir + sep)) return null;
     const st = statFile(file);
@@ -1680,7 +1680,7 @@ const DEFAULT_RULES = {
   shopping: { outfit: "chef", hair: "natural" },
   default: { outfit: "uniform", hair: "natural" },
 };
-let avatar = { outfit: null, hair: null, hairColor: null, auto: true, rules: DEFAULT_RULES, updatedMs: 0, updatedBy: "" };
+let avatar = { outfit: null, hair: null, hairColor: null, auto: true, rules: DEFAULT_RULES, updatedMs: 0, updatedBy: "", looks: [], current: null };
 
 /** `{outfits, hairstyles, colors}` (a bare array is the outfits), from the wardrobe dir or the placeholder. */
 function wardrobeFile() {
@@ -1694,12 +1694,58 @@ function wardrobeFile() {
         outfits: list(o.outfits, true),
         hairstyles: list(o.hairstyles, true),
         colors: list(o.colors).filter((c) => /^#[0-9a-f]{6}$/i.test(c.hex ?? "")),
+        // The editor's catalogue: MOCK_EDITOR_DIR/accessories.json (tools/avatar/accessories.py) or the file's own.
+        accessories: editorAccessories(o.accessories),
+        parts: list(o.parts, true),
       };
     } catch {
       // next
     }
   }
-  return { outfits: [], hairstyles: [], colors: [] };
+  return { outfits: [], hairstyles: [], colors: [], accessories: editorAccessories(), parts: [] };
+}
+
+const EDITOR_DIR = resolve(process.env.MOCK_EDITOR_DIR ?? join(homedir(), "scratch/lucina-editor/assets"));
+
+function editorAccessories(own) {
+  if (Array.isArray(own) && own.length) return own;
+  try {
+    return JSON.parse(readFileSync(join(EDITOR_DIR, "accessories.json"), "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+/** saveLook / deleteLook / looks / current, like secretary-server (avatar_looks.rs, simplified). */
+function patchLooks(body, next) {
+  let looks = [...(next.looks ?? [])];
+  if (Array.isArray(body.looks)) looks = body.looks.map((l, i) => ({ id: l.id ?? `look-${i + 1}`, name: String(l.name), look: l.look ?? {}, updatedMs: Date.now() }));
+  if (typeof body.deleteLook === "string") looks = looks.filter((l) => l.id !== body.deleteLook);
+  if (body.saveLook) {
+    const s = body.saveLook;
+    if (!s.name || typeof s.look !== "object") return bad("saveLook: name and look are required");
+    const slug = String(s.name).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "look";
+    let id = s.id ?? slug;
+    for (let n = 2; !s.id && looks.some((l) => l.id === id); n++) id = `${slug}-${n}`;
+    const entry = { id, name: String(s.name).trim().slice(0, 40), look: s.look, updatedMs: Date.now() };
+    if (looks.some((l) => l.id === id)) looks = looks.map((l) => (l.id === id ? entry : l));
+    else if (looks.length >= 20) return bad("looks: at most 20");
+    else looks.push(entry);
+  }
+  let current = next.current ?? null;
+  if (body.current !== undefined) {
+    if (body.current === null) current = null;
+    else {
+      const q = String(body.current).toLowerCase();
+      const hit = looks.find((l) => l.id === body.current || l.name.toLowerCase() === q || l.name.toLowerCase().split(/\s+/).includes(q));
+      if (!hit) return { status: 422, code: "unknown_look", message: `no look "${body.current}"; known: ${looks.map((l) => l.name).join(", ")}` };
+      current = hit.id;
+    }
+  }
+  if (current && !looks.some((l) => l.id === current)) current = null;
+  next.looks = looks;
+  next.current = current;
+  return null;
 }
 
 const bad = (message) => ({ status: 400, code: "bad_request", message });
@@ -1707,7 +1753,7 @@ const bad = (message) => ({ status: 400, code: "bad_request", message });
 /** PUT /v1/avatar: merge a patch like the real server (400 shape errors, 422 unknown_*). */
 function patchAvatar(body, by) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return bad("expected an object");
-  for (const k of Object.keys(body)) if (!["outfit", "hair", "hairColor", "auto", "rules"].includes(k)) return bad(`unknown field ${k}`);
+  for (const k of Object.keys(body)) if (!["outfit", "hair", "hairColor", "auto", "rules", "looks", "saveLook", "deleteLook", "current"].includes(k)) return bad(`unknown field ${k}`);
   const rules = body.rules ?? {};
   if (typeof rules !== "object" || Array.isArray(rules)) return bad("rules: expected an object");
   if (body.auto !== undefined && typeof body.auto !== "boolean") return bad("auto: expected a boolean");
@@ -1721,9 +1767,11 @@ function patchAvatar(body, by) {
   const next = { ...avatar, rules: nextRules };
   for (const f of ["outfit", "hair", "hairColor"]) if (f in body) next[f] = body[f];
   if (body.auto !== undefined) next.auto = body.auto;
-  const outfits = [next.outfit, ...SECTION_KEYS.map((k) => next.rules[k].outfit)].filter((v) => v !== null);
-  const hairs = [next.hair, ...SECTION_KEYS.map((k) => next.rules[k].hair)].filter((v) => v !== null);
-  const colors = [next.hairColor].filter((v) => v !== null);
+  // Like the server (validate_changes): only what this patch changes must be in the wardrobe.
+  const changed = (f, k) => (k ? rules[k] !== undefined : f in body);
+  const outfits = [changed("outfit") ? next.outfit : null, ...SECTION_KEYS.filter((k) => changed(null, k)).map((k) => next.rules[k].outfit)].filter((v) => v !== null);
+  const hairs = [changed("hair") ? next.hair : null, ...SECTION_KEYS.filter((k) => changed(null, k)).map((k) => next.rules[k].hair)].filter((v) => v !== null);
+  const colors = [changed("hairColor") ? next.hairColor : null].filter((v) => v !== null);
   if ([...outfits, ...hairs, ...colors].some((v) => typeof v !== "string" || !OUTFIT_ID.test(v))) return bad("ids must match [a-z0-9][a-z0-9_-]*");
   const w = wardrobeFile();
   const check = (ids, list, code, what, extra = []) => {
@@ -1736,6 +1784,8 @@ function patchAvatar(body, by) {
     check(hairs, w.hairstyles, "unknown_hairstyle", "hairstyle", ["natural"]) ??
     check(colors, w.colors, "unknown_hair_color", "hair colour");
   if (err) return err;
+  const lookErr = patchLooks(body, next);
+  if (lookErr) return lookErr;
   avatar = { ...next, updatedMs: Date.now(), updatedBy: by };
   return null;
 }

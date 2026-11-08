@@ -36,3 +36,4 @@ export type { OutfitEffect, OutfitEffectOptions, SubjectRect } from './outfitEff
 export { applyToon, normalizeToon, type ToonConfig, type ToonMaterialConfig, type ToonHandle, type ToonBloom, type ToonOptions, type ToonSource } from './toon';
 
 export * from './physics';
+export * from './editor';

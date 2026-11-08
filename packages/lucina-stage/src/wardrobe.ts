@@ -699,6 +699,7 @@ export async function createWardrobeStage(
     get lighting() {
       return cur.lighting;
     },
+    refit: () => cur.refit?.(),
     snapshot: () => cur.snapshot(),
     setDance: (on, o) => cur.setDance(on, o),
     get dancing() {
