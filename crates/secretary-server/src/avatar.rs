@@ -35,6 +35,7 @@ use axum::{Extension, Json, Router};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 
+use crate::avatar_looks::{LookError, LookInput, LooksPatch, SavedLook};
 use crate::devices::save_json_atomic;
 use crate::error::{ApiError, JsonBody};
 use crate::AppState;
@@ -139,6 +140,12 @@ pub struct AvatarSettings {
     /// `web` | `ios` | `device` | `lucina`; empty = never changed.
     #[serde(default)]
     pub updated_by: String,
+    /// Saved looks of the character editor (see [`crate::avatar_looks`]).
+    #[serde(default)]
+    pub looks: Vec<SavedLook>,
+    /// The look she wears now (an id in `looks`); `None` = none.
+    #[serde(default)]
+    pub current: Option<String>,
 }
 
 impl Default for AvatarSettings {
@@ -151,6 +158,8 @@ impl Default for AvatarSettings {
             rules: Rules::default(),
             updated_ms: 0,
             updated_by: String::new(),
+            looks: Vec::new(),
+            current: None,
         }
     }
 }
@@ -244,9 +253,28 @@ pub struct AvatarPatch {
     pub hair_color: Option<Option<String>>,
     pub auto: Option<bool>,
     pub rules: Option<RulesPatch>,
+    /// The look to wear: an id or a name of a saved look; `null` = none.
+    #[serde(default, deserialize_with = "present")]
+    pub current: Option<Option<String>>,
+    /// Replaces every saved look.
+    pub looks: Option<Vec<LookInput>>,
+    /// Adds a look, or replaces the one with its id.
+    pub save_look: Option<LookInput>,
+    /// Removes the look with this id.
+    pub delete_look: Option<String>,
 }
 
 impl AvatarPatch {
+    /// The look fields, taken out (they need the clock and can fail; see [`crate::avatar_looks`]).
+    pub fn take_looks(&mut self) -> LooksPatch {
+        LooksPatch {
+            current: self.current.take(),
+            looks: self.looks.take(),
+            save: self.save_look.take(),
+            delete: self.delete_look.take(),
+        }
+    }
+
     pub fn apply(self, mut s: AvatarSettings) -> AvatarSettings {
         if let Some(o) = self.outfit {
             s.outfit = o;
@@ -299,6 +327,10 @@ pub struct Wardrobe {
     pub outfits: Vec<Value>,
     pub hairstyles: Vec<Value>,
     pub colors: Vec<Value>,
+    /// Editor accessories (`acc-<id>.glb` on a bone slot).
+    pub accessories: Vec<Value>,
+    /// Outfit parts for mix and match (docs/design/avatar-parts.md).
+    pub parts: Vec<Value>,
 }
 
 fn ids(list: &[Value]) -> Vec<&str> {
@@ -485,6 +517,90 @@ fn valid_color(e: &Value) -> bool {
     id_ok(o) && hex_ok && name_ok(o.get("name"), false)
 }
 
+fn one_of(v: Option<&Value>, allowed: &[&str]) -> bool {
+    v.and_then(Value::as_str)
+        .is_some_and(|s| allowed.contains(&s))
+}
+
+fn text_ok(v: Option<&Value>, max: usize) -> bool {
+    match v {
+        None => true,
+        Some(Value::String(s)) => s.chars().count() <= max,
+        _ => false,
+    }
+}
+
+/// An editor accessory: `id`, `slot` (head, hair, ears, eyes, neck, back,
+/// wristL, wristR), a `.glb`, optional thumbnail, name, `bone`, `hideTiara`,
+/// credits and licence.
+fn valid_accessory(e: &Value) -> bool {
+    let Some(o) = e.as_object() else { return false };
+    id_ok(o)
+        && one_of(
+            o.get("slot"),
+            &[
+                "head", "hair", "ears", "eyes", "neck", "back", "wristL", "wristR",
+            ],
+        )
+        && asset_ok(o.get("glb"), &[".glb"], true)
+        && asset_ok(o.get("thumbnail"), &[".png", ".webp"], false)
+        && name_ok(o.get("name"), false)
+        && match o.get("bone") {
+            None => true,
+            Some(Value::String(b)) => {
+                !b.is_empty()
+                    && b.len() <= 64
+                    && b.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b" _.:-".contains(&c))
+            }
+            _ => false,
+        }
+        && matches!(o.get("hideTiara"), None | Some(Value::Bool(_)))
+        && text_ok(o.get("credits"), 400)
+        && text_ok(o.get("licence"), 200)
+}
+
+const PART_SLOTS: &[&str] = &["top", "bottom", "onepiece", "legwear", "shoes", "gloves"];
+
+/// An outfit part: `id`, `outfit`, `slot`, a `.glb`, `hides` (`Body_*` region
+/// names), `occupies` (slots), optional thumbnail, name, `toon` (object),
+/// credits and licence.
+fn valid_part(e: &Value) -> bool {
+    let Some(o) = e.as_object() else { return false };
+    let regions_ok = match o.get("hides") {
+        None => true,
+        Some(Value::Array(a)) => {
+            a.len() <= 40
+                && a.iter().all(|r| {
+                    r.as_str().is_some_and(|s| {
+                        s.starts_with("Body_")
+                            && s.len() <= 45
+                            && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    })
+                })
+        }
+        _ => false,
+    };
+    let occupies_ok = match o.get("occupies") {
+        None => true,
+        Some(Value::Array(a)) => a.len() <= 6 && a.iter().all(|s| one_of(Some(s), PART_SLOTS)),
+        _ => false,
+    };
+    id_ok(o)
+        && o.get("outfit")
+            .and_then(Value::as_str)
+            .is_some_and(valid_id)
+        && one_of(o.get("slot"), PART_SLOTS)
+        && asset_ok(o.get("glb"), &[".glb"], true)
+        && asset_ok(o.get("thumbnail"), &[".png", ".webp"], false)
+        && name_ok(o.get("name"), false)
+        && regions_ok
+        && occupies_ok
+        && matches!(o.get("toon"), None | Some(Value::Object(_)))
+        && text_ok(o.get("credits"), 400)
+        && text_ok(o.get("licence"), 200)
+}
+
 /// The valid entries of one list (unique ids, file order, at most [`MAX_OUTFITS`]).
 fn valid_list(v: Option<&Value>, ok: fn(&Value) -> bool, what: &str) -> Vec<Value> {
     let Some(Value::Array(entries)) = v else {
@@ -538,6 +654,8 @@ pub fn load_wardrobe(dir: &Path) -> Wardrobe {
         outfits: valid_list(root.get("outfits"), valid_outfit, "outfit"),
         hairstyles: valid_list(root.get("hairstyles"), valid_hairstyle, "hairstyle"),
         colors: valid_list(root.get("colors"), valid_color, "color"),
+        accessories: valid_list(root.get("accessories"), valid_accessory, "accessory"),
+        parts: valid_list(root.get("parts"), valid_part, "part"),
     }
 }
 
@@ -565,7 +683,13 @@ impl AvatarStore {
         let path = self.path();
         match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<AvatarSettings>(&bytes) {
-                Ok(s) if validate(&s, &Wardrobe::default()).is_ok() => s,
+                Ok(s)
+                    if validate(&s, &Wardrobe::default()).is_ok()
+                        && crate::avatar_looks::validate_list(&s.looks, s.current.as_deref())
+                            .is_ok() =>
+                {
+                    s
+                }
                 _ => {
                     tracing::warn!(path = %path.display(), "avatar.json invalid; using defaults");
                     AvatarSettings::default()
@@ -590,8 +714,21 @@ impl AvatarStore {
     ) -> Result<AvatarSettings, ApiError> {
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         let prev = self.load();
+        let mut patch = patch;
+        let looks = patch.take_looks();
         let mut next = patch.apply(prev.clone());
         validate_changes(&next, wardrobe, Some(&prev))?;
+        if !looks.is_empty() {
+            looks
+                .apply(&mut next.looks, &mut next.current, now_ms)
+                .map_err(|e| match e {
+                    LookError::Bad(m) => bad_request(m),
+                    LookError::Unknown(q) => {
+                        let known: Vec<&str> = next.looks.iter().map(|l| l.name.as_str()).collect();
+                        unknown("unknown_look", "look", &q, &known)
+                    }
+                })?;
+        }
         next.updated_ms = now_ms;
         next.updated_by = by.to_owned();
         save_json_atomic(&self.dir, AVATAR_FILE, &next).map_err(|e| {
@@ -683,6 +820,8 @@ async fn wardrobe(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
         "outfits": w.outfits,
         "hairstyles": w.hairstyles,
         "colors": w.colors,
+        "accessories": w.accessories,
+        "parts": w.parts,
     })))
 }
 
@@ -705,6 +844,7 @@ mod tests {
             outfits: vec![json!({"id": "uniform"})],
             hairstyles: Vec::new(),
             colors: Vec::new(),
+            ..Wardrobe::default()
         };
         let prev = AvatarSettings::default();
         assert!(
@@ -736,6 +876,7 @@ mod tests {
                 .map(|id| json!({"id": id}))
                 .collect(),
             colors: vec![json!({"id": "pink", "hex": "#ff88cc"})],
+            ..Wardrobe::default()
         }
     }
 

@@ -1,7 +1,15 @@
 import type { AgentListItem, Bucket } from "../../api/agents";
 import { t } from "../../i18n";
 
-export function statusLabel(a: Pick<AgentListItem, "bucket" | "status">): string {
+/** Labels lucina-agentd sets when a run that hit a provider's usage limit continues on another agent. */
+export const CONTINUED_ON = "lucina.continued-on";
+export const CONTINUED_PROVIDER = "lucina.continued-provider";
+export const CONTINUED_FROM = "lucina.continued-from";
+export const HANDOFF = "lucina.handoff";
+
+export function statusLabel(a: Pick<AgentListItem, "bucket" | "status"> & { labels?: Record<string, string> }): string {
+  if (a.labels?.[CONTINUED_ON]) return t("agents.stContinued", { provider: a.labels[CONTINUED_PROVIDER] ?? "?" });
+  if (a.status === "error" && a.labels?.[HANDOFF] === "pending") return t("agents.stHandingOff");
   switch (a.bucket) {
     case "needs_input":
       return t("agents.stNeedsInput");
@@ -21,7 +29,7 @@ export function StatusRing(props: { bucket: Bucket; status?: string }) {
   return <span class="ag-ring" data-bucket={props.bucket} data-status={props.status} aria-hidden="true" />;
 }
 
-export function StatusBadge(props: { agent: Pick<AgentListItem, "bucket" | "status"> }) {
+export function StatusBadge(props: { agent: Pick<AgentListItem, "bucket" | "status"> & { labels?: Record<string, string> } }) {
   return (
     <span class="ag-badge" data-bucket={props.agent.bucket}>
       <StatusRing bucket={props.agent.bucket} status={props.agent.status} />

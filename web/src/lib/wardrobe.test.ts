@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyPatch as applyLookPatch, lookHair, lookHairColor, lookOutfit, parseLooks, parseWardrobeFile as parseFile, wornLook } from "./wardrobe";
 import {
   applyPatch,
   categoriesPresent,
@@ -52,6 +53,8 @@ describe("wardrobe parsing", () => {
       },
       updatedMs: 5,
       updatedBy: "",
+      looks: [],
+      current: null,
     });
     expect(DEFAULT_SETTINGS.rules.gym).toEqual({ outfit: "gym", hair: "ponytail" });
     expect(parseSettings({ outfit: "Bad Id" }).outfit).toBeNull();
@@ -138,5 +141,58 @@ describe("hair", () => {
     expect(resolveHairColor({ ...s, hairColor: "green" }, file.colors)).toBeNull();
     expect(hairChoices([]).map((h) => h.id)).toEqual([NATURAL_HAIR]);
     expect(hairChoices(file.hairstyles.slice(1)).map((h) => h.id)).toEqual([NATURAL_HAIR, "ponytail", "bun"]);
+  });
+});
+
+describe("saved looks (the character editor)", () => {
+  const look = { body: { height: 60 }, hair: { style: "ponytail", color: "#AA3355" }, outfit: { id: "maid", parts: {} } };
+
+  it("parses looks and current from the server", () => {
+    const parsed = parseLooks(
+      [
+        { id: "serata", name: " Serata ", look, updatedMs: 3 },
+        { id: "serata", name: "dup", look },
+        { id: "Bad Id", name: "x", look },
+        { id: "noname", name: "", look },
+        { id: "nolook", name: "x", look: [] },
+      ],
+      "serata",
+    );
+    expect(parsed.looks).toEqual([{ id: "serata", name: "Serata", look, updatedMs: 3 }]);
+    expect(parsed.current).toBe("serata");
+    expect(parseLooks([], "serata").current).toBeNull();
+    expect(parseLooks("x", 1)).toEqual({ looks: [], current: null });
+  });
+
+  it("applies look patches optimistically", () => {
+    const s0 = parseLooks([{ id: "a", name: "A", look: {} }], "a");
+    const settings = { outfit: null, hair: null, hairColor: null, auto: true, rules: { gym: { outfit: "gym", hair: "natural" }, shopping: { outfit: "chef", hair: "natural" }, default: { outfit: "uniform", hair: "natural" } }, updatedMs: 0, updatedBy: "", ...s0 };
+    const saved = applyLookPatch(settings, { saveLook: { id: "b", name: "B", look }, current: "b" });
+    expect(saved.looks.map((l) => l.id)).toEqual(["a", "b"]);
+    expect(saved.current).toBe("b");
+    expect(wornLook(saved)).toEqual(look);
+    const deleted = applyLookPatch(saved, { deleteLook: "b" });
+    expect(deleted.current).toBeNull();
+    expect(wornLook(deleted)).toBeNull();
+  });
+
+  it("a worn look overrides outfit, hair and colour only when installed", () => {
+    const outfits = [{ id: "uniform", glb: "lucina.glb" }, { id: "maid", glb: "lucina-maid.glb" }];
+    expect(lookOutfit(look, outfits)).toBe("maid");
+    expect(lookOutfit({ outfit: { id: "pirate" } }, outfits)).toBeNull();
+    expect(lookOutfit({ outfit: { id: null, parts: { top: "casual-top" } } }, outfits)).toBeNull();
+    expect(lookOutfit({ outfit: { id: null, parts: { top: "casual-top" } } }, [...outfits, { id: "base", glb: "lucina-g-base.glb" }])).toBe("base");
+    expect(lookHair(look, [{ id: "ponytail", glb: "lucina-hair-ponytail.glb" }])).toBe("ponytail");
+    expect(lookHair(look, [])).toBeNull();
+    expect(lookHair({ hair: { style: "natural" } }, [])).toBe("natural");
+    expect(lookHairColor(look)).toBe("#aa3355");
+    expect(lookHairColor({ hair: { color: "red" } })).toBeNull();
+    expect(lookOutfit(null, outfits)).toBeNull();
+  });
+
+  it("passes the editor catalogue through", () => {
+    const f = parseFile({ accessories: [{ id: "beret" }, 3, null, []], parts: "x" });
+    expect(f.accessories).toEqual([{ id: "beret" }]);
+    expect(f.parts).toEqual([]);
   });
 });

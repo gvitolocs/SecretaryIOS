@@ -11,7 +11,7 @@ use lucina_agentd::api::router;
 use lucina_agentd::config::{default_socket, default_state_dir, dev_enabled};
 use lucina_agentd::lane::LaneConfig;
 use lucina_agentd::manager::{GateConfig, Manager, Options};
-use lucina_agentd::mock::{MockProvider, MockSlowProvider};
+use lucina_agentd::mock::{MockAltProvider, MockProvider, MockSlowProvider};
 use lucina_agentd::notify::Notifier;
 use lucina_agentd::peer::Peer;
 use lucina_agentd::process::Registry;
@@ -68,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if dev_enabled() {
         providers.push(Arc::new(MockProvider));
         providers.push(Arc::new(MockSlowProvider));
+        providers.push(Arc::new(MockAltProvider));
     }
     let notifier = Notifier::from_env();
     if notifier.is_none() {

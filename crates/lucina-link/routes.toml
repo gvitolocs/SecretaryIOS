@@ -1,0 +1,52 @@
+# Lucina Link: the default route table, compiled into the binary.
+# Override with $LUCINA_LINK_CONFIG or ~/.config/lucina-link/routes.toml. No secrets here: the Cloudflare Access service
+# token comes from the environment or ~/.config/lucina-link/secrets.env (from Infisical, project "Apis").
+#
+# kinds: lan, tailnet, public, cloudflare, ssh_jump (see docs/lucina-link.md for the ladder and the size policy).
+
+[services.nezopt-ssh]
+description = "nezopt shell (home server)"
+user = "nez"
+routes = [
+  { id = "lan", kind = "lan", tcp = "192.168.178.55:22", lan_cidr = "192.168.178.0/24" },
+  { id = "tailnet", kind = "tailnet", tcp = "100.107.164.33:22" },
+  { id = "cloudflare", kind = "cloudflare", ssh_hostname = "nezopt-ssh.getsecretary.tech" },
+  { id = "oracle", kind = "ssh_jump", jump = "oracle-peer1", tcp = "127.0.0.1:2224" },
+]
+
+[services.kindle-ssh]
+description = "Kindle PW3 root shell (KOReader dropbear, only while KOReader runs)"
+user = "root"
+identity = "~/.ssh/kindle_pw3"
+routes = [
+  # Placeholder name until the Kindle has a known, reserved LAN address.
+  { id = "lan", kind = "lan", tcp = "kindle.fritz.box:2222", lan_cidr = "192.168.178.0/24" },
+  { id = "cloudflare", kind = "cloudflare", ssh_hostname = "kindle-ssh.getsecretary.tech" },
+]
+
+[services.secretary]
+description = "Secretary API on Oracle p1"
+routes = [
+  { id = "public", kind = "public", http = "https://getsecretary.tech", health = "/healthz" },
+]
+
+[services.lucina-media]
+description = "Photo and video library on nezopt"
+routes = [
+  { id = "tailnet", kind = "tailnet", http = "http://100.107.164.33:8830", health = "/healthz" },
+  # p1 Caddy relays over the tailnet; 401 without auth still means reachable.
+  { id = "public", kind = "public", http = "https://getsecretary.tech/v1/media", health = "/health" },
+]
+
+[services.lucina-memo]
+description = "Voice memos on nezopt"
+routes = [
+  { id = "tailnet", kind = "tailnet", http = "http://100.107.164.33:8795", health = "/health" },
+  { id = "public", kind = "public", http = "https://getsecretary.tech/v1/memos", health = "/health" },
+]
+
+[services.lucina-rs]
+description = "Rust Lucina on nezopt (agents only)"
+routes = [
+  { id = "tailnet", kind = "tailnet", http = "http://100.107.164.33:8790", health = "/health" },
+]
