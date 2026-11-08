@@ -40,7 +40,8 @@ Client → server:
   nothing for it; frames, `end` and `cancel` with no turn running are ignored.
 
 Server → client:
-- `{"type":"listening"}`: reply to `start`.
+- `{"type":"listening"}`: reply to `start`. Since section 10 it also carries `purpose`, `codec`, `rate` and `turn`, for
+  every `start`, old-style ones included (10.1); a client that reads only `type` is not affected.
 - `{"type":"endpoint"}`: VAD found the end of speech (vad mode), or the 1 MiB (about 32 s) recording cap was hit (either
   mode). The client stops sending.
 - `{"type":"transcript","text":"…"}`
@@ -53,7 +54,7 @@ Server → client:
   and, when a filler phrase was played, `ack`; both are absent otherwise. When a filler is played, `first_audio` is
   the filler's and can be earlier than `tts_first`.
 - `{"type":"error","code":"…","message":"…"}`: the turn ended without (complete) audio. `no_speech`, `stt_unavailable`,
-  `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`. The socket stays open after an error.
+  `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`, and for notes `note_failed` (10.4). The socket stays open after an error.
 
 Server pipeline per turn: `start` warms STT (a background 0.5 s-silence call to the local STT, unless one ran in the
 last 60 s). PCM accumulates while an energy VAD watches it. On end-of-speech the server runs STT, then streaming chat
@@ -352,11 +353,17 @@ today's turn. The survey that led here is `docs/voice-streaming-survey.md`.
 | `text` | false | command only: also send the reply as text while it is written (`delta`, `answer`, 10.3), for a screen. |
 | `speak` | true | command only: false = no speech at all (no `audio` frames, no filler); the reply comes as text (`text` is implied). |
 
-A key the server does not know is ignored, as before. A bad value of a known key is `bad_request` and starts no turn.
-`mode: "vad"` with `purpose: "note"` is `bad_request` (a note ends when the owner lets go, never on a pause).
+A key the server does not know is ignored, as before. A bad value of a known key (wrong type included; `null` counts as
+absent) is `bad_request` and starts no turn. `mode: "vad"` with `purpose: "note"` is `bad_request` (a note ends when the
+owner lets go, never on a pause). `thread`, `channel` and `sessionId` matter only for `thread: "main"` and for notes, and
+`text` and `speak` only for commands; given anyway they are checked and then ignored. An empty `sessionId` is none. A
+`thread: "main"` start whose upgrade carries a bad `X-Secretary-Client` is `bad_request` (the `/v1/chat` rule refuses it).
+Voice notes can be switched off on the server (`SECRETARY_VOICE_SHARE_URL=off`): `start {purpose:"note"}` is then
+`bad_request` "voice notes are off".
 
 **Detecting the server.** `listening` now echoes what the server understood:
-`{"type":"listening","purpose":"note","codec":"ima-adpcm","rate":10909,"turn":"<turn id>"}`. A server from before
+`{"type":"listening","purpose":"note","codec":"ima-adpcm","rate":10909,"turn":"<turn id>"}`. The turn id is a UUID v4,
+unique per `start`; for a note it is the `shareId`. A server from before
 this section answers a bare `{"type":"listening"}`; a client that sent `ima-adpcm` or `note` and sees no `codec`
 key sends `cancel` and uses its old path.
 
@@ -371,7 +378,8 @@ key sends `cancel` and uses its old path.
   least 4 bytes is decoded for the codes it has; under 4 bytes it is dropped.
 - The server decodes as frames arrive and resamples to 16 kHz (linear) for the VAD and speech-to-text, so a
   turn's work starts the moment the owner stops. The caps count decoded 16 kHz audio: a command keeps section 2's
-  1 MiB (about 32 s), a note up to 10 minutes. Reaching the cap sends `endpoint` and runs the turn, as before.
+  1 MiB (about 32 s), a note up to 10 minutes. Reaching the cap sends `endpoint` and runs the turn, as before. A note
+  is never ended by a pause and never trimmed: the server runs no VAD on it.
 
 ### 10.3 Command turns: text while it is written
 
@@ -382,8 +390,12 @@ With `text: true` (or `speak: false`) a command turn also sends, before or betwe
   `reply` event). `replaces: true` means: show `text` instead of the deltas. A sensitive reply's text is the
   fixed phrase, as for speech.
 
-`transcript`, `reply` and `done` stay as in section 2. With `speak: false` no `audio` frames come; `done.ms` then
-has `lucina_first` and `total` and no `tts_first`/`first_audio`.
+`transcript`, `reply` and `done` stay as in section 2. With `speak: false` no `audio` frames come (and no filler, no
+Kokoro call); `reply.text` is then the whole settled reply, not cut at the 1200 characters speech is held to, and
+`done.ms` has `stt`, `lucina_first` and `total` (and `route`, when Lucina sent one) but no `tts_first`, `first_audio` or
+`ack`. An empty reply is the apology of section 2 in `answer` and `reply` alike, with `replaces: true`; a reply that
+reached the server only in Lucina's `done` (no `reply` event) is an `answer` with `replaces: true`. Lucina is asked in
+her spoken style (`voice: true`) either way.
 
 ### 10.4 Note turns
 
@@ -392,7 +404,7 @@ has `lucina_first` and `total` and no `tts_first`/`first_audio`.
    - **Transcript.** Recordings up to 120 s go to the same local speech-to-text as a command (lucina-memo, about
      80 ms; Gemini as fallback); then `{"type":"transcript","text":"…"}`. Longer ones, or a failed or empty local
      transcription, send no `transcript`: lucina-rs then transcribes the file itself (Whisper large-v3), as for any
-     shared voice note.
+     shared voice note. Under 0.3 s of audio the note is `error no_speech` and nothing is posted.
    - **The file.** `pcm16` becomes a 16 kHz PCM WAV; `ima-adpcm` becomes an IMA-ADPCM WAV of the client's own
      blocks (the same file Fortuna used to upload). Name `voice-<UTC yyyymmddThhmmss>.wav`.
    - **The share.** The server posts it as `POST /v1/share` (docs/share.md) through Caddy's loopback site
@@ -408,8 +420,13 @@ has `lucina_first` and `total` and no `tts_first`/`first_audio`.
    most 3 minutes) for at most 4 notes per connection; the oldest is dropped beyond that. When the socket
    closes, watching stops; the note and its answer are in the chat anyway.
 4. Errors: before `note`, `error` as in section 2 plus `note_failed` (the share was refused; the message has the
-   status). After `note`, a share that ends in `error` sends `{"type":"error","code":"lucina_unavailable","shareId":…}`.
-   `cancel` before `note` drops the recording (nothing is posted); after `note` it changes nothing.
+   status). After `note`, a share that ends in `error` sends `{"type":"error","code":"lucina_unavailable","shareId":…}`,
+   and so does one that has not answered after the 3 minutes (the note is in the chat anyway).
+   `cancel` before `note` drops the recording (nothing is posted); after `note` it changes nothing. A `cancel` that
+   arrives while the share request is already on its way may come too late to stop it; the device then still gets `note`
+   if the share was accepted.
+5. The server keeps a record of a note's turn as it does for a command (section 5): `ok`, `err` (`note_failed`), the
+   `stt` and `total` spans, the audio bytes received, the transcript's length. It has no `first_audio`.
 
 Every message about a note after `note` carries its `shareId`, because a new turn may already be running.
 

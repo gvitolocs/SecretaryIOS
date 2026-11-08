@@ -37,6 +37,12 @@
 //!   of the `route` event first, then those of the `done` body's `voice.layers` (a layer of the
 //!   same name replaces the earlier one). A routed turn waits at most [`DONE_GRACE`] after its
 //!   audio for the `done`, so the turn's record usually has the settled layers.
+//! - **Text and no speech** (protocol section 10). [`Spec::channel`] / [`Spec::session_id`] are
+//!   `voice` / `lucinavoice` for the shared thread, or the `/v1/chat` channel and the client's
+//!   session for `thread: "main"`. With [`Spec::text_out`] the deltas go out as `{"type":"delta"}`
+//!   and the settled reply as `{"type":"answer","text","replaces"}` (a sensitive reply is the fixed
+//!   phrase; an empty one the apology). With `speak: false` the same chat runs without the TTS
+//!   worker, the filler or the splitter (`text_inner`) and returns the whole reply text.
 //! - **After `reply`** the connection to Lucina is read to its end by a
 //!   background task, so Lucina finishes the turn (memory, rich reply) after
 //!   the audio is done. Dropping [`speak_turn`] before it returns (a cancel,
@@ -96,6 +102,9 @@ pub const EMPTY_PHRASE: (&str, &str) = (
     "Sorry, I don't have an answer.",
 );
 
+/// Where a turn's text goes while it is written (protocol section 10.3): the socket's outbox.
+pub type TextSink = mpsc::Sender<axum::extract::ws::Message>;
+
 /// What a turn needs to know.
 pub struct Spec {
     /// The transcript.
@@ -105,6 +114,64 @@ pub struct Spec {
     pub ident: Identity,
     /// What the speech-to-text engine said about Voice Learn for this turn.
     pub facts: crate::voice::SttFacts,
+    /// The chat's timeline channel: [`CHANNEL`] (the shared "Lucina Voice" thread), or `ios` / `web`
+    /// for `thread: "main"` (protocol section 10.1).
+    pub channel: String,
+    /// The chat session: [`SESSION_ID`] for the voice thread, the client's for the main chat.
+    pub session_id: Option<String>,
+    /// Speak the reply. `false`: no speech at all (no Kokoro call, no filler, no audio frames).
+    pub speak: bool,
+    /// Also send Lucina's `delta`s and settled reply as `{"type":"delta"}` / `{"type":"answer"}`
+    /// messages (protocol section 10.3).
+    pub text_out: Option<TextSink>,
+}
+
+impl Spec {
+    /// Today's turn: the "Lucina Voice" thread, spoken, no text messages.
+    pub fn voice_thread(
+        heard: String,
+        lang: Option<String>,
+        ident: Identity,
+        facts: crate::voice::SttFacts,
+    ) -> Self {
+        Self {
+            heard,
+            lang,
+            ident,
+            facts,
+            channel: CHANNEL.into(),
+            session_id: Some(SESSION_ID.into()),
+            speak: true,
+            text_out: None,
+        }
+    }
+}
+
+async fn send_text(out: &Option<TextSink>, v: serde_json::Value) {
+    if let Some(tx) = out {
+        let _ = tx
+            .send(axum::extract::ws::Message::Text(v.to_string().into()))
+            .await;
+    }
+}
+
+/// The settled reply as the wire's `answer`: (text, replaces). A sensitive reply is the fixed
+/// phrase; an empty one the apology (what speech would say); a reply that came from the `done` body
+/// instead of a `reply` event replaces the deltas.
+fn answer_of(
+    text: &str,
+    sensitive: bool,
+    replaces: bool,
+    from_done: bool,
+    deltas: bool,
+) -> (String, bool) {
+    if sensitive {
+        (SENSITIVE_PHRASE.1.to_owned(), true)
+    } else if text.trim().is_empty() {
+        (EMPTY_PHRASE.1.to_owned(), true)
+    } else {
+        (text.to_owned(), replaces || from_done || !deltas)
+    }
 }
 
 /// Why a turn did not end in complete audio.
@@ -568,19 +635,26 @@ async fn speak_inner(
     out: mpsc::Sender<Bytes>,
     drain_guard: &mut Guard,
 ) -> Result<String, PipeError> {
+    if !spec.speak {
+        return text_inner(st, spec, shared, drain_guard).await;
+    }
     let Spec {
         heard,
         lang,
         ident,
         facts,
+        channel,
+        session_id,
+        text_out,
+        ..
     } = spec;
     let turn_id = crate::voice::client_message_id().map_err(PipeError::Lucina)?;
     let chat = ChatRequest {
         message: heard.clone(),
-        session_id: Some(SESSION_ID.into()),
+        session_id,
         client_message_id: Some(turn_id.clone()),
-        // The shared "Lucina Voice" thread (protocol section 7).
-        channel: Some(CHANNEL.into()),
+        // The shared "Lucina Voice" thread (protocol section 7), or the main chat (section 10.1).
+        channel: Some(channel),
         device: Some(ident.device_id.clone()),
         device_name: Some(ident.device_name.clone()),
         reply_to: None,
@@ -621,6 +695,7 @@ async fn speak_inner(
 
     // The reply, once settled: (text, sensitive, replaces).
     let mut reply: Option<(String, bool, bool)> = None;
+    let mut from_done = false;
     loop {
         let ev = tokio::select! {
             biased;
@@ -643,28 +718,7 @@ async fn speak_inner(
                 fast,
                 source,
                 layers,
-            }) => {
-                shared.mark(&shared.route_ms);
-                shared.merge_layers(layers);
-                let info = RouteInfo {
-                    intent,
-                    confidence,
-                    jev_ms,
-                    fast,
-                    source,
-                }
-                .clean();
-                tracing::info!(
-                    device = %ident.device_id,
-                    intent = %info.intent,
-                    confidence = ?info.confidence,
-                    jev_ms = ?info.jev_ms,
-                    fast = info.fast,
-                    source = %info.source,
-                    "voice route"
-                );
-                let _ = shared.route.set(info);
-            }
+            }) => note_route(&shared, &ident, intent, confidence, jev_ms, fast, source, layers),
             Some(ChatEvent::Ack { text }) => {
                 // Only before anything of the answer is queued or sent, once,
                 // and never for a turn Lucina answered fast.
@@ -690,6 +744,7 @@ async fn speak_inner(
             Some(ChatEvent::Delta(t)) => {
                 shared.mark(&shared.lucina_first);
                 deltas = true;
+                send_text(&text_out, serde_json::json!({"type": "delta", "text": t})).await;
                 for seg in splitter.push(&t) {
                     say.emit(seg, false);
                 }
@@ -718,11 +773,16 @@ async fn speak_inner(
                     data["sensitive"].as_bool() == Some(true),
                     false,
                 ));
+                from_done = true;
                 break;
             }
         }
     }
     let (text, sensitive, replaces) = reply.unwrap_or_default();
+    if text_out.is_some() {
+        let (t, r) = answer_of(&text, sensitive, replaces, from_done, deltas);
+        send_text(&text_out, serde_json::json!({"type": "answer", "text": t, "replaces": r})).await;
+    }
 
     if sensitive {
         muted.store(true, Ordering::SeqCst);
@@ -753,6 +813,62 @@ async fn speak_inner(
     // does not see a closed connection, but never wait for it. Its `done` body
     // may complete the Jev layers; the turn's record picks them up if it
     // arrives while the audio is still being made (see below).
+    let done_rx = start_drain(events, &shared, drain_guard);
+
+    let outcome = match (&mut worker.0).await {
+        Ok(Ok(())) => Ok(spoken.join(" ")),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(PipeError::Tts(ApiError::internal("speech worker failed"))),
+    };
+    // A Lucina that routes turns (it sent `route`) also sends layers in `done`:
+    // give it a moment after the audio, no more.
+    if outcome.is_ok() && shared.route().is_some() {
+        let _ = tokio::time::timeout(DONE_GRACE, done_rx).await;
+    }
+    outcome
+}
+
+/// Record Lucina's `route` event: its time, its layers, the cleaned route.
+#[allow(clippy::too_many_arguments)]
+fn note_route(
+    shared: &Shared,
+    ident: &Identity,
+    intent: String,
+    confidence: Option<f64>,
+    jev_ms: Option<u64>,
+    fast: bool,
+    source: String,
+    layers: Vec<RouteLayer>,
+) {
+    shared.mark(&shared.route_ms);
+    shared.merge_layers(layers);
+    let info = RouteInfo {
+        intent,
+        confidence,
+        jev_ms,
+        fast,
+        source,
+    }
+    .clean();
+    tracing::info!(
+        device = %ident.device_id,
+        intent = %info.intent,
+        confidence = ?info.confidence,
+        jev_ms = ?info.jev_ms,
+        fast = info.fast,
+        source = %info.source,
+        "voice route"
+    );
+    let _ = shared.route.set(info);
+}
+
+/// Read Lucina's stream to its end in the background (its `done` may complete the Jev layers).
+/// The returned receiver fires when `done` arrived.
+fn start_drain(
+    mut events: secretary_core::ChatStream,
+    shared: &Arc<Shared>,
+    drain_guard: &mut Guard,
+) -> tokio::sync::oneshot::Receiver<()> {
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
     let drain = tokio::spawn({
         let shared = shared.clone();
@@ -769,18 +885,100 @@ async fn speak_inner(
         }
     });
     *drain_guard = Guard(Some(drain.abort_handle()));
+    done_rx
+}
 
-    let outcome = match (&mut worker.0).await {
-        Ok(Ok(())) => Ok(spoken.join(" ")),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(PipeError::Tts(ApiError::internal("speech worker failed"))),
+/// A turn with no speech (`speak: false`, protocol section 10.3): the same chat, `delta` and
+/// `answer` messages instead of audio. No Kokoro call, no filler. Returns the settled reply text.
+async fn text_inner(
+    st: AppState,
+    spec: Spec,
+    shared: Arc<Shared>,
+    drain_guard: &mut Guard,
+) -> Result<String, PipeError> {
+    let Spec {
+        heard,
+        ident,
+        facts,
+        channel,
+        session_id,
+        text_out,
+        ..
+    } = spec;
+    let turn_id = crate::voice::client_message_id().map_err(PipeError::Lucina)?;
+    let chat = ChatRequest {
+        message: heard,
+        session_id,
+        client_message_id: Some(turn_id.clone()),
+        channel: Some(channel),
+        device: Some(ident.device_id.clone()),
+        device_name: Some(ident.device_name.clone()),
+        reply_to: None,
+        voice_meta: Some(voice_meta(&turn_id, shared.stt(), &facts)),
     };
-    // A Lucina that routes turns (it sent `route`) also sends layers in `done`:
-    // give it a moment after the audio, no more.
-    if outcome.is_ok() && shared.route().is_some() {
+    let lucina = st.lucina().map_err(PipeError::Lucina)?;
+    let mut events = lucina
+        .chat_stream(&chat, true)
+        .await
+        .map_err(|e| PipeError::Lucina(e.into()))?;
+
+    let mut deltas = false;
+    let mut from_done = false;
+    let mut reply: Option<(String, bool, bool)> = None;
+    loop {
+        match events.next().await.map_err(|e| PipeError::Lucina(e.into()))? {
+            None => break,
+            Some(ChatEvent::Route {
+                intent,
+                confidence,
+                jev_ms,
+                fast,
+                source,
+                layers,
+            }) => note_route(&shared, &ident, intent, confidence, jev_ms, fast, source, layers),
+            // No speech, so no filler.
+            Some(ChatEvent::Ack { .. }) => {}
+            Some(ChatEvent::Delta(t)) => {
+                shared.mark(&shared.lucina_first);
+                deltas = true;
+                send_text(&text_out, serde_json::json!({"type": "delta", "text": t})).await;
+            }
+            Some(ChatEvent::Reply {
+                text,
+                sensitive,
+                replaces,
+            }) => {
+                shared.mark(&shared.lucina_first);
+                reply = Some((text, sensitive, replaces));
+                break;
+            }
+            Some(ChatEvent::Done(v)) => {
+                shared.mark(&shared.lucina_first);
+                shared.merge_layers(RouteLayer::from_done(&v));
+                let data = if v["data"].is_object() { &v["data"] } else { &v };
+                reply = Some((
+                    data["reply"].as_str().unwrap_or("").to_owned(),
+                    data["sensitive"].as_bool() == Some(true),
+                    false,
+                ));
+                from_done = true;
+                break;
+            }
+        }
+    }
+    let (text, sensitive, replaces) = reply.unwrap_or_default();
+    let (answer, wire_replaces) = answer_of(&text, sensitive, replaces, from_done, deltas);
+    send_text(
+        &text_out,
+        serde_json::json!({"type": "answer", "text": answer, "replaces": wire_replaces}),
+    )
+    .await;
+
+    let done_rx = start_drain(events, &shared, drain_guard);
+    if shared.route().is_some() {
         let _ = tokio::time::timeout(DONE_GRACE, done_rx).await;
     }
-    outcome
+    Ok(answer)
 }
 
 #[cfg(test)]

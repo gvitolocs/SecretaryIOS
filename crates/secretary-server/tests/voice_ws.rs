@@ -20,6 +20,7 @@ use futures_util::{stream, SinkExt, StreamExt};
 use reqwest::Client;
 use secretary_server::config::Config;
 use secretary_server::devices::DeviceStore;
+use secretary_server::voice_frames as frames;
 use secretary_server::{app, serve_on, AppState};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -69,6 +70,130 @@ struct Mock {
     kokoro_fails: Mutex<bool>,
     /// The SLOW script's SSE body was dropped (the chat connection closed).
     slow_dropped: Mutex<bool>,
+    /// Every `POST /v1/share` (voice notes).
+    shares: Mutex<Vec<ShareCall>>,
+    /// Every `GET /v1/share/{id}`: (id, authorization).
+    share_polls: Mutex<Vec<(String, Option<String>)>>,
+    /// How the mock share behaves.
+    share: Mutex<ShareScript>,
+}
+
+/// What the mock share endpoint does.
+#[derive(Debug, Clone, Default)]
+struct ShareScript {
+    /// `GET` answers `processing` this many times, then the final status.
+    processing: usize,
+    /// The final status is `error`, not `done`.
+    ends_in_error: bool,
+    /// `POST` answers this status instead of 202.
+    refuse: Option<u16>,
+}
+
+/// One voice-note upload as the mock share saw it.
+#[derive(Debug, Clone, Default)]
+struct ShareCall {
+    auth: Option<String>,
+    cookie: Option<String>,
+    csrf: Option<String>,
+    content_type: String,
+    fields: Vec<(String, String)>,
+    file_name: String,
+    file_type: String,
+    file: Vec<u8>,
+}
+
+impl ShareCall {
+    fn field(&self, k: &str) -> Option<&str> {
+        self.fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+    }
+}
+
+fn find_at(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    hay.get(from..)?.windows(needle.len()).position(|w| w == needle).map(|i| i + from)
+}
+
+/// The parts of a `multipart/form-data` body: text fields and the one file.
+fn parse_multipart(content_type: &str, body: &[u8], call: &mut ShareCall) {
+    let boundary = content_type.split("boundary=").nth(1).expect("a multipart boundary");
+    let delim = format!("--{boundary}").into_bytes();
+    let mut pos = find_at(body, &delim, 0).expect("first boundary");
+    loop {
+        let after = pos + delim.len();
+        if body[after..].starts_with(b"--") {
+            return;
+        }
+        let head_start = after + 2; // CRLF
+        let head_end = find_at(body, b"\r\n\r\n", head_start).expect("part headers");
+        let head = String::from_utf8_lossy(&body[head_start..head_end]).into_owned();
+        let data_start = head_end + 4;
+        let next = find_at(body, &delim, data_start).expect("next boundary");
+        let data = &body[data_start..next - 2]; // CRLF before the boundary
+        let name = head.split("name=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_owned();
+        if head.contains("filename=\"") {
+            call.file_name = head.split("filename=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_owned();
+            call.file_type = head.split("Content-Type: ").nth(1).unwrap_or("").trim().to_owned();
+            call.file = data.to_vec();
+            assert_eq!(name, "file");
+        } else {
+            call.fields.push((name, String::from_utf8_lossy(data).into_owned()));
+        }
+        pos = next;
+    }
+}
+
+async fn share(
+    State(m): State<Arc<Mock>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    let script = m.share.lock().unwrap().clone();
+    let hdr = |k: &str| headers.get(k).map(|v| v.to_str().unwrap().to_owned());
+    if method == axum::http::Method::POST && uri.path() == "/v1/share" {
+        let mut call = ShareCall {
+            auth: hdr("authorization"),
+            cookie: hdr("cookie"),
+            csrf: hdr("x-secretary-csrf"),
+            content_type: hdr("content-type").unwrap_or_default(),
+            ..ShareCall::default()
+        };
+        parse_multipart(&call.content_type.clone(), &body, &mut call);
+        let id = call.field("shareId").unwrap_or("").to_owned();
+        m.shares.lock().unwrap().push(call);
+        if let Some(code) = script.refuse {
+            return (
+                AxumStatus::from_u16(code).unwrap(),
+                Json(json!({"ok": false, "error": "invalid shareId"})),
+            )
+                .into_response();
+        }
+        return (
+            AxumStatus::ACCEPTED,
+            Json(json!({"ok": true, "shareId": id, "duplicate": false, "status": "processing",
+                        "userItemId": format!("usr_{}", &id[..8.min(id.len())]), "attachments": []})),
+        )
+            .into_response();
+    }
+    if method == axum::http::Method::GET {
+        if let Some(id) = uri.path().strip_prefix("/v1/share/") {
+            let n = {
+                let mut polls = m.share_polls.lock().unwrap();
+                polls.push((id.to_owned(), hdr("authorization")));
+                polls.iter().filter(|(i, _)| i == id).count()
+            };
+            let v = if n <= script.processing {
+                json!({"ok": true, "shareId": id, "status": "processing", "stage": "thinking"})
+            } else if script.ends_in_error {
+                json!({"ok": true, "shareId": id, "status": "error", "error": "model failed"})
+            } else {
+                json!({"ok": true, "shareId": id, "status": "done", "userItemId": "usr_x",
+                       "lucinaItemId": "lci_42", "reply": "Fatto, ho aggiunto il latte."})
+            };
+            return Json(v).into_response();
+        }
+    }
+    (AxumStatus::NOT_FOUND, "no").into_response()
 }
 
 #[derive(Debug, Clone)]
@@ -422,7 +547,18 @@ struct H {
 }
 
 async fn harness() -> H {
+    harness_with(|_| {}).await
+}
+
+async fn harness_with(tweak: impl FnOnce(&mut Config)) -> H {
     let mock = Arc::new(Mock::default());
+    let share_url = spawn(
+        Router::new()
+            .fallback(share)
+            .layer(axum::extract::DefaultBodyLimit::disable())
+            .with_state(mock.clone()),
+    )
+    .await;
     let lucina_url = spawn(Router::new().fallback(lucina).with_state(mock.clone())).await;
     let tts = spawn(Router::new().fallback(kokoro).with_state(mock.clone())).await;
     let stt = spawn(Router::new().fallback(local_stt).with_state(mock.clone())).await;
@@ -431,6 +567,8 @@ async fn harness() -> H {
     cfg.data_dir = dir.path().join("state");
     cfg.tts_url = format!("http://{tts}/");
     cfg.voice_stt_url = Some(format!("http://{stt}/v1/memos/stt"));
+    cfg.voice_share_url = Some(format!("http://{share_url}/v1/share"));
+    tweak(&mut cfg);
     let (dev, token) = DeviceStore::new(&cfg.data_dir).issue("Speaker").unwrap();
     let st = AppState::new(&cfg).unwrap();
     let addr = spawn(app(st.clone())).await;
@@ -467,6 +605,19 @@ impl H {
 
     async fn connect(&self) -> Ws {
         self.try_connect(Some(&self.token)).await.unwrap()
+    }
+
+    /// Connect with extra upgrade headers (`X-Secretary-Client`).
+    async fn connect_with(&self, extra: &[(&'static str, &'static str)]) -> Ws {
+        let mut req = format!("ws://{}/v1/voice/ws", self.addr)
+            .into_client_request()
+            .unwrap();
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {}", self.token).parse().unwrap());
+        for (k, v) in extra {
+            req.headers_mut().insert(*k, v.parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req).await.unwrap().0
     }
 }
 
@@ -571,9 +722,16 @@ async fn stream_audio(ws: &mut Ws, audio: &[u8]) {
     }
 }
 
+/// `listening`, with what the server understood of the `start` (protocol section 10.1).
+async fn expect_listening(ws: &mut Ws) -> Value {
+    let v = recv_json(ws).await;
+    assert_eq!(v["type"], "listening", "{v}");
+    v
+}
+
 async fn start_ptt(ws: &mut Ws) {
     send(ws, json!({"type": "start", "mode": "ptt"})).await;
-    assert_eq!(recv_json(ws).await, json!({"type": "listening"}));
+    expect_listening(ws).await;
 }
 
 async fn say_ptt(ws: &mut Ws, ms: usize) -> Vec<Got> {
@@ -692,7 +850,7 @@ async fn vad_mode_ends_the_turn_by_itself() {
         json!({"type": "start", "mode": "vad", "lang": "it"}),
     )
     .await;
-    assert_eq!(recv_json(&mut ws).await, json!({"type": "listening"}));
+    expect_listening(&mut ws).await;
     // 0.4 s of room noise (silence), 1 s of speech, then silence; no `end`.
     let mut sent = silence(400);
     sent.extend(tone(1000));
@@ -780,7 +938,7 @@ async fn cancel_stops_the_turn_and_frees_the_device() {
         match recv(&mut ws).await {
             Got::Pcm(_) => continue,
             Got::Json(v) => {
-                assert_eq!(v, json!({"type": "listening"}), "{v}");
+                assert_eq!(v["type"], "listening", "{v}");
                 break;
             }
         }
@@ -1667,7 +1825,7 @@ async fn the_filler_follows_the_turns_language() {
         json!({"type": "start", "mode": "ptt", "lang": "en"}),
     )
     .await;
-    assert_eq!(recv_json(&mut ws).await, json!({"type": "listening"}));
+    expect_listening(&mut ws).await;
     stream_audio(&mut ws, &tone(900)).await;
     send(&mut ws, json!({"type": "end"})).await;
     let out = turn_output(&mut ws).await;
@@ -1903,4 +2061,781 @@ async fn post_voice_plays_the_filler_first_too() {
         .wait_for(&h.token, &path, |v| v["turns"][0]["intent"] == "web_crawl")
         .await;
     assert!(v["turns"][0]["spans"]["ack"].is_u64());
+}
+
+
+// -- Streaming input: codecs, notes, text (protocol section 10) ------------------------------------
+
+/// s16 samples of a 440 Hz tone at `rate`.
+fn tone_samples(rate: u32, ms: usize) -> Vec<i16> {
+    (0..rate as usize * ms / 1000)
+        .map(|i| (8000.0 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin()) as i16)
+        .collect()
+}
+
+/// IMA-ADPCM (mono, `adpcm_ima_wav` blocks of `block` bytes) of `pcm`; the last block is padded
+/// with its last sample, like Fortuna's encoder does.
+fn ima_encode(pcm: &[i16], block: usize) -> Vec<u8> {
+    let spb = frames::samples_per_block(block);
+    let mut index = 0i32;
+    let mut out = Vec::new();
+    for chunk in pcm.chunks(spb) {
+        let mut pred = chunk[0] as i32;
+        out.extend_from_slice(&chunk[0].to_le_bytes());
+        out.push(index as u8);
+        out.push(0);
+        let last = *chunk.last().unwrap();
+        let mut codes = Vec::with_capacity(spb - 1);
+        for k in 1..spb {
+            let s = *chunk.get(k).unwrap_or(&last) as i32;
+            let mut best = (i32::MAX, 0u8, pred, index);
+            for code in 0..16u8 {
+                let (p, i) = frames::expand(pred, index, code);
+                if (p - s).abs() < best.0 {
+                    best = ((p - s).abs(), code, p, i);
+                }
+            }
+            codes.push(best.1);
+            pred = best.2;
+            index = best.3;
+        }
+        for pair in codes.chunks(2) {
+            out.push(pair[0] | (pair.get(1).copied().unwrap_or(0) << 4));
+        }
+        assert_eq!(out.len() % block, 0);
+    }
+    out
+}
+
+/// Frames of `size` bytes, the way a device cuts a stream (not at block boundaries).
+async fn stream_bytes(ws: &mut Ws, data: &[u8], size: usize) {
+    for f in data.chunks(size) {
+        ws.send(Message::binary(f.to_vec())).await.unwrap();
+    }
+}
+
+fn is_uuid_v4(s: &str) -> bool {
+    s.len() == 36
+        && s.as_bytes()[14] == b'4'
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit() && !b.is_ascii_uppercase(),
+        })
+}
+
+#[tokio::test]
+async fn listening_echoes_what_the_server_understood_for_every_start() {
+    let h = harness().await;
+    let mut ws = h.connect().await;
+    // An old-style start: today's turn, with the echo of its defaults.
+    send(&mut ws, json!({"type": "start", "mode": "ptt"})).await;
+    let a = expect_listening(&mut ws).await;
+    assert_eq!(a["purpose"], "command");
+    assert_eq!(a["codec"], "pcm16");
+    assert_eq!(a["rate"], 16000);
+    let id = a["turn"].as_str().unwrap();
+    assert!(is_uuid_v4(id), "{id}");
+    send(&mut ws, json!({"type": "cancel"})).await;
+    // A new-style one: the explicit values come back; every turn has its own id.
+    send(
+        &mut ws,
+        json!({"type": "start", "purpose": "note", "codec": "ima-adpcm", "rate": 10909, "block": 256}),
+    )
+    .await;
+    let b = expect_listening(&mut ws).await;
+    assert_eq!(
+        (b["purpose"].as_str(), b["codec"].as_str(), b["rate"].as_u64()),
+        (Some("note"), Some("ima-adpcm"), Some(10909))
+    );
+    assert!(is_uuid_v4(b["turn"].as_str().unwrap()));
+    assert_ne!(b["turn"], a["turn"]);
+}
+
+#[tokio::test]
+async fn bad_start_options_are_bad_requests_and_start_no_turn() {
+    let h = harness().await;
+    let mut ws = h.connect().await;
+    let adpcm = json!({"codec": "ima-adpcm", "rate": 10909, "block": 256});
+    let with = |extra: Value| {
+        let mut v = json!({"type": "start"});
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        v
+    };
+    let mut bad = vec![
+        json!({"type": "start", "codec": "opus"}),
+        json!({"type": "start", "rate": 8000}),
+        json!({"type": "start", "codec": "ima-adpcm", "rate": 10909}),
+        json!({"type": "start", "codec": "ima-adpcm", "rate": 10909, "block": 4}),
+        json!({"type": "start", "codec": "ima-adpcm", "rate": 10909, "block": 5000}),
+        json!({"type": "start", "codec": "ima-adpcm", "rate": 30000, "block": 256}),
+        json!({"type": "start", "codec": "ima-adpcm", "rate": 7000, "block": 256}),
+        json!({"type": "start", "purpose": "memo"}),
+        json!({"type": "start", "thread": "side"}),
+        json!({"type": "start", "purpose": "note", "thread": "voice"}),
+        json!({"type": "start", "purpose": "note", "mode": "vad"}),
+        json!({"type": "start", "mode": "walkie"}),
+        json!({"type": "start", "channel": "voice"}),
+        json!({"type": "start", "channel": "android"}),
+        json!({"type": "start", "sessionId": "has space"}),
+        json!({"type": "start", "sessionId": "x".repeat(65)}),
+        json!({"type": "start", "replyTo": ""}),
+        json!({"type": "start", "replyTo": "x".repeat(65)}),
+        json!({"type": "start", "source": "iOS-chat"}),
+        json!({"type": "start", "source": "a".repeat(33)}),
+        json!({"type": "start", "rate": "16000"}),
+        json!({"type": "start", "text": "yes"}),
+        json!({"type": "start", "speak": 0}),
+        json!({"type": "start", "lang": "fr"}),
+    ];
+    bad.push(with(json!({"codec": "pcm16", "block": "x"})));
+    bad.push({
+        let mut v = with(adpcm.clone());
+        v["rate"] = json!(10909.5);
+        v
+    });
+    for msg in bad {
+        send(&mut ws, msg.clone()).await;
+        let e = recv_json(&mut ws).await;
+        assert_eq!(
+            (e["type"].as_str(), e["code"].as_str()),
+            (Some("error"), Some("bad_request")),
+            "{msg} -> {e}"
+        );
+    }
+    // None of them started a turn: no busy, no listening, nothing in the way.
+    let quiet = tokio::time::timeout(Duration::from_millis(200), ws.next()).await;
+    assert!(quiet.is_err(), "{quiet:?}");
+    send(&mut ws, with(adpcm)).await;
+    expect_listening(&mut ws).await;
+    // Unknown keys are ignored, as before.
+    send(&mut ws, json!({"type": "cancel"})).await;
+    send(&mut ws, json!({"type": "start", "future": [1, 2], "hello": true})).await;
+    expect_listening(&mut ws).await;
+}
+
+#[tokio::test]
+async fn an_ima_adpcm_command_turn_reaches_the_stt_as_16k_pcm() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    let tone = tone_samples(10_909, 1200);
+    let data = ima_encode(&tone, 256);
+    send(
+        &mut ws,
+        json!({"type": "start", "mode": "ptt", "codec": "ima-adpcm", "rate": 10909, "block": 256}),
+    )
+    .await;
+    let l = expect_listening(&mut ws).await;
+    assert_eq!((l["codec"].as_str(), l["rate"].as_u64()), (Some("ima-adpcm"), Some(10909)));
+    // 700-byte frames: they cut the blocks anywhere.
+    stream_bytes(&mut ws, &data, 700).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    assert_eq!(types(&out), ["transcript", "audio", "pcm", "reply", "done"], "{out:?}");
+    assert_eq!(json_of(&out, "transcript")["text"], TWO);
+
+    let calls = h.mock.real_stt_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].content_type, "audio/x-s16le;rate=16000");
+    // 1200 ms of tone are 13 090 samples at 10 909 Hz (26 blocks decode to 13 130): about 19 200
+    // to 19 260 samples at 16 kHz, whole samples.
+    let samples = calls[0].len / 2;
+    assert_eq!(calls[0].len % 2, 0);
+    assert!((19_190..=19_262).contains(&samples), "{samples}");
+    // The turn is the usual one for Lucina.
+    let chats = h.mock.chats.lock().unwrap().clone();
+    assert_eq!(chats[0].0["channel"], "voice");
+    assert_eq!(chats[0].0["sessionId"], "lucinavoice");
+}
+
+#[tokio::test]
+async fn an_ima_adpcm_vad_turn_ends_by_itself() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(
+        &mut ws,
+        json!({"type": "start", "mode": "vad", "codec": "ima-adpcm", "rate": 8000, "block": 128}),
+    )
+    .await;
+    expect_listening(&mut ws).await;
+    let mut pcm = vec![0i16; 8000 * 4 / 10];
+    pcm.extend(tone_samples(8000, 1000));
+    pcm.extend(vec![0i16; 8000 * 3 / 2]);
+    stream_bytes(&mut ws, &ima_encode(&pcm, 128), 512).await;
+    assert_eq!(recv_json(&mut ws).await, json!({"type": "endpoint"}));
+    let out = turn_output(&mut ws).await;
+    assert_eq!(json_of(&out, "done")["type"], "done", "{out:?}");
+}
+
+/// The mock share's POSTs, once `n` have arrived.
+async fn shares(h: &H, n: usize) -> Vec<ShareCall> {
+    for _ in 0..200 {
+        let v = h.mock.shares.lock().unwrap().clone();
+        if v.len() >= n {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("no {n}th share arrived");
+}
+
+#[tokio::test]
+async fn a_pcm16_note_is_transcribed_posted_and_followed() {
+    let h = harness().await;
+    h.mock.say("Ricordami di comprare il latte");
+    let mut ws = h.connect().await;
+    send(
+        &mut ws,
+        json!({"type": "start", "purpose": "note", "lang": "it", "channel": "ios",
+               "sessionId": "ios_chat1", "replyTo": "itm_9", "source": "ios-chat"}),
+    )
+    .await;
+    let l = expect_listening(&mut ws).await;
+    assert_eq!((l["purpose"].as_str(), l["codec"].as_str()), (Some("note"), Some("pcm16")));
+    let turn = l["turn"].as_str().unwrap().to_owned();
+    // 3 s of speech and a second of silence at the end: a note is kept whole.
+    let mut audio = tone(3000);
+    audio.extend(silence(1000));
+    stream_audio(&mut ws, &audio).await;
+    send(&mut ws, json!({"type": "end"})).await;
+
+    // transcript, then note (the device is free), then reply and done from the watcher.
+    let t = recv_json(&mut ws).await;
+    assert_eq!((t["type"].as_str(), t["text"].as_str()), (Some("transcript"), Some("Ricordami di comprare il latte")));
+    let n = recv_json(&mut ws).await;
+    assert_eq!(n["type"], "note");
+    assert_eq!(n["shareId"], turn.as_str());
+    assert!(n["userItemId"].as_str().unwrap().starts_with("usr_"));
+    let r = recv_json(&mut ws).await;
+    assert_eq!(
+        r,
+        json!({"type": "reply", "shareId": turn, "text": "Fatto, ho aggiunto il latte.", "itemId": "lci_42"})
+    );
+    let d = recv_json(&mut ws).await;
+    assert_eq!((d["type"].as_str(), d["shareId"].as_str()), (Some("done"), Some(turn.as_str())));
+    let ms = &d["ms"];
+    for k in ["stt", "note", "reply", "total"] {
+        assert!(ms[k].is_u64(), "{k}: {ms}");
+    }
+    assert!(ms["stt"].as_u64() <= ms["note"].as_u64() && ms["note"].as_u64() <= ms["reply"].as_u64());
+    assert!(ms["reply"].as_u64() <= ms["total"].as_u64());
+
+    // The share request.
+    let calls = shares(&h, 1).await;
+    assert_eq!(calls.len(), 1);
+    let c = &calls[0];
+    assert_eq!(c.auth.as_deref(), Some(format!("Bearer {}", h.token).as_str()));
+    assert!(c.cookie.is_none() && c.csrf.is_none());
+    assert!(c.content_type.starts_with("multipart/form-data; boundary="));
+    for (k, v) in [
+        ("shareId", turn.as_str()),
+        ("intent", "ask"),
+        ("lang", "it"),
+        ("sessionId", "ios_chat1"),
+        ("channel", "ios"),
+        ("source", "ios-chat"),
+        ("replyTo", "itm_9"),
+    ] {
+        assert_eq!(c.field(k), Some(v), "{k}: {:?}", c.fields);
+    }
+    assert!(c.field("note").is_none());
+    let meta: Value = serde_json::from_str(c.field("meta").unwrap()).unwrap();
+    let f = &meta["files"][0];
+    assert_eq!((f["index"].as_u64(), f["voice"].as_bool()), (Some(0), Some(true)));
+    assert_eq!(f["durationMs"], 4000);
+    assert_eq!(f["transcript"], "Ricordami di comprare il latte");
+    // The file: a 44-byte PCM header and the whole recording (silence included).
+    assert_eq!(c.file_type, "audio/wav");
+    assert!(c.file_name.starts_with("voice-") && c.file_name.ends_with(".wav") && c.file_name.len() == 6 + 15 + 4, "{}", c.file_name);
+    assert_eq!(c.file.len(), 44 + audio.len());
+    assert_eq!(c.file[..44], frames::wav_pcm16_header(audio.len() as u32, 16000)[..]);
+    assert_eq!(c.file[44..], audio[..]);
+    // The recording went to the speech-to-text as it was; Lucina's chat and Kokoro were not asked.
+    let stt = h.mock.real_stt_calls();
+    assert_eq!((stt.len(), stt[0].len), (1, audio.len()));
+    assert!(h.mock.chats.lock().unwrap().is_empty() && h.mock.spoken().is_empty());
+    // The status was read with the caller's credentials.
+    let polls = h.mock.share_polls.lock().unwrap().clone();
+    assert!(!polls.is_empty());
+    assert!(polls.iter().all(|(id, a)| *id == turn && a.as_deref() == Some(format!("Bearer {}", h.token).as_str())));
+    // The server keeps a record of the note's turn too.
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h.wait_for(&h.token, &path, |v| v["turns"][0]["ok"] == true).await;
+    assert_eq!(v["turns"][0]["up_bytes"], audio.len());
+    assert!(v["turns"][0]["spans"]["stt"].is_u64());
+}
+
+#[tokio::test]
+async fn an_ima_adpcm_note_keeps_the_clients_blocks() {
+    let h = harness().await;
+    h.mock.say("Nota con blocchi");
+    let mut ws = h.connect().await;
+    send(
+        &mut ws,
+        json!({"type": "start", "purpose": "note", "codec": "ima-adpcm", "rate": 10909, "block": 256,
+               "channel": "web", "source": "fortuna-chat"}),
+    )
+    .await;
+    let l = expect_listening(&mut ws).await;
+    let turn = l["turn"].as_str().unwrap().to_owned();
+    let data = ima_encode(&tone_samples(10_909, 1500), 256);
+    assert_eq!(data.len() % 256, 0);
+    // A partial last block of 40 bytes: 4 header + 36 of codes -> 73 samples, kept in the file.
+    let mut sent = data.clone();
+    sent.extend_from_slice(&data[..40]);
+    stream_bytes(&mut ws, &sent, 1000).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = {
+        let mut v = vec![];
+        loop {
+            let g = recv(&mut ws).await;
+            let last = matches!(&g, Got::Json(j) if j["type"] == "done");
+            v.push(g);
+            if last {
+                break v;
+            }
+        }
+    };
+    assert_eq!(types(&out), ["transcript", "note", "reply", "done"], "{out:?}");
+    assert_eq!(json_of(&out, "note")["shareId"], turn.as_str());
+
+    let calls = shares(&h, 1).await;
+    let c = &calls[0];
+    assert_eq!(c.field("channel"), Some("web"));
+    assert_eq!(c.field("source"), Some("fortuna-chat"));
+    assert!(c.field("replyTo").is_none() && c.field("sessionId").is_none() && c.field("lang").is_none());
+    // The client's bytes after a 60-byte IMA-ADPCM header.
+    assert_eq!(c.file.len(), 60 + sent.len());
+    assert_eq!(c.file[..60], frames::wav_adpcm_header(10909, 256, sent.len() as u32)[..]);
+    assert_eq!(c.file[60..], sent[..]);
+    assert_eq!(&c.file[0..4], b"RIFF");
+    assert_eq!(u16::from_le_bytes([c.file[20], c.file[21]]), 0x0011);
+    let want = frames::total_samples(sent.len(), 256);
+    assert_eq!(u32::from_le_bytes(c.file[48..52].try_into().unwrap()) as usize, want);
+    // The speech-to-text heard the decoded, resampled audio.
+    let stt = h.mock.real_stt_calls();
+    let samples = stt[0].len / 2;
+    let expect = want * 16_000 / 10_909;
+    assert!(samples.abs_diff(expect) <= 2, "{samples} vs {expect}");
+    // Duration in the meta is the decoded audio's.
+    let meta: Value = serde_json::from_str(c.field("meta").unwrap()).unwrap();
+    let ms = meta["files"][0]["durationMs"].as_u64().unwrap();
+    assert!(ms.abs_diff(want as u64 * 1000 / 10_909) <= 2, "{ms}");
+}
+
+#[tokio::test]
+async fn a_new_start_is_accepted_while_a_notes_reply_is_pending() {
+    let h = harness().await;
+    h.mock.share.lock().unwrap().processing = 8; // about two seconds of polling
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    let turn = expect_listening(&mut ws).await["turn"].as_str().unwrap().to_owned();
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+    assert_eq!(recv_json(&mut ws).await["type"], "note");
+    // The note's answer is pending; the device is free: a spoken turn goes through.
+    let t0 = Instant::now();
+    send(&mut ws, json!({"type": "start", "mode": "ptt"})).await;
+    let l = expect_listening(&mut ws).await;
+    assert_eq!(l["purpose"], "command");
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    // Both turns' messages arrive, in whatever order; the note's carry its shareId.
+    let mut note_msgs = vec![];
+    let mut turn_msgs = vec![];
+    let mut audio_frames = 0;
+    while note_msgs.len() < 2 || !turn_msgs.iter().any(|v: &Value| v["type"] == "done") {
+        match recv(&mut ws).await {
+            Got::Pcm(_) => audio_frames += 1,
+            Got::Json(v) if v.get("shareId").is_some() => note_msgs.push(v),
+            Got::Json(v) => turn_msgs.push(v),
+        }
+    }
+    assert!(audio_frames > 0);
+    let kinds: Vec<_> = turn_msgs.iter().map(|v| v["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["transcript", "audio", "reply", "done"]);
+    assert_eq!(note_msgs[0]["type"], "reply");
+    assert_eq!(note_msgs[1]["type"], "done");
+    assert!(note_msgs.iter().all(|v| v["shareId"] == turn.as_str()));
+    // The command turn did not wait for the note.
+    assert!(t0.elapsed() < Duration::from_secs(5));
+    // And the command was the voice thread's, the note a share.
+    assert_eq!(h.mock.chats.lock().unwrap().len(), 1);
+    assert_eq!(shares(&h, 1).await.len(), 1);
+}
+
+#[tokio::test]
+async fn cancel_before_the_note_posts_nothing() {
+    let h = harness().await;
+    h.mock.say("Una nota");
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(1000)).await;
+    send(&mut ws, json!({"type": "cancel"})).await;
+    // `end` after a cancel is late and ignored; the device is free for the next turn.
+    send(&mut ws, json!({"type": "end"})).await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    let quiet = tokio::time::timeout(Duration::from_millis(500), ws.next()).await;
+    assert!(quiet.is_err(), "{quiet:?}");
+    assert!(h.mock.shares.lock().unwrap().is_empty());
+    assert!(h.mock.real_stt_calls().is_empty());
+}
+
+#[tokio::test]
+async fn notes_are_off_when_the_share_url_is_off() {
+    let h = harness_with(|cfg| cfg.voice_share_url = None).await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    let e = recv_json(&mut ws).await;
+    assert_eq!((e["code"].as_str(), e["message"].as_str()), (Some("bad_request"), Some("voice notes are off")));
+    // Commands are not affected.
+    let out = say_ptt(&mut ws, 600).await;
+    assert_eq!(json_of(&out, "done")["type"], "done");
+}
+
+#[tokio::test]
+async fn a_refused_share_is_note_failed_and_the_device_is_free() {
+    let h = harness().await;
+    h.mock.share.lock().unwrap().refuse = Some(400);
+    h.mock.say("Una nota");
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+    let e = recv_json(&mut ws).await;
+    assert_eq!(e["type"], "error");
+    assert_eq!(e["code"], "note_failed");
+    assert!(e["message"].as_str().unwrap().contains("400"), "{e}");
+    assert!(e.get("shareId").is_none());
+    // No watcher, no note; the next turn starts at once.
+    h.mock.share.lock().unwrap().refuse = None;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    assert!(h.mock.share_polls.lock().unwrap().is_empty());
+    // The failed turn left a record with its error.
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h.wait_for(&h.token, &path, |v| v["turns"][0]["err"] == "note_failed").await;
+    assert_eq!(v["turns"][0]["ok"], false);
+}
+
+#[tokio::test]
+async fn a_share_that_ends_in_error_is_lucina_unavailable_with_its_share_id() {
+    let h = harness().await;
+    h.mock.share.lock().unwrap().ends_in_error = true;
+    h.mock.say("Una nota");
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    let turn = expect_listening(&mut ws).await["turn"].as_str().unwrap().to_owned();
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+    assert_eq!(recv_json(&mut ws).await["type"], "note");
+    let e = recv_json(&mut ws).await;
+    assert_eq!(
+        (e["type"].as_str(), e["code"].as_str(), e["shareId"].as_str()),
+        (Some("error"), Some("lucina_unavailable"), Some(turn.as_str())),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_local_stt_still_posts_the_note_without_a_transcript() {
+    let h = harness().await;
+    *h.mock.stt_fails.lock().unwrap() = true;
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    // No `transcript`: the first message is the note; lucina-rs transcribes the file itself.
+    assert_eq!(recv_json(&mut ws).await["type"], "note");
+    let c = &shares(&h, 1).await[0];
+    let meta: Value = serde_json::from_str(c.field("meta").unwrap()).unwrap();
+    assert!(meta["files"][0].get("transcript").is_none());
+    assert_eq!(meta["files"][0]["voice"], true);
+    // A note too short to be speech is no_speech and posts nothing more.
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(100)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    loop {
+        let v = recv_json(&mut ws).await;
+        if v["type"] == "error" {
+            assert_eq!(v["code"], "no_speech");
+            break;
+        }
+    }
+    assert_eq!(h.mock.shares.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn at_most_four_notes_are_followed_and_the_oldest_is_dropped() {
+    let h = harness().await;
+    // Never answers within this test.
+    h.mock.share.lock().unwrap().processing = usize::MAX;
+    h.mock.say("Una nota");
+    let mut ws = h.connect().await;
+    let mut ids = vec![];
+    for _ in 0..5 {
+        send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+        expect_listening(&mut ws).await;
+        stream_audio(&mut ws, &tone(500)).await;
+        send(&mut ws, json!({"type": "end"})).await;
+        assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+        let n = recv_json(&mut ws).await;
+        assert_eq!(n["type"], "note");
+        ids.push(n["shareId"].as_str().unwrap().to_owned());
+    }
+    // Let the fifth note's watcher poll, then watch the polls for a while: the first note is no
+    // longer read, the other four still are.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let mark = h.mock.share_polls.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let later: Vec<String> = h.mock.share_polls.lock().unwrap()[mark..].iter().map(|(i, _)| i.clone()).collect();
+    assert!(!later.contains(&ids[0]), "{later:?}");
+    for id in &ids[1..] {
+        assert!(later.contains(id), "{id} not polled: {later:?}");
+    }
+}
+
+#[tokio::test]
+async fn thread_main_sends_the_chat_with_the_clients_channel_and_session() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    // The upgrade's X-Secretary-Client wins over the start's channel.
+    let mut ws = h.connect_with(&[("x-secretary-client", "ios")]).await;
+    send(&mut ws, json!({"type": "start", "thread": "main", "sessionId": "sess_7", "channel": "web"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    assert_eq!(json_of(&out, "done")["type"], "done");
+    // Without the header: the start's channel, else web.
+    let mut ws2 = h.connect().await;
+    send(&mut ws2, json!({"type": "start", "thread": "main", "channel": "ios"})).await;
+    expect_listening(&mut ws2).await;
+    stream_audio(&mut ws2, &tone(800)).await;
+    send(&mut ws2, json!({"type": "end"})).await;
+    turn_output(&mut ws2).await;
+    send(&mut ws2, json!({"type": "start", "thread": "main"})).await;
+    expect_listening(&mut ws2).await;
+    stream_audio(&mut ws2, &tone(800)).await;
+    send(&mut ws2, json!({"type": "end"})).await;
+    turn_output(&mut ws2).await;
+    let chats = h.mock.chats.lock().unwrap().clone();
+    let seen: Vec<_> = chats
+        .iter()
+        .map(|(b, _)| (b["channel"].as_str().unwrap().to_owned(), b["sessionId"].as_str().map(str::to_owned)))
+        .collect();
+    assert_eq!(seen[0], ("ios".to_owned(), Some("sess_7".to_owned())));
+    assert_eq!(seen[1].0, "ios");
+    assert_eq!(seen[2].0, "web");
+    // Still a streaming, spoken-style, device-scoped request.
+    assert_eq!(chats[0].1.as_deref(), Some("text/event-stream"));
+    assert_eq!(chats[0].0["voice"], true);
+    assert_eq!(chats[0].0["deviceName"], "Speaker");
+    // A bad X-Secretary-Client is refused at `start` for the main thread only.
+    let mut ws3 = h.connect_with(&[("x-secretary-client", "voice")]).await;
+    send(&mut ws3, json!({"type": "start", "thread": "main"})).await;
+    assert_eq!(recv_json(&mut ws3).await["code"], "bad_request");
+    send(&mut ws3, json!({"type": "start"})).await;
+    expect_listening(&mut ws3).await;
+}
+
+#[tokio::test]
+async fn text_true_sends_deltas_then_the_answer_beside_the_audio() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "text": true})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    let deltas: Vec<_> = out
+        .iter()
+        .filter_map(|g| match g {
+            Got::Json(v) if v["type"] == "delta" => Some(v["text"].as_str().unwrap().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas, ["Ciao a te. ", "Come stai", " oggi?"]);
+    let answer = json_of(&out, "answer");
+    assert_eq!(answer["text"], "Ciao a te. Come stai oggi?");
+    assert_eq!(answer["replaces"], false);
+    // Order: transcript, the deltas, then the answer; the audio and the rest as before.
+    let order: Vec<_> = types(&out);
+    let pos = |t: &str| order.iter().position(|x| x == t).unwrap();
+    assert!(pos("transcript") < pos("delta") && pos("delta") < pos("answer"));
+    assert!(order.iter().filter(|t| *t == "delta").count() >= 1);
+    assert!(pos("answer") < pos("reply") && pos("reply") < pos("done"));
+    assert_eq!(audio(&out), [pcm_of("Ciao a te.".len()), pcm_of("Come stai oggi?".len())].concat());
+    assert_eq!(json_of(&out, "reply")["text"], "Ciao a te. Come stai oggi?");
+
+    // A sensitive reply: the fixed phrase replaces what was shown.
+    h.mock.say(SECRET);
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "text": true})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    let answer = json_of(&out, "answer");
+    assert_eq!(answer["text"], "I'll answer that in the app.");
+    assert_eq!(answer["replaces"], true);
+    assert!(!out.iter().any(|g| matches!(g, Got::Json(v) if v["text"].as_str().is_some_and(|t| t.contains("482913")) && v["type"] == "answer")));
+
+    // Without `text`, none of these messages exist.
+    h.mock.say(TWO);
+    let out = say_ptt(&mut ws, 800).await;
+    assert!(!types(&out).iter().any(|t| t == "delta" || t == "answer"), "{:?}", types(&out));
+}
+
+#[tokio::test]
+async fn speak_false_makes_no_kokoro_call_and_sends_no_audio() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "speak": false})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    assert!(!out.iter().any(|g| matches!(g, Got::Pcm(_))), "{out:?}");
+    let t = types(&out);
+    assert_eq!(t.first().map(String::as_str), Some("transcript"));
+    assert!(!t.iter().any(|x| x == "audio"));
+    // `text` is implied: deltas, the answer, then reply and done.
+    assert_eq!(t.iter().filter(|x| *x == "delta").count(), 3, "{t:?}");
+    assert_eq!(&t[t.len() - 3..], ["answer", "reply", "done"]);
+    assert_eq!(json_of(&out, "answer")["text"], "Ciao a te. Come stai oggi?");
+    assert_eq!(json_of(&out, "reply")["text"], "Ciao a te. Come stai oggi?");
+    let ms = &json_of(&out, "done")["ms"];
+    assert!(ms["stt"].is_u64() && ms["lucina_first"].is_u64() && ms["total"].is_u64(), "{ms}");
+    assert!(ms.get("tts_first").is_none() && ms.get("first_audio").is_none(), "{ms}");
+    assert!(h.mock.spoken().is_empty(), "Kokoro was asked: {:?}", h.mock.spoken());
+
+    // No filler either, on a turn that would have one.
+    h.mock.say(ACK_SLOW);
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "speak": false})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    assert!(!out.iter().any(|g| matches!(g, Got::Pcm(_))));
+    let ms = &json_of(&out, "done")["ms"];
+    assert!(ms["route"].is_u64() && ms.get("ack").is_none() && ms.get("first_audio").is_none(), "{ms}");
+    assert!(h.mock.spoken().is_empty());
+
+    // A sensitive reply, and the JSON-only Lucina, work without speech too.
+    h.mock.say(SECRET);
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "speak": false})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    assert_eq!(json_of(&out, "answer")["text"], "I'll answer that in the app.");
+    h.mock.say(JSON_REPLY);
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "speak": false})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    assert_eq!(json_of(&out, "answer")["text"], "Prima frase. Seconda frase lunga.");
+    assert_eq!(json_of(&out, "answer")["replaces"], true);
+    assert!(h.mock.spoken().is_empty());
+}
+
+#[tokio::test]
+async fn a_cookie_callers_note_reaches_the_share_with_the_cookie_and_csrf() {
+    let h = harness().await;
+    h.mock.say("Una nota");
+    let login = h
+        .http
+        .post(format!("http://{}/v1/session", h.addr))
+        .json(&json!({"token": h.token}))
+        .send()
+        .await
+        .unwrap();
+    let cookie = login.headers()["set-cookie"].to_str().unwrap().to_owned();
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    let mut req = format!("ws://{}/v1/voice/ws", h.addr).into_client_request().unwrap();
+    req.headers_mut().insert("cookie", cookie.parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    stream_audio(&mut ws, &tone(800)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    loop {
+        if recv_json(&mut ws).await["type"] == "done" {
+            break;
+        }
+    }
+    let c = &shares(&h, 1).await[0];
+    assert_eq!(c.cookie.as_deref(), Some(cookie.as_str()));
+    assert_eq!(c.csrf.as_deref(), Some("1"));
+    assert!(c.auth.is_none());
+    // No X-Secretary-Client and no channel: the `/v1/chat` default.
+    assert_eq!(c.field("channel"), Some("web"));
+    assert!(h.mock.share_polls.lock().unwrap().iter().all(|(_, a)| a.is_none()));
+}
+
+#[tokio::test]
+async fn a_long_note_is_not_transcribed_by_the_server() {
+    let h = harness().await;
+    h.mock.say("Non sentita");
+    let mut ws = h.connect().await;
+    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
+    expect_listening(&mut ws).await;
+    // 125 s: past the 120 s the local engine is asked for.
+    let audio = tone(125_000);
+    stream_audio(&mut ws, &audio).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let n = recv_json(&mut ws).await;
+    assert_eq!(n["type"], "note", "no transcript expected: {n}");
+    let d = loop {
+        let v = recv_json(&mut ws).await;
+        if v["type"] == "done" {
+            break v;
+        }
+    };
+    assert!(d["ms"].get("stt").is_none(), "{d}");
+    assert!(h.mock.real_stt_calls().is_empty());
+    let c = &shares(&h, 1).await[0];
+    let meta: Value = serde_json::from_str(c.field("meta").unwrap()).unwrap();
+    assert!(meta["files"][0].get("transcript").is_none());
+    assert_eq!(meta["files"][0]["durationMs"], 125_000);
+    assert_eq!(c.file.len(), 44 + audio.len());
+}
+
+#[tokio::test]
+async fn the_command_cap_counts_decoded_audio() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(
+        &mut ws,
+        json!({"type": "start", "mode": "ptt", "codec": "ima-adpcm", "rate": 8000, "block": 256}),
+    )
+    .await;
+    expect_listening(&mut ws).await;
+    // 40 s of tone at 8 kHz is about 160 KB of ADPCM and 1.25 MB of 16 kHz PCM: over the 1 MiB cap.
+    let data = ima_encode(&tone_samples(8000, 40_000), 256);
+    assert!(data.len() < 200_000);
+    stream_bytes(&mut ws, &data, 4096).await;
+    // The server stops listening by itself (no `end`) and runs the turn.
+    assert_eq!(recv_json(&mut ws).await, json!({"type": "endpoint"}));
+    let out = turn_output(&mut ws).await;
+    assert_eq!(json_of(&out, "done")["type"], "done", "{out:?}");
+    let calls = h.mock.real_stt_calls();
+    assert_eq!(calls[0].len, 1024 * 1024);
 }
