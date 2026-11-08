@@ -219,6 +219,7 @@ fn settings(ids: BoxedStrategy<String>) -> impl Strategy<Value = AvatarSettings>
                 },
                 updated_ms: 0,
                 updated_by: String::new(),
+                ..AvatarSettings::default()
             },
         )
 }
@@ -233,6 +234,7 @@ fn wardrobe() -> impl Strategy<Value = Wardrobe> {
         outfits: list(&o),
         hairstyles: list(&h),
         colors: list(&c),
+        ..Wardrobe::default()
     })
 }
 

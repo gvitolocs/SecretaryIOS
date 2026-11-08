@@ -1,0 +1,665 @@
+/*
+ * "Edit Lucina", after Custom Cast's SceneEdit: a category rail, the live stage and a panel
+ * (part grid, sliders, colour wheel). Desktop: rail | stage | panel. Phones: the stage on top,
+ * the rail as a scrolling row, the panel below. Nebula/Pearl tokens only.
+ */
+
+.editor {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--violet) 16%, var(--bg)) 0%, var(--bg) 60%);
+  color: var(--text);
+  animation: scrim-in var(--dur-2) var(--ease-out) both;
+}
+
+.editor-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: calc(var(--safe-top, 0px) + 10px) var(--pad-right, 16px) 10px var(--pad-left, 16px);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--blur));
+  backdrop-filter: blur(var(--blur));
+}
+
+.editor-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.editor-title h2 {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-lg, 1.1rem);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: var(--grad-holo);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.editor-sub {
+  display: block;
+  overflow: hidden;
+  font-size: var(--fs-xs, 0.8rem);
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-dirty {
+  color: var(--amber);
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-actions .icon-btn:disabled {
+  opacity: 0.35;
+}
+
+.editor-save {
+  margin-left: 4px;
+}
+
+.editor-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) minmax(320px, 420px);
+}
+
+/* ---------- Category rail ---------- */
+
+.editor-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--hairline);
+}
+
+.editor-cat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius, 16px);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-2xs, 0.7rem);
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  transition: background var(--dur-2), color var(--dur-2), box-shadow var(--dur-2);
+}
+
+.editor-cat-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--surface-2);
+}
+
+.editor-cat-icon .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.editor-cat.is-on {
+  color: var(--text);
+}
+
+.editor-cat.is-on .editor-cat-icon {
+  background: var(--grad-holo-soft);
+  box-shadow: var(--glow-accent);
+}
+
+/* ---------- Stage ---------- */
+
+.editor-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-stage .stage-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.editor-nostage {
+  margin: 40px auto;
+  max-width: 320px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---------- Panel ---------- */
+
+.editor-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px calc(var(--safe-bottom, 0px) + 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-left: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--surface-solid) 90%, transparent);
+}
+
+.editor-panel > * {
+  flex: none;
+}
+
+.ed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ed-head h3,
+.ed-sub {
+  margin: 0;
+  font-size: var(--fs-sm, 0.9rem);
+  font-weight: 700;
+  letter-spacing: var(--tracking-hud, 0.08em);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ed-sub {
+  margin-top: 6px;
+}
+
+.ed-count {
+  font-family: var(--mono);
+  font-size: var(--fs-2xs, 0.7rem);
+  color: var(--text-dim);
+}
+
+.editor-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm, 0.9rem);
+}
+
+.ed-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ed-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wchip--set:not(.wchip--on) {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--text);
+}
+
+.ed-grid {
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+}
+
+/* Sliders: name, track, value (Custom Cast's body figure rows). */
+.ed-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ed-slider {
+  display: grid;
+  grid-template-columns: minmax(96px, 38%) minmax(0, 1fr) 2.6em;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+
+.ed-slider-name {
+  font-size: var(--fs-sm, 0.9rem);
+  color: var(--text);
+  cursor: default;
+  user-select: none;
+}
+
+.ed-slider-value {
+  font-family: var(--mono);
+  font-size: var(--fs-xs, 0.8rem);
+  text-align: right;
+  color: var(--accent);
+}
+
+.ed-slider-value.is-default {
+  color: var(--text-dim);
+}
+
+.editor input[type="range"] {
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.editor input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--surface-3), color-mix(in srgb, var(--accent) 45%, var(--surface-3)) 50%, var(--surface-3));
+}
+
+.editor input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.editor input[type="range"]::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+  margin-top: -8px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--grad-primary);
+  box-shadow: var(--glow-accent);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.editor input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.ed-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap, 44px);
+  font-size: var(--fs-sm, 0.9rem);
+}
+
+.ed-switch input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+/* Looks */
+.ed-looks {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.ed-look {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 16px);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+button.ed-look {
+  min-height: var(--tap, 44px);
+  cursor: pointer;
+}
+
+.ed-look.is-on {
+  border-color: transparent;
+  background: var(--grad-holo-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.ed-look-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap, 44px);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ed-look-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ed-look-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ed-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs, 0.7rem);
+  letter-spacing: var(--tracking-hud, 0.08em);
+  text-transform: uppercase;
+}
+
+.ed-random {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 16px);
+}
+
+.ed-random legend {
+  padding: 0 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs, 0.8rem);
+}
+
+/* Makeup layers */
+.ed-makeup {
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 16px);
+  background: var(--surface-2);
+}
+
+.ed-makeup summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap, 44px);
+  padding: 0 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ed-makeup summary .ed-slider-value {
+  margin-left: auto;
+}
+
+.ed-makeup[open] {
+  padding-bottom: 10px;
+}
+
+.ed-makeup > :not(summary) {
+  margin: 4px 12px 0;
+}
+
+.ed-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
+/* ---------- Colour wheel ---------- */
+
+.cwheel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cwheel-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.cwheel-ring {
+  position: relative;
+  flex: none;
+  width: 156px;
+  height: 156px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, #f33, #fd3, #3f6, #3ff, #36f, #c3f, #f33);
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* the ring's hole */
+.cwheel-ring::before {
+  content: "";
+  position: absolute;
+  inset: 14px;
+  border-radius: 50%;
+  background: var(--surface-solid);
+}
+
+.cwheel-square {
+  --cw-hue: 220;
+  position: absolute;
+  inset: 37px;
+  border-radius: 8px;
+  background:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, hsl(calc(var(--cw-hue) * 1deg) 100% 50%));
+  touch-action: none;
+}
+
+.cwheel-knob {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.4);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.cwheel-knob--ring {
+  background: transparent;
+}
+
+.cwheel-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 8px;
+}
+
+.cwheel-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border-strong);
+  cursor: pointer;
+}
+
+.cwheel-swatch.is-on {
+  border-color: var(--bg);
+  box-shadow: 0 0 0 2px var(--accent), var(--glow-accent);
+}
+
+.cwheel-swatch--natural {
+  width: auto;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-2xs, 0.7rem);
+  font-weight: 600;
+}
+
+.cwheel-sliders {
+  display: grid;
+  gap: 2px;
+}
+
+.cwheel-sliders label {
+  display: grid;
+  grid-template-columns: 6.5em minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs, 0.8rem);
+}
+
+/* ---------- Dialogs ---------- */
+
+.editor-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--scrim);
+}
+
+.editor-modal-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(380px, 100%);
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl, 24px);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-lg);
+}
+
+.editor-modal-card p {
+  margin: 0;
+}
+
+.editor-modal-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs, 0.8rem);
+}
+
+.editor-modal-card input[type="text"] {
+  min-height: var(--tap, 44px);
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.editor-modal-card .ed-row {
+  justify-content: flex-end;
+}
+
+/* ---------- Phones ---------- */
+
+@media (max-width: 820px) {
+  .editor-body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .editor-stage {
+    flex: none;
+    height: 44dvh;
+  }
+
+  .editor-rail {
+    flex: none;
+    flex-direction: row;
+    gap: 4px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+    scrollbar-width: none;
+    order: 1;
+  }
+
+  .editor-stage {
+    order: 0;
+  }
+
+  .editor-panel {
+    order: 2;
+    flex: 1;
+    min-height: 0;
+    border-left: 0;
+  }
+
+  .editor-cat {
+    flex: none;
+    min-width: 72px;
+    padding: 4px;
+  }
+
+  .editor-cat-icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .editor-save {
+    padding-inline: 14px;
+  }
+
+  .cwheel-ring {
+    width: 136px;
+    height: 136px;
+  }
+
+  .cwheel-square {
+    inset: 32px;
+  }
+}
+
+/* The wardrobe's way into the editor. */
+.wardrobe-edit {
+  margin-left: auto;
+  margin-right: 8px;
+}

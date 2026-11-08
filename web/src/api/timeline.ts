@@ -41,7 +41,7 @@ export interface ItemMeta {
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive" | "share" | "tool";
+  kind?: "reminder" | "avatar_outfit" | "avatar_look" | "note" | "notes" | "proactive" | "share" | "tool";
   /** With kind "tool": the tool Lucina called for this step, and whether it succeeded. */
   tool?: string;
   ok?: boolean;
@@ -314,6 +314,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (typeof m.outfit === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.outfit)) out.outfit = m.outfit;
     if (typeof m.hair === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.hair)) out.hair = m.hair;
   }
+  // Lucina put on a saved look (the character editor's presets).
+  if (m.kind === "avatar_look") out.kind = "avatar_look";
   if (m.kind === "notes") out.kind = "notes";
   if (m.kind === "tool") {
     out.kind = "tool";
