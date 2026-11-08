@@ -75,6 +75,7 @@ pub mod subagent;
 pub mod text_match;
 pub mod timeline;
 pub mod title;
+pub mod turn_watch;
 pub mod types;
 pub mod workspace;
 pub mod worktree_guard;

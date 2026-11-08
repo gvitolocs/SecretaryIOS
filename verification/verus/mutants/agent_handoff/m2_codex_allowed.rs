@@ -9,7 +9,7 @@
 //   should_hand_off / eligible / next_lane / decide <-> the functions of the same name
 // Differential test: crates/lucina-agents/tests/verus_handoff.rs.
 // Mutants (each must fail verification): verification/verus/mutants/agent_handoff/*.rs,
-// run by scripts/verus-mutants-handoff.sh.
+// run by scripts/verus-mutants-agents.sh.
 //
 // Proven:
 //   H1 failed_stays: a real failure (class Failed) is never handed on.

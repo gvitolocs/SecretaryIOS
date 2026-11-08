@@ -96,7 +96,7 @@ the lane its provider stands for, or a `code: quota` reply), continues as a new,
 - Next agent: the first lane of `deep-lucina` (claude, cursor, Mistral `vibe`, zcode, free Zen DeepSeek on
   `opencode`) whose provider is registered and wasn't tried yet by this run or the runs it continues. Never Codex
   and never the paid DeepSeek key. The pure decision is `lucina_agents::handoff` (Verus H1-H7,
-  `verification/verus/agent_handoff.rs`, six mutants killed by `scripts/verus-mutants-handoff.sh`).
+  `verification/verus/agent_handoff.rs`, six mutants killed by `scripts/verus-mutants-agents.sh`).
 - The continuation keeps the cwd and workspace, uncommitted changes included (never reset), the title, the labels
   (a reach thread's `reach` label too), and a no-ask mode when the old run had one and the new provider offers one.
   It gets the chat history (the fork attachment) and a prompt with the workspace's `git status` and the original
@@ -106,6 +106,15 @@ the lane its provider stands for, or a `code: quota` reply), continues as a new,
   is left. `wait`, orchestration finish notices and Lucina's reach watcher follow the continuation, so a reach
   thread still gets its reply.
 - A real failure stays a plain error.
+- **ACP turn watch** (`providers/acp.rs`, pure rule `lucina_agents::turn_watch`, Verus W1-W5 in
+  `verification/verus/acp_turn_watch.rs`): `opencode acp` on Zen's free tier logs `Free usage limit reached`
+  and never answers the prompt, so its turn hung as "running" and nothing could hand it on (2026-11-08). agentd
+  now tails the agent's own error log during a turn (OpenCode: `~/.local/share/opencode/log/opencode.log`,
+  lines for this `session.id` only) and ends the turn as a quota stop on a limit there; and it ends a turn with no
+  output for the agent's stall time (OpenCode 300 s, Cursor and Copilot 600 s, custom `acp.toml` agents only with
+  `stall_secs`) as a quota stop too. An open tool call or a permission waiting for the owner is never a stall.
+  `LUCINA_AGENTD_ACP_STALL_SECS` overrides every stall time (0 = off). Test: `tests/acp_watch.rs` with the fake
+  agent `tests/support/fake_acp.rs`, which hangs like opencode.
 
 ### Agent lifecycle
 
