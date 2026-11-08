@@ -92,6 +92,18 @@ What is left between the end of speech and the first sound is Lucina's own work 
 1-2 s when it runs) and Kokoro's first sentence (0.5 to 2.5 s, CPU image, once 6.8 s). The upload is gone from the
 critical path on every client.
 
+**After warming on socket open** (secretary-server 55f70dbf, 19:35 UTC, `tools/voice-probe`, GPU: resident Qwen
+plus the warm prompter engine):
+
+| path | end of speech → … (median of 3, or both of 2) |
+|---|---|
+| command "What time is it?" (pcm16, `text:true`) | transcript 0.18 s, text **0.42 s**, first audio **0.86 s**, done 0.91 s |
+| note, the DSi's exact shape (IMA-ADPCM 256-byte blocks, 10909 Hz) | transcript 0.25 s, in the chat 0.36 s, reply **2.0 s and 3.6 s** |
+
+The same probe at about 19:25, while a 4.5 GB Whisper large-v3 lease (old-path share transcription) sat on the GPU
+next to the resident Qwen server, saw the transcript come 5 to 12 s after the end of speech: the fast STT waits for
+GPU memory then. That contention shrinks as clients stop uploading whole files for Whisper large-v3.
+
 Two findings along the way:
 - **One old-style note stalls every note behind it.** The share worker processes one share at a time. A test note at
   18:29 waited 80 s behind a DSi note that was still going through Whisper large-v3. Once the DSi streams too,
