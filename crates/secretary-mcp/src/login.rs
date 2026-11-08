@@ -100,8 +100,9 @@ pub fn consent_page(
             continue;
         }
         boxes.push_str(&format!(
-            "<label class=\"scope\"><input type=\"checkbox\" name=\"scope_{name}\" value=\"1\" checked><span><b>{name}</b>{desc}</span></label>",
+            "<label class=\"scope\"><input type=\"checkbox\" name=\"scope_{name}\" value=\"1\"{checked}><span><b>{name}</b>{desc}</span></label>",
             name = s.as_str(),
+            checked = if s.explicit_only() { "" } else { " checked" },
             desc = esc(s.describe())
         ));
     }

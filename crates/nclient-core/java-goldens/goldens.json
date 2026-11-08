@@ -1,0 +1,128 @@
+{
+  "unescape": {
+    "hello\\u0020world": "hello world",
+    "plain text": "plain text",
+    "back\\nslash-newline\\ttab": "back\nslash-newline\ttab",
+    "escaped\\'quote": "escaped\\'quote",
+    "\\u4e2d\\u6587\\u30c6\\u30b9\\u30c8": "中文テスト",
+    "trailing\\": "trailing\\￿",
+    "\\u12short": "ᇯort",
+    "\\uZZZZinvalid": "invalid",
+    "mixed \\u0041 \\q end": "mixed A \\q end",
+    "": "",
+    "double\\\\backslash": "double\\\\backslash",
+    "\\u10FFFF-overlong": "ჿFF-overlong",
+    "backslash-n-at-\\nEOF": "backslash-n-at-\nEOF"
+  },
+  "unescape_null": "",
+  "to_query_tag": {
+    "big breasts|DEFAULT": "tag:\"big breasts\"",
+    "big breasts|ACCEPTED": "tag:\"big breasts\"",
+    "english|AVOIDED": "-language:\"english\"",
+    "english|ACCEPTED": "language:\"english\"",
+    "nakadashi|ACCEPTED": "tag:\"nakadashi\"",
+    "artist:weird \"name\"|DEFAULT": "artist:\"artist:weird \"name\"\"",
+    "artist:weird \"name\"|ACCEPTED": "artist:\"artist:weird \"name\"\""
+  },
+  "to_scraped_string": {
+    "big breasts": "100,42,3,big breasts",
+    "english": "999,12227,6,english",
+    "nakadashi": "555,777,3,nakadashi",
+    "artist:weird \"name\"": "3,5,4,artist:weird \"name\""
+  },
+  "csv_roundtrip": {
+    "big breasts": "big breasts/100/42/TAG",
+    "english": "english/999/12227/LANGUAGE",
+    "nakadashi": "nakadashi/555/777/TAG",
+    "artist:weird \"name\"": "artist:weird \"name\"/3/5/ARTIST"
+  },
+  "ranges": {
+    "default": "|isDefault=true",
+    "pages_eq": "pages:10|isDefault=false",
+    "pages_range": "pages:>=5 pages:<=40",
+    "uploaded_from": "uploaded:>=3d",
+    "uploaded_to": "uploaded:<=2w",
+    "uploaded_eq": "uploaded:7m",
+    "mixed": "pages:>=1 pages:<=200 uploaded:>=1y",
+    "mixed2": "pages:>=2 pages:<=4 uploaded:<=1h"
+  },
+  "sort_find": {
+    "null": "RECENT_ALL_TIME",
+    "popular": "POPULAR_ALL_TIME",
+    "popular-week": "POPULAR_ALL_TIME",
+    "xpopular-todayx": "POPULAR_ALL_TIME",
+    "popular-month": "POPULAR_ALL_TIME",
+    "recent": "RECENT_ALL_TIME",
+    "popular-we": "POPULAR_ALL_TIME",
+    "": "RECENT_ALL_TIME"
+  },
+  "local_sort": {
+    "TITLE/false": "hash=0;type=TITLE;desc=false",
+    "TITLE/true": "hash=-128;type=TITLE;desc=true",
+    "DATE/false": "hash=1;type=DATE;desc=false",
+    "DATE/true": "hash=-127;type=DATE;desc=true",
+    "PAGE_COUNT/false": "hash=2;type=PAGE_COUNT;desc=false",
+    "PAGE_COUNT/true": "hash=-126;type=PAGE_COUNT;desc=true",
+    "ARTIST/false": "hash=3;type=ARTIST;desc=false",
+    "ARTIST/true": "hash=-125;type=ARTIST;desc=true",
+    "GROUP/false": "hash=4;type=GROUP;desc=false",
+    "GROUP/true": "hash=-124;type=GROUP;desc=true",
+    "RANDOM/false": "hash=5;type=RANDOM;desc=false",
+    "RANDOM/true": "hash=-123;type=RANDOM;desc=true",
+    "raw130": "type=PAGE_COUNT;desc=true",
+    "raw-128": "type=TITLE;desc=true"
+  },
+  "path_title": {
+    "[Artist] My (Great) Title / Vol. 2?": "[Artist] My (Great) Title Vol. 2",
+    "slashes/and|pipes*star\"quote'apos:colon<lt>gt": "slashes and pipes star quote apos colon lt gt",
+    "  double   spaces  ": "double spaces",
+    "tab\tchar": "tab\tchar",
+    "": "",
+    "null-default-": "fallback"
+  },
+  "load_language": {
+    "english": "ENGLISH",
+    "japanese": "JAPANESE",
+    "chinese": "CHINESE",
+    "other": "UNKNOWN",
+    "mixed": "CHINESE"
+  },
+  "urls": {
+    "byall": "https://nhentai.net/api/v2/galleries?page=0",
+    "byall_p3": "https://nhentai.net/api/v2/galleries?page=3",
+    "random": "https://nhentai.net/api/v2/galleries/random",
+    "random_fav": "https://nhentai.net/api/v2/favorites/random",
+    "bysingle": "https://nhentai.net/api/v2/galleries/12345?include=related,favorite",
+    "favorite": "https://nhentai.net/api/v2/favorites?page=1",
+    "favorite_q": "https://nhentai.net/api/v2/favorites?page=2&q=big+hero",
+    "bytag": "https://nhentai.net/api/v2/search?query=+tag%3A%22nakadashi%22&page=1&sort=popular",
+    "bysearch": "https://nhentai.net/api/v2/search?query=gundam+tag%3A%22nakadashi%22+tag%3A%22vanilla%22+-language%3A%22english%22&page=2&sort=popular-week",
+    "bysearch_ranges": "https://nhentai.net/api/v2/search?query=+tag%3A%22nakadashi%22+tag%3A%22vanilla%22+-language%3A%22english%22+pages:>=1+pages:<=30+uploaded:>=1m&page=1&sort=popular-month",
+    "bysearch_unicode": "https://nhentai.net/api/v2/search?query=%5Cu4e2d%5Cu6587+%2B+title+artist%3A%22artist%3Aweird+%22name%22%22&page=1",
+    "bysearch_dup": "https://nhentai.net/api/v2/search?query=+tag%3A%22dup%22+tag%3A%22dup%22&page=1"
+  },
+  "bookmark": {
+    "page1": "https://nhentai.net/api/v2/galleries?page=3",
+    "page2": "https://nhentai.net/api/v2/search?query=gundam+tag%3A%22nakadashi%22+tag%3A%22vanilla%22+-language%3A%22english%22&page=2&sort=",
+    "search_title": "gundam tag%3A%22nakadashi%22 tag%3A%22vanilla%22 -language%3A%22english%22&page=2&sort=popular-week",
+    "search_title_q": "gundam"
+  },
+  "url_encode": {
+    "hello world": "hello+world",
+    "a+b": "a%2Bb",
+    "\\u4e2d\\u6587": "%5Cu4e2d%5Cu6587",
+    "100%": "100%25",
+    "tag/name": "tag%2Fname",
+    "a*b-c_d.e": "a*b-c_d.e",
+    "quote\"'?": "quote%22%27%3F"
+  },
+  "decisions": {
+    "empty_no_tags_recent": "BYALL|",
+    "empty_no_tags_popular": "BYSEARCH|-nclientv3",
+    "empty_one_accepted": "BYTAG|",
+    "empty_one_avoided": "BYSEARCH|",
+    "empty_two_tags": "BYSEARCH|",
+    "query_no_tags": "BYSEARCH|gundam",
+    "empty_ranges_custom": "BYSEARCH|"
+  }
+}

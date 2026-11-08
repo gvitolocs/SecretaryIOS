@@ -1,0 +1,13 @@
+[package]
+name = "secretary-chat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The iOS chat engine's pure kernel: timeline merge and order, the sync cursor loop, pagination (proved in verification/verus/chat_merge.rs)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest = "1"

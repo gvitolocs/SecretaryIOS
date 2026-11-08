@@ -1,0 +1,271 @@
+/* Lucina's computer (views/Computer.tsx). Generic tokens (--glass, --text, --border…), which the
+   character shell overrides, so the page matches it in both schemes. */
+/* width: the auto margins would shrink it to its widest line, past a phone's edge. */
+.computer-page { box-sizing: border-box; width: 100%; max-width: 1100px; margin: 0 auto; padding: var(--lu-space-sm, 8px) var(--lu-gutter, 16px) var(--lu-space-xxl, 28px); }
+.computer-page h1 { margin: 4px 0 12px; }
+.computer-page h2 { font-size: 1.1rem; margin: 20px 0 8px; }
+.computer-back { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); text-decoration: none; }
+.computer-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.computer-seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 2px; }
+.computer-seg button { border: 0; background: transparent; color: var(--text-muted); padding: 6px 12px; border-radius: 10px; font: inherit; cursor: pointer; }
+.computer-seg button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
+.computer-status { display: flex; align-items: center; gap: 10px; color: var(--text); background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius-lg, 16px); padding: 10px 12px; margin-bottom: 10px; }
+.computer-status[data-mine="yes"] { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+.computer-status-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.computer-status-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.computer-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-dim); flex: none; }
+.computer-status[data-driver="owner"] .computer-dot { background: var(--warn); }
+.computer-status[data-driver="lucina"] .computer-dot,
+.computer-status[data-driver="agent"] .computer-dot { background: var(--accent); animation: computer-pulse 1.4s ease-in-out infinite; }
+.computer-status[data-driver="none"] .computer-dot { background: var(--ok); }
+@keyframes computer-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .computer-dot { animation: none !important; } }
+.computer-muted { color: var(--text-muted); font-size: 0.85rem; }
+.computer-notice { margin: 0 0 8px; color: var(--text-muted); }
+.computer-error { margin: 0 0 8px; color: var(--danger-text); }
+.computer-screen { background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 1280 / 800; position: relative; }
+.computer-screen iframe, .computer-screen img { display: block; width: 100%; height: 100%; border: 0; }
+.computer-screen iframe { touch-action: none; }
+.computer-screen img { object-fit: contain; }
+.computer-screen img[data-clickable="yes"] { cursor: crosshair; touch-action: manipulation; }
+.computer-loading { color: var(--text-muted); display: grid; place-items: center; height: 100%; margin: 0; }
+.computer-card { color: var(--text); background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius-lg, 16px); padding: 12px; list-style: none; margin: 10px 0 0; }
+.computer-input { display: grid; gap: 10px; }
+.computer-type { display: flex; gap: 8px; }
+.computer-type input { flex: 1; min-width: 0; }
+.computer-keys { display: flex; flex-wrap: wrap; gap: 6px; }
+.computer-key { min-width: 44px; min-height: 36px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); font: inherit; cursor: pointer; }
+.computer-clip { display: grid; gap: 6px; }
+.computer-clip textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.computer-clip-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.computer-log li { padding: 5px 0; font-size: 0.9rem; }
+.computer-log li + li { border-top: 1px solid var(--border); }
+@media (max-width: 600px) {
+  .computer-status { flex-wrap: wrap; }
+  .computer-status .btn { width: 100%; }
+}
+
+/* Full screen. The Fullscreen API case is the browser's own (the element fills the screen); the
+   iPhone case is ours: fixed to the visual viewport, safe areas respected, page scroll locked, and
+   a floating bar for the controls the hidden page chrome used to provide. Letterboxing is the
+   viewer's job (Cua fits the desktop) and `object-fit: contain` for Simple mode. */
+.computer-page[data-full="yes"] .computer-screen,
+.computer-screen--full {
+  position: fixed;
+  inset: 0;
+  width: 100dvw;
+  height: 100dvh;
+  max-width: none;
+  margin: 0;
+  border-radius: 0;
+  aspect-ratio: auto;
+  z-index: 60;
+  background: #000;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+}
+.computer-screen--full iframe,
+.computer-screen--full img { width: 100%; height: 100%; }
+.computer-screen--full img { object-fit: contain; }
+html.computer-fullscreen,
+html.computer-fullscreen body {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+  touch-action: none;
+  background: #000;
+}
+.computer-screen--full::backdrop { background: #000; }
+
+/* Full screen shows the stream and nothing else of the page but the pill. */
+.computer-page[data-full="yes"] > :not(.computer-screen):not(.drivebar):not(.computer-notice):not(.computer-files) { display: none !important; }
+/* Focus mode: notices and file offers float over the stream (top right). */
+.computer-page[data-full="yes"] > .computer-notice,
+.computer-page[data-full="yes"] > .computer-files { position: fixed; top: 12px; right: 12px; z-index: 1002; max-width: min(420px, calc(100vw - 24px)); margin: 0; box-shadow: 0 6px 24px rgb(0 0 0 / 35%); }
+.computer-page[data-full="yes"] > .computer-notice { background: var(--surface-2); color: var(--text); padding: 8px 12px; border-radius: 10px; }
+.computer-screen--full { z-index: 1000; }
+
+/* The pill: who drives, the toggle, keyboard, keys & clipboard, exit. Faint until used. */
+.computer-pill {
+  position: fixed;
+  left: 50%;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 1010;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100vw - 16px);
+  padding: 4px 4px 4px 12px;
+  background: rgba(22, 25, 30, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 45%);
+  backdrop-filter: blur(12px);
+  font-size: 13px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.computer-pill:hover,
+.computer-pill:focus-within,
+.computer-pill[data-mine="no"] { opacity: 1; }
+.computer-pill-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text); white-space: nowrap; margin-right: 4px; }
+.computer-pill[data-mine="yes"] .computer-dot { background: #ff9f1a; }
+.computer-pill-btn {
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.computer-pill-btn:hover { background: rgb(255 255 255 / 10%); }
+.computer-pill-btn--primary { background: rgb(79 140 255 / 30%); color: #e6eeff; }
+.computer-pill-btn[aria-pressed="true"] { background: rgb(79 140 255 / 22%); color: #cfe0ff; }
+.computer-pill-btn:disabled { opacity: 0.4; }
+.computer-pill-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 24px));
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(22, 25, 30, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+}
+
+/* Watching in full screen: the stream takes the first click (it takes over, then reaches the
+   desktop). The top strip stays the viewer's own toolbar. */
+.computer-catch { position: absolute; inset: 56px 0 0 0; z-index: 4; cursor: pointer; background: transparent; }
+.computer-catch[data-busy="yes"] { cursor: progress; }
+/* In focus mode Cua's toolbar is hidden (the drive bar replaces it): the whole stream catches. */
+.computer-screen--full .computer-catch { inset: 0; }
+.computer-confirm {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  width: min(360px, calc(100% - 32px));
+  padding: 14px;
+  background: rgba(22, 25, 30, 0.97);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+}
+.computer-confirm p { margin: 0 0 12px; }
+.computer-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Where the last click landed, so the owner can see the mouse working (the shim draws the same
+   ring inside the live viewer). */
+.computer-mark {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border-radius: 50%;
+  border: 2px solid rgb(255 255 255 / 85%);
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 35%);
+  pointer-events: none;
+  z-index: 5;
+  animation: computer-mark 0.55s ease-out forwards;
+}
+.computer-mark[data-button="right"] { border-color: rgb(255 176 32 / 95%); }
+@keyframes computer-mark {
+  from { opacity: 0.95; transform: scale(0.7); }
+  to { opacity: 0; transform: scale(1.15); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .computer-mark { animation: none; opacity: 0.9; }
+}
+
+/* Touch: the screenshot is the mouse. No double-tap zoom, no page scroll while driving. */
+.computer-screen img[data-clickable="yes"] { touch-action: none; }
+.computer-actions { align-items: center; }
+.computer-actions .btn { min-height: 40px; }
+
+/* Where the live view comes from: nezopt on the home network, or through the server. */
+.computer-via {
+  justify-self: start;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.computer-via[data-via="lan"] { color: #9fe0b0; border-color: rgb(80 200 120 / 45%); }
+
+/* The viewer is down (Lucina restarting, the sandbox recreated): a fresh view is on its way. */
+.computer-reconnecting {
+  position: absolute; inset: 0; z-index: 3; margin: 0;
+  display: grid; place-items: center;
+  color: var(--text); background: color-mix(in srgb, var(--surface-1, #000) 72%, transparent);
+  font-weight: 600; pointer-events: none;
+}
+
+/* Files copied on her desktop, offered as downloads. */
+.computer-files {
+  display: flex; align-items: center; gap: 10px; margin: 8px 0 0;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+}
+.computer-files span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.computer-files-close { background: none; border: 0; color: var(--text-muted); font: inherit; cursor: pointer; padding: 4px 6px; }
+
+/* The chat beside the desktop: his one conversation with her, while he watches. Keys typed here stay here. */
+.computer-desktop, .computer-page { --computer-chat-w: 380px; }
+.computer-desktop[data-chat="yes"] .computer-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--computer-chat-w);
+  gap: 12px;
+  align-items: start;
+}
+.computer-chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--lu-chat-bg);
+}
+.computer-desktop .computer-chat {
+  position: sticky;
+  top: 8px;
+  height: calc(100dvh - 136px);
+}
+.computer-page .computer-chat { height: 60dvh; margin-top: 10px; }
+.computer-chat-toggle[aria-pressed="true"] { border-color: var(--accent, currentColor); }
+.computer-chat .chat-bar { flex-wrap: wrap; }
+
+/* Full screen on a wide window: the desktop takes what the chat leaves. */
+.computer-desktop[data-chat="yes"][data-full="yes"] .computer-screen,
+.computer-desktop[data-chat="yes"] .computer-screen--full,
+.computer-desktop[data-chat="yes"] .ldesk-stage--focus {
+  right: var(--computer-chat-w);
+  width: calc(100vw - var(--computer-chat-w));
+}
+.computer-desktop[data-chat="yes"][data-full="yes"] .computer-chat,
+.computer-desktop[data-chat="yes"]:has(.ldesk-stage--focus) .computer-chat {
+  position: fixed;
+  top: var(--desk-top, 0px);
+  right: 0;
+  bottom: 0;
+  width: var(--computer-chat-w);
+  height: auto;
+  border-radius: 0;
+  z-index: 1005;
+}
+
+/* With the chat open on a wide window, it takes the avatar's place on this page only. */
+.shell-body:has(.computer-desktop[data-chat="yes"], .computer-page[data-chat="yes"]) > .dock--side { display: none; }

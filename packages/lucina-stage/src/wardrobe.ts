@@ -24,7 +24,7 @@ import { HairRig, loadHairPart, NATURAL_HAIR, parseHairColors, parseHairstyles, 
 import { applyToonHairPart, toonFallbackFor } from './toon';
 import { playOutfitEffect, type SubjectRect } from './outfitEffect';
 import type { StageQualitySetting, StageTheme } from './scene/quality';
-import { createLucinaStage, type LucinaStage, type LucinaStageOptions, type TapEvent } from './stage';
+import { createLucinaStage, type LucinaStage, type LucinaStageOptions, type TapEvent, type TouchEvent } from './stage';
 import type { Expression, Framing, StageState } from './types';
 
 /** One outfit, as listed by `GET /v1/avatar/wardrobe`. */
@@ -233,7 +233,13 @@ export async function createWardrobeStage(
   for (const k of ['wardrobe', 'assetBase', 'outfit', 'changeEffect', 'maxSpeakWait', 'hairstyles', 'hairColors', 'hair', 'hairColor', 'hairLoader'] as const) delete (base as Record<string, unknown>)[k];
   const startUrls = startEntry ? outfitUrls(startEntry, assetBase, options.manifestUrl) : null;
 
-  let cur = await factory(canvas, startUrls ? { ...base, ...startUrls } : base);
+  const physicsOpts = typeof options.physics === 'object' ? options.physics : {};
+  /** Physics options for a stage wearing `outfitId` (false stays false). */
+  const physicsFor = (outfitId: string | null | undefined): LucinaStageOptions['physics'] =>
+    options.physics === false ? false : { ...physicsOpts, outfit: outfitId ?? null, hair: hair ?? null, ...(quality ? { quality } : {}) };
+  let hair: string = NATURAL_HAIR;
+  let quality: StageQualitySetting | undefined = (typeof options.environment === 'object' ? options.environment.quality : undefined) ?? physicsOpts.quality;
+  let cur = await factory(canvas, { ...(startUrls ? { ...base, ...startUrls } : base), physics: physicsFor(startEntry?.id) });
   base.toonFallback = toonFallbackFor(cur.three.model, options.manifestUrl) ?? base.toonFallback;
   let curCanvas = canvas;
   let outfit: string | null = startEntry && !cur.info.placeholder ? startEntry.id : null;
@@ -243,7 +249,6 @@ export async function createWardrobeStage(
   let framing: Framing = options.framing ?? 'bust';
   let reducedOverride: boolean | null = options.reducedMotion ?? null;
   const envOpts = typeof options.environment === 'object' ? options.environment : {};
-  let quality: StageQualitySetting | undefined = envOpts.quality;
   let theme: StageTheme | undefined = envOpts.theme;
   let look = false;
   let expression: { e: Expression | null; w: number } | null = null;
@@ -251,6 +256,11 @@ export async function createWardrobeStage(
 
   const stateCbs = new Set<(next: StageState, prev: StageState) => void>();
   const tapCbs = new Set<(e: TapEvent) => void>();
+  const touchCbs = new Set<(e: TouchEvent) => void>();
+  let interactive = options.interactive ?? false;
+  let background: string = 'default';
+  let lighting: string = 'default';
+  let gyroOn = false;
   const changingCbs = new Set<(c: boolean) => void>();
   const outfitCbs = new Set<(o: string | null) => void>();
   const owned = new Set<HTMLCanvasElement>();
@@ -263,9 +273,11 @@ export async function createWardrobeStage(
   function bind(s: LucinaStage): () => void {
     const a = s.onStateChange((n, p) => stateCbs.forEach((cb) => cb(n, p)));
     const b = s.onTap((e) => tapCbs.forEach((cb) => cb(e)));
+    const c = (s.onTouch?.bind(s) ?? (() => () => {}))((e) => touchCbs.forEach((cb) => cb(e)));
     return () => {
       a();
       b();
+      c();
     };
   }
   let unbind = bind(cur);
@@ -273,7 +285,6 @@ export async function createWardrobeStage(
   // ---- Hair ----
   let hairstyles: HairEntry[] = parseHairstyles(options.hairstyles ?? []);
   let hairColors: HairColor[] = parseHairColors(options.hairColors ?? []);
-  let hair: string = NATURAL_HAIR;
   let hairColor: string | null = null;
   const hairCbs = new Set<(h: string, c: string | null) => void>();
   const loadHair = options.hairLoader ?? ((url: string) => loadHairPart(url, options.fetchInit ? { fetchInit: options.fetchInit } : {}));
@@ -306,6 +317,7 @@ export async function createWardrobeStage(
     try {
       const { entry, part } = await partFor(hair, s.three.model);
       rigFor(s).attach(part, entry);
+      s.physics?.setVariant({ hair });
     } catch (e) {
       console.warn('[lucina-stage] hairstyle not loaded:', e);
     }
@@ -408,6 +420,9 @@ export async function createWardrobeStage(
         muted: cur.isMuted(),
         environment: options.environment ? { ...envOpts, ...(quality ? { quality } : {}), ...(theme ? { theme } : {}) } : options.environment,
         stateClips: stateClips ?? undefined,
+        interactive,
+        view: cur.view,
+        physics: physicsFor(o.outfit),
       });
     } catch (e) {
       if (next) dropCanvas(next);
@@ -427,6 +442,10 @@ export async function createWardrobeStage(
     ns.setMuted(cur.isMuted());
     ns.lookAtPointer(look);
     if (expression) ns.setExpression(expression.e, expression.w);
+    if (background !== 'default') ns.setBackground?.(background);
+    if (lighting !== 'default') ns.setLighting?.(lighting as never);
+    if (gyroOn) ns.setGyro?.(true);
+    if (cur.dancing) void ns.setDance?.(true);
     await waitQuiet(cur, token);
     if (token !== swapToken || disposed) return abandon();
     if (cur.state !== 'speaking') ns.setState(cur.state);
@@ -436,6 +455,7 @@ export async function createWardrobeStage(
     const incoming = ns;
     const incomingCanvas = next;
     const swap = (): void => {
+      if (old.view) incoming.setView?.(old.view, false);
       unbind();
       cur = incoming;
       curCanvas = incomingCanvas;
@@ -513,6 +533,7 @@ export async function createWardrobeStage(
         await underEffect(() => {
           rigFor(s).attach(part, entry);
           rigFor(s).setTint(hexOf(hairColor));
+          s.physics?.setVariant({ hair: want });
         }, o.effect);
         hair = want;
         hairCbs.forEach((cb) => cb(hair, hairColor));
@@ -605,6 +626,7 @@ export async function createWardrobeStage(
       ro?.disconnect();
       stateCbs.clear();
       tapCbs.clear();
+      touchCbs.clear();
       changingCbs.clear();
       outfitCbs.clear();
       hairCbs.clear();
@@ -637,6 +659,58 @@ export async function createWardrobeStage(
     },
     get three() {
       return cur.three;
+    },
+    get physics() {
+      return cur.physics ?? null;
+    },
+    onTouch(cb) {
+      touchCbs.add(cb);
+      return () => touchCbs.delete(cb);
+    },
+    get view() {
+      return cur.view;
+    },
+    setView: (v, animate) => cur.setView(v, animate),
+    resetView: (animate) => cur.resetView(animate),
+    cameraPreset: (p, animate) => cur.cameraPreset(p, animate),
+    setInteractive(on) {
+      interactive = !!on;
+      cur.setInteractive(on);
+    },
+    get interactive() {
+      return cur.interactive;
+    },
+    setBackground(id) {
+      cur.setBackground(id);
+      background = id;
+    },
+    get background() {
+      return cur.background;
+    },
+    setLighting(id) {
+      cur.setLighting(id);
+      lighting = id;
+    },
+    get lighting() {
+      return cur.lighting;
+    },
+    snapshot: () => cur.snapshot(),
+    setDance: (on, o) => cur.setDance(on, o),
+    get dancing() {
+      return cur.dancing;
+    },
+    setGyro(on) {
+      gyroOn = !!on;
+      cur.setGyro(on);
+    },
+    get gyro() {
+      return cur.gyro;
+    },
+    setFaceDrive(d) {
+      cur.setFaceDrive(d);
+    },
+    get faceDriven() {
+      return cur.faceDriven;
     },
     setModel,
     setOutfit(id, o = {}) {

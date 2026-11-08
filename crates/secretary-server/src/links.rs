@@ -46,6 +46,8 @@ use crate::AppState;
 
 pub const LINKS_FILE: &str = "links.json";
 pub const CALENDAR_FILE: &str = "calendar.json";
+/// Lucina's own calendar: the owner's events (primary data, not a cache).
+pub const OWN_FILE: &str = "calendar-events.json";
 const PENDING_TTL: Duration = Duration::from_secs(600);
 const MAX_ICS: usize = 20;
 const MAX_CUSTOM: usize = 200;
@@ -140,6 +142,9 @@ pub struct LinksState {
     pub ics: Vec<IcsSub>,
     #[serde(default)]
     pub custom: Vec<CustomLink>,
+    /// Tasks (see [`crate::todoist`]).
+    #[serde(default)]
+    pub todoist: Option<crate::todoist::TodoistConn>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -149,6 +154,10 @@ pub struct GoogleCache {
     pub sync_token: Option<String>,
     #[serde(default)]
     pub calendar_tz: Option<String>,
+    /// The primary calendar's default alerts (minutes before), from
+    /// `events.list`'s `defaultReminders`.
+    #[serde(default)]
+    pub default_reminders: Option<Vec<i64>>,
     #[serde(default)]
     pub items: BTreeMap<String, Item>,
 }
@@ -164,16 +173,21 @@ pub struct IphoneCache {
     pub items: Vec<Item>,
 }
 
-/// An event proposed by a client that may not write (the Lucina MCP),
-/// waiting for the owner's confirmation in the app.
+/// An event proposed by a client that may not write (the Lucina MCP, an
+/// agent), or one Lucina could not create directly for the owner, waiting for
+/// the owner's confirmation in the app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
     pub id: String,
     /// What would be sent to `POST /v1/calendar/events`.
     pub event: Value,
-    /// Who proposed it (`mcp:claude-code`, …).
+    /// Who proposed it (`mcp:claude-code`, `lucina:ios`, …).
     pub from: String,
+    /// Why it is a proposal and not an event (Lucina's direct create failed:
+    /// "Google Calendar needs reconnecting", …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub created_at: String,
     pub expires_at_ms: i64,
 }
@@ -191,9 +205,23 @@ pub struct CalendarCache {
     pub proposals: Vec<Proposal>,
 }
 
+/// Lucina's own calendar. Each event is stored in Google Calendar's event
+/// shape (`summary`, `start`/`end` as `{date}` or `{dateTime, timeZone}`,
+/// `location`, `description`, `hangoutLink`,
+/// `extendedProperties.private.addedBy`, `created`, `updated`), so it is
+/// validated, expanded and shown by the same code as Google events, and a
+/// later Google sync can copy it as it is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OwnCalendar {
+    /// Event id (`ev_…`) → event.
+    #[serde(default)]
+    pub events: BTreeMap<String, Value>,
+}
+
 pub struct Data {
     pub links: LinksState,
     pub cache: CalendarCache,
+    pub own: OwnCalendar,
 }
 
 struct PendingOAuth {
@@ -244,10 +272,18 @@ pub fn random_id(prefix: &str) -> String {
     format!("{prefix}{}", URL_SAFE_NO_PAD.encode(b))
 }
 
-fn random_secret() -> String {
+/// An OAuth `state` or PKCE verifier: 256 random bits, or an error. A failed
+/// random source must never give a value anyone could predict.
+pub(crate) fn random_secret() -> Result<String, ApiError> {
+    secret_from(getrandom::fill)
+}
+
+fn secret_from(
+    fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
+) -> Result<String, ApiError> {
     let mut b = [0u8; 32];
-    let _ = getrandom::fill(&mut b);
-    URL_SAFE_NO_PAD.encode(b)
+    fill(&mut b).map_err(|_| ApiError::internal("random source failed"))?;
+    Ok(URL_SAFE_NO_PAD.encode(b))
 }
 
 fn sha(s: &str) -> [u8; 32] {
@@ -262,6 +298,9 @@ impl Hub {
             tracing::warn!(error = %e, "calendar cache unreadable; starting empty");
             CalendarCache::default()
         });
+        // The owner's own events: unlike the cache, a corrupt file stops the
+        // server instead of starting empty.
+        let own: OwnCalendar = load(&cfg.data_dir.join(OWN_FILE))?;
         let google = match &cfg.google {
             Some(g) => Some(GoogleClient::new(g.clone())?),
             None => None,
@@ -269,7 +308,7 @@ impl Hub {
         Ok(Self {
             dir: cfg.data_dir.clone(),
             sealer: Sealer::new(&cfg.data_dir),
-            data: tokio::sync::Mutex::new(Data { links, cache }),
+            data: tokio::sync::Mutex::new(Data { links, cache, own }),
             google,
             access: tokio::sync::Mutex::new(None),
             pending: Mutex::new(Vec::new()),
@@ -289,6 +328,17 @@ impl Hub {
             mcp: cfg.mcp_status.clone(),
             mcp_cache: Mutex::new(None),
             channel_cache: Mutex::new(None),
+        })
+    }
+
+    pub fn save_own(&self, d: &Data) -> Result<(), ApiError> {
+        crate::devices::save_json_atomic(&self.dir, OWN_FILE, &d.own).map_err(|e| {
+            tracing::error!(error = %e, "calendar-events.json write failed");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                "could not save the calendar",
+            )
         })
     }
 
@@ -467,6 +517,10 @@ fn private_ip(ip: IpAddr) -> bool {
                 || v.octets()[0] == 100 && (v.octets()[1] & 0xc0) == 64 // 100.64/10 (Tailscale, CGNAT)
         }
         IpAddr::V6(v) => {
+            // ::ffff:a.b.c.d reaches a.b.c.d (verification L1).
+            if let Some(v4) = v.to_ipv4_mapped() {
+                return private_ip(IpAddr::V4(v4));
+            }
             v.is_loopback()
                 || v.is_unspecified()
                 || (v.segments()[0] & 0xfe00) == 0xfc00
@@ -613,6 +667,7 @@ async fn channel_activity(st: &AppState) -> HashMap<String, i64> {
         let q = secretary_core::models::TimelineQuery {
             before: None,
             limit: Some("200".into()),
+            ..Default::default()
         };
         if let Ok(call) = secretary_core::Call::timeline(&q) {
             let page =
@@ -747,6 +802,7 @@ async fn overview(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     let hub = &st.links;
     let mcp = hub.mcp_clients().await;
     let activity = channel_activity(&st).await;
+    let (open_tasks, pending_edits) = crate::tasks::link_counts(&st).await;
     let d = hub.data.lock().await;
     let configured = hub.google.is_some();
 
@@ -939,6 +995,7 @@ async fn overview(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
         "google": {"configured": configured, "status": g_status, "account": g_account, "services": g_services},
         "groups": [
             {"id": "calendars", "cards": calendars},
+            {"id": "tasks", "cards": [crate::todoist::card(d.links.todoist.as_ref(), st.tasks.client.cfg.oauth.is_some(), open_tasks, pending_edits)]},
             {"id": "channels", "cards": channels},
             {"id": "ai", "cards": ai},
             {"id": "google", "cards": services},
@@ -999,8 +1056,8 @@ async fn google_connect(
         Some("ios") => "ios",
         Some(_) => return Err(bad("client: web or ios")),
     };
-    let state = random_secret();
-    let verifier = random_secret();
+    let state = random_secret()?;
+    let verifier = random_secret()?;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     {
         let mut p = hub.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -1400,7 +1457,7 @@ fn owner_only(ident: &Identity) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn guard(
+pub(crate) async fn guard(
     Extension(ident): Extension<Identity>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -1488,5 +1545,13 @@ mod tests {
         assert_eq!(by("ai:grok")["status"], "connected");
         assert_eq!(by("ai:old")["status"], "disconnected");
         assert!(ai_cards(None).iter().all(|c| c["status"] == "unknown"));
+    }
+
+    #[test]
+    fn a_failed_random_source_gives_no_secret() {
+        assert!(secret_from(|_| Err(getrandom::Error::UNSUPPORTED)).is_err());
+        let (a, b) = (random_secret().unwrap(), random_secret().unwrap());
+        assert_eq!(a.len(), 43);
+        assert_ne!(a, b);
     }
 }

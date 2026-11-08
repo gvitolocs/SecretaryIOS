@@ -1,0 +1,12 @@
+[package]
+name = "lucina-phone-core"
+description = "Shared, I/O-free core of Lucina's phone bridge: OTP detection and redaction, owner OTP intents and the relay protocol types (phone app, relay and Lucina use the same types)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Unicode classes (\p{L}, Unicode \b and case folding) are needed for the multilingual OTP context.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case", "unicode-gencat"] }

@@ -159,16 +159,6 @@ h3 {
   text-transform: uppercase;
 }
 
-/* ---------- Glass ---------- */
-
-.glass {
-  background: var(--glass);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4);
-  backdrop-filter: blur(var(--blur)) saturate(1.4);
-}
-
 /* ---------- Buttons and inputs ---------- */
 
 .btn {
@@ -605,6 +595,305 @@ select.text-input option {
   margin-top: 14px;
 }
 
+/* QR sign-in (views/QrLogin.tsx): below the form on narrow screens, beside it on wide ones. */
+.login-card--qr {
+  display: grid;
+}
+
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 22px 0 18px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.login-qr {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+
+.login-qr-frame {
+  display: grid;
+  place-items: center;
+  width: 196px;
+  height: 196px;
+  padding: 8px;
+  border-radius: var(--radius-lg, 18px);
+  background: #fff;
+  box-shadow: var(--shadow-lg);
+}
+
+.login-qr-image {
+  display: block;
+  width: 180px;
+  height: 180px;
+  image-rendering: pixelated;
+}
+
+.login-qr-note {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  margin: 0;
+  padding: 0 10px;
+  color: #3a3a46;
+  font-size: var(--fs-sm);
+}
+
+.login-qr-note p {
+  margin: 0;
+}
+
+.login-qr-note--ok {
+  color: #11795a;
+  font-weight: 600;
+}
+
+.login-qr .login-qr-note .btn {
+  margin-top: 0;
+  min-height: 36px;
+}
+
+.login-qr-title {
+  margin: 16px 0 4px;
+  font-size: var(--fs-md, 1rem);
+  font-weight: 650;
+}
+
+.login-qr-hint {
+  max-width: 260px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* /approve (views/Approve.tsx): the signed-in device answers a QR sign-in. */
+.approve-page {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: 24px var(--pad-right) 24px var(--pad-left);
+}
+
+.approve-card {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  max-width: 440px;
+  padding: 28px 24px;
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.approve-title {
+  margin: 0;
+  font-size: var(--fs-2xl, 1.5rem);
+  font-weight: 700;
+}
+
+.approve-sub {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.approve-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  margin: 4px 0;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+}
+
+.approve-facts dt {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  align-self: center;
+}
+
+.approve-facts dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.approve-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.approve-actions .btn {
+  min-height: 48px;
+}
+
+.login-qr-short {
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Signed-out /approve: approve from the signed-in app instead. */
+.login-approve-note {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 18px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+}
+
+.login-approve-note p {
+  margin: 0;
+}
+
+.login-approve-title {
+  font-weight: 700;
+}
+
+/* /scan (views/ScanQr.tsx): approve a QR sign-in from this app. */
+.scan-page {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 16px var(--pad-right) 32px var(--pad-left);
+}
+.scan-page--wide {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.pg.scan-desk .scan-desk-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Desktop: the viewfinder keeps a phone-sized square instead of filling the column. */
+.pg.scan-desk .scan-viewfinder {
+  max-width: 420px;
+}
+
+.scan-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scan-title {
+  margin: 0;
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+}
+
+.scan-sub,
+.scan-hint {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.scan-viewfinder {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: #000;
+  border: 1px solid var(--border);
+}
+
+.scan-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scan-frame {
+  position: absolute;
+  inset: 18%;
+  border: 3px solid color-mix(in srgb, var(--cyan) 80%, #fff);
+  border-radius: 18px;
+  box-shadow: 0 0 0 999px rgb(0 0 0 / 35%);
+}
+
+.scan-viewfinder:not([data-camera="on"]) .scan-frame {
+  display: none;
+}
+
+.scan-note {
+  position: relative;
+  max-width: 300px;
+  margin: 0;
+  padding: 0 16px;
+  color: #fff;
+  text-align: center;
+}
+
+.scan-code {
+  display: grid;
+  gap: 8px;
+}
+
+.scan-code-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.scan-code-row .text-input {
+  font-size: 1.25rem;
+  letter-spacing: 0.2em;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 760px) {
+  .login-card--qr {
+    max-width: 780px;
+    grid-template-columns: minmax(0, 1fr) auto 248px;
+    align-items: center;
+    column-gap: 28px;
+    padding: 38px 34px 34px;
+  }
+
+  .login-card--qr .login-divider {
+    flex-direction: column;
+    align-self: stretch;
+    margin: 0;
+  }
+
+  .login-card--qr .login-divider::before,
+  .login-card--qr .login-divider::after {
+    width: 1px;
+    height: auto;
+  }
+}
+
 .password-field {
   position: relative;
 }
@@ -902,6 +1191,8 @@ select.text-input option {
 /* Phones: the page ends above the floating dock. */
 .shell-body {
   position: relative;
+  /* The last row (minmax(0, 1fr)) even without a banner, so short pages fill the height. */
+  grid-row: 3;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -911,6 +1202,10 @@ select.text-input option {
 
 .shell-body > .content {
   min-width: 0;
+  /* Pages that scroll themselves (chat, shopping, gym) fill it exactly; the rest (server, gallery, films, chats)
+     scroll here, since the shell body is clipped (overflow: hidden) on wide screens and inside Secretary Code. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (max-width: 420px) {
@@ -1019,6 +1314,7 @@ select.text-input option {
 
   .shell-body {
     grid-column: 2;
+    grid-row: 2;
     padding-bottom: 0;
   }
 
@@ -1245,8 +1541,12 @@ select.text-input option {
   display: block;
   width: 100%;
   height: 100%;
-  touch-action: manipulation;
-  cursor: pointer;
+  /* The stage takes every touch on itself (orbit, pinch, taps); the page scrolls elsewhere. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  cursor: grab;
   animation: fade-in var(--dur-4) var(--ease-out) both;
 }
 
@@ -1536,6 +1836,50 @@ select.text-input option {
   animation: rise-in var(--dur-3) var(--ease-spring) both;
 }
 
+/* Face tracking is on: a clear camera indicator with Recenter and Stop (top, under the HUD). */
+.stage-face {
+  position: absolute;
+  z-index: 3;
+  top: 52px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  padding: 6px 8px 6px 12px;
+  border-radius: 18px;
+  background: rgb(40 6 12 / 0.62);
+  border: 1px solid rgb(255 90 110 / 0.55);
+  color: #ffe9ec;
+  font-size: var(--fs-xs);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.stage-face-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff3b55;
+  box-shadow: 0 0 10px rgb(255 59 85 / 0.8);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.stage-face-label {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-face-dot {
+    animation: none;
+  }
+}
+
 .stage-pill--note {
   border-color: rgb(160 200 255 / 0.3);
   color: #e3e8ff;
@@ -1577,6 +1921,7 @@ select.text-input option {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  background: var(--lu-chat-bg);
 }
 
 .messages {
@@ -1595,6 +1940,13 @@ select.text-input option {
   mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 10px), transparent);
   scrollbar-width: thin;
   scrollbar-color: var(--surface-3) transparent;
+}
+
+.messages-content {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: inherit;
 }
 
 .messages > *,
@@ -1845,6 +2197,10 @@ select.text-input option {
   --ch: var(--neon-teal);
 }
 
+.src-badge[data-channel="voice"] {
+  --ch: var(--neon-teal);
+}
+
 .src-badge .icon {
   width: 13px;
   height: 13px;
@@ -1869,6 +2225,21 @@ select.text-input option {
 
 .msg-imported {
   font-style: italic;
+}
+
+/* A reply Jev decided (yes/no answers): certainty and latency, like the source badge. */
+.jev-badge {
+  --ch: var(--violet);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ch) 32%, transparent);
+  background: color-mix(in srgb, var(--ch) 10%, transparent);
+  color: color-mix(in srgb, var(--ch) 80%, var(--text));
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  white-space: nowrap;
 }
 
 .msg-time {
@@ -2130,4 +2501,309 @@ select.text-input option {
 .empty-sub {
   margin: 0 0 16px;
   color: var(--text-muted);
+}
+
+/* ---- Lucina reached out (proactive outreach) ---- */
+
+.msg--proactive {
+  align-items: flex-start;
+}
+
+.proactive {
+  max-width: min(92%, 580px);
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--violet) 42%, transparent);
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(var(--glass-strong), var(--glass-strong)) padding-box,
+    var(--grad-holo-soft);
+  color: var(--text);
+  box-shadow: 0 0 28px color-mix(in srgb, var(--violet) 20%, transparent);
+}
+
+.proactive--high {
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+  box-shadow: 0 0 30px color-mix(in srgb, var(--amber) 22%, transparent);
+}
+
+.msg--focus .proactive {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.proactive-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.proactive-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--violet);
+}
+
+.proactive-title .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.prio-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.prio-chip[data-priority="high"] {
+  color: var(--notice-text);
+  background: var(--notice-bg);
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+}
+
+.proactive-text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.proactive-actions,
+.proactive-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.proactive-feedback .chip:disabled:not(.chip--active) {
+  opacity: 0.5;
+}
+
+.proactive-note {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+
+.proactive-note--error {
+  color: var(--danger-text);
+}
+
+.proactive-why {
+  margin-top: 8px;
+}
+
+.proactive-why-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.proactive-why-text {
+  margin: 4px 0 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.proactive-missing {
+  margin: 8px auto;
+  max-width: min(92%, 580px);
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--violet) 42%, transparent);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.proactive-missing .proactive-feedback {
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.stage-canvas:active {
+  cursor: grabbing;
+}
+
+/* Lucina's studio: a glass sheet over the bottom of the stage (Custom Cast's slide-up panels). */
+.stage-studio {
+  position: absolute;
+  z-index: 3;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 18px;
+  background: rgb(8 10 30 / 0.62);
+  border: 1px solid rgb(160 200 255 / 0.22);
+  color: #e9edff;
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  animation: sheet-up var(--dur-4) var(--ease-out) both;
+}
+
+.stage-studio-tabs,
+.stage-studio-chips,
+.stage-studio-actions,
+.stage-photo-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.stage-studio-chips {
+  flex-wrap: wrap;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.studio-tab,
+.studio-chip,
+.studio-action,
+.studio-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgb(160 200 255 / 0.22);
+  background: rgb(255 255 255 / 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.studio-tab[aria-selected="true"],
+.studio-chip[aria-pressed="true"],
+.studio-action[aria-pressed="true"] {
+  background: var(--grad-primary);
+  border-color: transparent;
+  color: #fff;
+}
+
+.studio-close {
+  margin-left: auto;
+  padding: 0 10px;
+  font-size: var(--fs-md);
+}
+
+.studio-empty {
+  font-size: var(--fs-xs);
+  opacity: 0.7;
+}
+
+.studio-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgb(255 255 255 / 0.4);
+}
+
+.studio-swatch[data-color="#101426"] { background: #101426; }
+.studio-swatch[data-color="#f4f1ec"] { background: #f4f1ec; }
+.studio-swatch[data-color="#ffd6e5"] { background: #ffd6e5; }
+.studio-swatch[data-color="#cfe8ff"] { background: #cfe8ff; }
+
+/* Photo mode: only her (and the shutter) on screen. */
+.stage--photo .stage-hud,
+.stage--photo .stage-controls,
+.stage--photo .stage-pill,
+.stage--photo .stage-wave {
+  display: none;
+}
+
+.stage-photo-bar {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  overflow: visible;
+}
+
+.stage-photo-bar .studio-action {
+  background: rgb(8 10 30 / 0.55);
+  color: #fff;
+}
+
+.stage-shutter {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 4px solid #fff;
+  background: rgb(255 255 255 / 0.25);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+}
+
+.stage-shutter:active {
+  background: rgb(255 255 255 / 0.7);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-studio {
+    animation: none;
+  }
+}
+
+/* One subtle connection indicator (iOS parity): a faint 6 px dot while all is well; the full,
+   glowing 8 px dot only on problems. */
+.status {
+  min-width: 0;
+  padding: 0 10px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.dot--ok {
+  width: 6px;
+  height: 6px;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.dot--ok::after {
+  animation: none;
+}
+
+/* "Updating…" while a plugin page's copy (lib/pageCache) is checked for changes: a small pill over the page, so it
+   takes no room and nothing moves when it goes. Above the tab bar on a phone. */
+.swr-updating {
+  position: fixed;
+  z-index: 40;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: var(--lu-card-raised, #2c2c2e);
+  color: var(--lu-text-secondary, #8e8e93);
+  font-size: var(--lu-type-footnote, 13px);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 18%);
+  pointer-events: none;
+}
+@media (max-width: 700px) {
+  .swr-updating { bottom: calc(env(safe-area-inset-bottom) + 76px); }
 }

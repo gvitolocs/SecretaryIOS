@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# TLC checks of the TLA+ twins added by docs/verification-gaps.md:
+# formal/delegate/DelegateBudget.tla and formal/devices/DeviceEvents.tla.
+#
+# Every cfg says on its first line what TLC must do with it:
+#   \* MUST PASS ...  -> exit code 0
+#   \* MUST FAIL ...  -> exit code 12 (an invariant is violated: a known bug or
+#                        a reachability witness); passing means the model got
+#                        too weak or the bug was fixed without flipping the case.
+# Tools: JAVA (default: java on PATH) and TLA_JAR (default ~/tools/tla/tla2tools.jar).
+# On nezopt run it through verify-gate: `verify-gate -- formal/run-gap-checks`.
+set -u
+
+cd "$(dirname "$0")"
+JAVA="${JAVA:-java}"
+TLA_JAR="${TLA_JAR:-$HOME/tools/tla/tla2tools.jar}"
+meta="$(mktemp -d)"
+trap 'rm -rf "$meta"' EXIT
+
+fail=0
+for cfg in delegate/DelegateBudget_*.cfg devices/DeviceEvents_*.cfg; do
+    dir="$(dirname "$cfg")"
+    name="$(basename "$cfg" .cfg)"
+    spec="${name%%_*}"
+    first="$(head -n 1 "$cfg")"
+    case "$first" in
+        *"MUST PASS"*) want=0 ;;
+        *"MUST FAIL"*) want=12 ;;
+        *) echo "$cfg: first line must say MUST PASS or MUST FAIL"; fail=1; continue ;;
+    esac
+    out="$(cd "$dir" && "$JAVA" -XX:+UseParallelGC -cp "$TLA_JAR" tlc2.TLC -config "$name.cfg" \
+        -metadir "$meta/$name" -workers auto -noGenerateSpecTE "$spec.tla" 2>&1)"
+    rc=$?
+    states="$(grep -oE '[0-9]+ distinct states found' <<<"$out" | tail -n 1)"
+    if [ "$rc" -eq "$want" ]; then verdict=ok; else verdict="FAILED (want rc $want)"; fail=1; fi
+    printf '%-46s rc=%-3s %-28s %s\n' "$name" "$rc" "$states" "$verdict"
+done
+echo
+[ "$fail" -eq 0 ] && echo "ALL GAP CHECKS GREEN" || echo "GAP CHECKS FAILED"
+exit "$fail"

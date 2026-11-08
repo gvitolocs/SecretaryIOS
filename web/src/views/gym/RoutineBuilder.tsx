@@ -1,4 +1,5 @@
 import { createEffect, createSignal, For, on, Show } from "solid-js";
+import type { Routine } from "../../api/gym";
 import { gym, runGym } from "../../state/gym";
 import { ChevronDownIcon, ChevronUpIcon, PlusCircleIcon } from "./icons";
 import ExercisePicker from "./Picker";
@@ -20,10 +21,17 @@ export function moveItem<T>(items: readonly T[], from: number, to: number): T[] 
 /**
  * New routine (ExercisePicker.swift `RoutineBuilder`): a name, catalog
  * exercises in order, then `save_routine` with `exercise_ids`. The engine
- * gives each exercise three sets of eight; there is no edit command, so a
- * routine is changed by deleting it and building it again.
+ * gives each exercise three sets of eight. With `routine` it edits that
+ * routine instead (`update_routine`: the name and the exercises in order;
+ * exercises it already had keep their sets), focused on the name or on the
+ * exercise list (`focus`).
  */
-export default function RoutineBuilder(props: { open: boolean; onClose: () => void }) {
+export default function RoutineBuilder(props: {
+  open: boolean;
+  onClose: () => void;
+  routine?: Routine;
+  focus?: "name" | "exercises";
+}) {
   const [name, setName] = createSignal("");
   const [selected, setSelected] = createSignal<string[]>([]);
   const [pickerOpen, setPickerOpen] = createSignal(false);
@@ -40,11 +48,11 @@ export default function RoutineBuilder(props: { open: boolean; onClose: () => vo
       () => props.open,
       (open) => {
         if (!open) return;
-        setName("");
-        setSelected([]);
+        setName(props.routine?.name ?? "");
+        setSelected(props.routine?.exercises.map((e) => e.exercise_id) ?? []);
         setError(null);
         setPickerOpen(false);
-        queueMicrotask(() => nameInput?.focus());
+        queueMicrotask(() => (props.focus === "exercises" ? addButton : nameInput)?.focus());
       },
     ),
   );
@@ -69,7 +77,12 @@ export default function RoutineBuilder(props: { open: boolean; onClose: () => vo
     setError(null);
     setSaving(true);
     try {
-      const res = await runGym({ type: "save_routine", name: routineName, exercise_ids: ids });
+      const editing = props.routine;
+      const res = await runGym(
+        editing
+          ? { type: "update_routine", routine_id: editing.id, name: routineName, exercise_ids: ids }
+          : { type: "save_routine", name: routineName, exercise_ids: ids },
+      );
       if (res?.ok) props.onClose();
     } finally {
       setSaving(false);
@@ -93,7 +106,7 @@ export default function RoutineBuilder(props: { open: boolean; onClose: () => vo
         >
           <header class="picker-head">
             <h2 id="routine-builder-title" class="section-title">
-              {gt("newRoutine")}
+              {props.routine ? gt("editRoutine") : gt("newRoutine")}
             </h2>
             <button type="button" class="icon-btn" aria-label={gt("close")} onClick={() => props.onClose()}>
               ×
@@ -186,7 +199,7 @@ export default function RoutineBuilder(props: { open: boolean; onClose: () => vo
             >
               <PlusCircleIcon /> {gt("addExercise")}
             </button>
-            <p class="muted small">{gt("builderNote")}</p>
+            <p class="muted small">{props.routine ? gt("editNote") : gt("builderNote")}</p>
             <Show when={error()}>
               {(msg) => (
                 <p class="field-error" role="alert">

@@ -13,18 +13,20 @@ import { toApiError, type ApiError } from "../api/client";
 import { shoppingApi } from "../api/shopping";
 import { locale, setLocale } from "../i18n";
 import { uuid } from "../lib/ids";
-import { readString, writeString } from "../lib/storage";
+import { readJSON, readString, writeJSON, writeString } from "../lib/storage";
 import {
   buildIndex,
   catalogName,
   DEFAULT_ICON,
   EMPTY_CATALOG,
   exactMatch,
+  fold,
   LANGS,
   OTHER_SECTION,
   resolveByName,
   type Catalog,
   type CatalogItem,
+  type CatalogSection,
   type Lang,
 } from "../lib/shoppingCatalog";
 import { translate } from "../lib/shoppingI18n";
@@ -60,7 +62,12 @@ import {
 import { markLucinaOnline } from "./lucina";
 
 export const UNDO_MS = 5_000;
-const GROUPED_KEY = "secretary.shopping.grouped";
+/** Section headers inside "To buy" (off by default: one grid in store-walk order, as in Bring!). */
+const GROUPED_KEY = "secretary.shopping.groupHeaders";
+/** Language of item names (catalog tiles, search, new rows); unset = guessed from the list. */
+const ITEM_LANG_KEY = "secretary.shopping.itemLang";
+/** Per-list store-walk order of the catalog sections: { [listId]: sectionId[] }. */
+const SECTION_ORDER_KEY = "secretary.shopping.sectionOrder";
 const MAX_CONFLICT_RETRIES = 3;
 const RETRY_MIN_MS = 2_000;
 const RETRY_MAX_MS = 30_000;
@@ -91,7 +98,26 @@ interface ShoppingState {
   /** The owner's custom item objects (searchable next to the catalog). */
   customObjects: CustomObject[];
   grouped: boolean;
+  /** Item-name language picked in the menu; null = itemLang() guesses it. */
+  itemLangPref: Lang | null;
+  sectionOrder: Record<string, string[]>;
   undo: UndoEntry | null;
+}
+
+function loadSectionOrder(): Record<string, string[]> {
+  const raw = readJSON("local", SECTION_ORDER_KEY);
+  const out: Record<string, string[]> = {};
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [k, v] of Object.entries(raw)) {
+      if (Array.isArray(v)) out[k] = v.filter((x): x is string => typeof x === "string");
+    }
+  }
+  return out;
+}
+
+function loadItemLang(): Lang | null {
+  const v = readString("local", ITEM_LANG_KEY);
+  return v && (LANGS as readonly string[]).includes(v) ? (v as Lang) : null;
 }
 
 /** The app-wide language (src/i18n: navigator.languages, or the owner's override). */
@@ -114,7 +140,9 @@ function initialState(): ShoppingState {
     pending: 0,
     catalog: EMPTY_CATALOG,
     customObjects: [],
-    grouped: readString("local", GROUPED_KEY) !== "0",
+    grouped: readString("local", GROUPED_KEY) === "1",
+    itemLangPref: loadItemLang(),
+    sectionOrder: loadSectionOrder(),
     undo: null,
   };
 }
@@ -142,16 +170,56 @@ function customAsCatalogItem(o: CustomObject, lang: Lang): CatalogItem {
 }
 
 /**
- * Search index in the UI language: the catalog plus the owner's custom
- * objects (rebuilt only when the catalog, the objects or the language change).
+ * The language the list's items are written in: the menu's choice, else the language most of
+ * the list's catalog rows are named in (an Italian household list stays Italian under an
+ * English UI), else the UI language.
+ */
+export const itemLang = createRoot(() =>
+  createMemo<Lang>(() => {
+    if (shop.itemLangPref) return shop.itemLangPref;
+    const byId = new Map(shop.catalog.items.map((c) => [c.id, c]));
+    const votes = new Map<Lang, number>();
+    for (const row of shop.items) {
+      const id = row.objectId ?? row.catalogId;
+      const cat = id ? byId.get(id) : undefined;
+      if (!cat) continue;
+      const name = fold(row.name);
+      for (const l of LANGS) {
+        // An item without a name in `l` is named in the catalog's own language by `name`.
+        const n = cat.names[l] ?? (l === shop.catalog.lang ? cat.name : undefined);
+        if (n && fold(n) === name) votes.set(l, (votes.get(l) ?? 0) + 1);
+      }
+    }
+    let best: Lang = shop.lang;
+    let bestVotes = votes.get(shop.lang) ?? 0;
+    for (const [l, n] of votes) if (n > bestVotes) [best, bestVotes] = [l, n];
+    return best;
+  }),
+);
+
+/**
+ * Search index in the list's item language: the catalog plus the owner's custom objects (rebuilt only
+ * when the catalog, the objects or the language change).
  */
 export const catalogIndex = createRoot(() =>
-  createMemo(() =>
-    buildIndex(
-      { ...shop.catalog, items: [...shop.catalog.items, ...shop.customObjects.map((o) => customAsCatalogItem(o, shop.lang))] },
-      shop.lang,
-    ),
-  ),
+  createMemo(() => {
+    const lang = itemLang();
+    return buildIndex(
+      { ...shop.catalog, items: [...shop.catalog.items, ...shop.customObjects.map((o) => customAsCatalogItem(o, lang))] },
+      lang,
+    );
+  }),
+);
+
+/** Catalog sections in the current list's store-walk order; sections it hasn't placed keep catalog order, after. */
+export const orderedSections = createRoot(() =>
+  createMemo<CatalogSection[]>(() => {
+    const order = shop.sectionOrder[shop.currentListId] ?? [];
+    const rank = new Map(order.map((id, i) => [id, i]));
+    const catalogRank = new Map(shop.catalog.sections.map((s, i) => [s.id, i]));
+    const key = (s: CatalogSection) => rank.get(s.id) ?? order.length + (catalogRank.get(s.id) ?? 0);
+    return [...shop.catalog.sections].sort((a, b) => key(a) - key(b));
+  }),
 );
 
 export function t(key: Parameters<typeof translate>[1], vars?: Record<string, string | number>): string {
@@ -182,7 +250,7 @@ function catalogHint(objectId: string) {
   const item = catalogIndex().byId.get(objectId);
   return item
     ? {
-        name: catalogName(item, shop.lang),
+        name: catalogName(item, itemLang()),
         names: item.names,
         kind: item.custom ? ("custom" as const) : ("catalog" as const),
         section: item.section,
@@ -535,6 +603,27 @@ export function setGrouped(grouped: boolean): void {
   writeString("local", GROUPED_KEY, grouped ? "1" : "0");
 }
 
+export function setItemLang(lang: Lang | null): void {
+  setShop("itemLangPref", lang);
+  writeString("local", ITEM_LANG_KEY, lang ?? "");
+}
+
+/** Move a section one step earlier (-1) or later (+1) in the current list's store-walk order. */
+export function moveSection(id: string, delta: -1 | 1): void {
+  const ids = orderedSections().map((s) => s.id);
+  const i = ids.indexOf(id);
+  const j = i + delta;
+  if (i < 0 || j < 0 || j >= ids.length) return;
+  [ids[i], ids[j]] = [ids[j]!, ids[i]!];
+  setShop("sectionOrder", shop.currentListId, ids);
+  writeJSON("local", SECTION_ORDER_KEY, { ...shop.sectionOrder });
+}
+
+export function resetSectionOrder(): void {
+  setShop("sectionOrder", (o) => Object.fromEntries(Object.entries(o).filter(([k]) => k !== shop.currentListId)));
+  writeJSON("local", SECTION_ORDER_KEY, { ...shop.sectionOrder });
+}
+
 export function dismissShoppingError(): void {
   setShop("actionError", null);
 }
@@ -622,7 +711,7 @@ export function tapItem(id: string): void {
 
 /** Tap on a catalog (or custom object) search result. Returns the row id it ended up on. */
 export function addCatalogItem(cat: CatalogItem, spec?: string): string {
-  const name = catalogName(cat, shop.lang);
+  const name = catalogName(cat, itemLang());
   const existing = findActive(cat.id, name);
   if (existing) {
     if (existing.status === "needed" && spec === undefined) return existing.id;
@@ -644,18 +733,22 @@ export function addCatalogItem(cat: CatalogItem, spec?: string): string {
  * language) when it matches exactly, else new text the server turns into a
  * custom object with names in every language.
  */
-export function addText(text: string): string | null {
+export function addText(text: string, spec?: string): string | null {
   const name = text.trim().slice(0, 200);
   if (!name) return null;
   const cat = exactMatch(catalogIndex(), name);
-  if (cat) return addCatalogItem(cat);
+  if (cat) return addCatalogItem(cat, spec);
   const existing = findActive(null, name);
   if (existing) {
-    if (existing.status === "recent") tapItem(existing.id);
+    if (spec !== undefined) {
+      const wasRecent = existing.status === "recent";
+      enqueue(shop.currentListId, [{ type: "add", itemId: existing.id, name: existing.name, spec }]);
+      if (wasRecent) offerUndo(t("addedToast", { name: existing.name }), [{ type: "purchase", itemId: existing.id }]);
+    } else if (existing.status === "recent") tapItem(existing.id);
     return existing.id;
   }
   const rowId = uuid();
-  enqueue(shop.currentListId, [{ type: "add", rowId, text: name, name }]);
+  enqueue(shop.currentListId, [{ type: "add", rowId, text: name, name, ...(spec ? { spec } : {}) }]);
   offerUndo(t("addedToast", { name }), [{ type: "remove", itemId: rowId }]);
   return rowId;
 }

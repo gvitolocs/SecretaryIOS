@@ -1,0 +1,28 @@
+[package]
+name = "secretary-media-stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Media streaming for the Secretary players: tokenised play URLs, HTTP range, HLS via ffmpeg, subtitles, resume positions"
+
+[dependencies]
+secretary-player = { path = "../secretary-player" }
+axum = "0.8"
+tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+libc = "0.2"
+hmac = "0.12"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+getrandom = "0.3"
+mime = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

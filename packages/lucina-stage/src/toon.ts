@@ -6,10 +6,12 @@
  * Swapped-in outfits without their own block inherit it without the per-file texture overrides.
  */
 import {
+  ACESFilmicToneMapping,
   BackSide,
   ClampToEdgeWrapping,
   Color,
   DataTexture,
+  Float32BufferAttribute,
   LinearFilter,
   Matrix3,
   Mesh,
@@ -20,9 +22,12 @@ import {
   Texture,
   Vector2,
   Vector3,
+  type BufferGeometry,
   type Material,
   type MeshStandardMaterial,
   type Object3D,
+  type Scene,
+  type WebGLRenderer,
 } from 'three';
 import { fetchOk, type LoadOptions } from './loader';
 import type { NormalizedManifest } from './manifest';
@@ -53,7 +58,12 @@ export interface ToonMaterialConfig {
   rim: number;
   angelRing?: RGB;
   alpha: 'map' | 'none';
-  outline?: { color: RGB; albedoMix: number; scale: number };
+  outline?: { color: RGB; albedoMix: number; scale: number; weight?: 'shell' };
+  /**
+   * Engage eyes (_UvCameraFollowRateX/Y): the texture slides toward the camera by this much UV per unit of the
+   * view direction in the eye bone's frame (x = her left, y = up), so she keeps looking at the viewer.
+   */
+  eyeFollow?: { x: number; y: number };
 }
 export interface ToonConfig {
   ramps?: string;
@@ -95,7 +105,8 @@ export function normalizeToon(raw: unknown): ToonConfig {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
     const m = object(value),
       ol = object(m.outline),
-      oc = rgb(ol.color);
+      oc = rgb(ol.color),
+      ef = object(m.eyeFollow);
     const entry: ToonMaterialConfig = {
       preset: m.preset === 'flat' || m.preset === 'hide' ? m.preset : 'lit',
       ramp: ramp(m.ramp),
@@ -113,7 +124,18 @@ export function normalizeToon(raw: unknown): ToonConfig {
       rim: number(m.rim, 0, 0, 10),
       angelRing: rgb(m.angelRing),
       alpha: m.alpha === 'none' ? 'none' : 'map',
-      outline: oc ? { color: oc, albedoMix: number(ol.albedoMix, 0), scale: number(ol.scale, 3.5, 0, 20) } : undefined,
+      outline: oc
+        ? {
+            color: oc,
+            albedoMix: number(ol.albedoMix, 0),
+            scale: number(ol.scale, 3.5, 0, 20),
+            ...(ol.weight === 'shell' ? { weight: 'shell' as const } : {}),
+          }
+        : undefined,
+      eyeFollow:
+        m.eyeFollow !== undefined && (number(ef.x, 0, -1, 1) || number(ef.y, 0, -1, 1))
+          ? { x: number(ef.x, 0, -1, 1), y: number(ef.y, 0, -1, 1) }
+          : undefined,
     };
     for (const key of Object.keys(entry)) {
       if (entry[key as keyof ToonMaterialConfig] === undefined) delete (entry as unknown as Record<string, unknown>)[key];
@@ -125,6 +147,153 @@ export function normalizeToon(raw: unknown): ToonConfig {
   return out;
 }
 const color = (v: RGB): Color => new Color().setRGB(...v, SRGBColorSpace);
+
+const ACES_IN = [0.59719, 0.35458, 0.04823, 0.076, 0.90834, 0.01566, 0.0284, 0.13383, 0.83777] as const;
+const ACES_OUT = [1.60475, -0.53108, -0.07367, -0.10208, 1.10813, -0.00605, -0.00327, -0.07276, 1.07602] as const;
+const acesRRT = (v: number): number => (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.432951) + 0.238081);
+
+/**
+ * Scene-space (pre-tone-map) grey value whose ACES display value is `display`.
+ *
+ * UnrealBloomPass thresholds scene space, but toon bloom thresholds are authored in display
+ * space (Blender's glare threshold on the Standard-view image). With the inverse-tone toon
+ * material active, convert back through three r186's forward ACES: scale by exposure / 0.6,
+ * the input matrix, the RRT/ODT fit and the output matrix. Grey stays grey (both matrices have
+ * rows summing to 1), so a scalar bisection on [0, 20] is enough. 40 steps, current exposure.
+ */
+export function acesSceneThreshold(display: number, exposure: number): number {
+  const target = Math.min(1, Math.max(0, display));
+  const e = exposure > 0 ? exposure : 1e-4;
+  const forward = (x: number): number => {
+    const v = (x * e) / 0.6;
+    const fit = [0, 1, 2].map((row) => {
+      const r = ACES_IN[row * 3]! * v + ACES_IN[row * 3 + 1]! * v + ACES_IN[row * 3 + 2]! * v;
+      return Math.min(1, Math.max(0, acesRRT(r)));
+    });
+    // Grey: the first output channel is the display value of the (near) equal RGB triple.
+    const out = ACES_OUT[0]! * fit[0]! + ACES_OUT[1]! * fit[1]! + ACES_OUT[2]! * fit[2]!;
+    return Math.min(1, Math.max(0, out));
+  };
+  let lo = 0,
+    hi = 20;
+  if (forward(hi) < target) return hi;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (forward(mid) < target) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/**
+ * Per-vertex hull weight for `outline.weight: "shell"`.
+ *
+ * The face material also covers lashes and mouth/eye pieces, which must not get an inverted
+ * hull. Vertices are welded by position (so UV seams do not split islands) and split into
+ * connected components; every component except the largest (the skin shell) gets 0. Border
+ * vertices of the shell (welded edges used by one triangle) get 0, their one-ring gets 0.5,
+ * and the interior gets 1, so the jaw/cheek silhouette extrudes but eye/mouth openings do not.
+ */
+export function computeOutlineWeights(geometry: BufferGeometry): Float32Array {
+  const position = geometry.getAttribute('position');
+  const count = position?.count ?? 0;
+  const weights = new Float32Array(count);
+  if (!position || count === 0) return weights;
+  // Weld positions: 1e-5 local units, enough to join duplicated seam vertices without merging detail.
+  const weldIds = new Int32Array(count);
+  const welded = new Map<string, number>();
+  for (let i = 0; i < count; i++) {
+    const key = `${Math.round(position.getX(i) * 1e5)},${Math.round(position.getY(i) * 1e5)},${Math.round(position.getZ(i) * 1e5)}`;
+    let id = welded.get(key);
+    if (id === undefined) {
+      id = welded.size;
+      welded.set(key, id);
+    }
+    weldIds[i] = id;
+  }
+  const weldedCount = welded.size;
+  const index = geometry.getIndex();
+  const triangleCount = Math.floor((index?.count ?? count) / 3);
+  const triangles: number[] = [];
+  for (let t = 0; t < triangleCount; t++) {
+    const a = weldIds[index ? index.getX(t * 3) : t * 3]!;
+    const b = weldIds[index ? index.getX(t * 3 + 1) : t * 3 + 1]!;
+    const c = weldIds[index ? index.getX(t * 3 + 2) : t * 3 + 2]!;
+    if (a === b || b === c || a === c) continue;
+    triangles.push(a, b, c);
+  }
+  const parent = new Int32Array(weldedCount);
+  for (let i = 0; i < weldedCount; i++) parent[i] = i;
+  const find = (v: number): number => {
+    let root = v;
+    while (parent[root] !== root) root = parent[root]!;
+    for (let n = v; parent[n] !== root; ) {
+      const next = parent[n]!;
+      parent[n] = root;
+      n = next;
+    }
+    return root;
+  };
+  for (let t = 0; t < triangles.length; t += 3) {
+    const a = find(triangles[t]!),
+      b = find(triangles[t + 1]!),
+      c = find(triangles[t + 2]!);
+    if (b !== a) parent[b] = a;
+    if (c !== a) parent[c] = a;
+  }
+  const triangleCounts = new Int32Array(weldedCount);
+  for (let t = 0; t < triangles.length; t += 3) triangleCounts[find(triangles[t]!)]!++;
+  let largest = -1,
+    largestCount = 0;
+  for (let i = 0; i < weldedCount; i++) {
+    if (find(i) === i && triangleCounts[i]! > largestCount) {
+      largest = i;
+      largestCount = triangleCounts[i]!;
+    }
+  }
+  if (largest < 0) return weights;
+  const inLargest = new Uint8Array(weldedCount);
+  for (let i = 0; i < weldedCount; i++) inLargest[i] = find(i) === largest ? 1 : 0;
+  // Welded edges of the shell; used exactly once means an open border (eye/mouth/lash rim).
+  const edges = new Map<number, number>();
+  const edge = (a: number, b: number): number => (a < b ? a * weldedCount + b : b * weldedCount + a);
+  const largestTriangles: number[] = [];
+  for (let t = 0; t < triangles.length; t += 3) {
+    const a = triangles[t]!,
+      b = triangles[t + 1]!,
+      c = triangles[t + 2]!;
+    if (!inLargest[a]) continue;
+    largestTriangles.push(a, b, c);
+    for (const [x, y] of [
+      [a, b],
+      [b, c],
+      [c, a],
+    ] as const) {
+      const key = edge(x, y);
+      edges.set(key, (edges.get(key) ?? 0) + 1);
+    }
+  }
+  const border = new Uint8Array(weldedCount);
+  for (const [key, uses] of edges) {
+    if (uses !== 1) continue;
+    border[Math.floor(key / weldedCount)] = 1;
+    border[key % weldedCount] = 1;
+  }
+  const ring = new Uint8Array(weldedCount);
+  for (let t = 0; t < largestTriangles.length; t += 3) {
+    const a = largestTriangles[t]!,
+      b = largestTriangles[t + 1]!,
+      c = largestTriangles[t + 2]!;
+    if (border[a]) ring[b] = ring[c] = 1;
+    if (border[b]) ring[a] = ring[c] = 1;
+    if (border[c]) ring[a] = ring[b] = 1;
+  }
+  for (let i = 0; i < count; i++) {
+    const id = weldIds[i]!;
+    weights[i] = !inLargest[id] || border[id] ? 0 : ring[id] ? 0.5 : 1;
+  }
+  return weights;
+}
 
 export interface ToonHandle {
   config: ToonConfig;
@@ -147,6 +316,36 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
   const children = new Set<ToonHandle>();
   const originals = new Map<Mesh, Material | Material[]>();
   const cache = new Map<string, Promise<Texture>>();
+  const restorers: (() => void)[] = [];
+  let toneRenderer: WebGLRenderer | null = null;
+  let toneScene: Scene | null = null;
+  // The bloom pipeline's OutputPass tone-maps the whole frame; invert ACES only for toon pixels.
+  // AgX/Neutral have no closed-form inverse, so they keep the toneMapped=false output.
+  const syncTone = (): void => {
+    if (!toneRenderer || !toneScene) return;
+    const inverse =
+      toneScene.userData.toonInverseTone === true && toneRenderer.toneMapping === ACESFilmicToneMapping ? 1 : 0;
+    const exposure = toneRenderer.toneMappingExposure;
+    for (const m of created) {
+      const uniforms = (m as ShaderMaterial).uniforms;
+      if (!m.userData.engageToon || !uniforms?.inverseTone || !uniforms.toneExposure) continue;
+      uniforms.inverseTone.value = inverse;
+      uniforms.toneExposure.value = exposure;
+    }
+  };
+  // Capture the renderer/scene without touching stage.ts: every toon draw refreshes them first.
+  const hookTone = (target: Mesh): void => {
+    const previous = target.onBeforeRender;
+    target.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
+      toneRenderer = renderer;
+      toneScene = scene;
+      syncTone();
+      previous.call(target, renderer, scene, camera, geometry, material, group);
+    };
+    restorers.push(() => {
+      target.onBeforeRender = previous;
+    });
+  };
   let resolvedBase = opts.baseUrl;
   const load = (name: string, data = false): Promise<Texture> => {
     const key = `${data}:${name}`;
@@ -208,11 +407,19 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
       if (cfg.solidColor) defines.SOLID_COLOR = '';
       if (cfg.angelRing) defines.ANGEL_RING = '';
       if (outline) defines.OUTLINE = '';
+      if (cfg.eyeFollow && !outline) defines.EYE_FOLLOW = '';
       const attr = mesh.geometry.getAttribute('color');
       let max = 0;
       if (outline && attr) {
         for (let i = 0; i < attr.count; i++) max = Math.max(max, attr.getX(i));
         if (max > 0) defines.OUTLINE_COLOR = '';
+      }
+      if (outline && cfg.outline?.weight === 'shell') {
+        // Shared with the hull: add once, even across wardrobe re-applies.
+        if (!mesh.geometry.getAttribute('outlineWeight')) {
+          mesh.geometry.setAttribute('outlineWeight', new Float32BufferAttribute(computeOutlineWeights(mesh.geometry), 1));
+        }
+        defines.OUTLINE_WEIGHT = '';
       }
       const m = new ShaderMaterial({
         name: src.name,
@@ -247,6 +454,9 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
           albedoMix: { value: cfg.outline?.albedoMix ?? 0 },
           outlineWidth: { value: outline ? (0.0009 * (cfg.outline?.scale ?? 3.5)) / 3.5 : 0 },
           outlineMax: { value: max || 1 },
+          inverseTone: { value: 0 },
+          toneExposure: { value: 1 },
+          eyeFollow: { value: new Vector2(cfg.eyeFollow?.x ?? 0, cfg.eyeFollow?.y ?? 0) },
         },
         side: outline ? BackSide : src.side,
         transparent: src.transparent,
@@ -309,9 +519,14 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
     for (const { mesh, mats, hull } of replacements) {
       originals.set(mesh, mesh.material);
       mesh.material = Array.isArray(mesh.material) ? mats : mats[0]!;
-      if (hull) mesh.parent?.add(hull);
+      hookTone(mesh);
+      if (hull) {
+        hookTone(hull);
+        mesh.parent?.add(hull);
+      }
     }
     const update = (): void => {
+      syncTone();
       for (const child of children) child.update();
       for (const { source, hull } of outlines) {
         if (hull.parent !== source.parent) source.parent?.add(hull);
@@ -335,6 +550,7 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
         bindings.delete(model);
         for (const child of children) child.dispose();
         children.clear();
+        for (const restore of restorers) restore();
         for (const [mesh, mat] of originals) mesh.material = mat;
         for (const { hull } of outlines) hull.removeFromParent();
         for (const m of created) m.dispose();
@@ -347,6 +563,7 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
     bindings.set(model, { handle, source: { config, baseUrl: resolvedBase, modelUrl: absoluteUrl(opts.modelUrl), manifestUrl: absoluteUrl(opts.manifestUrl) }, options: { ...opts, baseUrl: resolvedBase }, children });
     return handle;
   } catch (e) {
+    for (const restore of restorers) restore();
     for (const [mesh, mat] of originals) mesh.material = mat;
     for (const { hull } of outlines) hull.removeFromParent();
     // Wait for pending loads before releasing their bitmaps as well.
@@ -460,13 +677,39 @@ export function toonHandleFor(model: Object3D): ToonHandle | undefined {
   return bindings.get(model)?.handle;
 }
 
-/** Hair's natural tint is restored on null; toon shaders need no standard-map injection. */
+/** Rec. 601 luma, as the toon shader's `lum`. */
+const luma = (c: Color): number => c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+
+/** The hue and saturation of `hue` at the luma of `like` (channels capped at 1). */
+function rehue(hue: Color, like: Color): Color {
+  const k = luma(like) / Math.max(luma(hue), 1e-4);
+  return new Color(Math.min(1, hue.r * k), Math.min(1, hue.g * k), Math.min(1, hue.b * k));
+}
+
+/**
+ * Hair's natural tint is restored on null; toon shaders need no standard-map injection. The hair's
+ * own glow (emission), angel ring and outline are blue for her natural colour: they take the new
+ * hue (the glow dimmed with a darker colour), or brown reads mauve and black reads navy.
+ */
 export function tintToonMaterial(material: Material, hex: string | null): boolean {
   const m = material as ShaderMaterial;
   const tint = m.userData.engageToon && m.uniforms.tint?.value;
   if (!(tint instanceof Color)) return false;
   const base = (m.userData.toonBaseTint ??= tint.clone()) as Color;
+  const keys = ['emission', 'ringColor', 'outlineColor'] as const;
+  const bases = (m.userData.toonBaseHairColors ??= Object.fromEntries(
+    keys.flatMap((k) => (m.uniforms[k]?.value instanceof Color ? [[k, (m.uniforms[k]!.value as Color).clone()]] : [])),
+  )) as Partial<Record<(typeof keys)[number], Color>>;
   if (hex) tint.set(hex);
   else tint.copy(base);
+  // A darker colour glows less (else black hair turns grey); a lighter one keeps the original glow.
+  const dim = Math.min(1, luma(tint) / Math.max(luma(base), 1e-4));
+  for (const k of keys) {
+    const orig = bases[k];
+    if (!orig) continue;
+    const v = m.uniforms[k]!.value as Color;
+    v.copy(hex ? rehue(tint, orig) : orig);
+    if (hex && k === 'emission') v.multiplyScalar(dim);
+  }
   return true;
 }

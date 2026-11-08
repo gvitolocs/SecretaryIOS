@@ -1,11 +1,12 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LinksOverview } from "../api/links";
+import type { LinkAction, LinksOverview } from "../api/links";
 import { setLocale } from "../i18n";
 import { nav } from "../lib/navigate";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import LinksView from "./Links";
 
 function overview(over: Partial<LinksOverview> = {}): LinksOverview {
@@ -111,6 +112,13 @@ function server(over: Partial<LinksOverview> = {}) {
     if (path === "/v1/links/ics") return { status: 201, body: { id: "ics_2", label: "x", host: "h", eventCount: 3, feedName: null } };
     if (path === "/v1/links/custom") return { status: 201, body: {} };
     if (path === "/v1/calendar/sync") return { body: { google: { ok: true }, ics: [] } };
+    if (path === "/v1/links/todoist/token") {
+      const token = (c.body as { token: string }).token;
+      return token === "good-token-0123456789abcdef"
+        ? { body: { connected: true, account: "owner@example.com" } }
+        : { status: 422, body: { error: { code: "todoist_token_rejected", message: "Todoist did not accept that token" } } };
+    }
+    if (path === "/v1/links/todoist/connect") return { body: { authorizeUrl: "https://app.todoist.com/oauth/authorize?client_id=x" } };
     return { body: { ok: true } };
   });
 }
@@ -211,5 +219,91 @@ describe("Links", () => {
     expect(await screen.findByText("Da ricollegare")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ricollega" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Calendari" })).toBeInTheDocument();
+  });
+
+  it("connects Todoist with a pasted API token (never shown again) or OAuth", async () => {
+    const todoist = {
+      id: "tasks",
+      cards: [
+        {
+          id: "todoist",
+          kind: "todoist",
+          name: "Todoist",
+          status: "disconnected",
+          oauth: true,
+          scopes: ["data:read_write"],
+          actions: ["connect", "token"] as LinkAction[],
+        },
+      ],
+    };
+    const calls = server({ groups: [todoist] });
+    show();
+    expect(await screen.findByRole("heading", { name: "Tasks" })).toBeInTheDocument();
+    expect(screen.getByText(/Connect with Todoist, or paste the API token/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Paste API token" }));
+    const input = await screen.findByLabelText("Todoist API token");
+    expect(input).toHaveAttribute("type", "password");
+    const form = screen.getByRole("form", { name: "Paste API token" });
+    fireEvent.input(input, { target: { value: "bad-token-0123456789abcdef" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText(/didn't accept that token/)).toBeInTheDocument();
+    fireEvent.input(input, { target: { value: "good-token-0123456789abcdef" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText("Todoist is connected (owner@example.com). Importing your tasks…")).toBeInTheDocument();
+    const posts = calls.filter((c) => c.url === "/v1/links/todoist/token");
+    expect(posts.at(-1)?.body).toEqual({ token: "good-token-0123456789abcdef" });
+    expect(posts.at(-1)?.headers["x-secretary-csrf"]).toBe("1");
+
+    const assign = vi.spyOn(nav, "assign").mockImplementation(() => {});
+    const card = screen.getByText("Todoist").closest("li") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://app.todoist.com/oauth/authorize?client_id=x"));
+  });
+});
+
+describe("Links desktop page", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("keeps the header while loading, with proposals and agenda beside source lists", async () => {
+    stubWide();
+    server({ proposals: [] });
+    show();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Links" }),
+    ).toBeInTheDocument();
+    const proposals = await screen.findByRole("region", {
+      name: "Waiting for your OK",
+    });
+    expect(
+      within(proposals).getByText(
+        "There are no proposals waiting for your OK.",
+      ),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Dentist")).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("region", { name: "Calendars" })
+        .querySelector(".pg-rows"),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".pg-grid--rail")).toBeInTheDocument();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+    expect(
+      document.querySelector(".links-head, .links-grid, .view-title, .pg-seg"),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Subscribe to a calendar" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Subscribe to a calendar" }),
+    ).toBeInTheDocument();
+  });
+  it("shows one retry state under the title on load failure", async () => {
+    stubWide();
+    stubFetch(() => ({ status: 503, body: { error: "Offline" } }));
+    show();
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Links",
+    );
+    expect(document.querySelectorAll(".pg-error")).toHaveLength(1);
   });
 });

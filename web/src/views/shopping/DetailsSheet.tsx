@@ -1,9 +1,12 @@
-import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
+import { type JSX, createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import { LANGS, OTHER_SECTION, type Lang } from "../../lib/shoppingCatalog";
 import { LANG_LABEL, relativeTime, sourceName, SPEC_CHIPS } from "../../lib/shoppingI18n";
 import { THEME_ICON } from "../../lib/shoppingOps";
 import { deleteItem, editItem, itemIcon, itemSection, moveItem, shop, t } from "../../state/shopping";
+import { Button, PrimaryAction } from "../../components/page";
+import { ItemIcon, SectionIcon } from "./ItemIcon";
+import { ShopSheet } from "./ShopSheet";
 
 interface Form {
   name: string;
@@ -41,7 +44,7 @@ export function toggleChip(spec: string, chip: string): string {
  * the last change; delete. Edits are kept when the sheet closes (Done, the
  * scrim, Escape), like the original.
  */
-export function DetailsSheet(props: { itemId: string | null; onClose: () => void }) {
+export function DetailsSheet(props: { wide?: boolean; itemId: string | null; onClose: () => void }) {
   const item = createMemo(() => (props.itemId ? shop.items.find((i) => i.id === props.itemId) : undefined));
   const [form, setForm] = createStore<Form>({
     name: "",
@@ -54,6 +57,8 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
   });
   const isCustom = () => item()?.kind === "custom" && !!item()?.objectId;
   const [panel, setPanel] = createSignal<Panel>(null);
+  /** Desktop: the first click on Delete arms it, the second deletes. */
+  const [armed, setArmed] = createSignal(false);
   let specInput: HTMLInputElement | undefined;
   let lastFocus: HTMLElement | null = null;
 
@@ -75,6 +80,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
           section: itemSection(it),
         });
         setPanel(null);
+        setArmed(false);
         queueMicrotask(() => specInput?.focus());
       },
     ),
@@ -113,9 +119,10 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
   const otherLists = createMemo(() => shop.lists.filter((l) => l.id !== shop.currentListId));
   const togglePanel = (p: Exclude<Panel, null>) => setPanel((cur) => (cur === p ? null : p));
 
-  return (
-    <Show when={item()}>
-      {(it) => (
+  const Frame = (p: { children: JSX.Element }) => (
+    <Show
+      when={props.wide}
+      fallback={
         <div class="bring-scrim" onClick={(e) => e.target === e.currentTarget && finish(true)}>
           <div
             class="bring-sheet bring-details"
@@ -129,10 +136,31 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
               }
             }}
           >
+            {p.children}
+          </div>
+        </div>
+      }
+    >
+      <ShopSheet
+        open
+        title={form.name || item()?.name}
+        onClose={() => finish(true)}
+        footer={<PrimaryAction onClick={() => finish(true)}>{t("done")}</PrimaryAction>}
+      >
+        {p.children}
+      </ShopSheet>
+    </Show>
+  );
+
+  return (
+    <Show when={item()}>
+      {(it) => (
+        <Frame>
+          <Show when={!props.wide}>
             <div class="bring-sheet-grip" aria-hidden="true" />
             <header class="bring-details-head">
               <span class="bring-details-icon" aria-hidden="true">
-                {itemIcon(it()) ?? "🛒"}
+                <ItemIcon icon={itemIcon(it())} catalogId={it().catalogId} name={it().name} section={it().section} iconPicked={it().iconPicked} />
               </span>
               <h2 id="bring-details-title" class="bring-details-name">
                 {(isCustom() ? form.names[shop.lang] : form.name) || it().name}
@@ -141,7 +169,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 {t("done")}
               </button>
             </header>
-
+          </Show>
             <div class="bring-details-body">
               <h3 class="bring-details-title">{t("specTitle")}</h3>
               <label class="sr-only" for="bring-spec">
@@ -150,7 +178,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
               <input
                 ref={specInput}
                 id="bring-spec"
-                class="bring-field"
+                class={props.wide ? "pg-input" : "bring-field"}
                 type="text"
                 maxlength="200"
                 placeholder={t("specPlaceholder")}
@@ -171,7 +199,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                     return (
                       <button
                         type="button"
-                        class="bring-chip"
+                        class={props.wide ? "pg-btn" : "bring-chip"}
                         classList={{ "bring-chip--on": active() }}
                         aria-pressed={active()}
                         onClick={() => setForm("spec", toggleChip(form.spec, chip))}
@@ -186,7 +214,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 <label class="bring-qty">
                   <span>{t("quantity")}</span>
                   <input
-                    class="bring-field"
+                    class={props.wide ? "pg-input" : "bring-field"}
                     type="text"
                     inputmode="decimal"
                     maxlength="8"
@@ -197,7 +225,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 <label class="bring-qty">
                   <span>{t("unit")}</span>
                   <input
-                    class="bring-field"
+                    class={props.wide ? "pg-input" : "bring-field"}
                     type="text"
                     maxlength="20"
                     placeholder="kg, g, l, pz"
@@ -211,7 +239,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
               <div class="bring-controls">
                 <button
                   type="button"
-                  class="bring-control"
+                  class={props.wide ? "pg-btn" : "bring-control"}
                   aria-expanded={panel() === "rename"}
                   onClick={() => togglePanel("rename")}
                 >
@@ -222,7 +250,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 </button>
                 <button
                   type="button"
-                  class="bring-control"
+                  class={props.wide ? "pg-btn" : "bring-control"}
                   aria-expanded={panel() === "section"}
                   onClick={() => togglePanel("section")}
                 >
@@ -234,7 +262,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 <Show when={otherLists().length > 0}>
                   <button
                     type="button"
-                    class="bring-control"
+                    class={props.wide ? "pg-btn" : "bring-control"}
                     aria-expanded={panel() === "move"}
                     onClick={() => togglePanel("move")}
                   >
@@ -287,7 +315,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                   </label>
                   <input
                     id="bring-rename"
-                    class="bring-field"
+                    class={props.wide ? "pg-input" : "bring-field"}
                     type="text"
                     maxlength="200"
                     value={form.name}
@@ -308,14 +336,16 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                       <button
                         type="button"
                         role="radio"
-                        class="bring-option"
+                        class={props.wide ? "pg-btn" : "bring-option"}
                         aria-checked={form.section === s.id}
                         onClick={() => {
                           setForm("section", s.id);
                           setPanel(null);
                         }}
                       >
-                        <span aria-hidden="true">{s.icon}</span>
+                        <span aria-hidden="true">
+                          <SectionIcon id={s.id} icon={s.icon} />
+                        </span>
                         <span>{s.name}</span>
                       </button>
                     )}
@@ -328,7 +358,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                     {(l) => (
                       <button
                         type="button"
-                        class="bring-option"
+                        class={props.wide ? "pg-btn" : "bring-option"}
                         onClick={() => {
                           // Save pending edits first, so they travel with the item.
                           const id = it().id;
@@ -357,12 +387,34 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 </div>
               </Show>
 
-              <button type="button" class="bring-btn bring-btn--destructive bring-btn--block" onClick={() => deleteItem(it().id)}>
-                {t("deleteItem")}
-              </button>
+              <Show
+                when={props.wide}
+                fallback={
+                  <button type="button" class="bring-btn bring-btn--destructive bring-btn--block" onClick={() => deleteItem(it().id)}>
+                    {t("deleteItem")}
+                  </button>
+                }
+              >
+                <Show
+                  when={armed()}
+                  fallback={
+                    <Button variant="ghost" onClick={() => setArmed(true)}>
+                      {t("deleteItem")}
+                    </Button>
+                  }
+                >
+                  <div class="shopping-confirm" role="group" aria-label={t("deleteItem")}>
+                    <Button variant="danger" onClick={() => deleteItem(it().id)}>
+                      {t("deleteItem")}
+                    </Button>
+                    <Button variant="ghost" onClick={() => setArmed(false)}>
+                      {t("cancel")}
+                    </Button>
+                  </div>
+                </Show>
+              </Show>
             </div>
-          </div>
-        </div>
+        </Frame>
       )}
     </Show>
   );

@@ -1,0 +1,65 @@
+/* Live Photos: the grid badge, the LIVE button in the viewer's toolbar and the motion clip laid over the still. */
+
+.g-badge--live {
+  right: 6px;
+  bottom: 6px;
+  padding: 3px;
+}
+
+.g-badge__live {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.gl-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.pv-btn.gl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 40px;
+  padding: 0;
+}
+
+.gl-btn__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.pv-btn.gl-btn .gl-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.pv-actions .pv-btn.gl-btn--on {
+  background: rgb(255 255 255 / 24%);
+}
+
+/* The motion shares the still's box exactly (PhotoViewer gives it the same style as the picture) and never takes the
+   pointer, so panning, zooming and holding still reach the still underneath. */
+.gl-video {
+  pointer-events: none;
+  opacity: 0;
+  background: transparent;
+}
+
+.gl-video--on {
+  opacity: 1;
+}
+
+/* A long press on a touch screen must not open the system's image menu. */
+.pv-img {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-video {
+    transition: none !important;
+  }
+}

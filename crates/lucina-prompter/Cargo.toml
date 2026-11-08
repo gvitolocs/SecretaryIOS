@@ -1,0 +1,15 @@
+[package]
+name = "lucina-prompter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina Prompter: which talking points the speaker just covered (a local word matcher plus TypeSafe Jev, failing open to the matcher)"
+
+[dependencies]
+async-trait = { workspace = true }
+lucina-jev = { path = "../lucina-jev" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

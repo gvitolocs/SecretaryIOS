@@ -1,0 +1,18 @@
+{
+  "note": "Read-only GET routes against the LIVE Node Lucina (:8788) and the Rust shadow (:8790) on the same live data. No writes. The agenda step makes one real DeepSeek briefing call on each side, so the briefing text differs.",
+  "textAllow": [],
+  "timelineAllow": [],
+  "steps": [
+    {"name": "health", "method": "GET", "path": "/health"},
+    {"name": "reminders upcoming", "method": "GET", "path": "/reminders"},
+    {"name": "reminders today", "method": "GET", "path": "/reminders?scope=today"},
+    {"name": "reminders all incl. sent", "method": "GET", "path": "/reminders?scope=all&includeSent=1"},
+    {"name": "agenda tomorrow", "method": "GET", "path": "/agenda?date={tomorrow}", "allow": ["response.body.data.briefing", "response.body.data.briefingCached"], "why": "real DeepSeek on both sides (different text); Node may hold a cached briefing"},
+    {"name": "shopping v1", "method": "GET", "path": "/shopping"},
+    {"name": "shopping lists", "method": "GET", "path": "/shopping/lists"},
+    {"name": "default list state", "method": "GET", "path": "/shopping/lists/default"},
+    {"name": "job unknown", "method": "GET", "path": "/jobs/00000000-0000-4000-8000-000000000000"},
+    {"name": "timeline bad limit", "method": "GET", "path": "/timeline?limit=0"},
+    {"name": "presence (Rust only)", "method": "GET", "path": "/presence", "allow": ["status", "response"], "why": "Rust-only route"}
+  ]
+}

@@ -1,0 +1,24 @@
+[Unit]
+Description=Lucina Discord presence watcher (owner only; own GUILDS|GUILD_PRESENCES gateway session)
+After=network-online.target
+Wants=network-online.target
+# Never burn identifies in a crash loop (1000 a day per bot token).
+StartLimitIntervalSec=900
+StartLimitBurst=8
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/lucina/presence.env
+ExecStart=%h/.local/bin/lucina-rs presence-watch
+Restart=always
+RestartSec=20
+# 78 = fatal gateway close (bad token, disallowed intents): do not restart.
+RestartPreventExitStatus=78
+TimeoutStopSec=10
+UMask=0077
+MemoryHigh=24M
+MemoryMax=64M
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

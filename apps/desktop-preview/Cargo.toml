@@ -1,0 +1,16 @@
+[package]
+name = "ink-preview"
+description = "Desktop E Ink emulator for the Lucina Ink reader: renders pages through the simulated Kindle display"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ink-preview"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+ink-epub = { path = "../../crates/ink-epub" }
+ink-render = { path = "../../crates/ink-render" }
+ink-kindle-hal = { path = "../../crates/ink-kindle-hal" }

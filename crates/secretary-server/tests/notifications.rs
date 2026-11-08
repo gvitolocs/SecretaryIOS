@@ -365,7 +365,8 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     assert_eq!(d[0].id, "a");
     let p = &d[0].payload;
     assert_eq!(p["category"], "reminder");
-    assert_eq!(p["title"], "Promemoria", "subscription language");
+    // The subscription asked for Italian; she never writes Italian to him (owner rule 2026-11-02).
+    assert_eq!(p["title"], "Reminder", "subscription language");
     assert_eq!(p["body"], "Chiama il dentista");
     assert_eq!(p["route"], "/");
     assert_eq!(p["unread"], 1);
@@ -393,7 +394,7 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     let last = d.iter().find(|x| x.payload["body"] == "due").unwrap();
     assert_eq!(last.headers["topic"], "lucina");
     assert_eq!(last.headers["urgency"], "normal");
-    assert_eq!(last.payload["title"], "2 messaggi da Lucina");
+    assert_eq!(last.payload["title"], "2 messages from Lucina");
 
     // Previews off: no text leaves the server, even encrypted.
     let (s, mut settings) = h
@@ -411,7 +412,7 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     h.notify(json!({"category": "shopping", "body": "Latte aggiunto", "route": "/shopping"}))
         .await;
     let d = h.wait_delivered(4).await;
-    assert_eq!(d[3].payload["body"], "Apri Secretary per leggerlo.");
+    assert_eq!(d[3].payload["body"], "Open Secretary to read it.");
     assert_eq!(d[3].payload["route"], "/shopping");
 }
 
@@ -506,14 +507,14 @@ async fn subscribe_validates_endpoint_and_keys() {
         ))
         .await;
     assert_eq!((s, code(&b)), (404, "subscription_not_found"));
-    // APNs is off without a paid team.
+    // An APNs token that is not hex is refused.
     let (s, b) = h
         .send(
             h.req(reqwest::Method::POST, "/v1/push/apns")
-                .json(&json!({"token": "ab".repeat(32)})),
+                .json(&json!({"token": "not-a-token"})),
         )
         .await;
-    assert_eq!((s, code(&b)), (503, "apns_disabled"));
+    assert_eq!((s, code(&b)), (400, "bad_request"));
     let (s, b) = h.send(h.req(reqwest::Method::GET, "/v1/push/key")).await;
     assert_eq!(s, 200);
     assert_eq!(
@@ -523,6 +524,104 @@ async fn subscribe_validates_endpoint_and_keys() {
             .len(),
         65
     );
+}
+
+#[tokio::test]
+async fn apns_tokens_are_kept_while_apns_is_off() {
+    let h = harness(false).await;
+    let token = "ab".repeat(32);
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, "/v1/push/apns")
+                .json(&json!({"token": token, "lang": "it"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["apnsEnabled"], false);
+    assert_eq!(
+        (b["kind"].as_str(), b["service"].as_str()),
+        (Some("apns"), Some("apns"))
+    );
+    let id = b["id"].clone();
+
+    // A push while off: the web subscription gets it, the token is skipped
+    // without counting a failure (it would be dropped after 10).
+    h.subscribe("w", 4, "en").await;
+    for i in 0..12 {
+        let (s, b) = h
+            .notify(json!({"category": "reminder", "body": format!("r{i}")}))
+            .await;
+        assert_eq!(s, 201, "{b}");
+    }
+    h.wait_delivered(12).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (s, v) = h
+        .send(h.req(reqwest::Method::GET, "/v1/notifications/settings"))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["apns"]["enabled"], false);
+    let subs = v["subscriptions"].as_array().unwrap();
+    let apns = subs.iter().find(|x| x["id"] == id).expect("token kept");
+    assert_eq!(apns["failures"], 0);
+    assert_eq!(apns["lastError"], Value::Null);
+
+    // Registering again refreshes the same subscription.
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, "/v1/push/apns")
+                .json(&json!({"token": token.to_uppercase()})),
+        )
+        .await;
+    assert_eq!((s, &b["id"]), (201, &id));
+}
+
+#[tokio::test]
+async fn live_activity_tokens_are_validated_and_kept() {
+    let h = harness(false).await;
+    let post = |body: Value| {
+        h.req(reqwest::Method::POST, "/v1/push/liveactivity")
+            .json(&body)
+    };
+    let start = "ab".repeat(40);
+    let update = "cd".repeat(40);
+    let id = "apr_AbCdEfGhIjKlMnOpQrStUv";
+    for bad in [
+        json!({"kind": "start", "token": "not-a-token"}),
+        json!({"kind": "update", "token": update}),
+        json!({"kind": "update", "token": update, "approvalId": "n_123"}),
+        json!({"kind": "later", "token": start}),
+    ] {
+        let (s, b) = h.send(post(bad.clone())).await;
+        assert_eq!((s, code(&b)), (400, "bad_request"), "{bad}");
+    }
+    let (s, b) = h
+        .send(post(
+            json!({"kind": "start", "token": start.to_uppercase()}),
+        ))
+        .await;
+    assert_eq!((s, &b), (201, &json!({"ok": true})));
+    let (s, _) = h
+        .send(post(
+            json!({"kind": "update", "token": update, "approvalId": id}),
+        ))
+        .await;
+    assert_eq!(s, 201);
+    // Again: refreshed, not duplicated.
+    let (s, _) = h.send(post(json!({"kind": "start", "token": start}))).await;
+    assert_eq!(s, 201);
+    let tokens = h.state.notify.live.list();
+    assert_eq!(tokens.len(), 2, "{tokens:?}");
+    assert_eq!(tokens[0].kind, notify::live::LiveKind::Update);
+    assert_eq!(tokens[0].approval_id.as_deref(), Some(id));
+    assert_eq!(tokens[1].token, start);
+    let r = h
+        .http
+        .post(format!("{}/v1/push/liveactivity", h.base))
+        .json(&json!({"kind": "start", "token": start}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
 }
 
 #[tokio::test]
@@ -574,6 +673,8 @@ async fn inbox_settings_and_auth() {
     assert_eq!((s, b["status"].as_str()), (200, Some("disabled")));
 
     for i in 0..3 {
+        // Inbox ids sort by milliseconds, then a random suffix: avoid timestamp ties.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let (s, _) = h
             .notify(json!({"category": "lucina_message", "title": "Lucina", "body": format!("m{i}"), "channel": "telegram"}))
             .await;
@@ -636,7 +737,7 @@ async fn inbox_settings_and_auth() {
     assert_eq!(v["settings"]["categories"]["presence"], false);
     assert_eq!(v["webPush"]["enabled"], true);
     assert_eq!(v["apns"]["enabled"], false);
-    assert_eq!(v["categories"].as_array().unwrap().len(), 7);
+    assert_eq!(v["categories"].as_array().unwrap().len(), 9, "7 + agent + approval");
     assert!(v["currentDevice"]["id"]
         .as_str()
         .unwrap()
@@ -724,6 +825,59 @@ async fn cookie_writes_need_csrf() {
     assert_eq!(s, 200);
 }
 
+/// The owner's rule: Lucina's chats with agents never alert him, messages to him do.
+#[tokio::test]
+async fn agent_chat_makes_no_push_and_messages_to_him_do() {
+    let h = harness(true).await;
+    h.subscribe("phone", 9, "en").await;
+    for _ in 0..100 {
+        if !h.lucina.streams.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let now = chrono_now_iso();
+    let send = |id: &str, text: &str, meta: Value| {
+        h.lucina
+            .items
+            .send(json!({"id": id, "ts": now, "channel": "web", "role": "lucina", "text": text, "meta": meta}))
+            .unwrap();
+    };
+    // Agent traffic, whichever provider, also when it names him.
+    send("01JB0000000000000000000001", "Build done.", json!({"via": "mcp", "caller": "claude-code"}));
+    send("01JB0000000000000000000002", "Giuseppe should see this", json!({"via": "mcp", "caller": "some-new-provider"}));
+    send("01JB0000000000000000000003", "💬 Claude replied", json!({"kind": "reach", "tool": "reach_claude"}));
+    // A message to him, after them: its push is the first one, so nothing above got through.
+    send("01JB0000000000000000000004", "Ciao Giuseppe", json!({"device": "dev_1"}));
+    let d = h.wait_delivered(1).await;
+    assert_eq!(d[0].payload["body"], "Ciao Giuseppe");
+    let b = h.inbox().await;
+    assert_eq!(b["items"].as_array().unwrap().len(), 1, "agent chat is not in the inbox: {b}");
+    assert_eq!(b["unread"], 1, "and not on the badge");
+
+    // An agent's question reaches him through its decision push, even with its turn silent.
+    send("01JB0000000000000000000005", "Decision needed", json!({"kind": "decision", "decisionId": "dc-1", "via": "mcp", "caller": "claude-code"}));
+    let (s, r) = h
+        .notify(json!({"category": "lucina_message", "title": "Decision needed: claude-code", "body": "Deploy?",
+                       "route": "/decisions/dc-1", "dedupKey": "decision:dc-1", "timelineId": "01JB0000000000000000000005"}))
+        .await;
+    assert_eq!(s, 201, "{r}");
+    let d = h.wait_delivered(2).await;
+    assert!(d.iter().any(|x| x.payload["route"] == "/decisions/dc-1"), "{d:?}");
+
+    // So does an approval, and Lucina telling him herself during an agent's turn.
+    let approval = notify::NewNotification::new(notify::Category::Approval, "claude-code asks to run a command");
+    assert_eq!(h.state.notify.publish(approval).await.unwrap().status(), "created");
+    let (s, r) = h
+        .notify(json!({"category": "lucina_message", "body": "The agent asks you to look at the build", "channel": "web"}))
+        .await;
+    assert_eq!(s, 201, "{r}");
+    let d = h.wait_delivered(4).await;
+    let cats: Vec<&str> = d.iter().map(|x| x.payload["category"].as_str().unwrap()).collect();
+    assert!(cats.contains(&"approval"), "{cats:?}");
+    assert!(d.iter().any(|x| x.payload["body"] == "The agent asks you to look at the build"), "{d:?}");
+}
+
 #[tokio::test]
 async fn timeline_ingestion_creates_and_pushes_lucina_items() {
     let h = harness(true).await;
@@ -789,4 +943,88 @@ fn chrono_now_iso() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap()
+}
+
+#[tokio::test]
+async fn proactive_feedback_and_service_settings() {
+    let h = harness(false).await;
+    let id = "po_01K85Z3Q4X5Y6Z7A8B9C0D1E2F";
+    let path = format!("/v1/proactive/outreach/{id}/feedback");
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, &path)
+                .json(&json!({"action": "stop"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["feedback"]["action"], "stop");
+    assert_eq!(b["feedback"]["outreachId"], id);
+    let first = b["feedback"]["id"].as_str().unwrap().to_owned();
+    // The same tap again: the stored one.
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, &path)
+                .json(&json!({"action": "stop"})),
+        )
+        .await;
+    assert_eq!(
+        (s, b["feedback"]["id"].as_str().unwrap()),
+        (200, first.as_str())
+    );
+    for (p, body) in [
+        (path.as_str(), json!({"action": "delete_everything"})),
+        (
+            "/v1/proactive/outreach/nope/feedback",
+            json!({"action": "useful"}),
+        ),
+        (path.as_str(), json!({"action": "useful", "extra": 1})),
+    ] {
+        let (s, _) = h.send(h.req(reqwest::Method::POST, p).json(&body)).await;
+        assert_eq!(s, 400, "{p} {body}");
+    }
+    // The service token is not a device token, and the other way round.
+    let r = h
+        .http
+        .post(format!("{}{path}", h.base))
+        .bearer_auth(&h.svc)
+        .json(&json!({"action": "useful"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    let (s, _) = h
+        .send(h.req(reqwest::Method::GET, "/v1/proactive/feedback"))
+        .await;
+    assert_eq!(s, 401);
+
+    // The engine pulls with the service token.
+    let pull = |after: Option<&str>| {
+        let url = match after {
+            Some(a) => format!("{}/v1/proactive/feedback?after={a}", h.base),
+            None => format!("{}/v1/proactive/feedback", h.base),
+        };
+        h.http.get(url).bearer_auth(&h.svc)
+    };
+    let (s, b) = h.send(pull(None)).await;
+    assert_eq!(s, 200);
+    assert_eq!(b["items"].as_array().unwrap().len(), 1);
+    assert_eq!(b["cursor"], first.as_str());
+    let (_, b) = h.send(pull(Some(&first))).await;
+    assert!(b["items"].as_array().unwrap().is_empty());
+    assert_eq!(b["cursor"], first.as_str(), "the cursor stays");
+
+    let (s, b) = h
+        .send(
+            h.http
+                .get(format!("{}/v1/notify/settings", h.base))
+                .bearer_auth(&h.svc),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(b["settings"]["quietHours"]["start"], "22:30");
+    assert_eq!(b["present"], false);
+    assert!(
+        b.get("subscriptions").is_none(),
+        "no device list for the service"
+    );
 }

@@ -63,9 +63,12 @@ async function main(): Promise<void> {
           },
         }
       : {}),
+    // Touch and mouse: orbit, pinch/wheel zoom, taps on her (`?static` turns it off).
+    interactive: !q.has('static'),
     onError: (e) => log(`model error: ${String(e)}`),
   });
   (window as unknown as { stage: LucinaStage }).stage = stage;
+  stage.onTouch((e) => log(`touch ${e.region}${e.side ? ` (${e.side})` : ''} → ${e.reaction} [${e.played}] line=${e.line}`));
   // The demo always starts muted (lip-sync still runs); `?unmuted` opts in to sound.
   // Audio only ever plays after an explicit click on "speak test".
   stage.setMuted(!q.has('unmuted'));

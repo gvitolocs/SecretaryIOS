@@ -31,7 +31,7 @@ async fn exercise(lifecycle: ClientLifecycleMode) {
         Some("lucina-mcp")
     );
     let tools = client.list_all_tools().await.expect("tools/list");
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 55);
     let r = client
         .call_tool(
             CallToolRequestParams::new("ask_lucina").with_arguments(

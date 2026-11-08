@@ -8,9 +8,11 @@ export const CATEGORIES = [
   "reminder",
   "calendar",
   "device_confirm",
+  "agent",
   "shopping",
   "presence",
   "system",
+  "approval",
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
@@ -40,7 +42,8 @@ export interface DevicePrefs {
 }
 
 export interface NotificationSettings {
-  categories: Record<Category, boolean>;
+  /** Older servers have no "approval" entry: those requests are always on. */
+  categories: Partial<Record<Category, boolean>>;
   quietHours: { enabled: boolean; start: string; end: string };
   timeZone: string;
   dndUntil: number | null;

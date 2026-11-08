@@ -1,0 +1,42 @@
+# VIBE_HOME for CodeCor coding agents (lucina-agentd acp.toml agents.vibe), from the lane config; edits and commands ask through ACP.
+# Prices from docs.mistral.ai/inference/pricing, 2026-11-02, dollars per million tokens; Medium from Vibe's built-in default.
+enable_telemetry = false
+enable_update_checks = false
+enable_auto_update = false
+active_model = "mistral-large"
+
+[models.mistral-small]
+name = "mistral-small-latest"
+provider = "mistral"
+alias = "mistral-small"
+input_price = 0.15
+cached_input_price = 0.015
+output_price = 0.6
+max_context_length = 262144
+
+[models.mistral-large]
+name = "mistral-large-4"
+provider = "mistral"
+alias = "mistral-large"
+input_price = 0.7
+cached_input_price = 0.07
+output_price = 2.1
+max_context_length = 1048576
+
+[models.mistral-medium]
+name = "mistral-vibe-cli-latest"
+provider = "mistral"
+alias = "mistral-medium"
+input_price = 1.5
+cached_input_price = 0.15
+output_price = 7.5
+max_context_length = 262144
+
+[models.codestral]
+name = "codestral-latest"
+provider = "mistral"
+alias = "codestral"
+input_price = 0.3
+cached_input_price = 0.03
+output_price = 0.9
+max_context_length = 256000

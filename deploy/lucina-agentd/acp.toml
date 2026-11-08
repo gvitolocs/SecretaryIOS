@@ -1,0 +1,17 @@
+# ~/.config/lucina-agentd/acp.toml: the custom ACP agents lucina-agentd offers (crates/lucina-agentd/src/providers/acp.rs).
+# agentd reads it when it starts. Install each command beside it as ~/.local/bin/<name> (see the scripts here).
+# The Mistral report agent (read-only, docs/design/mistral-provider.md).
+[agents.mistral]
+label = "Mistral"
+command = ["/home/nez/.local/bin/mistral-acp"]
+
+# CodeCor's coding Vibe: mistral-large on the owner's Vibe sign-in, every tool asks (vibe-codecor-acp.sh, vibe-codecor.toml
+# as ~/.config/vibe-codecor/config.toml).
+[agents.vibe]
+label = "Mistral Vibe"
+command = ["/home/nez/.local/bin/vibe-codecor-acp"]
+
+# LucinaCode (opencode-rust `oc-cli acp`) on the local Qwen (lucinacode-acp.sh; ~/.local/bin/oc-cli built from opencode-rust main).
+[agents.lucinacode]
+label = "Qwen (LucinaCode)"
+command = ["/home/nez/.local/bin/lucinacode-acp"]

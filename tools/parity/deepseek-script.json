@@ -1,0 +1,19 @@
+{"note": "Fake DeepSeek for the phase-1 parity harness: the same script serves the Node reference and the Rust instance (two fake instances), so replies are identical when both runtimes route the same way. Rules match the prompt kind and the last user message.",
+ "rules": [
+  {"kind": "intent", "content": "{\"intent\":\"chat\",\"confidence\":0.9,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+  {"kind": "plan", "contains": "grafico", "content": "{\"action\":\"graph_task\",\"prompt\":\"patrimony trend over the last months\",\"spreadsheetName\":\"patrimony.xlsx\"}"},
+  {"kind": "plan", "contains": "example.com", "content": "{\"action\":\"web_crawl_task\",\"url\":\"https://example.com/articolo\",\"query\":\"riassunto\"}"},
+  {"kind": "plan", "contains": "harness", "content": "{\"action\":\"cursor_task\",\"prompt\":\"inspect the deploy\"}"},
+  {"kind": "plan", "content": "{\"action\":\"reply\",\"text\":\"Risposta dal planner.\"}"},
+  {"kind": "reply", "contains": "daily briefing", "content": "Oggi hai un paio di cose in agenda. Per il resto la giornata è tranquilla."},
+  {"kind": "reply", "contains": "nota parity-test", "content": "La nota parla della riunione alle 10 con Anna."},
+  {"kind": "reply", "contains": "example.com", "content": "Dall'app non posso leggere pagine web: chiedimelo su Telegram."},
+  {"kind": "reply", "contains": "discord", "content": "Dai dati del watcher non posso dirlo con certezza."},
+  {"kind": "reply", "contains": "ricordi", "content": "Avevamo deciso tre allenamenti a settimana."},
+  {"kind": "reply", "contains": "capital", "content": "Canberra."},
+  {"kind": "reply", "contains": "vejret", "content": "Det ved jeg desværre ikke."},
+  {"kind": "reply", "contains": "ciao", "content": "Ciao Giuseppe!"},
+  {"kind": "reply", "content": "Va bene."}
+ ],
+ "default": {"content": "{\"action\":\"reply\",\"text\":\"ok\"}"}
+}

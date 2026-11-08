@@ -1,0 +1,119 @@
+/* Pixiv (views/Pixiv.tsx, components/pixiv/Reader.tsx), on the Lucina tokens (styles/lucina-tokens.css, --lu-*).
+   The back link, search field and muted text come from styles/media.css. The page scrolls in the shell's
+   .content (like Films); the reader is a fixed layer above the shell. */
+.pixiv { min-width: 0; display: grid; align-content: start; gap: var(--lu-space-md); max-width: 1400px; margin: 0 auto; padding: var(--lu-space-lg) var(--lu-space-gutter); padding-bottom: 150px; color: var(--lu-text); font-family: var(--lu-font); width: 100%; box-sizing: border-box; }
+.pixiv > * { min-width: 0; }
+.pixiv h1 { font-size: var(--lu-type-large-title); font-weight: var(--lu-type-large-title-weight); margin: 0; }
+
+.px-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--lu-space-xs); min-height: 36px; padding: 0 var(--lu-space-lg); border: 0; border-radius: var(--lu-radius-button); background: var(--lu-field); color: var(--lu-text); font: inherit; font-size: var(--lu-type-subheadline); cursor: pointer; }
+.px-btn--primary { background: var(--lu-accent-fill); color: var(--lu-on-accent); }
+.px-btn:focus-visible, .px-chip:focus-visible, .px-tab:focus-visible, .px-card:focus-visible, .px-iconbtn:focus-visible, .px-tag:focus-visible, .px-nav:focus-visible { outline: 2px solid var(--lu-accent); outline-offset: 2px; }
+
+/* Sections. */
+.px-tabs { display: flex; gap: var(--lu-space-xs); padding: 3px; border-radius: var(--lu-radius-field); background: var(--lu-field); }
+.px-tab { flex: 1; min-height: 34px; padding: 0 var(--lu-space-sm); border: 0; border-radius: calc(var(--lu-radius-field) - 3px); background: transparent; color: var(--lu-text-secondary); font: inherit; font-size: var(--lu-type-subheadline); font-weight: 600; cursor: pointer; }
+.px-tab--on { background: var(--lu-card-raised); color: var(--lu-text); }
+.px-panel { display: grid; gap: var(--lu-space-md); min-width: 0; }
+
+/* Ranking modes scroll by themselves; the page never scrolls sideways. */
+.px-chips { display: flex; gap: var(--lu-space-sm); overflow-x: auto; margin: 0 calc(-1 * var(--lu-space-gutter)); padding: 0 var(--lu-space-gutter) var(--lu-space-xs); scrollbar-width: none; overscroll-behavior-x: contain; }
+.px-chips::-webkit-scrollbar { display: none; }
+.px-chip { flex: none; min-height: 32px; padding: 0 var(--lu-space-md); border: 1px solid var(--lu-separator); border-radius: var(--lu-radius-pill); background: transparent; color: var(--lu-text); font: inherit; font-size: var(--lu-type-footnote); cursor: pointer; white-space: nowrap; }
+.px-chip--on { background: var(--lu-accent-soft); border-color: var(--lu-accent); color: var(--lu-accent); }
+.px-chip--adult { border-style: dashed; }
+
+/* Search. */
+.px-search { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--lu-space-sm); align-items: end; }
+.px-search .px-search__field { display: flex; flex-direction: row; align-items: center; gap: 8px; height: 40px; min-width: 0; padding: 0 12px; grid-column: span 2; box-sizing: border-box; }
+.px-search .px-search__field .icon { flex: none; width: 18px; height: 18px; }
+.px-search .px-search__field input { flex: 1; min-width: 0; width: 100%; }
+.px-search .px-btn { height: 40px; }
+.px-select { display: grid; gap: 2px; min-width: 0; font-size: var(--lu-type-caption); color: var(--lu-text-secondary); }
+/* The Content filter above the ranking chips and the bookmarks. */
+.px-filters { display: flex; flex-wrap: wrap; gap: var(--lu-space-sm); min-width: 0; }
+.px-filters .px-select { width: min(100%, 220px); }
+.px-select select { min-height: 36px; width: 100%; padding: 0 var(--lu-space-sm); border: 0; border-radius: var(--lu-radius-field); background: var(--lu-field); color: var(--lu-text); font: inherit; font-size: var(--lu-type-subheadline); }
+
+/* The grid of works. */
+.px-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--lu-space-lg) var(--lu-space-grid-gap); }
+.px-grid__cell { min-width: 0; }
+.px-card { display: grid; gap: 2px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.px-card__thumb { position: relative; display: block; aspect-ratio: 3 / 4; overflow: hidden; border-radius: var(--lu-radius-tile); background: var(--lu-field); }
+.px-card__thumb img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform var(--lu-motion-base) ease; }
+.px-card:hover .px-card__thumb img { transform: scale(1.03); }
+.px-card__title { margin-top: var(--lu-space-xs); font-size: var(--lu-type-subheadline); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.px-card__author { color: var(--lu-text-secondary); font-size: var(--lu-type-caption-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.px-badge { position: absolute; display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: var(--lu-radius-pill); background: var(--lu-scrim); color: #fff; font-size: var(--lu-type-caption-2); font-weight: 600; }
+.px-badge--pages { top: var(--lu-space-xs); right: var(--lu-space-xs); }
+.px-badge--r18 { top: var(--lu-space-xs); left: var(--lu-space-xs); background: var(--lu-negative); }
+.px-badge--tier { bottom: var(--lu-space-xs); left: var(--lu-space-xs); max-width: calc(100% - 44px); overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.px-badge--mark { bottom: var(--lu-space-xs); right: var(--lu-space-xs); background: var(--lu-accent-fill); padding: 0; width: 24px; }
+.px-badge--mark .icon { width: 14px; height: 14px; }
+.px-foot { display: grid; justify-items: center; gap: var(--lu-space-sm); padding: var(--lu-space-md) 0; min-height: 24px; }
+.px-note { margin: 0; color: var(--lu-text-secondary); font-size: var(--lu-type-footnote); text-align: center; }
+.px-note--error { color: var(--lu-negative); }
+.px-note--sort { text-align: left; }
+/* Why a list is short or empty (R-18 needs Pixiv's session, the account hides R-18, ...). */
+.px-notice { margin: 0; padding: var(--lu-space-sm) var(--lu-space-md); border-radius: var(--lu-radius-field); border-left: 3px solid var(--lu-accent); background: var(--lu-accent-soft); color: var(--lu-text); font-size: var(--lu-type-footnote); line-height: 1.4; overflow-wrap: anywhere; min-width: 0; }
+
+/* ---- the reader ---- */
+.px-reader { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--lu-bg); color: var(--lu-text); font-family: var(--lu-font); min-width: 0; }
+.px-reader__bar { display: flex; align-items: center; gap: var(--lu-space-sm); padding: calc(var(--lu-space-sm) + env(safe-area-inset-top, 0px)) var(--lu-space-md) var(--lu-space-sm); border-bottom: 1px solid var(--lu-separator); min-width: 0; }
+.px-reader__heading { flex: 1; min-width: 0; }
+.px-reader__title { margin: 0; font-size: var(--lu-type-subheadline); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.px-reader__author { margin: 0; font-size: var(--lu-type-caption-2); color: var(--lu-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.px-reader__actions { display: flex; align-items: center; gap: var(--lu-space-xs); flex: none; }
+.px-iconbtn { display: inline-grid; place-items: center; min-width: 40px; height: 40px; padding: 0; border: 0; border-radius: var(--lu-radius-pill); background: transparent; color: var(--lu-text); font: inherit; cursor: pointer; }
+.px-iconbtn .icon { width: 22px; height: 22px; }
+.px-iconbtn:disabled { opacity: 0.4; cursor: default; }
+.px-iconbtn--text { padding: 0 var(--lu-space-sm); font-size: var(--lu-type-footnote); font-weight: 600; border-radius: var(--lu-radius-field); }
+.px-iconbtn--on { color: var(--lu-accent); }
+.px-iconbtn[aria-pressed="true"].px-iconbtn--text { background: var(--lu-accent-soft); color: var(--lu-accent); }
+.px-savewrap { position: relative; }
+.px-menu { position: absolute; right: 0; top: 100%; z-index: 3; display: grid; min-width: 150px; padding: var(--lu-space-xs); border-radius: var(--lu-radius-field); background: var(--lu-card-raised); box-shadow: 0 8px 24px #0006; }
+.px-menu button { min-height: 40px; padding: 0 var(--lu-space-md); border: 0; border-radius: calc(var(--lu-radius-field) - 4px); background: transparent; color: var(--lu-text); font: inherit; font-size: var(--lu-type-subheadline); text-align: left; cursor: pointer; }
+.px-menu button:hover, .px-menu button:focus-visible { background: var(--lu-field); outline: none; }
+
+.px-reader__body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; min-width: 0; }
+.px-stage { position: relative; min-height: 0; min-width: 0; overflow: hidden; background: #000; touch-action: none; user-select: none; -webkit-user-select: none; cursor: zoom-in; display: grid; place-items: center; }
+.px-stage--zoomed { cursor: grab; }
+/* Until the image and stage sizes are known: the whole image, contained. Then Reader + zoom.ts place it (Fit, zoom, pan). */
+.px-stage__img { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; image-rendering: auto; -webkit-user-drag: none; }
+.px-stage__img--sized { inset: auto; left: 50%; top: 50%; object-fit: fill; }
+.px-zoom__level { min-width: 4.5em; font-variant-numeric: tabular-nums; }
+.px-stage__note { position: absolute; margin: 0; color: #fff; font-size: var(--lu-type-footnote); text-align: center; padding: var(--lu-space-lg); }
+.px-nav { position: absolute; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: var(--lu-radius-pill); background: var(--lu-scrim); color: #fff; cursor: pointer; }
+.px-nav--prev { left: var(--lu-space-sm); }
+.px-nav--next { right: var(--lu-space-sm); }
+.px-nav--next .icon { transform: scaleX(-1); }
+
+/* Details: a sheet over the picture on a phone, a column beside it on a wide screen. */
+.px-info { position: absolute; left: 0; right: 0; bottom: 0; max-height: 60%; overflow-y: auto; padding: var(--lu-space-lg); border-radius: var(--lu-radius-sheet) var(--lu-radius-sheet) 0 0; background: var(--lu-card); box-shadow: 0 -8px 24px #0006; display: grid; gap: var(--lu-space-md); align-content: start; overscroll-behavior: contain; }
+.px-info__text { margin: 0; font-size: var(--lu-type-subheadline); color: var(--lu-text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.px-info__heading { margin: 0; font-size: var(--lu-type-caption); font-weight: 600; color: var(--lu-text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.px-stats { display: flex; gap: var(--lu-space-lg); margin: 0; }
+.px-stats div { display: grid; }
+.px-stats dt { font-size: var(--lu-type-caption-2); color: var(--lu-text-secondary); }
+.px-stats dd { margin: 0; font-size: var(--lu-type-headline); font-weight: 600; }
+.px-tags { display: flex; flex-wrap: wrap; gap: var(--lu-space-sm); margin: 0; padding: 0; list-style: none; }
+.px-tag { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; max-width: 100%; padding: 0 var(--lu-space-md); border: 0; border-radius: var(--lu-radius-pill); background: var(--lu-field); color: var(--lu-text); font: inherit; font-size: var(--lu-type-footnote); cursor: pointer; }
+.px-tag .icon { width: 14px; height: 14px; flex: none; color: var(--lu-text-secondary); }
+.px-tag span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.px-tag__en { color: var(--lu-text-secondary); }
+@media (min-width: 900px) {
+  .px-reader__body--details { grid-template-columns: minmax(0, 1fr) 340px; }
+  .px-info { position: static; max-height: none; border-radius: 0; box-shadow: none; border-left: 1px solid var(--lu-separator); }
+}
+
+.px-zoom { display: flex; align-items: center; gap: 2px; flex: none; padding: 2px; border-radius: var(--lu-radius-field); background: var(--lu-field); }
+/* Phones zoom with a pinch and a double tap: the buttons would crowd the bar. */
+@media (max-width: 699px) { .px-zoom { display: none; } }
+/* Save results and "Updating…": a short note over the bottom of the picture. */
+.px-toast { position: absolute; left: 50%; bottom: calc(var(--lu-space-lg) + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); margin: 0; max-width: min(90%, 520px); padding: 8px 14px; border-radius: var(--lu-radius-pill); background: rgba(20, 20, 24, 0.82); color: #fff; font-size: var(--lu-type-footnote); text-align: center; pointer-events: none; opacity: 0; transition: opacity var(--lu-motion-base) ease; z-index: 2; }
+.px-toast--on { opacity: 1; }
+.px-reader__count { margin: 0 var(--lu-space-xs); color: var(--lu-text-secondary); flex: none; font-size: var(--lu-type-footnote); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Desktop page system: thumbnail grid on the card surface. */
+.pg.pixiv-desk .pixiv-surface { padding: var(--pg-pad, 24px); }
+.pg.pixiv-desk .px-chips { margin: 0; padding: 0 0 12px; }
+.pg.pixiv-desk .px-panel { gap: 16px; }

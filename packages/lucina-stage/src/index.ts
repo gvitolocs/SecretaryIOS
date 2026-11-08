@@ -1,5 +1,9 @@
 export { createLucinaStage } from './stage';
-export type { LucinaStage, LucinaStageOptions, SpeakOptions, StageInfo, TapEvent } from './stage';
+export { gltfExtensions, loadModel } from './loader';
+export type { LoadedModel, LoadOptions } from './loader';
+export type { LucinaStage, LucinaStageOptions, SpeakOptions, StageInfo, TapEvent, TouchEvent } from './stage';
+export * from './interact';
+export * from './facedrive';
 export {
   createVoice,
   getSpeechRecognition,
@@ -29,3 +33,5 @@ export { EFFECT_DURATION_MS, effectPhases, playOutfitEffect } from './outfitEffe
 export type { OutfitEffect, OutfitEffectOptions, SubjectRect } from './outfitEffect';
 
 export { applyToon, normalizeToon, type ToonConfig, type ToonMaterialConfig, type ToonHandle, type ToonBloom, type ToonOptions, type ToonSource } from './toon';
+
+export * from './physics';

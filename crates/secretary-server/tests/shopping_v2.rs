@@ -111,10 +111,15 @@ async fn mock_handler(
                 return fail(StatusCode::CONFLICT, "stale_revision");
             }
             let mut applied_set = m.applied.lock().unwrap();
-            let (mut applied, mut dups) = (vec![], vec![]);
+            let (mut applied, mut dups, mut rejected) = (vec![], vec![], vec![]);
             for op in &ops {
                 let id = op["opId"].as_str().unwrap().to_owned();
-                if applied_set.insert(id.clone()) {
+                // like Lucina's Jev gate for MCP batches
+                if body["via"] == "mcp" && op["name"] == "lavatrici" {
+                    rejected.push(json!({"opId": id, "error": "needs_confirmation",
+                        "text": "lavatrici", "question": "Intendevi Detersivo per lavatrice?",
+                        "suggestion": "Detersivo per lavatrice"}));
+                } else if applied_set.insert(id.clone()) {
                     applied.push(id);
                 } else {
                     dups.push(id);
@@ -126,7 +131,7 @@ async fn mock_handler(
             ok(
                 StatusCode::OK,
                 json!({"revision": *rev, "applied": applied, "duplicates": dups,
-                       "items": [banana()]}),
+                       "rejected": rejected, "items": [banana()]}),
             )
         }
         _ => fail(StatusCode::NOT_FOUND, "not_found"),
@@ -431,6 +436,35 @@ async fn ops_are_idempotent_end_to_end() {
 }
 
 #[tokio::test]
+async fn mcp_batches_carry_via_and_lucina_questions_come_back() {
+    let h = harness().await;
+    let rejected = json!({"opId": U2, "error": "needs_confirmation", "text": "lavatrici",
+        "question": "Intendevi Detersivo per lavatrice?", "suggestion": "Detersivo per lavatrice"});
+    let (s, b) = h
+        .send(h.req(Method::POST, "/v1/shopping/lists/default/ops").json(
+            &json!({"via": "mcp", "ops": [
+                {"opId": U1, "type": "add", "name": "latte"},
+                {"opId": U2, "type": "add", "name": "lavatrici"},
+            ]}),
+        ))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(h.last_body()["via"], "mcp");
+    assert_eq!(b["applied"], json!([U1]));
+    assert_eq!(b["rejected"], json!([rejected]));
+
+    // the app's batches carry no via
+    let (s, _) = h
+        .send(
+            h.req(Method::POST, "/v1/shopping/lists/default/ops")
+                .json(&json!({"ops": [{"opId": U3, "type": "clear_recent"}]})),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert!(h.last_body().get("via").is_none());
+}
+
+#[tokio::test]
 async fn conflicts_and_lucina_errors_are_mapped() {
     let h = harness().await;
     let (s, b) = h
@@ -481,6 +515,7 @@ async fn ops_are_validated_before_lucina() {
         json!({"ops": [{"opId": U1, "type": "move", "itemId": "i", "toListId": "a b"}]}),
         json!({"ops": [{"opId": U1, "type": "clear_recent"}, {"opId": U1, "type": "clear_recent"}]}),
         json!({"expectedRevision": -1, "ops": [{"opId": U1, "type": "clear_recent"}]}),
+        json!({"via": "web", "ops": [{"opId": U1, "type": "clear_recent"}]}),
     ];
     for body in cases {
         let (s, b) = h

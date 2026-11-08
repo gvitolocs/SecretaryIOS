@@ -1,0 +1,13 @@
+[package]
+name = "secretary-image-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The photo viewer core (secretary-image zoom, pan and swipe down) as a WebAssembly module for the web app"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+secretary-image = { path = "../secretary-image" }
+serde_json.workspace = true

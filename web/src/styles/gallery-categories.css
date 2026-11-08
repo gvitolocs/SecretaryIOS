@@ -1,0 +1,109 @@
+/* The automatic albums ("Things" on the albums page, components/gallery/categories) and the category row of the info panel. */
+
+.cat-things .al-section {
+  margin-bottom: 2px;
+}
+
+.cat-note {
+  max-width: 1100px;
+  margin: 0 auto 10px;
+  font-size: var(--lu-type-footnote, 13px);
+  color: var(--g-fg-soft, #8e8e93);
+}
+
+.cat-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.52);
+}
+
+.cat-badge .icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cat-tile .al-cover > .icon {
+  width: 34px;
+  height: 34px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The info panel's row. */
+.cat-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.cat-row__icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.cat-row__icon .icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cat-menu {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0 0;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--lu-field, rgba(118, 118, 128, 0.16));
+}
+
+.cat-menu__item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cat-menu__item:hover:not(:disabled),
+.cat-menu__item:focus-visible {
+  background: rgba(127, 143, 224, 0.2);
+  outline: none;
+}
+
+.cat-menu__item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cat-error {
+  margin: 6px 0 0;
+  font-size: var(--lu-type-footnote, 13px);
+  color: var(--lu-danger, #d94a4a);
+}

@@ -1,0 +1,210 @@
+/* The Gallery's Share sheet (components/gallery/share/ShareSheet.tsx) and the Shared links page (views/GallerySharedLinks.tsx).
+   The sheet reuses the dialog classes of gallery-viewer.css (.gv-dialog, .gv-check, .gv-error…). */
+
+.gs-body { gap: 16px; }
+
+.gs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+}
+
+.gs-section + .gs-section {
+  padding-top: 14px;
+  border-top: 1px solid var(--lu-separator, rgb(255 255 255 / 12%));
+}
+
+.gs-h {
+  margin: 0;
+  font-size: var(--lu-type-subheadline, 14px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+}
+
+.gs-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.gs-field > span { color: var(--lu-text-secondary, rgb(255 255 255 / 60%)); }
+
+.gs-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.gs-link {
+  font-family: var(--lu-mono, ui-monospace, monospace);
+  font-size: 13px;
+}
+
+.gs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gs-row .btn { flex: 0 1 auto; }
+
+.gs-life, .gs-note { font-size: var(--lu-type-subheadline, 13px); }
+
+.gs-status {
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--lu-accent-soft, rgb(91 124 255 / 14%));
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.gs-actions { align-items: center; justify-content: space-between; }
+
+.gs-manage {
+  color: var(--lu-accent, #7f8fe0);
+  font-size: var(--lu-type-subheadline, 14px);
+  text-decoration: none;
+}
+
+.gs-manage:hover { text-decoration: underline; }
+
+/* ---- the Shared links page ---- */
+
+.sl-page {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 8px 16px 32px;
+  color: var(--lu-text, inherit);
+  font-family: var(--lu-font, inherit);
+}
+
+.sl-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 860px;
+  margin: 0 auto 8px;
+  padding: 6px 0;
+}
+
+.sl-h1 {
+  flex: 1;
+  margin: 0;
+  font-size: var(--lu-type-title-2, 22px);
+  font-weight: 600;
+}
+
+.sl-back {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  color: inherit;
+}
+
+.sl-back:hover { background: var(--lu-field, rgb(118 118 128 / 24%)); }
+
+.sl-section {
+  max-width: 860px;
+  margin: 18px auto 8px;
+  font-size: var(--lu-type-subheadline, 14px);
+  font-weight: 600;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+}
+
+.sl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+.sl-empty {
+  max-width: 860px;
+  margin: 32px auto;
+  text-align: center;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+}
+
+.sl-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--lu-separator, rgb(255 255 255 / 12%));
+  border-radius: 14px;
+  background: var(--lu-card, rgb(255 255 255 / 4%));
+}
+
+.sl-row--over { opacity: 0.65; }
+
+.sl-cover {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--lu-field, rgb(118 118 128 / 24%));
+}
+
+.sl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.sl-main { flex: 1 1 220px; min-width: 0; }
+
+.sl-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.sl-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sl-badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--lu-field, rgb(118 118 128 / 24%));
+  font-size: 12px;
+}
+
+.sl-meta {
+  margin: 2px 0 0;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+.sl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sl-actions a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.sl-ask { font-size: var(--lu-type-subheadline, 14px); }
+
+@media (max-width: 560px) {
+  .sl-actions { width: 100%; }
+  .sl-actions .btn { flex: 1; text-align: center; }
+}

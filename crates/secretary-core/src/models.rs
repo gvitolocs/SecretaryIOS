@@ -41,7 +41,7 @@ pub struct Health {
 
 // -- chat / jobs ------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatRequest {
     pub message: String,
@@ -49,10 +49,25 @@ pub struct ChatRequest {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_message_id: Option<String>,
-    /// The client surface: `web` or `ios` (see [`crate::validate::CHAT_CHANNELS`]).
+    /// The client surface: `web` or `ios`, or `voice` (set by secretary-server for LucinaVoice turns only; see [`crate::validate::CHAT_CHANNELS`]).
     /// secretary-server always sets it before forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// Authenticated device; secretary-server overwrites client values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    /// Swipe to reply: the timeline id of the earlier message this one
+    /// answers (`[A-Za-z0-9_-]{1,64}`, see [`crate::validate::timeline_ref`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// LucinaVoice turns only (secretary-server sets it): what the turn tells Lucina besides
+    /// the words, `{turnId, ms: {stt}, ambiguous?: [{heard, candidates}]}`. `turnId` and `ms`
+    /// reach the thread item's `meta.voice`; `ambiguous` feeds Lucina's `vocab` layer. Never
+    /// audio. A Lucina that does not know the field ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_meta: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -473,6 +488,10 @@ pub struct OpsBatch {
     /// Language of item names in the answer and of `rename` (`it|en|da`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    /// Who sent the batch; `mcp` = an MCP client: Lucina checks its
+    /// free-text adds with Jev. Absent = the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
     pub ops: Vec<ShoppingOp>,
 }
 
@@ -702,6 +721,8 @@ pub enum Channel {
     Web,
     Ios,
     Alexa,
+    /// The LucinaVoice speaker's shared thread ("Lucina Voice").
+    Voice,
     #[default]
     Other,
     Unknown(String),
@@ -715,6 +736,7 @@ impl From<String> for Channel {
             "web" => Channel::Web,
             "ios" => Channel::Ios,
             "alexa" => Channel::Alexa,
+            "voice" => Channel::Voice,
             "other" => Channel::Other,
             _ => Channel::Unknown(s),
         }
@@ -729,6 +751,7 @@ impl From<Channel> for String {
             Channel::Web => "web".into(),
             Channel::Ios => "ios".into(),
             Channel::Alexa => "alexa".into(),
+            Channel::Voice => "voice".into(),
             Channel::Other => "other".into(),
             Channel::Unknown(s) => s,
         }
@@ -792,8 +815,8 @@ pub struct TimelineItem {
     pub extra: Map<String, Value>,
 }
 
-/// `GET /timeline` data: newest first; `nextBefore` is the cursor for the
-/// next (older) page, `null` at the start of history.
+/// `GET /timeline` data: `nextBefore` pages older history; `cursor` tracks
+/// arrivals for incremental requests.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelinePage {
@@ -801,6 +824,42 @@ pub struct TimelinePage {
     pub items: Vec<TimelineItem>,
     #[serde(default)]
     pub next_before: Option<Scalar>,
+    /// Arrival-order id to use as the next `after` cursor.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /timeline/conversations` data, with forward-compatible fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineConversations {
+    pub items: Vec<TimelineConversation>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineConversation {
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub channel: Channel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    pub count: u64,
+    pub last_id: Scalar,
+    pub last_ts: Scalar,
+    pub last_role: Role,
+    pub last_text: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -815,6 +874,13 @@ pub struct TimelineQuery {
     /// Cursor: an item id; only older items are returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<String>,
+    /// Arrival-order cursor: fetch items received after this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
     /// 1..=200; Lucina defaults to 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<String>,
@@ -946,6 +1012,43 @@ mod tests {
         let a: ShoppingListData = serde_json::from_value(json!({"list": one})).unwrap();
         let b: ShoppingListData = serde_json::from_value(one.clone()).unwrap();
         assert_eq!(a.into_list(), b.into_list());
+    }
+
+    #[test]
+    fn chat_request_reply_to_roundtrip() {
+        let raw = json!({"message": "e questo?", "sessionId": "iphone", "clientMessageId": "c-9",
+                         "channel": "ios", "replyTo": "01K83ZK4Q6X1V9W2D3E4F5G6H7"});
+        let req: ChatRequest = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(req.reply_to.as_deref(), Some("01K83ZK4Q6X1V9W2D3E4F5G6H7"));
+        assert_eq!(serde_json::to_value(&req).unwrap(), raw);
+        // Absent: not serialized at all, so the forwarded body is unchanged.
+        let raw = json!({"message": "ciao"});
+        let req: ChatRequest = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(req.reply_to, None);
+        assert_eq!(serde_json::to_value(&req).unwrap(), raw);
+    }
+
+    #[test]
+    fn device_chat_and_incremental_page_shapes() {
+        let req: ChatRequest = serde_json::from_value(json!({"message": "hi"})).unwrap();
+        assert!(req.device.is_none());
+        assert!(req.device_name.is_none());
+        let body = serde_json::to_value(req).unwrap();
+        assert!(body.get("device").is_none());
+        assert!(body.get("deviceName").is_none());
+        let raw = json!({"items": [], "nextBefore": null, "cursor": "arrival_1",
+            "hasMore": true, "futurePage": 42});
+        let page: TimelinePage = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(page.cursor.as_deref(), Some("arrival_1"));
+        assert_eq!(page.has_more, Some(true));
+        assert!(!page.extra.contains_key("cursor"));
+        assert!(!page.extra.contains_key("hasMore"));
+        assert_eq!(serde_json::to_value(page).unwrap(), raw);
+        let old: TimelinePage = serde_json::from_value(json!({"items": []})).unwrap();
+        assert_eq!(old.cursor, None);
+        assert_eq!(old.has_more, None);
+        assert!(serde_json::from_value::<TimelinePage>(json!({"cursor": 1})).is_err());
+        assert!(serde_json::from_value::<TimelinePage>(json!({"hasMore": "yes"})).is_err());
     }
 
     #[test]

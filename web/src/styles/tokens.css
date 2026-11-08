@@ -1,96 +1,97 @@
 /*
- * Secretary design system: "Nebula" (dark, default look) and "Pearl" (light).
- * Holographic accents (cyan -> violet -> magenta), glass panels, neon glows, a fine grain.
- * Every component reads these tokens; the legacy names (--bg, --surface, --accent, ...)
- * are kept so older rules follow the new palette.
+ * Secretary web tokens: the shared Lucina look (design/tokens.json, the iOS Weight, Settings
+ * and Chat tabs), so the web and the apps read as one product.
  *
- * Theme: dark unless the device prefers light, overridable with <html data-theme="dark|light">
- * (the account panel's Appearance setting).
+ * The values come from lucina-tokens.css (generated, --lu-*). The older names below
+ * (--bg, --surface, --accent, ...) are kept as aliases so every existing rule follows the
+ * shared palette; new rules should use --lu-* directly. Light mode and <html data-theme>
+ * are handled in lucina-tokens.css, so nothing here is repeated per theme.
  */
 
 :root {
-  color-scheme: dark;
+  /* ---- Surfaces ---- */
+  --void: var(--lu-bg);
+  --bg: var(--lu-bg);
+  --bg-elev: var(--lu-card);
+  --surface: var(--lu-card);
+  --surface-solid: var(--lu-card);
+  --surface-2: var(--lu-field);
+  --surface-3: var(--lu-card-raised);
+  --glass: var(--lu-card);
+  --glass-strong: var(--lu-tab-bar-bg);
+  --glass-hi: transparent;
+  --text: var(--lu-text);
+  --text-muted: var(--lu-text-secondary);
+  --text-dim: var(--lu-text-tertiary);
+  --border: color-mix(in srgb, var(--lu-separator) 55%, transparent);
+  --border-strong: var(--lu-separator);
+  --hairline: transparent;
 
-  /* ---- Palette: Nebula ---- */
-  --void: #04050d;
-  --bg: #070915;
-  --bg-elev: #0d1024;
-  --surface: rgb(22 26 54 / 0.62);
-  --surface-solid: #12162e;
-  --surface-2: rgb(150 170 255 / 0.08);
-  --surface-3: rgb(150 170 255 / 0.14);
-  --glass: rgb(18 22 48 / 0.55);
-  --glass-strong: rgb(14 17 38 / 0.82);
-  --glass-hi: rgb(255 255 255 / 0.07);
-  --text: #eef1ff;
-  --text-muted: #a0a8cc;
-  --text-dim: #6e7699;
-  --border: rgb(150 175 255 / 0.15);
-  --border-strong: rgb(150 200 255 / 0.3);
-  --hairline: rgb(255 255 255 / 0.06);
+  /* ---- The former neon palette, folded onto the accent and the semantic colours ---- */
+  --cyan: var(--lu-accent);
+  --violet: var(--lu-accent);
+  --magenta: var(--lu-accent);
+  --lime: var(--lu-positive);
+  --amber: var(--lu-warning);
+  --neon-red: var(--lu-negative);
+  --neon-teal: var(--lu-info);
 
-  --cyan: #3cf2ff;
-  --violet: #a67bff;
-  --magenta: #ff5fd2;
-  --lime: #c6ff5e;
-  --amber: #ffc857;
-  --neon-red: #ff4d6d;
-  --neon-teal: #2ee6c5;
+  --accent: var(--lu-accent);
+  --accent-strong: var(--lu-accent);
+  /* Text on an --accent fill: dark on periwinkle (7:1), light on indigo in light mode. */
+  --accent-contrast: var(--lu-bg);
+  --accent-soft: var(--lu-accent-soft);
+  --accent-2: var(--lu-accent);
+  --accent-3: var(--lu-accent);
 
-  --accent: #49e6ff;
-  --accent-strong: #9af6ff;
-  --accent-contrast: #031019;
-  --accent-soft: rgb(60 242 255 / 0.12);
-  --accent-2: var(--violet);
-  --accent-3: var(--magenta);
+  --user-bubble: linear-gradient(var(--lu-accent-fill), var(--lu-accent-fill));
+  --user-bubble-text: var(--lu-on-accent);
 
-  --user-bubble: linear-gradient(135deg, #0b6f8c 0%, #4b35c4 62%, #7a2fb4 100%);
-  --user-bubble-text: #f5f7ff;
+  --ok: var(--lu-positive);
+  --warn: var(--lu-warning);
+  --bad: var(--lu-negative);
+  --danger-text: var(--lu-negative);
+  --danger-bg: color-mix(in srgb, var(--lu-negative) 14%, transparent);
+  --notice-bg: color-mix(in srgb, var(--lu-warning) 14%, transparent);
+  --notice-text: var(--lu-warning);
 
-  --ok: #3dffa8;
-  --warn: #ffc857;
-  --bad: #ff5a7a;
-  --danger-text: #ff9db1;
-  --danger-bg: rgb(255 77 109 / 0.12);
-  --notice-bg: rgb(255 200 87 / 0.1);
-  --notice-text: #ffe2a3;
+  /* Gradients are flat now (one accent); kept as gradients so background-image still works. */
+  --grad-holo: linear-gradient(var(--lu-accent), var(--lu-accent));
+  --grad-holo-soft: linear-gradient(var(--lu-accent-soft), var(--lu-accent-soft));
+  --grad-primary: linear-gradient(var(--lu-accent-fill), var(--lu-accent-fill));
+  --grad-border: linear-gradient(transparent, transparent);
 
-  --grad-holo: linear-gradient(120deg, #3cf2ff 0%, #a67bff 48%, #ff5fd2 100%);
-  --grad-holo-soft: linear-gradient(120deg, rgb(60 242 255 / 0.22), rgb(166 123 255 / 0.2) 50%, rgb(255 95 210 / 0.18));
-  --grad-primary: linear-gradient(120deg, #22d3ee 0%, #6d5dfc 60%, #b14dff 100%);
-  --grad-border: linear-gradient(140deg, rgb(60 242 255 / 0.55), rgb(166 123 255 / 0.25) 45%, rgb(255 95 210 / 0.5));
-
-  /* ---- Glow + depth ---- */
-  --glow-accent: 0 0 0 1px rgb(60 242 255 / 0.35), 0 0 18px rgb(60 242 255 / 0.3);
-  --glow-violet: 0 0 0 1px rgb(166 123 255 / 0.4), 0 0 22px rgb(166 123 255 / 0.35);
-  --glow-text: 0 0 12px rgb(60 242 255 / 0.55);
-  --shadow: 0 1px 0 var(--hairline) inset, 0 10px 30px rgb(0 0 0 / 0.35);
-  --shadow-lg: 0 1px 0 var(--hairline) inset, 0 24px 60px rgb(0 0 0 / 0.55);
-  --blur: 18px;
-  --blur-strong: 28px;
-  --scrim: rgb(3 4 12 / 0.62);
-  --grain-opacity: 0.07;
-  --aurora-a: rgb(130 90 255 / 0.3);
-  --aurora-b: rgb(40 220 255 / 0.18);
-  --aurora-c: rgb(255 80 200 / 0.16);
+  /* ---- Depth: flat cards, a shadow only on what floats ---- */
+  --glow-accent: 0 0 0 1px color-mix(in srgb, var(--lu-accent) 45%, transparent);
+  --glow-violet: none;
+  --glow-text: none;
+  --shadow: none;
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.35);
+  --blur: 20px;
+  --blur-strong: 24px;
+  --scrim: var(--lu-scrim);
+  --grain-opacity: 0;
+  --aurora-a: transparent;
+  --aurora-b: transparent;
+  --aurora-c: transparent;
 
   /* ---- Shape + space ---- */
-  --gutter: 16px;
-  --tap: 44px;
-  --radius: 20px;
-  --radius-sm: 14px;
-  --radius-xs: 10px;
-  --radius-lg: 26px;
-  --radius-xl: 34px;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 28px;
-  --space-7: 40px;
+  --gutter: var(--lu-space-gutter);
+  --tap: var(--lu-space-tap);
+  --radius: var(--lu-radius-card);
+  --radius-sm: var(--lu-radius-tile);
+  --radius-xs: var(--lu-radius-field);
+  --radius-lg: var(--lu-radius-sheet);
+  --radius-xl: var(--lu-radius-sheet);
+  --space-1: var(--lu-space-xs);
+  --space-2: var(--lu-space-sm);
+  --space-3: var(--lu-space-md);
+  --space-4: var(--lu-space-lg);
+  --space-5: var(--lu-space-xl);
+  --space-6: var(--lu-space-xxl);
+  --space-7: var(--lu-space-xxxl);
   --rail-w: 104px;
-  --dock-h: 66px;
+  --dock-h: var(--lu-tab-bar-height);
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
@@ -99,135 +100,28 @@
   --pad-left: max(var(--gutter), var(--safe-left));
   --pad-right: max(var(--gutter), var(--safe-right));
 
-  /* ---- Type ---- */
-  --font: "Sora Variable", "Sora", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-display: var(--font);
-  --mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --fs-2xs: 0.6875rem;
-  --fs-xs: 0.75rem;
-  --fs-sm: 0.875rem;
-  --fs-md: 1rem;
-  --fs-lg: 1.125rem;
-  --fs-xl: 1.375rem;
-  --fs-2xl: 1.75rem;
-  --fs-3xl: 2.375rem;
-  --tracking-hud: 0.14em;
+  /* ---- Type: the system font and the iOS text styles ---- */
+  --font: var(--lu-font);
+  --font-display: var(--lu-font);
+  /* Small-capitals labels used the mono face; they take the system font like iOS section headers.
+     Code keeps --lu-font-mono (lucina-look.css). */
+  --mono: var(--lu-font);
+  --fs-2xs: var(--lu-type-caption-2);
+  --fs-xs: var(--lu-type-caption);
+  --fs-sm: var(--lu-type-subheadline);
+  --fs-md: var(--lu-type-body);
+  --fs-lg: var(--lu-type-title-3);
+  --fs-xl: var(--lu-type-title-2);
+  --fs-2xl: var(--lu-type-title);
+  --fs-3xl: var(--lu-type-large-title);
+  --tracking-hud: 0.06em;
 
   /* ---- Motion ---- */
-  --dur-1: 120ms;
-  --dur-2: 220ms;
-  --dur-3: 380ms;
+  --dur-1: var(--lu-motion-fast);
+  --dur-2: var(--lu-motion-base);
+  --dur-3: var(--lu-motion-slow);
   --dur-4: 640ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-/* ---- Palette: Pearl (light) ---- */
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    color-scheme: light;
-    --void: #e7e9f7;
-    --bg: #eef0fb;
-    --bg-elev: #ffffff;
-    --surface: rgb(255 255 255 / 0.7);
-    --surface-solid: #ffffff;
-    --surface-2: rgb(70 80 160 / 0.07);
-    --surface-3: rgb(70 80 160 / 0.12);
-    --glass: rgb(255 255 255 / 0.62);
-    --glass-strong: rgb(255 255 255 / 0.88);
-    --glass-hi: rgb(255 255 255 / 0.9);
-    --text: #12142b;
-    --text-muted: #555b7e;
-    --text-dim: #7c82a3;
-    --border: rgb(60 70 150 / 0.14);
-    --border-strong: rgb(60 90 190 / 0.3);
-    --hairline: rgb(255 255 255 / 0.8);
-    --cyan: #0896b8;
-    --violet: #6a4dff;
-    --magenta: #c2339f;
-    --lime: #5d9c00;
-    --amber: #b27300;
-    --neon-red: #f0365c;
-    --neon-teal: #0fb39a;
-    --accent: #06809e;
-    --accent-strong: #045f76;
-    --accent-contrast: #ffffff;
-    --accent-soft: rgb(8 150 184 / 0.12);
-    --user-bubble: linear-gradient(135deg, #0a7fa0 0%, #5a40e0 70%, #8a35c8 100%);
-    --ok: #0f9d63;
-    --warn: #b27300;
-    --bad: #d6304f;
-    --danger-text: #b0213f;
-    --danger-bg: rgb(240 54 92 / 0.1);
-    --notice-bg: rgb(255 186 40 / 0.16);
-    --notice-text: #6b4600;
-    --grad-holo: linear-gradient(120deg, #0aa6c4 0%, #6a4dff 50%, #d23bb0 100%);
-    --grad-holo-soft: linear-gradient(120deg, rgb(10 166 196 / 0.14), rgb(106 77 255 / 0.12) 50%, rgb(210 59 176 / 0.12));
-    --grad-primary: linear-gradient(120deg, #0891b2 0%, #5b4bf0 65%, #9b3fe6 100%);
-    --grad-border: linear-gradient(140deg, rgb(10 166 196 / 0.45), rgb(106 77 255 / 0.2) 45%, rgb(210 59 176 / 0.4));
-    --glow-accent: 0 0 0 1px rgb(8 150 184 / 0.35), 0 4px 18px rgb(8 150 184 / 0.22);
-    --glow-violet: 0 0 0 1px rgb(106 77 255 / 0.35), 0 4px 20px rgb(106 77 255 / 0.22);
-    --glow-text: none;
-    --shadow: 0 1px 0 var(--hairline) inset, 0 8px 26px rgb(40 50 120 / 0.1);
-    --shadow-lg: 0 1px 0 var(--hairline) inset, 0 22px 60px rgb(40 50 120 / 0.18);
-    --scrim: rgb(30 34 70 / 0.32);
-    --grain-opacity: 0.05;
-    --aurora-a: rgb(140 110 255 / 0.22);
-    --aurora-b: rgb(40 200 240 / 0.2);
-    --aurora-c: rgb(255 120 210 / 0.16);
-  }
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-  --void: #e7e9f7;
-  --bg: #eef0fb;
-  --bg-elev: #ffffff;
-  --surface: rgb(255 255 255 / 0.7);
-  --surface-solid: #ffffff;
-  --surface-2: rgb(70 80 160 / 0.07);
-  --surface-3: rgb(70 80 160 / 0.12);
-  --glass: rgb(255 255 255 / 0.62);
-  --glass-strong: rgb(255 255 255 / 0.88);
-  --glass-hi: rgb(255 255 255 / 0.9);
-  --text: #12142b;
-  --text-muted: #555b7e;
-  --text-dim: #7c82a3;
-  --border: rgb(60 70 150 / 0.14);
-  --border-strong: rgb(60 90 190 / 0.3);
-  --hairline: rgb(255 255 255 / 0.8);
-  --cyan: #0896b8;
-  --violet: #6a4dff;
-  --magenta: #c2339f;
-  --lime: #5d9c00;
-  --amber: #b27300;
-  --neon-red: #f0365c;
-  --neon-teal: #0fb39a;
-  --accent: #06809e;
-  --accent-strong: #045f76;
-  --accent-contrast: #ffffff;
-  --accent-soft: rgb(8 150 184 / 0.12);
-  --user-bubble: linear-gradient(135deg, #0a7fa0 0%, #5a40e0 70%, #8a35c8 100%);
-  --ok: #0f9d63;
-  --warn: #b27300;
-  --bad: #d6304f;
-  --danger-text: #b0213f;
-  --danger-bg: rgb(240 54 92 / 0.1);
-  --notice-bg: rgb(255 186 40 / 0.16);
-  --notice-text: #6b4600;
-  --grad-holo: linear-gradient(120deg, #0aa6c4 0%, #6a4dff 50%, #d23bb0 100%);
-  --grad-holo-soft: linear-gradient(120deg, rgb(10 166 196 / 0.14), rgb(106 77 255 / 0.12) 50%, rgb(210 59 176 / 0.12));
-  --grad-primary: linear-gradient(120deg, #0891b2 0%, #5b4bf0 65%, #9b3fe6 100%);
-  --grad-border: linear-gradient(140deg, rgb(10 166 196 / 0.45), rgb(106 77 255 / 0.2) 45%, rgb(210 59 176 / 0.4));
-  --glow-accent: 0 0 0 1px rgb(8 150 184 / 0.35), 0 4px 18px rgb(8 150 184 / 0.22);
-  --glow-violet: 0 0 0 1px rgb(106 77 255 / 0.35), 0 4px 20px rgb(106 77 255 / 0.22);
-  --glow-text: none;
-  --shadow: 0 1px 0 var(--hairline) inset, 0 8px 26px rgb(40 50 120 / 0.1);
-  --shadow-lg: 0 1px 0 var(--hairline) inset, 0 22px 60px rgb(40 50 120 / 0.18);
-  --scrim: rgb(30 34 70 / 0.32);
-  --grain-opacity: 0.05;
-  --aurora-a: rgb(140 110 255 / 0.22);
-  --aurora-b: rgb(40 200 240 / 0.2);
-  --aurora-c: rgb(255 120 210 / 0.16);
 }

@@ -29,6 +29,15 @@ getsecretary.tech {
 		format filter {
 			request>headers>Authorization delete
 			request>headers>Cookie delete
+			# Capabilities in the URI (2026-10-31): signed media URLs (/v1/instagram/s|a, /v1/media/s,
+			# /v1/nclient/s) keep only their route; Lucina's computer live view socket keeps its viewer
+			# ticket's name, not its value.
+			request>uri multi_regexp {
+				regexp "^(/v1/(?:instagram/[sa]|media/s|nclient/s)/)[^?#]*" "${1}REDACTED"
+				regexp "([?&]ticket=)[^&#]*" "${1}REDACTED"
+			}
+			# LucinaDesk: the socket's single-use ticket rides as a subprotocol.
+			request>headers>Sec-Websocket-Protocol delete
 			resp_headers>Set-Cookie delete
 		}
 	}

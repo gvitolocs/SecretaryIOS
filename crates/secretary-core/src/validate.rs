@@ -102,6 +102,24 @@ pub fn icon(field: &'static str, s: &str) -> Result<()> {
     Ok(())
 }
 
+/// A timeline item id a chat message replies to (`replyTo`): the same
+/// alphabet and length as [`session_id`], `[A-Za-z0-9_-]{1,64}`.
+pub fn timeline_ref(field: &'static str, s: &str) -> Result<()> {
+    session_id(field, s)
+}
+
+/// Conversation key: lowercase kind, optionally a 1..=64 character token.
+pub fn conversation(s: &str) -> Result<()> {
+    let (kind, token) = s.split_once(':').map_or((s, None), |(k, t)| (k, Some(t)));
+    if kind.is_empty() || !kind.bytes().all(|b| b.is_ascii_lowercase()) {
+        return Err(invalid("conversation", "must have a lowercase kind"));
+    }
+    if let Some(token) = token {
+        session_id("conversation", token)?;
+    }
+    Ok(())
+}
+
 /// Optional id: absent is fine, present must pass [`id`].
 pub fn opt_id(field: &'static str, s: Option<&str>) -> Result<()> {
     s.map_or(Ok(()), |s| id(field, s))
@@ -148,8 +166,18 @@ pub fn flag(field: &'static str, s: &str) -> Result<&'static str> {
 /// Max page size of `GET /timeline`.
 pub const MAX_TIMELINE_LIMIT: u32 = 200;
 
-/// Client surfaces a chat message may come from.
-pub const CHAT_CHANNELS: &[&str] = &["web", "ios"];
+/// Longest `q` and page size of `GET /ops/search` (Lucina's ops record).
+pub const MAX_OPS_QUERY_CHARS: usize = 500;
+pub const MAX_OPS_SEARCH_LIMIT: u32 = 50;
+
+/// Radius range of `GET /grocery/deals/map?radiusM=` (meters),
+/// also enforced by the server route.
+pub const DEALS_RADIUS_MIN: u32 = 500;
+pub const DEALS_RADIUS_MAX: u32 = 15_000;
+
+/// Client surfaces a chat message may come from. `voice` is the LucinaVoice speaker's shared
+/// thread: only secretary-server's own voice pipeline sends it (`POST /v1/chat` refuses it from clients).
+pub const CHAT_CHANNELS: &[&str] = &["web", "ios", "voice"];
 
 /// A decimal integer in `min..=max` (no sign, no leading `+`).
 pub fn bounded_int(field: &'static str, s: &str, min: u32, max: u32) -> Result<u32> {
@@ -364,6 +392,7 @@ mod tests {
             assert!(bounded_int("limit", bad, 1, 200).is_err(), "{bad:?}");
         }
         assert!(chat_channel("channel", "ios").is_ok());
+        assert!(chat_channel("channel", "voice").is_ok());
         assert!(chat_channel("channel", "telegram").is_err());
     }
 }

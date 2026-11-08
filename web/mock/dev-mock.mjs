@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // `npm run dev:mock`: start the mock API and the Vite dev server together.
+// MOCK_TIMELINE_ITEMS and MOCK_LATENCY_MS are inherited by the API child.
 // Extra arguments are passed to Vite (e.g. `npm run dev:mock -- --host`).
 
 import { spawn } from "node:child_process";
