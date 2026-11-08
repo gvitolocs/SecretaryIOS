@@ -104,7 +104,7 @@ export function fakeShoppingServer(init: Record<string, { name: string; theme: L
   });
   const catalogHint = (id: string) => {
     const c = TEST_CATALOG.items.find((i) => i.id === id);
-    if (c) return { name: c.name, names: { it: c.name, ...c.names }, kind: "catalog" as const, section: c.section, icon: c.icon };
+    if (c) return { name: c.name, names: { ...c.names, it: c.names.it ?? c.name }, kind: "catalog" as const, section: c.section, icon: c.icon };
     const custom = [...lists.values()].flatMap((x) => x.items).find((r) => r.objectId === id && r.kind === "custom");
     return custom ? { name: custom.name, names: custom.names, kind: "custom" as const, section: custom.section, icon: custom.icon ?? "🛒" } : undefined;
   };
