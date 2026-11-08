@@ -56,6 +56,7 @@ members = [
     "crates/secretary-player-wasm",
     "crates/secretary-maps",
     "crates/secretary-image-wasm",
+    "crates/lucina-link",
     "verification/models",
     "crates/secretary-media-stream",
     "crates/lucina-media",
