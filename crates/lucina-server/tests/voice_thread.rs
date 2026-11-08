@@ -850,7 +850,8 @@ async fn a_shopping_sentence_with_several_products_is_split_by_the_slots_layer()
         (slots["verdict"].as_str(), slots["used"].clone()),
         (Some("several"), json!(true))
     );
-    assert_eq!(reply, "Ho aggiunto latte e uova alla lista della spesa.");
+    // English or Danish, never Italian (owner rule 2026-11-02).
+    assert_eq!(reply, "Added latte and uova to your shopping list.");
     assert!(
         listed.contains("Latte") && listed.contains("Uova"),
         "{listed}"
