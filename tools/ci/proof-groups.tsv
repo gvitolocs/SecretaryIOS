@@ -1,0 +1,11 @@
+# Which group a proof belongs to: group<TAB>keys. A key is a verification/verus/ file stem, a mutant kernel folder, a verification/<dir>
+# with mutants.sh, or a crate name (shipped //@ files, crates/<c>/verus/). Hand-kept: a proof whose key is not here stops CI
+# (lucina-ci inventory) until it gets a group. Groups only label jobs; every unit still runs on its own runner.
+agents	acp_turn_watch agent_handoff agent_lifecycle delegate_limits run_gate worktree_guard deploy_guard permission_gate confirmation_gate mcp_scopes
+notify	reply_route delivery_monitor quiet_hours attention_engine dial_number voice-frames secretary-server
+secrets	secrets_policy secrets_redactor secret_source_path login_lockout otp_expiry otp_extract otp_owner otp_redact address_guard link_policy
+media	media_stream_kernels media_upload album_share share_kernels share_reconcile drive_kernels avatar_validation body_kernel player_kernels
+memory	memory_surfaces memo_kernel notes_kernel meeting_kernel chat_merge library_merge timeline_ids sync_kernel vault-sync lucina-vault protocol_kernels retirement_kernels
+shopping	shopping_ops shopping_text deals_kernel
+life	gym_kernel gym_lifecycle game_planner free_slots map_kernels nclient-core
+models	models

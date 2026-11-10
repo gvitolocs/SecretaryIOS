@@ -1,0 +1,63 @@
+# Generated: lucina-ci inventory --write. Do not edit. unit<TAB>group<TAB>kind<TAB>target<TAB>inputs
+models/stateright	models	models	tools/ci/run-models.sh	Cargo.lock,Cargo.toml,verification/models/,tools/ci/run-models.sh
+mutants/vault-sync	memory	mutants	verification/vault-sync/mutants.sh	crates/lucina-vault/,verification/vault-sync/
+mutants/verus-acp_turn_watch	agents	mutants	tools/ci/verus-mutant-files.sh verification/verus/mutants/acp_turn_watch/	verification/verus/mutants/acp_turn_watch/,tools/ci/verus-mutant-files.sh
+mutants/verus-agent_handoff	agents	mutants	tools/ci/verus-mutant-files.sh verification/verus/mutants/agent_handoff/	verification/verus/mutants/agent_handoff/,tools/ci/verus-mutant-files.sh
+mutants/verus-reply_route	notify	mutants	tools/ci/verus-mutant-files.sh verification/verus/mutants/reply_route/	verification/verus/mutants/reply_route/,tools/ci/verus-mutant-files.sh
+mutants/verus-shopping_text	shopping	mutants	tools/ci/verus-mutant-files.sh verification/verus/mutants/shopping_text/	verification/verus/mutants/shopping_text/,tools/ci/verus-mutant-files.sh
+mutants/voice-frames	notify	mutants	verification/voice-frames/mutants.sh	crates/secretary-server/,ios/Extensions/SecretaryWidgets/ApprovalLiveActivity.swift,ios/Secretary/Shared/ApprovalActivity.swift,verification/voice-frames/
+shipped/lucina-vault/sync_rules	memory	shipped	crates/lucina-vault/src/sync_rules.rs	crates/lucina-vault/
+shipped/secretary-server/voice_rules	notify	shipped	crates/secretary-server/src/voice_rules.rs	crates/secretary-server/,ios/Extensions/SecretaryWidgets/ApprovalLiveActivity.swift,ios/Secretary/Shared/ApprovalActivity.swift
+verus/acp_turn_watch	agents	verus	verification/verus/acp_turn_watch.rs	verification/verus/acp_turn_watch.rs
+verus/address_guard	secrets	verus	verification/verus/address_guard.rs	verification/verus/address_guard.rs
+verus/agent_handoff	agents	verus	verification/verus/agent_handoff.rs	verification/verus/agent_handoff.rs
+verus/agent_lifecycle	agents	verus	verification/verus/agent_lifecycle.rs	verification/verus/agent_lifecycle.rs
+verus/album_share	media	verus	verification/verus/album_share.rs	crates/lucina-media/,verification/verus/album_share.rs
+verus/attention_engine	notify	verus	verification/verus/attention_engine.rs	verification/verus/attention_engine.rs
+verus/avatar_validation	media	verus	verification/verus/avatar_validation.rs	verification/verus/avatar_validation.rs
+verus/body_kernel	media	verus	verification/verus/body_kernel.rs	crates/secretary-body/,verification/verus/body_kernel.rs
+verus/chat_merge	memory	verus	verification/verus/chat_merge.rs	verification/verus/chat_merge.rs
+verus/confirmation_gate	agents	verus	verification/verus/confirmation_gate.rs	verification/verus/confirmation_gate.rs
+verus/deals_kernel	shopping	verus	verification/verus/deals_kernel.rs	verification/verus/deals_kernel.rs
+verus/delegate_limits	agents	verus	verification/verus/delegate_limits.rs	verification/verus/delegate_limits.rs
+verus/delivery_monitor	notify	verus	verification/verus/delivery_monitor.rs	verification/verus/delivery_monitor.rs
+verus/deploy_guard	agents	verus	verification/verus/deploy_guard.rs	verification/verus/deploy_guard.rs
+verus/dial_number	notify	verus	verification/verus/dial_number.rs	verification/verus/dial_number.rs
+verus/drive_kernels	media	verus	verification/verus/drive_kernels.rs	crates/lucina-media/,verification/verus/drive_kernels.rs
+verus/free_slots	life	verus	verification/verus/free_slots.rs	verification/verus/free_slots.rs
+verus/game_planner	life	verus	verification/verus/game_planner.rs	verification/verus/game_planner.rs
+verus/gym_kernel	life	verus	verification/verus/gym_kernel.rs	crates/secretary-gym/,verification/verus/gym_kernel.rs
+verus/gym_lifecycle	life	verus	verification/verus/gym_lifecycle.rs	verification/verus/gym_lifecycle.rs
+verus/library_merge	memory	verus	verification/verus/library_merge.rs	verification/verus/library_merge.rs
+verus/link_policy	secrets	verus	verification/verus/link_policy.rs	verification/verus/link_policy.rs
+verus/login_lockout	secrets	verus	verification/verus/login_lockout.rs	verification/verus/login_lockout.rs
+verus/map_kernels	life	verus	verification/verus/map_kernels.rs	verification/verus/map_kernels.rs
+verus/mcp_scopes	agents	verus	verification/verus/mcp_scopes.rs	verification/verus/mcp_scopes.rs
+verus/media_stream_kernels	media	verus	verification/verus/media_stream_kernels.rs	crates/secretary-media-stream/,verification/verus/media_stream_kernels.rs
+verus/media_upload	media	verus	verification/verus/media_upload.rs	verification/verus/media_upload.rs
+verus/meeting_kernel	memory	verus	verification/verus/meeting_kernel.rs	verification/verus/meeting_kernel.rs
+verus/memo_kernel	memory	verus	verification/verus/memo_kernel.rs	verification/verus/memo_kernel.rs
+verus/memory_surfaces	memory	verus	verification/verus/memory_surfaces.rs	verification/verus/memory_surfaces.rs
+verus/nclient-core/verify_core	life	verus	crates/nclient-core/verus/verify_core.rs	crates/nclient-core/,crates/nclient-core/verus/verify_core.rs
+verus/notes_kernel	memory	verus	verification/verus/notes_kernel.rs	verification/verus/notes_kernel.rs
+verus/otp_expiry	secrets	verus	verification/verus/otp_expiry.rs	verification/verus/otp_expiry.rs
+verus/otp_extract	secrets	verus	verification/verus/otp_extract.rs	verification/verus/otp_extract.rs
+verus/otp_owner	secrets	verus	verification/verus/otp_owner.rs	verification/verus/otp_owner.rs
+verus/otp_redact	secrets	verus	verification/verus/otp_redact.rs	verification/verus/otp_redact.rs
+verus/permission_gate	agents	verus	verification/verus/permission_gate.rs	verification/verus/permission_gate.rs
+verus/player_kernels	media	verus	verification/verus/player_kernels.rs	verification/verus/player_kernels.rs
+verus/protocol_kernels	memory	verus	verification/verus/protocol_kernels.rs	verification/verus/protocol_kernels.rs
+verus/quiet_hours	notify	verus	verification/verus/quiet_hours.rs	verification/verus/quiet_hours.rs
+verus/reply_route	notify	verus	verification/verus/reply_route.rs	verification/verus/reply_route.rs
+verus/retirement_kernels	memory	verus	verification/verus/retirement_kernels.rs	verification/verus/retirement_kernels.rs
+verus/run_gate	agents	verus	verification/verus/run_gate.rs	verification/verus/run_gate.rs
+verus/secret_source_path	secrets	verus	verification/verus/secret_source_path.rs	verification/verus/secret_source_path.rs
+verus/secrets_policy	secrets	verus	verification/verus/secrets_policy.rs	verification/verus/secrets_policy.rs
+verus/secrets_redactor	secrets	verus	verification/verus/secrets_redactor.rs	verification/verus/secrets_redactor.rs
+verus/share_kernels	media	verus	verification/verus/share_kernels.rs	verification/verus/share_kernels.rs
+verus/share_reconcile	media	verus	verification/verus/share_reconcile.rs	verification/verus/share_reconcile.rs
+verus/shopping_ops	shopping	verus	verification/verus/shopping_ops.rs	verification/verus/shopping_ops.rs
+verus/shopping_text	shopping	verus	verification/verus/shopping_text.rs	verification/verus/shopping_text.rs
+verus/sync_kernel	memory	verus	verification/verus/sync_kernel.rs	verification/verus/sync_kernel.rs
+verus/timeline_ids	memory	verus	verification/verus/timeline_ids.rs	verification/verus/timeline_ids.rs
+verus/worktree_guard	agents	verus	verification/verus/worktree_guard.rs	verification/verus/worktree_guard.rs

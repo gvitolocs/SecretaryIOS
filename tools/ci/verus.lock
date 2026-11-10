@@ -1,0 +1,10 @@
+# The Verus release every proof in this repository is checked with (docs/ci/VERUS.md). Read by tools/ci/install-verus.sh and
+# lucina-ci, which refuse any other verifier. The same release as LucinaOS (references/upstream.lock there) and as nezopt's
+# /home/nez/tools/verus/verus-x86-linux, which scripts/verify.sh uses.
+[verus]
+url = "https://github.com/verus-lang/verus"
+release = "0.2026.11.02.8bf68ee"
+binary_sha256 = "1208c995c8e5244577693eba311d34bc2050c4acf984e10c4c7baf2003abff14"   # the verus launcher
+verifier_sha256 = "30d4325219c3d84b8d7512087a9068939687f740409d2bcf25cdc3174adb19c6" # rust_verify beside it
+rust_toolchain = "1.99.1"
+zip_x86_linux_sha256 = "f3a0119292df8855e4435da8130bee1873b0e6a60c306accf81a08ea687bba3c" # the release asset (GitHub digest)

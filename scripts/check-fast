@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The fast local check, run in your worktree before a commit: only what the change touched, capped. docs/ci/SHIFT-LEFT.md.
+# Usage: scripts/check-fast [--base REF] [--no-build] [--proofs [--mutants] [--all-proofs]] [--merge-gate]
+# diffgate, rustfmt, Clippy and unit tests of the touched crates, shellcheck/actionlint/gitleaks when installed, the proof
+# inventory. Verus runs on GitHub; --proofs runs the affected proofs here.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+# One shared Cargo target for every worktree (the same one LucinaOS uses), so the loop adds no new large target directories on
+# nezopt. The launcher itself builds apart, in its own small target, because LucinaOS's launcher has the same package name.
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/.cache/lucina-check-target}
+export LUCINA_CI_CPU_QUOTA=${LUCINA_CI_CPU_QUOTA:-400%}
+free=$(df --output=avail -BG "$HOME" | tail -1 | tr -dc 0-9)
+[ "$free" -ge 20 ] || { echo "check-fast: only ${free} GiB free; refusing to build" >&2; exit 2; }
+tool=${SECRETARY_CI_TOOL_TARGET:-$HOME/.cache/secretary-ci-tool}
+CARGO_TARGET_DIR=$tool cargo build --quiet --release --locked --manifest-path "$root/tools/ci/lucina-ci/Cargo.toml"
+exec "$tool/release/lucina-ci" check-fast "$@"
