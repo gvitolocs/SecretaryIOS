@@ -81,4 +81,16 @@ Add the file, give its stem (or crate, or mutant folder) a group in `tools/ci/pr
 
 ## Status and evidence
 
-RESULTS
+Run on GitHub-hosted runners of `gvitolocs/SecretaryIOS` (private) on 2026-11-10:
+
+| Check | Run | Result |
+| --- | --- | --- |
+| Full run, branch `rust-ci-standard` at bba9c416 | 42912778900 | `success`: 65 of 65 jobs, 62 of 62 units `verified`, each on its own runner; self-test passed; `verus-gate` success |
+| Runner size | same | every report: `runner_class: small-runner`, MemTotal 7.7 GiB, cap 6 GiB |
+| Deliberately false proof (`ensures 1 + 1 == 3` added to `reply_route.rs`), `proof/verus/reply_route` | 42912890994 | `proof_failed`; `verus-gate` failure |
+| Surviving mutant (an unchanged copy of the kernel in `mutants/reply_route/`), `proof/mutants/verus-reply_route` | 42912908187 | `mutant_survived` (`SURVIVED ...m99_ci_identical_survives.rs`); `verus-gate` failure |
+| Merge gate on those commits | `lucina-ci merge-check`, `scripts/gate-github-checks.sh` | green commit: passes; both negative commits: refused (`verus-gate: failure`) |
+
+Measured per unit (peak of the whole process tree, wall time of the unit): 61 units peaked between about 200 and 328 MiB (highest `verus/otp_redact`), most finished in about 1 s (median 1.0 s); the longest Verus units were the mutant scripts, `mutants/voice-frames` 142 s and `mutants/vault-sync` 14 s. `models/stateright` (build plus `cargo test`) peaked at 2.1 GiB in 151 s. Jobs took 6 to 171 s each (28 s on average), most of it setup; the whole run took about 4 minutes. Every unit fits the 6 GiB cap with room to spare; none needed a split.
+
+The negative branches were deleted after the runs. Not proven yet: a 16 GB runner (this repository is private and stays so), and the TLC and Quint specs, which are not in CI.
