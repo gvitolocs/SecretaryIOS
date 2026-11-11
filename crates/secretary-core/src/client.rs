@@ -1935,6 +1935,28 @@ pub fn decode_envelope(status: u16, bytes: &[u8]) -> Result<Value> {
     decode_response(status, bytes)
 }
 
+/// The code and message of an error body. Lucina writes `{error: "code", message}`
+/// (`api.rs::ApiError`); a body that nests them, `{error: {code, message}}` — the
+/// shape the apps are answered with, and what a stand-in Lucina in a test answers
+/// with — is read the same way, so `Api.code` is Lucina's code and not `http_<status>`.
+fn error_fields(status: u16, bytes: &[u8]) -> (String, Option<String>) {
+    let Ok(body) = serde_json::from_slice::<Value>(bytes) else {
+        return (format!("http_{status}"), None);
+    };
+    let code = body
+        .get("error")
+        .and_then(|e| e.as_str().or_else(|| e.get("code").and_then(Value::as_str)))
+        .filter(|c| !c.is_empty())
+        .unwrap_or(format!("http_{status}").as_str())
+        .to_owned();
+    let message = body
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| body.pointer("/error/message").and_then(Value::as_str))
+        .map(str::to_owned);
+    (code, message)
+}
+
 fn decode_response<T: DeserializeOwned>(status: u16, bytes: &[u8]) -> Result<T> {
     if (200..300).contains(&status) {
         let env: Envelope<Value> =
@@ -1949,13 +1971,7 @@ fn decode_response<T: DeserializeOwned>(status: u16, bytes: &[u8]) -> Result<T> 
         serde_json::from_value(env.data.unwrap_or(Value::Null))
             .map_err(|e| Error::Decode(e.to_string()))
     } else {
-        let (code, message) = match serde_json::from_slice::<Envelope<Value>>(bytes) {
-            Ok(env) => (
-                env.error.unwrap_or_else(|| format!("http_{status}")),
-                env.message,
-            ),
-            Err(_) => (format!("http_{status}"), None),
-        };
+        let (code, message) = error_fields(status, bytes);
         Err(Error::Api {
             status,
             code,
@@ -2724,6 +2740,34 @@ mod tests {
             decode_response::<Value>(200, b"nope"),
             Err(Error::Decode(_))
         ));
+    }
+
+    #[test]
+    fn an_error_body_that_nests_its_code_still_carries_lucinas_code() {
+        match decode_response::<Value>(
+            404,
+            br#"{"ok":false,"error":{"code":"not_found","message":"no such parcel"}}"#,
+        ) {
+            Err(Error::Api {
+                status,
+                code,
+                message,
+            }) => assert_eq!(
+                (status, code.as_str(), message.as_deref()),
+                (404, "not_found", Some("no such parcel"))
+            ),
+            other => panic!("{other:?}"),
+        }
+        for body in [
+            br#"{"ok":false,"error":{}}"#.as_slice(),
+            br#"{"ok":false,"error":""}"#.as_slice(),
+            br#"{"ok":false}"#.as_slice(),
+        ] {
+            match decode_response::<Value>(404, body) {
+                Err(Error::Api { code, .. }) => assert_eq!(code, "http_404", "{body:?}"),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
