@@ -33,7 +33,7 @@ const LucinaEditor = lazy(() => import("../components/LucinaEditor"));
 // The owner's sections: Chat, Calendar (2026-10-30), Shopping, Training + Weight, Plugins. All but Calendar are
 // also the iPhone tabs (2026-10-24). Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
-const PLUGIN_PATHS = ["/approvals", "/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram", "/agents", "/voice"];
+const PLUGIN_PATHS = ["/approvals", "/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/parcels", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram", "/agents", "/voice"];
 
 function NavLinks(props: { class: string }) {
   const location = useLocation();
