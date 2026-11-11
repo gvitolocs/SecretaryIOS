@@ -43,6 +43,34 @@ The same path as the caller digest (`crates/lucina-server/src/callers.rs`): one 
 notification through secretary-server `POST /v1/notify` with category `reminder`. That means quiet hours and
 his switches apply to parcels as they do to reminders. No Telegram, no new channel, no new credentials.
 
+## App and API
+
+The apps reach the same service the chat turn and the loop use, through secretary-server
+(`crates/secretary-server/src/parcels.rs`, contract in `docs/server-api.md`), which forwards to Lucina's
+`/api/secretary/parcels*` (`crates/lucina-server/src/parcels.rs`):
+
+| Route | |
+|---|---|
+| `GET /v1/parcels` | `{parcels, digestHour}`: active first, newest change first, delivered and stopped after |
+| `POST /v1/parcels` | `{number, carrier?, label?}`: detect the carrier, save, look up once → `{parcel}` |
+| `GET /v1/parcels/{id}` | `{parcel}`; an unknown id → 404 `not_found` |
+| `POST /v1/parcels/{id}/refresh` | `{parcel}`: looked up now unless it was checked under 10 minutes ago |
+| `PATCH /v1/parcels/{id}` | `{label: text or null}` → `{parcel}` |
+| `DELETE /v1/parcels/{id}` | `{ok: true}` |
+
+`Parcel` is camelCase with RFC 3339 UTC times, from `lucina_parcels::view`: `id`, `number`, `carrier`, `label`, `state`
+(`active`|`delivered`|`stopped`), `schedule` (`hourly`|`daily`|`stopped`) and `near` (why it is hourly), `addedAt`,
+`lastChecked`, `nextCheck` (`view::next_check`: `lastChecked` + 1 h hourly, the next digest hour daily, null stopped),
+`lastError`, `status` (`stage`, `text`, `lastUpdate`, `expectedDelivery`, `location`, `destinationCountry`; null before
+the first successful check) and `events` — the carrier's scans newest first, at most 50, kept with the parcel.
+
+- Web and Mac: `web/src/views/Parcels.tsx`.
+- iPhone: `ios/Secretary/Features/Parcels/` (`ParcelsView.swift`, `ParcelDetailView.swift`, `ParcelsAPI.swift`,
+  `ParcelsStore.swift`, `ParcelText.swift`).
+
+Adding, refreshing and removing are one implementation, `lucina_parcels::Service`, shared by the API, the `parcel` tool
+and the chat turn — no second copy of the detect-and-track step.
+
 ## The scraper
 
 Universal Parcel Scraper (plhery/universal-parcel-scraper, Apache-2.0), pinned `v0.637.1`, runs unmodified as
@@ -66,6 +94,8 @@ time and stores nothing — storing and polling are ours, in `lucina-parcels`.
 
 - `cargo test -p lucina-parcels` (the policy rules and the fixture tests against captured scraper responses)
 - `cargo test -p lucina-server --test parcels`
+- `cargo test -p secretary-core parcels` (the `Call`s of the API) and
+  `cargo test -p secretary-server --test parcels` (`/v1/parcels*` against a mock Lucina)
 - service: `systemctl --user status lucina-parcel-scraper`, `curl -s http://127.0.0.1:8796/health`
 - routing: `POST /api/secretary/jev/route` with a "track this <number>" text
 
