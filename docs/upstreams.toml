@@ -1505,3 +1505,62 @@ relation = "reference"
 confidence = "confirmed"
 rely_on = ["time to live 600 s", "cache_size 6", "pressure limits: moderate 3, critical 0"]
 notes = "Read 2026-11-11 from chromium.googlesource.com at the pin. Spec: LucinaNet docs/specs/history-depth.md."
+
+[[upstream]]
+id = "aurora-silicon-aura"
+name = "aurora-silicon/aura (m1n1-based loader)"
+url = "https://github.com/aurora-silicon/aura"
+source = "github"
+repo = "aurora-silicon/aura"
+branch = "main"
+track = "commits"
+pin = "409b7e1554493516e671ae1bab22ae6296231671"
+pin_date = "2026-11-11"
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/aura"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "inherited MIT plus Aurora code under GPL-2.0-only (README)"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "likely"
+rely_on = ["boot hand-off", "T8132 stage 1 and 2"]
+notes = "Aurora policy: do not contribute upstream; LLM use disclosed per commit. Reference only."
+
+[[upstream]]
+id = "aurora-silicon-distributions"
+name = "aurora-silicon/aurora-distributions (installer catalog and validation record)"
+url = "https://github.com/aurora-silicon/aurora-distributions"
+source = "github"
+repo = "aurora-silicon/aurora-distributions"
+branch = "main"
+track = "commits"
+pin = "431ebce8c0f61393ed7c71169026b7d445e4ee3c"
+pin_date = "2026-11-10"
+paths = ["docs/VALIDATION.md", "site/installer/catalog.json"]
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/aurora-distributions"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "unknown (listed as Other; not read)"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "likely"
+rely_on = ["apple,j713 and apple,j715 catalog entries", "VALIDATION.md device rows"]
+notes = "Status source for what Aurora admits and validates per Mac. At 2026-11-11 the catalog admits j713 and j715, VALIDATION.md has no row for them."
+
+[[upstream]]
+id = "aurora-silicon-installer"
+name = "aurora-silicon/aurora-installer (native macOS installer, pre-releases)"
+url = "https://github.com/aurora-silicon/aurora-installer"
+source = "github"
+repo = "aurora-silicon/aurora-installer"
+track = "releases"
+pin = "0.1.0 Alpha 19"
+pin_date = "2026-11-09"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "MIT (listing)"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "likely"
+rely_on = ["install flow", "boot object handling"]
+notes = "Alphas every 1 to 6 days (alpha 9 on 23 Oct, alpha 19 on 9 Nov). Read-only reference for the owner decisions D1 to D3; nothing is run."
