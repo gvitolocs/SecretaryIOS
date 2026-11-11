@@ -25,7 +25,10 @@ use super::{GateResult, JobKind, Outcome, Spec};
 
 /// The exit code: 0 when the job did what it was for.
 pub fn run(dir: &Path) -> i32 {
-    let spec: Spec = match std::fs::read_to_string(dir.join("job.json")).map_err(|e| e.to_string()).and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string())) {
+    let spec: Spec = match std::fs::read_to_string(dir.join("job.json"))
+        .map_err(|e| e.to_string())
+        .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("pipeline-exec: {}: {e}", dir.join("job.json").display());
@@ -44,7 +47,10 @@ pub fn run(dir: &Path) -> i32 {
     let ok = outcome.ok;
     let json = serde_json::to_string_pretty(&outcome).unwrap_or_default();
     let tmp = dir.join("result.json.tmp");
-    if std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, dir.join("result.json"))).is_err() {
+    if std::fs::write(&tmp, json)
+        .and_then(|_| std::fs::rename(&tmp, dir.join("result.json")))
+        .is_err()
+    {
         return 2;
     }
     if ok {
@@ -55,7 +61,12 @@ pub fn run(dir: &Path) -> i32 {
 }
 
 fn fail(code: &str, message: impl Into<String>) -> Outcome {
-    Outcome { ok: false, code: code.into(), message: message.into(), ..Outcome::default() }
+    Outcome {
+        ok: false,
+        code: code.into(),
+        message: message.into(),
+        ..Outcome::default()
+    }
 }
 
 struct Exec {
@@ -75,11 +86,23 @@ type Git = Result<String, String>;
 
 impl Exec {
     fn open(dir: &Path, spec: Spec) -> Result<Self, String> {
-        let log = OpenOptions::new().create(true).append(true).open(dir.join("log")).map_err(|e| format!("log: {e}"))?;
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("log"))
+            .map_err(|e| format!("log: {e}"))?;
         let home = std::env::var("HOME").unwrap_or_default();
         // The same tools as a login shell: tests call mkfs.fat and friends, which live in sbin.
-        let path = format!("{home}/.cargo/bin:{home}/.local/bin:{home}/bin:{}:/usr/sbin:/sbin", std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()));
-        Ok(Exec { spec, log, path, members: None })
+        let path = format!(
+            "{home}/.cargo/bin:{home}/.local/bin:{home}/bin:{}:/usr/sbin:/sbin",
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())
+        );
+        Ok(Exec {
+            spec,
+            log,
+            path,
+            members: None,
+        })
     }
 
     /// Finish cleanup while the executor still holds the job's flock, regardless of outcome.
@@ -88,13 +111,25 @@ impl Exec {
             JobKind::Merge => self.merge(),
             JobKind::Deploy => self.deploy(),
         };
-        let root = self.spec.target_root.clone().unwrap_or_else(|| super::Config::from_env(Path::new(".")).target_root);
-        self.say(&super::sweep::run(Path::new(&self.spec.target_dir), &root, self.members.as_ref().map(|m| &m.names)));
+        let root = self
+            .spec
+            .target_root
+            .clone()
+            .unwrap_or_else(|| super::Config::from_env(Path::new(".")).target_root);
+        self.say(&super::sweep::run(
+            Path::new(&self.spec.target_dir),
+            &root,
+            self.members.as_ref().map(|m| &m.names),
+        ));
         outcome
     }
 
     fn say(&mut self, msg: &str) {
-        let _ = writeln!(self.log, "[{}] {msg}", chrono::Utc::now().format("%H:%M:%S"));
+        let _ = writeln!(
+            self.log,
+            "[{}] {msg}",
+            chrono::Utc::now().format("%H:%M:%S")
+        );
     }
 
     fn git(&self, dir: &Path, args: &[&str]) -> Git {
@@ -113,7 +148,11 @@ impl Exec {
             Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
         } else {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(if err.is_empty() { format!("git {} failed", args.join(" ")) } else { err })
+            Err(if err.is_empty() {
+                format!("git {} failed", args.join(" "))
+            } else {
+                err
+            })
         }
     }
 
@@ -130,9 +169,17 @@ impl Exec {
     /// `bash -c cmd` in `cwd` with output into the log, under `timeout`. Returns its success.
     fn sh(&mut self, cwd: &Path, cmd: &str, timeout_min: u64) -> bool {
         self.say(&format!("$ {cmd}"));
-        let (Ok(out), Ok(err)) = (self.log.try_clone(), self.log.try_clone()) else { return false };
+        let (Ok(out), Ok(err)) = (self.log.try_clone(), self.log.try_clone()) else {
+            return false;
+        };
         let status = Command::new("timeout")
-            .args(["--kill-after=30s", &format!("{}m", timeout_min.max(1)), "bash", "-c", cmd])
+            .args([
+                "--kill-after=30s",
+                &format!("{}m", timeout_min.max(1)),
+                "bash",
+                "-c",
+                cmd,
+            ])
             .current_dir(cwd)
             .env("PATH", &self.path)
             .env("CARGO_TARGET_DIR", &self.spec.target_dir)
@@ -146,7 +193,16 @@ impl Exec {
         match status {
             Ok(s) if s.success() => true,
             Ok(s) => {
-                let why = if s.code() == Some(124) { format!("timed out after {timeout_min} min") } else { format!("exit {}", s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())) };
+                let why = if s.code() == Some(124) {
+                    format!("timed out after {timeout_min} min")
+                } else {
+                    format!(
+                        "exit {}",
+                        s.code()
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "signal".into())
+                    )
+                };
                 self.say(&format!("failed: {why}"));
                 false
             }
@@ -168,9 +224,23 @@ impl Exec {
         match self.spec.remote.clone() {
             Some(remote) => {
                 self.git_logged(&repo, &["fetch", "-q", &remote])?;
-                self.git(&repo, &["rev-parse", "--verify", &format!("refs/remotes/{remote}/{trunk}^{{commit}}")])
+                self.git(
+                    &repo,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        &format!("refs/remotes/{remote}/{trunk}^{{commit}}"),
+                    ],
+                )
             }
-            None => self.git(&repo, &["rev-parse", "--verify", &format!("refs/heads/{trunk}^{{commit}}")]),
+            None => self.git(
+                &repo,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    &format!("refs/heads/{trunk}^{{commit}}"),
+                ],
+            ),
         }
     }
 
@@ -181,7 +251,16 @@ impl Exec {
         if !dir.join(".git").exists() {
             let _ = self.git(&repo, &["worktree", "prune"]);
             std::fs::create_dir_all(&self.spec.work_root).map_err(|e| e.to_string())?;
-            self.git_logged(&repo, &["worktree", "add", "--detach", &dir.display().to_string(), sha])?;
+            self.git_logged(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    &dir.display().to_string(),
+                    sha,
+                ],
+            )?;
             return Ok(dir);
         }
         let _ = self.git(&dir, &["rebase", "--abort"]);
@@ -202,13 +281,20 @@ impl Exec {
     /// The repo's crates. Workspace members come from `cargo metadata`; any other crate is
     /// standalone (its own lock, `--manifest-path`).
     fn crates(&self, dir: &Path) -> (Vec<Crate>, bool) {
-        let files = self.git(dir, &["ls-files", "--", "Cargo.toml", "*/Cargo.toml"]).unwrap_or_default();
+        let files = self
+            .git(dir, &["ls-files", "--", "Cargo.toml", "*/Cargo.toml"])
+            .unwrap_or_default();
         let mut crates = Vec::new();
         let mut has_workspace = false;
         let members = &self.members;
         for f in files.lines() {
-            let Ok(text) = std::fs::read_to_string(dir.join(f)) else { continue };
-            let d = f.strip_suffix("Cargo.toml").unwrap_or_default().trim_end_matches('/');
+            let Ok(text) = std::fs::read_to_string(dir.join(f)) else {
+                continue;
+            };
+            let d = f
+                .strip_suffix("Cargo.toml")
+                .unwrap_or_default()
+                .trim_end_matches('/');
             if d.is_empty() && text.contains("[workspace]") {
                 has_workspace = true;
             }
@@ -228,7 +314,13 @@ impl Exec {
             return None;
         }
         let out = Command::new("cargo")
-            .args(["metadata", "--no-deps", "--format-version", "1", "--offline"])
+            .args([
+                "metadata",
+                "--no-deps",
+                "--format-version",
+                "1",
+                "--offline",
+            ])
             .current_dir(dir)
             .env("PATH", &self.path)
             .stdin(Stdio::null())
@@ -239,7 +331,10 @@ impl Exec {
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
         let root = std::fs::canonicalize(dir).ok()?;
         let ids = v["workspace_members"].as_array()?;
-        let mut members = Members { directories: Vec::new(), names: HashSet::new() };
+        let mut members = Members {
+            directories: Vec::new(),
+            names: HashSet::new(),
+        };
         for p in v["packages"].as_array()? {
             if !ids.contains(&p["id"]) {
                 continue;
@@ -262,11 +357,20 @@ impl Exec {
             // Some tests time things or bind ports and fail when nezopt is loaded: a failed cargo
             // test runs once more, and a pass then is reported as flaky, not hidden.
             if !ok && g.run.starts_with("cargo test") {
-                self.say(&format!("gate failed: {}; running it once more (flaky tests under load)", g.name));
+                self.say(&format!(
+                    "gate failed: {}; running it once more (flaky tests under load)",
+                    g.name
+                ));
                 ok = self.sh(dir, &g.run, g.timeout_min);
                 flaky = ok;
             }
-            results.push(GateResult { name: g.name.clone(), command: g.run.clone(), ok, seconds: t.elapsed().as_secs(), flaky });
+            results.push(GateResult {
+                name: g.name.clone(),
+                command: g.run.clone(),
+                ok,
+                seconds: t.elapsed().as_secs(),
+                flaky,
+            });
             if !ok {
                 return (results, Some(g.name.clone()));
             }
@@ -280,14 +384,33 @@ impl Exec {
         };
         let title = self.spec.title.clone().unwrap_or_else(|| branch.clone());
         for attempt in 1..=3 {
-            self.say(&format!("merge {branch} at {} into {} (attempt {attempt})", &head[..head.len().min(10)], self.spec.trunk));
+            self.say(&format!(
+                "merge {branch} at {} into {} (attempt {attempt})",
+                &head[..head.len().min(10)],
+                self.spec.trunk
+            ));
             let base = match self.trunk_tip() {
                 Ok(b) => b,
                 Err(e) => return fail("FETCH_FAILED", e),
             };
+            // The trunk's rules first: a bad `.lucina/pipeline.toml` stops the job before any gate runs.
+            let rules = match self.rules(&base) {
+                Ok(r) => r,
+                Err(e) => return fail("RULES_INVALID", e),
+            };
             let repo = self.repo();
-            if self.git(&repo, &["merge-base", "--is-ancestor", &head, &base]).is_ok() {
-                return Outcome { ok: true, code: "NOTHING_TO_MERGE".into(), message: format!("{branch} is already on {}", self.spec.trunk), landed: Some(base), method: Some("already".into()), ..Outcome::default() };
+            if self
+                .git(&repo, &["merge-base", "--is-ancestor", &head, &base])
+                .is_ok()
+            {
+                return Outcome {
+                    ok: true,
+                    code: "NOTHING_TO_MERGE".into(),
+                    message: format!("{branch} is already on {}", self.spec.trunk),
+                    landed: Some(base),
+                    method: Some("already".into()),
+                    ..Outcome::default()
+                };
             }
             let dir = match self.fresh_worktree(".landing", &base) {
                 Ok(d) => d,
@@ -299,8 +422,16 @@ impl Exec {
             {
                 let msg = format!("Merge {branch}: {title}");
                 let _ = self.git(&dir, &["checkout", "-q", "-f", "--detach", &base]);
-                if self.git_logged(&dir, &["merge", "-q", "--no-ff", "-m", &msg, &head]).is_err() {
-                    let conflicts: Vec<String> = self.git(&dir, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default().lines().map(str::to_string).collect();
+                if self
+                    .git_logged(&dir, &["merge", "-q", "--no-ff", "-m", &msg, &head])
+                    .is_err()
+                {
+                    let conflicts: Vec<String> = self
+                        .git(&dir, &["diff", "--name-only", "--diff-filter=U"])
+                        .unwrap_or_default()
+                        .lines()
+                        .map(str::to_string)
+                        .collect();
                     let _ = self.git(&dir, &["merge", "--abort"]);
                     return Outcome {
                         ok: false,
@@ -317,23 +448,46 @@ impl Exec {
             };
             self.members = self.members(&dir);
             if candidate == base {
-                return Outcome { ok: true, code: "NOTHING_TO_MERGE".into(), message: format!("every commit of {branch} is already on {}", self.spec.trunk), landed: Some(base), method: Some("already".into()), ..Outcome::default() };
+                return Outcome {
+                    ok: true,
+                    code: "NOTHING_TO_MERGE".into(),
+                    message: format!("every commit of {branch} is already on {}", self.spec.trunk),
+                    landed: Some(base),
+                    method: Some("already".into()),
+                    ..Outcome::default()
+                };
             }
-            let changed: Vec<String> = self.git(&dir, &["diff", "--name-only", &base, &candidate]).unwrap_or_default().lines().map(str::to_string).collect();
+            let changed: Vec<String> = self
+                .git(&dir, &["diff", "--name-only", &base, &candidate])
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect();
             self.say(&format!("{method}: {} file(s) changed", changed.len()));
-            let mut rules = match self.rules(&base) {
-                Ok(r) => r,
-                Err(e) => return fail("RULES_INVALID", e),
-            };
-            if self.spec.full && rules.merge.cargo == "check" {
-                rules.merge.cargo = "touched".into();
-            }
             let (crates, has_workspace) = self.crates(&dir);
             let range = format!("{base}..{candidate}");
-            let gates = repo::plan(&rules, &changed, &crates, has_workspace, &range, &self.spec.allow);
+            let (gates, notes) = repo::plan_with(
+                &rules,
+                &changed,
+                &crates,
+                has_workspace,
+                &range,
+                &self.spec.allow,
+                self.spec.full,
+            );
+            for n in &notes {
+                self.say(n);
+            }
             let (results, failed) = self.run_gates(&dir, &gates);
             if let Some(g) = failed {
-                return Outcome { ok: false, code: "GATE_FAILED".into(), message: format!("gate failed: {g} (lagent job logs {})", self.spec.job_id), method: Some(method.into()), gates: results, ..Outcome::default() };
+                return Outcome {
+                    ok: false,
+                    code: "GATE_FAILED".into(),
+                    message: format!("gate failed: {g} (lagent job logs {})", self.spec.job_id),
+                    method: Some(method.into()),
+                    gates: results,
+                    ..Outcome::default()
+                };
             }
             match self.advance(&dir, &base, &candidate) {
                 Ok(()) => {
@@ -345,7 +499,12 @@ impl Exec {
                             self.spec.trunk,
                             &candidate[..10],
                             results.len(),
-                            match results.iter().filter(|r| r.flaky).map(|r| r.name.as_str()).collect::<Vec<_>>() {
+                            match results
+                                .iter()
+                                .filter(|r| r.flaky)
+                                .map(|r| r.name.as_str())
+                                .collect::<Vec<_>>()
+                            {
                                 f if f.is_empty() => String::new(),
                                 f => format!("; flaky, passed on retry: {}", f.join(", ")),
                             }
@@ -357,22 +516,44 @@ impl Exec {
                     }
                 }
                 Err(Stop::Moved) => {
-                    self.say(&format!("{} moved while the gates ran; starting over", self.spec.trunk));
+                    self.say(&format!(
+                        "{} moved while the gates ran; starting over",
+                        self.spec.trunk
+                    ));
                     continue;
                 }
                 Err(Stop::Blocked(why, conflicts)) => {
-                    return Outcome { ok: false, code: "TRUNK_CHECKOUT_BLOCKED".into(), message: why, method: Some(method.into()), gates: results, conflicts, ..Outcome::default() };
+                    return Outcome {
+                        ok: false,
+                        code: "TRUNK_CHECKOUT_BLOCKED".into(),
+                        message: why,
+                        method: Some(method.into()),
+                        gates: results,
+                        conflicts,
+                        ..Outcome::default()
+                    };
                 }
             }
         }
-        fail("PUSH_FAILED", format!("{} kept moving; three attempts failed", self.spec.trunk))
+        fail(
+            "PUSH_FAILED",
+            format!("{} kept moving; three attempts failed", self.spec.trunk),
+        )
     }
 
     /// Fast-forward the trunk from `base` to `candidate`.
     fn advance(&mut self, dir: &Path, base: &str, candidate: &str) -> Result<(), Stop> {
         let trunk = self.spec.trunk.clone();
         match self.spec.remote.clone() {
-            Some(remote) => match self.git_logged(dir, &["push", "-q", &remote, &format!("{candidate}:refs/heads/{trunk}")]) {
+            Some(remote) => match self.git_logged(
+                dir,
+                &[
+                    "push",
+                    "-q",
+                    &remote,
+                    &format!("{candidate}:refs/heads/{trunk}"),
+                ],
+            ) {
                 Ok(_) => Ok(()),
                 Err(_) => Err(Stop::Moved),
             },
@@ -381,7 +562,9 @@ impl Exec {
                 // uncommitted changes that don't touch the merged files, and refuses otherwise);
                 // else the ref, if it is still at `base`.
                 let repo = self.repo();
-                let list = self.git(&repo, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+                let list = self
+                    .git(&repo, &["worktree", "list", "--porcelain"])
+                    .unwrap_or_default();
                 let mut path = None;
                 let mut current = None;
                 for line in list.lines() {
@@ -409,14 +592,27 @@ impl Exec {
                             )
                         })
                     }
-                    None => self.git_logged(&repo, &["update-ref", &format!("refs/heads/{trunk}"), candidate, base]).map(|_| ()).map_err(|_| Stop::Moved),
+                    None => self
+                        .git_logged(
+                            &repo,
+                            &[
+                                "update-ref",
+                                &format!("refs/heads/{trunk}"),
+                                candidate,
+                                base,
+                            ],
+                        )
+                        .map(|_| ())
+                        .map_err(|_| Stop::Moved),
                 }
             }
         }
     }
 
     pub fn deploy(&mut self) -> Outcome {
-        let Some(runtime) = self.spec.runtime.clone() else { return fail("INVALID", "a deploy job needs a runtime") };
+        let Some(runtime) = self.spec.runtime.clone() else {
+            return fail("INVALID", "a deploy job needs a runtime");
+        };
         let tip = match self.trunk_tip() {
             Ok(t) => t,
             Err(e) => return fail("FETCH_FAILED", e),
@@ -434,37 +630,116 @@ impl Exec {
             Err(e) => return fail("DEPLOY_TREE_FAILED", e),
         };
         self.members = self.members(&dir);
-        self.say(&format!("deploy {runtime} from {} at {}", self.spec.trunk, &tip[..10]));
-        let plan = Command::new("deploy-guard").args(["plan", "--runtime", &runtime, "--repo"]).arg(&dir).env("PATH", &self.path).output();
-        let plan = plan.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        self.say(&format!(
+            "deploy {runtime} from {} at {}",
+            self.spec.trunk,
+            &tip[..10]
+        ));
+        let plan = Command::new("deploy-guard")
+            .args(["plan", "--runtime", &runtime, "--repo"])
+            .arg(&dir)
+            .env("PATH", &self.path)
+            .output();
+        let plan = plan
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
         self.say(&format!("plan: {plan}"));
         if plan.contains("up to date") && !self.spec.force {
-            return Outcome { ok: true, code: "NOTHING_TO_DEPLOY".into(), message: format!("{runtime} already runs {}'s changes for it ({plan}); --force deploys anyway", self.spec.trunk), landed: Some(tip), ..Outcome::default() };
+            return Outcome {
+                ok: true,
+                code: "NOTHING_TO_DEPLOY".into(),
+                message: format!(
+                    "{runtime} already runs {}'s changes for it ({plan}); --force deploys anyway",
+                    self.spec.trunk
+                ),
+                landed: Some(tip),
+                ..Outcome::default()
+            };
         }
         let t = recipe.timeout_min.unwrap_or(45);
         if let Some(build) = &recipe.build {
             if !self.sh(&dir, build, t) {
-                return Outcome { ok: false, code: "BUILD_FAILED".into(), message: format!("the build failed (lagent job logs {})", self.spec.job_id), landed: Some(tip), ..Outcome::default() };
+                return Outcome {
+                    ok: false,
+                    code: "BUILD_FAILED".into(),
+                    message: format!("the build failed (lagent job logs {})", self.spec.job_id),
+                    landed: Some(tip),
+                    ..Outcome::default()
+                };
             }
         }
         let rq = repo::shell_quote(&runtime);
         let dq = repo::shell_quote(&dir.display().to_string());
-        if !self.sh(&dir, &format!("deploy-guard check --runtime {rq} --repo {dq}"), 5) {
-            return Outcome { ok: false, code: "REFUSED".into(), message: "deploy-guard refused the deploy (see the log)".into(), landed: Some(tip), ..Outcome::default() };
+        if !self.sh(
+            &dir,
+            &format!("deploy-guard check --runtime {rq} --repo {dq}"),
+            5,
+        ) {
+            return Outcome {
+                ok: false,
+                code: "REFUSED".into(),
+                message: "deploy-guard refused the deploy (see the log)".into(),
+                landed: Some(tip),
+                ..Outcome::default()
+            };
         }
         if !self.sh(&dir, &recipe.install, t) {
-            return Outcome { ok: false, code: "INSTALL_FAILED".into(), message: format!("the install failed; check {runtime} now (lagent job logs {})", self.spec.job_id), landed: Some(tip), ..Outcome::default() };
+            return Outcome {
+                ok: false,
+                code: "INSTALL_FAILED".into(),
+                message: format!(
+                    "the install failed; check {runtime} now (lagent job logs {})",
+                    self.spec.job_id
+                ),
+                landed: Some(tip),
+                ..Outcome::default()
+            };
         }
         if let Some(health) = &recipe.health {
             if !self.sh(&dir, health, 5) {
-                return Outcome { ok: false, code: "UNHEALTHY".into(), message: format!("{runtime} is installed but its health check failed; not recorded"), landed: Some(tip), ..Outcome::default() };
+                return Outcome {
+                    ok: false,
+                    code: "UNHEALTHY".into(),
+                    message: format!(
+                        "{runtime} is installed but its health check failed; not recorded"
+                    ),
+                    landed: Some(tip),
+                    ..Outcome::default()
+                };
             }
         }
-        let note = format!("{} (lagent deploy {})", self.spec.note.clone().unwrap_or_else(|| format!("{} at {}", self.spec.trunk, &tip[..8])), self.spec.job_id);
-        if !self.sh(&dir, &format!("deploy-guard record --runtime {rq} --repo {dq} --note {}", repo::shell_quote(&note)), 5) {
-            return Outcome { ok: false, code: "RECORD_FAILED".into(), message: "installed, but deploy-guard record failed: record it by hand".into(), landed: Some(tip), ..Outcome::default() };
+        let note = format!(
+            "{} (lagent deploy {})",
+            self.spec.note.clone().unwrap_or_else(|| format!(
+                "{} at {}",
+                self.spec.trunk,
+                &tip[..8]
+            )),
+            self.spec.job_id
+        );
+        if !self.sh(
+            &dir,
+            &format!(
+                "deploy-guard record --runtime {rq} --repo {dq} --note {}",
+                repo::shell_quote(&note)
+            ),
+            5,
+        ) {
+            return Outcome {
+                ok: false,
+                code: "RECORD_FAILED".into(),
+                message: "installed, but deploy-guard record failed: record it by hand".into(),
+                landed: Some(tip),
+                ..Outcome::default()
+            };
         }
-        Outcome { ok: true, code: "DEPLOYED".into(), message: format!("{runtime} runs {} at {}", self.spec.trunk, &tip[..10]), landed: Some(tip), ..Outcome::default() }
+        Outcome {
+            ok: true,
+            code: "DEPLOYED".into(),
+            message: format!("{runtime} runs {} at {}", self.spec.trunk, &tip[..10]),
+            landed: Some(tip),
+            ..Outcome::default()
+        }
     }
 }
 
@@ -478,7 +753,11 @@ enum Stop {
 
 /// The files git names when it refuses a merge (indented lines of its error).
 fn blocking_files(err: &str) -> Vec<String> {
-    err.lines().filter(|l| l.starts_with([' ', '\t'])).map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
+    err.lines()
+        .filter(|l| l.starts_with([' ', '\t']))
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -487,8 +766,17 @@ mod tests {
     use super::*;
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let o = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
@@ -503,8 +791,17 @@ mod tests {
     fn setup(root: &Path) -> (PathBuf, PathBuf) {
         let origin = root.join("origin.git");
         let repo = root.join("repo");
-        Command::new("git").args(["init", "-q", "--bare", "-b", "main"]).arg(&origin).status().unwrap();
-        Command::new("git").args(["clone", "-q"]).arg(&origin).arg(&repo).status().unwrap();
+        Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(&origin)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["clone", "-q"])
+            .arg(&origin)
+            .arg(&repo)
+            .status()
+            .unwrap();
         git(&repo, &["config", "user.email", "t@t"]);
         git(&repo, &["config", "user.name", "t"]);
         git(&repo, &["checkout", "-q", "-b", "main"]);
@@ -560,15 +857,30 @@ mod tests {
         git(&repo, &["push", "-q", "origin", "main"]);
         let out = exec(root, spec(root, &repo, "topic", &head));
         assert!(out.ok, "{out:?}");
-        assert_eq!((out.code.as_str(), out.method.as_deref()), ("MERGED", Some("merge")));
+        assert_eq!(
+            (out.code.as_str(), out.method.as_deref()),
+            ("MERGED", Some("merge"))
+        );
         assert_eq!(out.gates.len(), 1);
         let landed = out.landed.unwrap();
         assert_eq!(git(&origin, &["rev-parse", "main"]), landed);
         // The branch's own commit landed unchanged as the merge's second parent, main's tip as its first.
-        assert_eq!(git(&origin, &["rev-parse", &format!("{landed}^1")]), main_tip);
+        assert_eq!(
+            git(&origin, &["rev-parse", &format!("{landed}^1")]),
+            main_tip
+        );
         assert_eq!(git(&origin, &["rev-parse", &format!("{landed}^2")]), head);
         assert!(git(&origin, &["log", "--format=%s", "-1", "main"]).starts_with("Merge topic"));
-        assert_eq!(git(&origin, &["log", "--first-parent", "--format=%s", "-3", "main"]).lines().skip(1).collect::<Vec<_>>(), vec!["add c", "rules"]);
+        assert_eq!(
+            git(
+                &origin,
+                &["log", "--first-parent", "--format=%s", "-3", "main"]
+            )
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>(),
+            vec!["add c", "rules"]
+        );
         // Merged again: nothing to do.
         let again = exec(root, spec(root, &repo, "topic", &head));
         assert_eq!(again.code, "NOTHING_TO_MERGE");
@@ -597,9 +909,20 @@ mod tests {
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let marker = root.join("ran-once");
-        std::fs::write(bin.join("cargo"), format!("#!/bin/sh\nif [ -f {m} ]; then exit 0; fi\ntouch {m}; exit 1\n", m = marker.display())).unwrap();
-        Command::new("chmod").arg("+x").arg(bin.join("cargo")).status().unwrap();
-        std::fs::write(repo.join(".lucina/pipeline.toml"), format!("[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n")).unwrap();
+        std::fs::write(
+            bin.join("cargo"),
+            format!(
+                "#!/bin/sh\nif [ -f {m} ]; then exit 0; fi\ntouch {m}; exit 1\n",
+                m = marker.display()
+            ),
+        )
+        .unwrap();
+        Command::new("chmod")
+            .arg("+x")
+            .arg(bin.join("cargo"))
+            .status()
+            .unwrap();
+        std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n").unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "rules"]);
         git(&repo, &["push", "-q", "origin", "main"]);
@@ -612,7 +935,11 @@ mod tests {
         let out = x.merge();
         assert!(out.ok, "{out:?}");
         assert!(out.gates[0].flaky);
-        assert!(out.message.contains("flaky, passed on retry: t"), "{}", out.message);
+        assert!(
+            out.message.contains("flaky, passed on retry: t"),
+            "{}",
+            out.message
+        );
         assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
     }
 
@@ -638,20 +965,30 @@ mod tests {
                 let artifact = Path::new(&spec.target_dir).join("debug/incremental/old");
                 std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
                 std::fs::write(&artifact, "old output").unwrap();
-                let old = std::time::SystemTime::now() - std::time::Duration::from_secs(4 * 60 * 60);
-                File::open(&artifact).unwrap().set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+                let old =
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(4 * 60 * 60);
+                File::open(&artifact)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(old))
+                    .unwrap();
                 if sweep_fails {
                     // An existing but wrong boundary fails deterministically, even as root.
                     spec.target_root = Some(repo.clone());
                 }
                 std::fs::write(dir.join("job.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
                 assert_eq!(run(&dir), exit);
-                let outcome: Outcome = serde_json::from_slice(&std::fs::read(dir.join("result.json")).unwrap()).unwrap();
+                let outcome: Outcome =
+                    serde_json::from_slice(&std::fs::read(dir.join("result.json")).unwrap())
+                        .unwrap();
                 assert_eq!(outcome.code, code);
                 assert_eq!(outcome.ok, exit == 0);
                 let log = std::fs::read_to_string(dir.join("log")).unwrap();
                 assert_eq!(log.matches("target sweep:").count(), 1, "{log}");
-                assert_eq!(log.contains("refusing target outside root"), sweep_fails, "{log}");
+                assert_eq!(
+                    log.contains("refusing target outside root"),
+                    sweep_fails,
+                    "{log}"
+                );
                 assert_eq!(artifact.exists(), sweep_fails);
             }
         }
@@ -666,7 +1003,11 @@ mod tests {
             std::fs::create_dir_all(dir.join("src")).unwrap();
             std::fs::write(dir.join("src/lib.rs"), "").unwrap();
         }
-        std::fs::write(dependency.join("Cargo.toml"), "[package]\nname = \"stable-dependency\"\nversion = \"0.1.0\"\n[workspace]\n").unwrap();
+        std::fs::write(
+            dependency.join("Cargo.toml"),
+            "[package]\nname = \"stable-dependency\"\nversion = \"0.1.0\"\n[workspace]\n",
+        )
+        .unwrap();
         std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"workspace-crate\"\nversion = \"0.1.0\"\n[workspace]\n[dependencies]\nstable-dependency = { path = \"../dependency\" }\n").unwrap();
         let x = Exec::open(root.path(), spec(root.path(), &project, "b", "abc")).unwrap();
         let members = x.members(&project).unwrap();
@@ -689,7 +1030,11 @@ mod tests {
         let root = root.path();
         let (origin, repo) = setup(root);
         std::fs::create_dir_all(repo.join(".lucina")).unwrap();
-        std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\n[[gate]]\nname = \"never\"\nrun = \"exit 3\"\n").unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\n[[gate]]\nname = \"never\"\nrun = \"exit 3\"\n",
+        )
+        .unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "rules"]);
         git(&repo, &["push", "-q", "origin", "main"]);
@@ -707,14 +1052,31 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         let repo = root.join("repo");
-        Command::new("git").args(["init", "-q", "-b", "main"]).arg(&repo).status().unwrap();
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .arg(&repo)
+            .status()
+            .unwrap();
         git(&repo, &["config", "user.email", "t@t"]);
         git(&repo, &["config", "user.name", "t"]);
         std::fs::create_dir_all(repo.join(".lucina")).unwrap();
-        std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\n").unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\n",
+        )
+        .unwrap();
         commit(&repo, "a.txt", "1\n", "a");
         git(&repo, &["branch", "topic"]);
-        git(&repo, &["worktree", "add", "-q", &root.join("topic").display().to_string(), "topic"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                &root.join("topic").display().to_string(),
+                "topic",
+            ],
+        );
         let head = commit(&root.join("topic"), "b.txt", "b\n", "add b");
         let mut s = spec(root, &repo, "topic", &head);
         s.remote = None;
@@ -726,12 +1088,24 @@ mod tests {
         let landed = git(&repo, &["rev-parse", "main"]);
         assert_eq!(out.landed.as_deref(), Some(landed.as_str()));
         assert_eq!(git(&repo, &["rev-parse", "main^2"]), head);
-        assert!(repo.join("b.txt").exists(), "the main checkout fast-forwarded");
-        assert_eq!(std::fs::read_to_string(repo.join("notes.txt")).unwrap(), "mine\n");
+        assert!(
+            repo.join("b.txt").exists(),
+            "the main checkout fast-forwarded"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("notes.txt")).unwrap(),
+            "mine\n"
+        );
         // Uncommitted changes to a file the merge changes: blocked, said why, main unchanged.
         let head2 = commit(&root.join("topic"), "c.txt", "topic\n", "add c");
         std::fs::write(repo.join("c.txt"), "local edit\n").unwrap();
-        let out = exec(root, Spec { head: Some(head2), ..s });
+        let out = exec(
+            root,
+            Spec {
+                head: Some(head2),
+                ..s
+            },
+        );
         assert_eq!(out.code, "TRUNK_CHECKOUT_BLOCKED", "{out:?}");
         assert_eq!(out.conflicts, vec!["c.txt".to_string()]);
         assert_eq!(git(&repo, &["rev-parse", "main"]), landed);
