@@ -196,6 +196,12 @@ impl Manager {
         &self.inner.pipeline
     }
 
+    /// The commit ledger in the state directory (`pipeline.config.dir` is `<state>/pipeline`).
+    fn ledger_path(&self) -> String {
+        let dir = &self.pipeline().config.dir;
+        dir.parent().unwrap_or(dir).join(crate::ledger::FILE).display().to_string()
+    }
+
     /// `lagent task start`: fetch, make a worktree from the trunk, register the task.
     pub async fn start_task(&self, req: StartTask) -> Result<(Task, WorkspaceRecord), ManagerError> {
         if req.title.trim().is_empty() {
@@ -353,6 +359,7 @@ impl Manager {
             allow: req.allow.clone(),
             force: false,
             full: req.full,
+            ledger: Some(self.ledger_path()),
         };
         let job = Job {
             job_id: id.clone(),
@@ -408,6 +415,7 @@ impl Manager {
             allow: Vec::new(),
             force: req.force,
             full: false,
+            ledger: Some(self.ledger_path()),
         };
         let job = Job {
             job_id: id,

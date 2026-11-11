@@ -192,6 +192,7 @@ impl Exec {
             .env_remove("LAGENT_ALLOW")
             .env_remove("LAGENT_ALLOW_GATE_CHANGE")
             .env_remove("LAGENT_ALLOW_SPEC_CHANGE")
+            .env_remove(repo::LEDGER_ENV)
             .envs(self.gate_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
@@ -222,6 +223,14 @@ impl Exec {
 
     fn repo(&self) -> PathBuf {
         PathBuf::from(&self.spec.repo)
+    }
+
+    /// The commit ledger the gates are pointed at (`LAGENT_COMMIT_LEDGER`).
+    fn ledger_path(&self) -> PathBuf {
+        match &self.spec.ledger {
+            Some(p) => PathBuf::from(p),
+            None => crate::ledger::Ledger::in_state_dir(&crate::config::default_state_dir()).path,
+        }
     }
 
     /// Fetch, then the trunk's commit.
@@ -361,7 +370,12 @@ impl Exec {
             self.gate_env = if g.name == "diffgate" {
                 Vec::new()
             } else {
-                repo::allow_env(&self.spec.allow)
+                let mut env = repo::allow_env(&self.spec.allow);
+                env.push((
+                    repo::LEDGER_ENV.to_string(),
+                    self.ledger_path().display().to_string(),
+                ));
+                env
             };
             let t = Instant::now();
             let mut ok = self.sh(dir, &g.run, g.timeout_min);
@@ -477,6 +491,23 @@ impl Exec {
                 .map(str::to_string)
                 .collect();
             self.say(&format!("{method}: {} file(s) changed", changed.len()));
+            // Who wrote the commits: how many of the branch's have a commit-ledger entry. Only said;
+            // the gates (LAGENT_COMMIT_LEDGER) decide what to do with it.
+            {
+                let name = repo
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let ledger = self.ledger_path();
+                let line = match crate::ledger::count_attested(&ledger, &repo, &name, &base, &head) {
+                    Some((total, have)) => format!(
+                        "commit ledger: {have} of {total} non-merge commit(s) of the branch have a ledger entry ({})",
+                        ledger.display()
+                    ),
+                    None => format!("commit ledger: could not list the branch's commits ({})", ledger.display()),
+                };
+                self.say(&line);
+            }
             // A branch's gate scripts run from the candidate tree, so a branch that edits one is
             // judged by its own edit: that needs an explicit, logged allow. Renames count as a
             // delete plus an add here, so a moved gate script is seen at both paths.
@@ -931,6 +962,7 @@ mod tests {
             allow: vec![],
             force: false,
             full: false,
+            ledger: None,
         }
     }
 
@@ -1347,6 +1379,61 @@ mod tests {
         let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
         assert!(
             log.contains("SPEC CHANGE allowed for this merge: proof reworded"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn gate_commands_see_the_commit_ledger_and_the_log_counts_attested_commits() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (_origin, repo) = setup(root);
+        let ledger = root.join("state/commit-ledger.jsonl");
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            format!(
+                "[merge]\ndiffgate = false\n[[gate]]\nname = \"sees ledger\"\nrun = \"test \\\"$LAGENT_COMMIT_LEDGER\\\" = {}\"\n",
+                ledger.display()
+            ),
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let c1 = commit(&repo, "b.txt", "b\n", "add b");
+        let head = commit(&repo, "c.txt", "c\n", "add c");
+        // Without a ledger path in the spec the gate sees the default one and fails.
+        assert_eq!(
+            exec(root, spec(root, &repo, "topic", &head)).code,
+            "GATE_FAILED"
+        );
+        // One of the two commits is attested.
+        crate::ledger::Ledger::new(&ledger)
+            .append(vec![crate::ledger::Entry {
+                v: 1,
+                commit: c1,
+                repo: "repo".into(),
+                workspace: String::new(),
+                model: "claude-sonnet-5-5".into(),
+                kind: "lane".into(),
+                lane: String::new(),
+                session: "t".into(),
+                declared_by: "flag".into(),
+                time: String::new(),
+                prev: String::new(),
+            }])
+            .unwrap();
+        let mut s = spec(root, &repo, "topic", &head);
+        s.ledger = Some(ledger.display().to_string());
+        let dir = root.join("job-ledger");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = Exec::open(&dir, s).unwrap().merge();
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(
+            log.contains("commit ledger: 1 of 2 non-merge commit(s) of the branch have a ledger entry"),
             "{log}"
         );
     }

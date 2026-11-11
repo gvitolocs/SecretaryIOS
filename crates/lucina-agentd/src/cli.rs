@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::client::{Client, ClientError};
 use crate::config::{default_socket, shorten_path};
 
+mod attest;
 mod device;
 mod term;
 mod orch;
@@ -124,6 +125,11 @@ pub enum Command {
     Board,
     /// Which workspaces and main checkouts have processes running, and how much memory they use (Lucina only)
     Top,
+    /// Record which model wrote commits, after checking their Co-Authored-By trailer (Lucina only)
+    Attest(attest::AttestCli),
+    /// The commit attribution ledger: show entries, verify its hash chain (Lucina only)
+    #[command(subcommand)]
+    Ledger(attest::LedgerCommand),
     /// Run one pipeline job (agentd starts this under the merge lock)
     #[command(hide = true)]
     PipelineExec { dir: std::path::PathBuf },
@@ -1191,6 +1197,8 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Device(cmd) => pipe::device(&client, cmd).await,
         Command::Board => pipe::board(&client).await,
         Command::Top => pipe::top(&client).await,
+        Command::Attest(a) => attest::attest(a),
+        Command::Ledger(cmd) => attest::ledger_cmd(cmd),
         Command::PipelineExec { dir } => {
             let code = crate::pipeline::exec::run(dir);
             std::process::exit(code);
