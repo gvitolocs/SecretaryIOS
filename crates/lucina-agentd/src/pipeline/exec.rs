@@ -485,6 +485,15 @@ impl Exec {
                 };
                 repo::gate_files_changed(&rules, &all_changed, &exists)
             };
+            let trunk_has_rules = self
+                .git(
+                    &repo,
+                    &["cat-file", "-e", &format!("{base}:{}", repo::FILE)],
+                )
+                .is_ok();
+            let adds_rules = !trunk_has_rules && dir.join(repo::FILE).is_file();
+            let mut rules_from_merge = false;
+            let mut rules = rules;
             if !gate_changes.is_empty() {
                 match repo::gate_change_reason(&self.spec.allow) {
                     None => {
@@ -492,8 +501,13 @@ impl Exec {
                             ok: false,
                             code: "GATE_CHANGE_NEEDS_ALLOW".into(),
                             message: format!(
-                                "{branch} changes the files its own gates run from: {}. Take a second look at the diff of those files, then rerun with --allow gate-change=\"<why>\"",
-                                gate_changes.join(", ")
+                                "{branch} changes the files its own gates run from: {}. Take a second look at the diff of those files, then rerun with --allow gate-change=\"<why>\"{}",
+                                gate_changes.join(", "),
+                                if adds_rules {
+                                    format!(". The trunk has no {}: with the allow, the rules of the file this merge adds apply to this merge", repo::FILE)
+                                } else {
+                                    String::new()
+                                }
                             ),
                             method: Some(method.into()),
                             gate_changes,
@@ -501,6 +515,24 @@ impl Exec {
                         };
                     }
                     Some(reason) => {
+                        if repo::rules_source(trunk_has_rules, adds_rules, &self.spec.allow)
+                            == repo::RulesSource::Candidate
+                        {
+                            let text =
+                                std::fs::read_to_string(dir.join(repo::FILE)).unwrap_or_default();
+                            rules = match Rules::parse(&text) {
+                                Ok(r) => r,
+                                Err(e) => return fail("RULES_INVALID", e),
+                            };
+                            rules_from_merge = true;
+                            self.say(&format!(
+                                "RULES TAKEN FROM THIS MERGE: the trunk has no {} (allowed: {reason})",
+                                repo::FILE
+                            ));
+                            if !rules.merge.diffgate {
+                                self.say("diffgate is OFF in the rules this merge adds");
+                            }
+                        }
                         for f in &gate_changes {
                             self.say(&format!(
                                 "GATE CHANGED by this merge: {f} (allowed: {reason})"
@@ -532,6 +564,7 @@ impl Exec {
                     method: Some(method.into()),
                     gates: results,
                     gate_changes,
+                    rules_from_merge,
                     ..Outcome::default()
                 };
             }
@@ -559,6 +592,7 @@ impl Exec {
                         method: Some(method.into()),
                         gates: results,
                         gate_changes,
+                        rules_from_merge,
                         ..Outcome::default()
                     }
                 }
@@ -577,6 +611,7 @@ impl Exec {
                         method: Some(method.into()),
                         gates: results,
                         gate_changes,
+                        rules_from_merge,
                         conflicts,
                         ..Outcome::default()
                     };
@@ -1136,6 +1171,125 @@ mod tests {
             ),
             "{log}"
         );
+    }
+
+    /// A topic branch off a trunk with no pipeline file: a crate that does not compile (the default
+    /// `cargo = "touched"` gate would fail) and a `.lucina/pipeline.toml` with `rules`.
+    fn bootstrap_branch(root: &Path, rules: &str) -> (PathBuf, PathBuf, String) {
+        let (origin, repo) = setup(root);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"bt\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "this does not compile\n").unwrap();
+        std::fs::write(repo.join(".lucina/pipeline.toml"), rules).unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "bootstrap"]);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        (origin, repo, head)
+    }
+
+    #[test]
+    fn bootstrap_is_refused_without_the_allow() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo, head) =
+            bootstrap_branch(root, "[merge]\ncargo = \"none\"\ndiffgate = false\n");
+        let before = git(&origin, &["rev-parse", "main"]);
+        let out = exec(root, spec(root, &repo, "topic", &head));
+        assert_eq!(out.code, "GATE_CHANGE_NEEDS_ALLOW");
+        assert!(
+            out.message
+                .contains("the rules of the file this merge adds apply"),
+            "{}",
+            out.message
+        );
+        assert!(out
+            .gate_changes
+            .contains(&".lucina/pipeline.toml".to_string()));
+        assert!(!out.rules_from_merge && out.gates.is_empty());
+        assert_eq!(git(&origin, &["rev-parse", "main"]), before);
+    }
+
+    #[test]
+    fn bootstrap_with_the_allow_uses_the_added_rules() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo, head) =
+            bootstrap_branch(root, "[merge]\ncargo = \"none\"\ndiffgate = false\n");
+        let mut s = spec(root, &repo, "topic", &head);
+        s.allow = vec!["gate-change=first pipeline file".into()];
+        let dir = root.join("job-bootstrap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = Exec::open(&dir, s).unwrap().merge();
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        assert!(out.rules_from_merge);
+        assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(log.contains("RULES TAKEN FROM THIS MERGE: the trunk has no .lucina/pipeline.toml (allowed: first pipeline file)"), "{log}");
+        assert!(
+            log.contains("diffgate is OFF in the rules this merge adds"),
+            "{log}"
+        );
+        assert!(
+            log.contains("GATE CHANGED by this merge: .lucina/pipeline.toml"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_with_the_trunk_default_would_fail_and_a_bad_added_file_is_invalid() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo, head) = bootstrap_branch(root, "[merge]\ncargo = \"sometimes\"\n");
+        let before = git(&origin, &["rev-parse", "main"]);
+        let mut s = spec(root, &repo, "topic", &head);
+        s.allow = vec!["gate-change=first pipeline file".into()];
+        let out = exec(root, s);
+        assert_eq!(out.code, "RULES_INVALID", "{}", out.message);
+        assert_eq!(git(&origin, &["rev-parse", "main"]), before);
+        // Without the allow the same compile error is judged by the trunk default: nothing lands either.
+        let root2 = tempfile::tempdir().unwrap();
+        let (origin2, repo2, head2) = bootstrap_branch(root2.path(), "[merge]\ncargo = \"none\"\n");
+        let before2 = git(&origin2, &["rev-parse", "main"]);
+        assert_ne!(
+            exec(root2.path(), spec(root2.path(), &repo2, "topic", &head2)).code,
+            "MERGED"
+        );
+        assert_eq!(git(&origin2, &["rev-parse", "main"]), before2);
+    }
+
+    #[test]
+    fn a_trunk_that_has_rules_keeps_them_for_the_merge_that_changes_them() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo) = gate_repo(root);
+        // The trunk's gate always fails; the branch's file would drop it.
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\n[[gate]]\nname = \"never\"\nrun = \"exit 3\"\n",
+        )
+        .unwrap();
+        git(&repo, &["commit", "-qam", "failing gate"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        let before = git(&origin, &["rev-parse", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(
+            &repo,
+            ".lucina/pipeline.toml",
+            "[merge]\ndiffgate = false\ncargo = \"none\"\n",
+            "drop gate",
+        );
+        let mut s = spec(root, &repo, "topic", &head);
+        s.allow = vec!["gate-change=drop the gate".into()];
+        let out = exec(root, s);
+        assert_eq!(out.code, "GATE_FAILED", "{}", out.message);
+        assert!(!out.rules_from_merge);
+        assert_eq!(git(&origin, &["rev-parse", "main"]), before);
     }
 
     #[test]

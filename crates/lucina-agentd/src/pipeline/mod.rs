@@ -185,6 +185,9 @@ pub struct Outcome {
     /// Set when the merge was refused for it (`GATE_CHANGE_NEEDS_ALLOW`) or let through by `--allow gate-change`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gate_changes: Vec<String>,
+    /// Merge: the trunk had no pipeline file and this merge's added one judged the merge (`--allow gate-change`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rules_from_merge: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

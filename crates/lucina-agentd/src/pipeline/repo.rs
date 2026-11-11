@@ -359,6 +359,25 @@ pub fn gate_change_reason(allow: &[String]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Whose rules judge a merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesSource {
+    /// The trunk's `.lucina/pipeline.toml` (or the defaults when the trunk has none): always, but for the case below.
+    Trunk,
+    /// Bootstrap: the trunk has no pipeline file, the merge adds one and the job carries `gate-change=<reason>`.
+    Candidate,
+}
+
+/// Which rules apply: the candidate's added file only when the trunk has none, the merge adds one and
+/// there is a non-empty `gate-change` reason. A trunk that has a file is never overruled by the merge.
+pub fn rules_source(trunk_has_file: bool, merge_adds_file: bool, allow: &[String]) -> RulesSource {
+    if !trunk_has_file && merge_adds_file && gate_change_reason(allow).is_some() {
+        RulesSource::Candidate
+    } else {
+        RulesSource::Trunk
+    }
+}
+
 /// Does `path` match a `[merge] gate_files` entry: the same path, or under a `dir/` or `dir/**` prefix?
 fn gate_file_matches(entry: &str, path: &str) -> bool {
     let prefix = entry.strip_suffix("**").unwrap_or(entry);
@@ -599,6 +618,19 @@ mod tests {
             &files(&["gate-change=why"]),
         );
         assert_eq!(g[0].run, "diffgate --repo . --range A..B");
+    }
+
+    #[test]
+    fn rules_source_bootstraps_only_a_missing_trunk_file_with_an_allow() {
+        let ok = files(&["gate-change=first pipeline file"]);
+        let none = files(&[]);
+        let empty = files(&["gate-change="]);
+        assert_eq!(rules_source(false, true, &ok), RulesSource::Candidate);
+        assert_eq!(rules_source(false, true, &none), RulesSource::Trunk);
+        assert_eq!(rules_source(false, true, &empty), RulesSource::Trunk);
+        assert_eq!(rules_source(false, false, &ok), RulesSource::Trunk);
+        assert_eq!(rules_source(true, true, &ok), RulesSource::Trunk);
+        assert_eq!(rules_source(true, false, &ok), RulesSource::Trunk);
     }
 
     #[test]
