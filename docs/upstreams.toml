@@ -1321,3 +1321,148 @@ relation = "reference"
 confidence = "confirmed"
 rely_on = ["LLInt interpreter design (llint/)", "register bytecode and UnlinkedCodeBlock (bytecode/)", "MarkedSpace size-class heap and eden collection (heap/)", "bytecode cache (runtime/CachedTypes.cpp)"]
 notes = "Owner decision 2026-11-08: LucinaJavascript is interpreter-first with no JIT, modelled on JSC's LLInt ('this is our way to go'); V8 and SpiderMonkey are references for streaming parse and the code/stencil cache only. Records: adopt the LLInt design (register bytecode, cheap dispatch, inline caches on property access and calls, lazy UnlinkedFunctionExecutable re-parse, which LucinaJS already does since 2026-11-08); adapt the heap (non-moving MarkedSpace with size classes and an eden mode, to replace the copying semispace whose copy window is LucinaJS's memory gap); reference the bytecode cache (CachedTypes); reject the JITs (Baseline, DFG, FTL): no executable memory. Licences: llint/ and bytecode/ files are Apple BSD-2-Clause (reusable with notice); heap/, parser/ and most of runtime/ are LGPL-2.0-or-later (KJS heritage): copy behaviour, not code, from those. Ported as Rust, not C++/offlineasm."
+
+# ───────────────────────── LucinaOS on the Mac (M4 port, stage 0, 2026-11-11) ─────────────────────────
+# Local shallow clones: /home/nez/Projects/ReverseEngineering/asahi-m4/<name>. Reading notes: LucinaOS docs/research/mac-m4/.
+# m1n1 carries an AI-tool ban (m1n1/AGENTS.md): do not point model tools at it without the owner.
+
+[[upstream]]
+id = "asahi-linux"
+name = "AsahiLinux/linux (Apple Silicon drivers and device trees)"
+url = "https://github.com/AsahiLinux/linux"
+source = "github"
+repo = "AsahiLinux/linux"
+branch = "asahi"
+track = "commits"
+pin = "6ba0637d1ed9a2e3639dd3fc9eca6cd0483a6434"
+pin_date = "2026-11-05"
+paths = ["drivers/irqchip/irq-apple-aic.c", "drivers/iommu/apple-dart.c", "drivers/iommu/io-pgtable-dart.c", "drivers/pmdomain/apple", "drivers/soc/apple", "drivers/nvme/host/apple.c", "drivers/gpu/drm/apple", "drivers/gpu/drm/asahi", "drivers/hid/spi-hid", "drivers/mfd/macsmc.c", "drivers/phy/apple", "arch/arm64/boot/dts/apple", "sound/soc/apple"]
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/linux"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "GPL-2.0-only OR MIT (per file; see port sheets)"
+licence_ours = "per file, notices kept"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["AICv3", "DART", "RTKit", "ANS NVMe", "DCP", "AGX", "SMC", "SPI HID", "device trees t8132"]
+notes = "Stage 0 of the Mac M4 port; no code ported yet. Sparse, blob-filtered clone. Port sheets in LucinaOS docs/research/mac-m4/sheets."
+
+[[upstream]]
+id = "aurora-silicon-linux"
+name = "aurora-silicon/linux (Apple Silicon kernel with M4 support)"
+url = "https://github.com/aurora-silicon/linux"
+source = "github"
+repo = "aurora-silicon/linux"
+branch = "integration/aurora"
+track = "commits"
+pin = "dc2d53da7827d50335e591fc3703f393d48f7de8"
+pin_date = "2026-11-12"
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/aurora-linux"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "unknown (per file; not checked)"
+licence_ours = "per file, notices kept"
+relation = "reference"
+confidence = "likely"
+rely_on = ["t8132 device trees", "M4 NVMe", "M4 GPU backend g16", "M4 SMC"]
+notes = "Only public source with M4 NVMe, SMC and GPU backend today. Reference only: the Asahi project rejects LLM-written drivers and the provenance of this fork is not reviewed."
+
+[[upstream]]
+id = "asahi-m1n1"
+name = "AsahiLinux/m1n1"
+url = "https://github.com/AsahiLinux/m1n1"
+source = "github"
+repo = "AsahiLinux/m1n1"
+branch = "main"
+track = "commits"
+pin = "cf37927d6bf47c502136e7d2c9e61f946b0b8745"
+pin_date = "2026-11-10"
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/m1n1"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "MIT to v1.9.9, GPL-2.0-or-later from v2.0.0 (README)"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["boot_args hand-off", "spin-table start", "hypervisor tracing"]
+notes = "AI-tool ban in m1n1/AGENTS.md (https://asahilinux.org/slop/). Owner decision needed before any model reads it."
+
+[[upstream]]
+id = "asahi-u-boot"
+name = "AsahiLinux/u-boot"
+url = "https://github.com/AsahiLinux/u-boot"
+source = "github"
+repo = "AsahiLinux/u-boot"
+branch = "asahi"
+track = "commits"
+pin = "b33034a515a068381c4aa28831fb709e91300cd1"
+pin_date = "2026-08-10"
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/u-boot"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "GPL-2.0-or-later"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "likely"
+rely_on = ["apple_m1_defconfig", "RTKit", "SART", "DART", "ANS"]
+notes = "Only an M1 board today; the M4 boot route (LucinaOS docs/research/mac-m4/stage0.md section 3) depends on an M4 build of it."
+
+[[upstream]]
+id = "asahi-docs"
+name = "AsahiLinux/docs (hardware and platform documentation)"
+url = "https://github.com/AsahiLinux/docs"
+source = "github"
+repo = "AsahiLinux/docs"
+branch = "main"
+track = "commits"
+pin = "ed6f9d6ac4ac49a09924224ac07e7341a71e1e45"
+pin_date = "2026-11-07"
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/docs"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "unknown (not checked)"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "likely"
+rely_on = ["feature-support/m4", "hw/soc"]
+notes = "The feature support pages are the status source for M4; re-read weekly."
+
+[[upstream]]
+id = "asahi-speakersafetyd"
+name = "AsahiLinux/speakersafetyd"
+url = "https://github.com/AsahiLinux/speakersafetyd"
+source = "github"
+repo = "AsahiLinux/speakersafetyd"
+branch = "main"
+track = "commits"
+pin = "a87e6da5627150edd3ac45c622739c5998ebc3a1"
+pin_date = "2026-10-28"
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/speakersafetyd"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "MIT through v2.0.2, GPL-2.0 after (README)"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["speaker protection model", "10.7 ms capture deadline"]
+notes = "Hardware-damage protection. Our own daemon must be proven before any speaker output."
+
+[[upstream]]
+id = "omarchy-m4-native"
+name = "kazuhidet/Omarchy-M4-Native (community M4 Air project)"
+url = "https://github.com/kazuhidet/Omarchy-M4-Native"
+source = "github"
+repo = "kazuhidet/Omarchy-M4-Native"
+branch = "develop"
+track = "commits"
+pin = "4d5ae954c8a600a06e937348ffe378de1e35d822"
+pin_date = "2026-11-10"
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/Omarchy-M4-Native"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4", base = "origin/main" }]
+licence_upstream = "mixed (GPL-2.0-only kernel parts, MIT userspace; see its LICENSES)"
+licence_ours = "n/a"
+relation = "reference"
+confidence = "unconfirmed"
+rely_on = ["M4 Air J713 feature claims"]
+notes = "Claims are leads until its code confirms them. Alpha."
