@@ -43,27 +43,34 @@ pub fn client_channel(
 mod tests {
     use super::*;
 
+    /// What else a request says about itself: (source, session id, user agent).
+    type Ctx = (
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+    );
+
     #[test]
     fn client_channel_table() {
         let ua = Some("Fortuna/1.62 (Nintendo DSi)");
         // (claimed, source, session, user agent) -> channel
-        let rows: &[(&str, Option<&str>, Option<&str>, Option<&str>, &str)] = &[
-            ("web", Some("fortuna-chat"), None, None, "dsi"),
-            ("web", None, Some("fortuna-abc123"), None, "dsi"),
-            ("web", None, None, ua, "dsi"),
-            ("", Some("fortuna-chat"), None, None, "dsi"),
-            ("web", None, None, Some("Mozilla/5.0"), "web"),
-            ("web", Some("juno-chat"), Some("juno-x"), None, "web"),
-            ("web", None, None, None, "web"),
-            ("", None, None, None, "web"),
-            ("mac", None, None, None, "mac"),
-            ("mac", Some("fortuna-chat"), None, None, "mac"),
-            ("dsi", None, None, None, "dsi"),
-            ("ios", Some("fortuna-chat"), Some("fortuna-1"), ua, "ios"),
-            ("ios", None, None, None, "ios"),
-            ("voice", None, Some("fortuna-1"), None, "voice"),
+        let rows: &[(&str, Ctx, &str)] = &[
+            ("web", (Some("fortuna-chat"), None, None), "dsi"),
+            ("web", (None, Some("fortuna-abc123"), None), "dsi"),
+            ("web", (None, None, ua), "dsi"),
+            ("", (Some("fortuna-chat"), None, None), "dsi"),
+            ("web", (None, None, Some("Mozilla/5.0")), "web"),
+            ("web", (Some("juno-chat"), Some("juno-x"), None), "web"),
+            ("web", (None, None, None), "web"),
+            ("", (None, None, None), "web"),
+            ("mac", (None, None, None), "mac"),
+            ("mac", (Some("fortuna-chat"), None, None), "mac"),
+            ("dsi", (None, None, None), "dsi"),
+            ("ios", (Some("fortuna-chat"), Some("fortuna-1"), ua), "ios"),
+            ("ios", (None, None, None), "ios"),
+            ("voice", (None, Some("fortuna-1"), None), "voice"),
         ];
-        for (claimed, source, session, agent, want) in rows {
+        for (claimed, (source, session, agent), want) in rows {
             assert_eq!(
                 client_channel(claimed, *source, *session, *agent),
                 *want,
