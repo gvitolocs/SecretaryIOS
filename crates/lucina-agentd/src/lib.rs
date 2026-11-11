@@ -42,6 +42,7 @@ pub mod journal;
 pub mod jsonrpc;
 pub mod juno_mcp;
 pub mod lane;
+pub mod ledger;
 pub mod manager;
 pub mod mcp;
 pub mod mock;
