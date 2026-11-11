@@ -159,6 +159,10 @@ pub async fn upgrade(
     if let Some(v) = headers.get(crate::routes::CLIENT_HEADER) {
         client.insert(crate::routes::CLIENT_HEADER, v.clone());
     }
+    // Fortuna's User-Agent tells a DSi from the web page (`routes::app_channel`).
+    if let Some(v) = headers.get(header::USER_AGENT) {
+        client.insert(header::USER_AGENT, v.clone());
+    }
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
         .on_upgrade(move |socket| connection(st, ident, creds, client, socket))
@@ -607,7 +611,12 @@ impl Conn {
         // The chat channel of the main thread: the `/v1/chat` rule (protocol section 10.1).
         let channel = if opts.main {
             match crate::routes::chat_channel(&self.client, opts.channel.as_deref()) {
-                Ok(c) => c,
+                Ok(c) => crate::routes::app_channel(
+                    &self.client,
+                    &c,
+                    Some(opts.source.as_str()),
+                    opts.session_id.as_deref(),
+                ),
                 Err(e) => {
                     self.send_error("bad_request", &e.message);
                     return;

@@ -66,6 +66,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("cursor_task", "Give a coding task to a coding agent (Cursor, Codex, Claude Code) on a project."),
     ("agent_message", "The owner asks Lucina to pass a message, question or issue report on to another assistant: Claude (the Claude Code coordinator of his projects), Grok Bot, or Lucina Agents (tell Claude that…, report this to Claude, ask Grok…, post it in Lucina agents, use Lucina agents)."),
     ("flaw_report", "The owner reports a small flaw he noticed in one of his own apps (Lucina's web app, Mac app, Android or iPhone app, or Juno): something that looks or behaves wrong, such as emoji shown as boxes, lost line breaks, a card or button still active after it was used, or a status that differs between clients. Not a question about how to use something, and not a request to pass a message on."),
+    ("agent_task", "The owner asks Lucina to carry out an action on one of his own devices or machines that she has no tool of her own for: start, open, switch on or copy something on his Nintendo DSi, a PC or server of his (nespc, nezopt), his laptop or another device, or get a game, file or program onto one of them. Not a job for her own sandbox computer or Android phone (computer_task), not a coding task on a project (cursor_task), not passing a message on (agent_message), and not a question about how to do it."),
     ("discord_admin", "Administer the Discord server: channels, roles, members."),
     ("grocery.purchase", "The user reports groceries they bought."),
     ("grocery.consume", "The user reports eating or using up part of a grocery item."),
@@ -108,6 +109,20 @@ pub(crate) fn intent_questions() -> Vec<(&'static str, Question)> {
     ]
 }
 
+/// Jev's state for the intent questions: facts only. `device` and `device_connected` join it when the
+/// owner's turn comes from a device we know (`crate::device`), and are absent otherwise.
+pub(crate) fn intent_state(t: &TurnInput<'_>, recent: &str) -> Value {
+    crate::device::with_device(
+        json!({
+            "platform": if t.platform.is_empty() { "unknown" } else { t.platform },
+            "user": t.user_label,
+            "recent_turns": recent,
+            "message": t.user_text,
+        }),
+        t.device,
+    )
+}
+
 /// The intent as the DeepSeek classifier's JSON plus Jev's confidence in it,
 /// or `None` when Jev is off or failed (the caller asks DeepSeek).
 pub async fn classify_intent(jev: &Jev, t: &TurnInput<'_>) -> Option<(Value, f64)> {
@@ -115,12 +130,7 @@ pub async fn classify_intent(jev: &Jev, t: &TurnInput<'_>) -> Option<(Value, f64
         return None;
     }
     let recent: String = t.memory.chars().take(1500).collect();
-    let state = json!({
-        "platform": if t.platform.is_empty() { "unknown" } else { t.platform },
-        "user": t.user_label,
-        "recent_turns": recent,
-        "message": t.user_text,
-    });
+    let state = intent_state(t, &recent);
     let d = jev.decide("intent", state, &intent_questions()).await.ok()?;
     intent_json(&d)
 }
@@ -203,6 +213,7 @@ pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "agent_message",
     "flaw_report",
     "computer_task",
+    "agent_task",
     "schedule_reminder",
     "calendar_event",
     "study_focus_reminders",
@@ -494,6 +505,31 @@ mod tests {
             if let Question::Choice { options, .. } = &q {
                 assert!(options.len() <= lucina_jev::MAX_OPTIONS, "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn jev_first_routes_agent_task_and_no_tier0_rule_can() {
+        assert_eq!(jev_first(Some(("agent_task", 0.8)), None), Ok(()));
+        assert_eq!(jev_first(Some(("agent_task", 0.5)), None), Err("below_threshold"));
+        assert!(SIDE_EFFECT_INTENTS.contains(&"agent_task"));
+        assert_eq!(lucina_intent::tier0::default_reply_mode("agent_task"), "direct");
+        assert!(INTENT_OPTIONS.iter().any(|(n, _)| *n == "agent_task"));
+        // No regex rule names it: the intent table and its reply mode are the only places.
+        let source = include_str!("../../lucina-intent/src/tier0.rs");
+        assert_eq!(source.matches("\"agent_task\"").count(), 2, "only the intent list and its reply mode");
+        let s = lucina_intent::heuristics::Settings::default();
+        for m in [
+            "Accendi i Anespici e passami Pokémon Diamante su questo DSi",
+            "turn on nespc and put Pokémon Diamond on this DSi",
+            "tænd for min pc og læg et spil på min DSi",
+            "avvia il gioco sul DSi",
+            "copy the ROM from nespc to the DSi",
+            "open Safari on my Mac",
+            "start the game on my laptop",
+        ] {
+            let rule = lucina_intent::tier0::classify_tier0(m, "", &s);
+            assert!(rule.is_none_or(|c| c.intent != "agent_task"), "{m}");
         }
     }
 

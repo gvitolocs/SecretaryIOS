@@ -105,13 +105,16 @@ pub fn presence_block(st: &AppState, prompt: &str) -> String {
 
 /// Classify a turn: tier 0, else the model (tier 1) on the recent turns.
 /// `mcp`: the turn comes from a Lucina MCP client (an agent's or assistant app's text, not the owner's).
+/// `device`: the device the owner is talking through (`crate::device::jev_device_of_turn`), a fact in Jev's state.
 /// `sample`: a real turn of the owner's own, whose Jev answer is kept (`jev_samples`).
+#[allow(clippy::too_many_arguments)]
 pub async fn classify(
     st: &AppState,
     user_text: &str,
     recent: &str,
     user_label: &str,
     platform: &str,
+    device: &str,
     mcp: bool,
     sample: bool,
 ) -> Classification {
@@ -121,6 +124,7 @@ pub async fn classify(
         memory: recent,
         user_label,
         platform,
+        device,
     };
     let rule = tier0::classify_tier0(user_text, recent, s);
     let first = crate::jev_route::jev_first_enabled();
@@ -273,6 +277,7 @@ pub async fn prepare_with(
         peer: &st.cfg.owner_peer_id,
         voice: false,
         intent_text: None,
+        device: "",
     };
     prepare_keyed(
         st, surface, session, keys, user_text, user_label, platform, tools_mode,
@@ -294,6 +299,8 @@ pub struct Keys<'a> {
     /// The owner's own words when the turn's text holds more (a share: his note, not the shared content). Intent
     /// rules read only these: a screenshot's "O(m log n)" once made a share a log inspection (5 Nov 2026).
     pub intent_text: Option<&'a str>,
+    /// The device the owner is talking through, for Jev's state (`crate::device::jev_device_of_turn`); empty: not known.
+    pub device: &'a str,
 }
 
 /// How far back the share-sheet session's turns count as this conversation's.
@@ -436,6 +443,7 @@ pub async fn prepare_keyed(
             &recent_context,
             user_label,
             platform,
+            keys.device,
             surface.caller().is_some(),
             owner && surface.caller().is_none() && !crate::selftest::is_session(session),
         )

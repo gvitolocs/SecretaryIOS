@@ -538,7 +538,7 @@ async fn slots_layer(t: &Turn<'_>, plan: Plan) -> Option<Plan> {
 /// What kind of risky action the turn is, if it is one: a message to another assistant (`message`), a post
 /// to the Pokoin channel (`post`), a purchase or an order (`purchase`), a delete (`delete`). Deterministic and
 /// cheap: it only decides whether the Jev question is worth asking.
-fn risk_kind(intent: &str, message: &str) -> Option<&'static str> {
+pub(super) fn risk_kind(intent: &str, message: &str) -> Option<&'static str> {
     static BUY: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static DEL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static OBJ: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -556,7 +556,7 @@ fn risk_kind(intent: &str, message: &str) -> Option<&'static str> {
         "social_post" => return Some("post"),
         _ => {}
     }
-    if matches!(intent, "computer_task" | "web_crawl") && buy.is_match(message) {
+    if matches!(intent, "computer_task" | "web_crawl" | "agent_task") && buy.is_match(message) {
         return Some("purchase");
     }
     const READ_ONLY: &[&str] = &[

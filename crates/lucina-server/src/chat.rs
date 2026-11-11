@@ -53,6 +53,7 @@ mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
 mod about_turn;
+mod act_turn;
 mod secret_turn;
 pub mod reply;
 mod share_turn;
@@ -186,9 +187,18 @@ async fn handle_chat_turn(
     } else {
         channel
     };
-    if channel != "web" && channel != "ios" && channel != VOICE_CHANNEL {
-        return Err(ApiError::bad_request("channel must be web, ios or voice"));
+    if !secretary_core::channel::CHAT_CHANNELS.contains(&channel.as_str()) {
+        return Err(ApiError::bad_request(
+            "channel must be web, ios, dsi, mac or voice",
+        ));
     }
+    // The Fortuna firmware that predates the `dsi` channel says `web`: its source and session id say DSi.
+    let channel = secretary_core::channel::client_channel(
+        &channel,
+        body["source"].as_str(),
+        Some(requested.as_str()),
+        None,
+    );
     // The speaker's own thread has its own session unless the sender names one.
     let requested = if requested.is_empty() && channel == VOICE_CHANNEL {
         VOICE_SESSION.to_owned()
@@ -822,12 +832,21 @@ impl Turn<'_> {
             .map_or(self.st.cfg.owner_peer_id.as_str(), |o| o.peer_id.as_str())
     }
 
+    /// The device fact Jev's state gets: the owner's own turn from the DSi or the Mac, nothing else.
+    fn device(&self) -> &'static str {
+        if self.guarded || self.origin.is_some() {
+            return "";
+        }
+        crate::device::jev_device_of_turn(&self.channel, self.mcp.is_some())
+    }
+
     fn input<'b>(&'b self, memory: &'b str, platform: &'b str) -> TurnInput<'b> {
         TurnInput {
             user_text: &self.message,
             memory,
             user_label: &self.user_label,
             platform,
+            device: self.device(),
         }
     }
 }
@@ -1048,6 +1067,11 @@ async fn run_turn_scoped(
         "" => base_system,
         juno => format!("{base_system} {juno}"),
     };
+    // The DSi or the Mac he is writing from: on, connected, and not something she can act on herself.
+    let base_system = match crate::device::system_fact(&channel, mcp_turn.is_some()) {
+        "" => base_system,
+        fact => format!("{base_system} {fact}"),
+    };
     // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
     let consult = mcp_turn
         .as_ref()
@@ -1151,6 +1175,7 @@ async fn run_turn_scoped(
                     voice: t.channel == VOICE_CHANNEL,
                     // A share's intent is his note, never the shared content's words.
                     intent_text: t.share.then_some(t.share_note.as_str()),
+                    device: t.device(),
                 },
                 &t.message,
                 &t.user_label,
@@ -1218,6 +1243,11 @@ async fn run_turn_scoped(
                         .to_owned()
                 } else {
                     game_system
+                };
+                // The DSi or the Mac he is writing from, in every model call of the turn.
+                let game_system = match crate::device::system_fact(&t.channel, t.mcp.is_some()) {
+                    "" => game_system,
+                    fact => format!("{game_system}\n{fact}").trim().to_owned(),
                 };
                 let finish = crate::planner::TURN_REPLY
                     .scope(
@@ -1789,7 +1819,7 @@ fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Fi
             let ack = plan["ack"]
                 .as_str()
                 .map(str::trim)
-                .filter(|a| action == "computer_task" && !a.is_empty())
+                .filter(|a| matches!(action, "computer_task" | "agent_task") && !a.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
                     format!(
@@ -1932,6 +1962,12 @@ async fn json_turn(
 
     // A flaw he noticed ("emoji are boxes"): into the tracker in his words (crate::flaws).
     if let Some(f) = flaw_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence) {
+        return f;
+    }
+
+    // He asks for something on one of his devices or machines that she has no tool for: an agent does
+    // it. Jev routes this; no text is matched (crate::act).
+    if let Some(f) = act_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence, cmid).await {
         return f;
     }
 
@@ -2963,6 +2999,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 .as_ref()
                 .map_or(USER_LABEL, |o| o.user_label.as_str()),
             platform: origin.as_ref().map_or(PLATFORM_LABEL, |o| o.platform_label),
+            device: "",
         };
         let outcome: Result<(String, String), String> = async {
             match action.as_str() {
@@ -2980,6 +3017,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 "computer_task" => {
                     run_computer_task(plan["task"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&message)).await
                 }
+                "agent_task" => crate::act::job(&st, &t, &plan, &job.id).await,
                 crate::video::ACTION => {
                     let cfg = &st.cfg.video;
                     crate::video::save_resume(cfg, &crate::video::Resume {
@@ -3386,6 +3424,7 @@ async fn tools_turn(
     };
     // The device the message came from, as a fact of the turn (no message text is matched).
     let voice_system = format!("{voice_system} {}", juno_fact(&st, &session, mcp));
+    let voice_system = format!("{voice_system} {}", crate::device::system_fact(&channel, mcp));
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
         .with_reply_to(reply_to);
@@ -3424,6 +3463,7 @@ async fn tools_turn(
                 peer: &st.cfg.owner_peer_id,
                 voice: channel == VOICE_CHANNEL,
                 intent_text: None,
+                device: "",
             },
             &message,
             USER_LABEL,
@@ -3472,6 +3512,7 @@ async fn tools_turn(
         memory: &memory_context,
         user_label: USER_LABEL,
         platform: PLATFORM_LABEL,
+        device: "",
     };
     let mut pending_note = String::new();
     let mut settled: Option<String> = None;

@@ -28,8 +28,8 @@ use crate::timeutil::{clip_utf16, iso_ms, js_trim, now_ms, parse_js_date};
 use crate::ulid::{is_timeline_id, new_id};
 use crate::{Result, StoreError};
 
-pub const CHANNELS: [&str; 7] = [
-    "telegram", "discord", "web", "ios", "alexa", "voice", "other",
+pub const CHANNELS: [&str; 9] = [
+    "telegram", "discord", "web", "ios", "dsi", "mac", "alexa", "voice", "other",
 ];
 pub const ROLES: [&str; 2] = ["user", "lucina"];
 pub const MAX_TEXT_CHARS: usize = 8000;
@@ -295,7 +295,9 @@ pub fn conversation_key(channel: &str, meta: Option<&Meta>) -> String {
         return format!("agent:{}", if caller.is_empty() { "mcp" } else { &caller });
     }
     match channel {
-        "web" | "ios" => match meta
+        // `dsi` (Nintendo DSi) and `mac` are app channels like `web`: a device's rows are one
+        // conversation whichever of its channels they carry (an old DSi row says `web`).
+        "web" | "ios" | "dsi" | "mac" => match meta
             .and_then(|m| m.device.as_deref())
             .filter(|d| valid_device(d))
         {
@@ -347,7 +349,12 @@ impl ConversationFilter {
             Self::Mine { device, channel } => {
                 key == "lucina"
                     || key.strip_prefix("device:") == Some(device.as_str())
-                    || key.strip_prefix("legacy:") == Some(channel.as_str())
+                    || key.strip_prefix("legacy:").is_some_and(|legacy| {
+                        legacy == channel.as_str()
+                            // Rows from before devices were told apart: a DSi or Mac client also owns the
+                            // `web` ones it used to write.
+                            || (legacy == "web" && matches!(channel.as_str(), "dsi" | "mac"))
+                    })
             }
         }
     }
@@ -814,6 +821,8 @@ impl Inner {
         let title = match kind {
             "device" => meta.device_name.clone().unwrap_or_else(|| key[7..].into()),
             "legacy" if item.channel == "ios" => "iPhone (before devices)".into(),
+            "legacy" if item.channel == "dsi" => "Nintendo DSi (before devices)".into(),
+            "legacy" if item.channel == "mac" => "Mac (before devices)".into(),
             "legacy" => "Web (before devices)".into(),
             "agent" => match &key[6..] {
                 "chatgpt" => "ChatGPT",

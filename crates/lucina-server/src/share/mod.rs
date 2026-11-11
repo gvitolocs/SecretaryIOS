@@ -649,13 +649,20 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         return Err(bad("invalid intent"));
     }
     let channel = field("channel", "web");
-    if channel != "ios" && channel != "web" {
-        return Err(bad("channel must be ios or web"));
+    if !secretary_core::channel::APP_CHANNELS.contains(&channel.as_str()) {
+        return Err(bad("channel must be web, ios, dsi or mac"));
     }
     let session = field("sessionId", "");
     if !valid_session(&session) {
         return Err(bad("invalid sessionId"));
     }
+    // The firmware that predates the `dsi` channel says `web`; its source and session id say DSi.
+    let channel = secretary_core::channel::client_channel(
+        &channel,
+        Some(field("source", "").trim()),
+        Some(session.as_str()),
+        None,
+    );
     // Test traffic (a test device, `conversation=selftest`, a `probe…`/`test…` source) runs in the
     // self-test conversation: never the owner's chat, never a push (docs/share.md).
     let selftest = test_device

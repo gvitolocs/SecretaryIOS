@@ -225,6 +225,10 @@ pub enum ChannelArg {
     Discord,
     Web,
     Ios,
+    /// The Nintendo DSi (Fortuna shell).
+    Dsi,
+    /// The Lucina app on the owner's Mac.
+    Mac,
     Alexa,
     Other,
 }
@@ -236,6 +240,8 @@ impl ChannelArg {
             ChannelArg::Discord => "discord",
             ChannelArg::Web => "web",
             ChannelArg::Ios => "ios",
+            ChannelArg::Dsi => "dsi",
+            ChannelArg::Mac => "mac",
             ChannelArg::Alexa => "alexa",
             ChannelArg::Other => "other",
         }
@@ -251,7 +257,7 @@ pub struct TimelineArgs {
     /// Pagination cursor: the `next_before` value printed at the end of the previous page.
     #[serde(default)]
     pub before: Option<String>,
-    /// Only messages from this channel.
+    /// Only messages from this channel (telegram, discord, web, ios, dsi = Nintendo DSi, mac = the Mac app, alexa, other).
     #[serde(default)]
     pub channel: Option<ChannelArg>,
 }

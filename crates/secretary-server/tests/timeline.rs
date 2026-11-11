@@ -684,6 +684,71 @@ async fn chat_channel_from_header_or_body_defaults_to_web() {
     assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
 }
 
+#[tokio::test]
+async fn chat_channel_dsi_and_mac_are_forwarded() {
+    let h = harness(|_| {}).await;
+    let last_channel =
+        || h.mock.seen("/api/secretary/chat").last().unwrap().body["channel"].clone();
+    let chat = |header: Option<&str>, agent: Option<&str>, body: Value| {
+        let mut rb = h
+            .http
+            .post(h.url("/v1/chat"))
+            .bearer_auth(&h.token)
+            .json(&body);
+        if let Some(v) = header {
+            rb = rb.header("X-Secretary-Client", v);
+        }
+        if let Some(v) = agent {
+            rb = rb.header("User-Agent", v);
+        }
+        rb
+    };
+
+    // The firmware installed today says web: the User-Agent, source and session id say DSi.
+    let (s, b) = h
+        .json(chat(
+            Some("web"),
+            Some("Fortuna/1.62 (Nintendo DSi)"),
+            json!({"message": "ciao"}),
+        ))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(last_channel(), "dsi", "Fortuna user agent");
+    let (s, _) = h
+        .json(chat(
+            Some("web"),
+            None,
+            json!({"message": "ciao", "source": "fortuna-chat"}),
+        ))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "dsi", "fortuna-chat source");
+    let (s, _) = h
+        .json(chat(
+            None,
+            None,
+            json!({"message": "ciao", "sessionId": "fortuna-abc"}),
+        ))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "dsi", "fortuna- session");
+
+    let (s, _) = h.json(chat(Some("mac"), None, json!({"message": "ciao"}))).await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "mac");
+    let (s, _) = h.json(chat(Some("dsi"), None, json!({"message": "ciao"}))).await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "dsi");
+    let (s, _) = h.json(chat(Some("web"), None, json!({"message": "ciao"}))).await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "web", "a plain web client stays web");
+
+    let before = h.mock.seen("/api/secretary/chat").len();
+    let (s, b) = h.json(chat(Some("nope"), None, json!({"message": "ciao"}))).await;
+    assert_eq!((s, code(&b)), (400, "bad_request"));
+    assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
+}
+
 // -- POST /v1/chat replyTo ---------------------------------------------------------
 
 #[tokio::test]

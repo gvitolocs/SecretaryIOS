@@ -694,9 +694,9 @@ async fn route(
             let platform = body["platform"].as_str().unwrap_or("secretary");
             let mcp = body["mcp"].as_bool().unwrap_or(false);
             let rule = lucina_intent::tier0::classify_tier0(text, recent, &st.cfg.intent);
-            let t = crate::planner::TurnInput { user_text: text, memory: recent, user_label: USER_LABEL, platform };
+            let t = crate::planner::TurnInput { user_text: text, memory: recent, user_label: USER_LABEL, platform, device: "" };
             let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
-            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, mcp, false).await;
+            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, "", mcp, false).await;
             Ok(ok(json!({
                 "tier0": rule.as_ref().map(|c| c.intent.clone()),
                 "tier0Confidence": rule.as_ref().map(|c| c.confidence),
@@ -1281,6 +1281,7 @@ async fn agenda(st: &AppState, bearer: crate::surface::BearerVerified, uri: &Uri
             memory: &memory,
             user_label: USER_LABEL,
             platform: PLATFORM_LABEL,
+            device: "",
         };
         let text = match st
             .planner
@@ -1667,12 +1668,12 @@ fn timeline_list(st: &AppState, uri: &Uri) -> ApiResult {
         }
     } else if let Some(scope) = scope {
         let device = query_param(uri, "device").filter(|d| valid_device(d));
-        let channel = query_param(uri, "channel").filter(|c| c == "web" || c == "ios");
+        let channel = query_param(uri, "channel").filter(|c| secretary_core::channel::APP_CHANNELS.contains(&c.as_str()));
         match (scope.as_str(), device, channel) {
             ("mine", Some(device), Some(channel)) => ConversationFilter::Mine { device, channel },
             _ => {
                 return Err(ApiError::bad_request(
-                    "scope=mine requires a valid device and web or ios channel",
+                    "scope=mine requires a valid device and a web, ios, dsi or mac channel",
                 ))
             }
         }

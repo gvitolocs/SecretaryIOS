@@ -30,6 +30,7 @@ pub const INTENTS: &[&str] = &[
     "social_post",
     "cursor_task",
     "computer_task",
+    "agent_task",
     "agent_message",
     "flaw_report",
     "lucina_log_inspect",
@@ -137,6 +138,7 @@ pub fn default_reply_mode(intent: &str) -> &'static str {
         | "social_post"
         | "calendar_event"
         | "spreadsheet_update"
+        | "agent_task"
         | "agent_message" => "direct",
         _ => "full_plan",
     }

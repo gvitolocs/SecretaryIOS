@@ -131,7 +131,8 @@ async fn page(
     QueryArgs(q): QueryArgs<TimelineQuery>,
 ) -> Result<Json<TimelinePage>, ApiError> {
     let call = if q.scope.as_deref() == Some("mine") {
-        let channel = crate::routes::chat_channel(&headers, None)?;
+        let claimed = crate::routes::chat_channel(&headers, None)?;
+        let channel = crate::routes::app_channel(&headers, &claimed, None, None);
         Call::timeline_for_device(&q, &ident.device_id, &channel)?
     } else {
         Call::timeline(&q)?

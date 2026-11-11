@@ -34,7 +34,7 @@ async fn main() {
     assert!(jev.configured(), "JEV_API_KEY missing");
     let mut ok = 0;
     for (msg, want) in CASES {
-        let t = TurnInput { user_text: msg, memory: "", user_label: "Giuseppe", platform: "telegram" };
+        let t = TurnInput { user_text: msg, memory: "", user_label: "Giuseppe", platform: "telegram", device: "" };
         let started = std::time::Instant::now();
         match classify_intent(jev, &t).await {
             Some((v, c)) => {

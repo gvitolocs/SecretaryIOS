@@ -240,6 +240,9 @@ pub struct TurnInput<'a> {
     pub memory: &'a str,
     pub user_label: &'a str,
     pub platform: &'a str,
+    /// The device the owner is talking through (`crate::device::jev_device_of_turn`): Jev's state
+    /// carries it as a fact. Empty: not known, nothing is added.
+    pub device: &'a str,
 }
 
 impl Planner {
@@ -735,6 +738,7 @@ mod tests {
             memory,
             user_label: "Giuseppe",
             platform: "secretary",
+            device: "",
         }
     }
 
