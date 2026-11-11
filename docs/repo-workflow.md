@@ -30,6 +30,16 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
   gate too. The CLI shows the log and exits non-zero on `CONFLICT` (merge `origin/main` into your branch, commit, merge
   again) or `GATE_FAILED` (`lagent job logs <id>`). Your worktree isn't touched during the merge; afterwards it is
   archived (worktree and branch go, gitignored outputs too: copy artifacts out first) unless you pass `--keep`.
+- **Merge gates per repo** (`.lucina/pipeline.toml`, read from the trunk, `[merge]` table):
+  - `cargo = "check"`: compile only (workspace check and touched standalone crates); `--full` adds the tests of touched crates.
+  - `cargo = "touched"` (the default when the key is missing): check, then test each touched crate.
+  - `cargo = "none"`: no `cargo check` and no `cargo test` gate (for repos where a check compiles a whole browser; run the build
+    yourself first). diffgate and `[[gate]]` entries still run, and `--full` still tests the touched crates.
+  - Any other value stops the merge job before a gate runs (`RULES_INVALID`), naming the file, the value and `check, touched, none`.
+    `"off"` is still read as `"none"`.
+  - `skip = ["path"]` leaves crates out of both cargo gates; `test_skip = ["path"]` leaves them out of the test gate only.
+    If every touched crate is in `test_skip`, the test gate is reported as skipped (never the whole workspace).
+  - The job log has one line per cargo gate (`cargo check: ...`, `cargo test: ...`) saying whether it runs or is skipped, and why.
 - **Deploys** go through `lagent deploy <runtime>`: recipes in `.lucina/pipeline.toml` cover `lucina-agentd`, `lucina-rs`,
   `lucina-media`, `lucina-memo`, `secretary-server`, `secretary-mcp` and `web`. A runtime without one gets `NO_RECIPE`; add it, or deploy by
   hand as in "Deploying" below, always through deploy-guard. A hand deploy holds the merge lock and stalls the queue.

@@ -285,6 +285,11 @@ impl Exec {
                 Ok(b) => b,
                 Err(e) => return fail("FETCH_FAILED", e),
             };
+            // The trunk's rules first: a bad `.lucina/pipeline.toml` stops the job before any gate runs.
+            let rules = match self.rules(&base) {
+                Ok(r) => r,
+                Err(e) => return fail("RULES_INVALID", e),
+            };
             let repo = self.repo();
             if self.git(&repo, &["merge-base", "--is-ancestor", &head, &base]).is_ok() {
                 return Outcome { ok: true, code: "NOTHING_TO_MERGE".into(), message: format!("{branch} is already on {}", self.spec.trunk), landed: Some(base), method: Some("already".into()), ..Outcome::default() };
@@ -321,16 +326,12 @@ impl Exec {
             }
             let changed: Vec<String> = self.git(&dir, &["diff", "--name-only", &base, &candidate]).unwrap_or_default().lines().map(str::to_string).collect();
             self.say(&format!("{method}: {} file(s) changed", changed.len()));
-            let mut rules = match self.rules(&base) {
-                Ok(r) => r,
-                Err(e) => return fail("RULES_INVALID", e),
-            };
-            if self.spec.full && rules.merge.cargo == "check" {
-                rules.merge.cargo = "touched".into();
-            }
             let (crates, has_workspace) = self.crates(&dir);
             let range = format!("{base}..{candidate}");
-            let gates = repo::plan(&rules, &changed, &crates, has_workspace, &range, &self.spec.allow);
+            let (gates, notes) = repo::plan_with(&rules, &changed, &crates, has_workspace, &range, &self.spec.allow, self.spec.full);
+            for n in &notes {
+                self.say(n);
+            }
             let (results, failed) = self.run_gates(&dir, &gates);
             if let Some(g) = failed {
                 return Outcome { ok: false, code: "GATE_FAILED".into(), message: format!("gate failed: {g} (lagent job logs {})", self.spec.job_id), method: Some(method.into()), gates: results, ..Outcome::default() };

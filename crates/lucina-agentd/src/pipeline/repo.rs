@@ -7,9 +7,11 @@
 //! [merge]
 //! diffgate = true                # diffgate over the merged range (default true)
 //! cargo = "check"                # compile only: the session ran the tests in its workspace
-//!                                # (the default "touched" also tests each touched crate; "off")
+//!                                # "touched" (the default) also tests each touched crate;
+//!                                # "none" runs no cargo gate (`--full` still tests touched crates)
 //! timeout_min = 45               # per gate
 //! skip = ["firmware/lucinavoice"] # crate dirs the cargo gates leave alone (other toolchains)
+//! test_skip = ["crates/big"]     # crate dirs left out of the test gate only (still checked)
 //!
 //! [[gate]]                       # extra gates, run when a changed path starts with one of `paths`
 //! name = "web build"
@@ -49,11 +51,37 @@ pub struct MergeRules {
     pub timeout_min: u64,
     #[serde(default)]
     pub skip: Vec<String>,
+    #[serde(default)]
+    pub test_skip: Vec<String>,
 }
 
 impl Default for MergeRules {
     fn default() -> Self {
-        MergeRules { diffgate: true, cargo: touched(), timeout_min: 45, skip: Vec::new() }
+        MergeRules { diffgate: true, cargo: touched(), timeout_min: 45, skip: Vec::new(), test_skip: Vec::new() }
+    }
+}
+
+/// What `[merge] cargo` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CargoMode {
+    /// Compile only.
+    Check,
+    /// Compile, and test each touched crate.
+    Touched,
+    /// No cargo gate (`--full` still tests the touched crates).
+    None,
+}
+
+/// The accepted `cargo` values, for error messages.
+pub const CARGO_VALUES: &str = "check, touched, none";
+
+/// `"off"` is the older spelling of `"none"` and is still read as such.
+pub fn cargo_mode(value: &str) -> Option<CargoMode> {
+    match value {
+        "check" => Some(CargoMode::Check),
+        "touched" => Some(CargoMode::Touched),
+        "none" | "off" => Some(CargoMode::None),
+        _ => None,
     }
 }
 
@@ -92,7 +120,11 @@ pub struct Rules {
 
 impl Rules {
     pub fn parse(text: &str) -> Result<Rules, String> {
-        toml::from_str(text).map_err(|e| format!("{FILE}: {e}"))
+        let rules: Rules = toml::from_str(text).map_err(|e| format!("{FILE}: {e}"))?;
+        if cargo_mode(&rules.merge.cargo).is_none() {
+            return Err(format!("{FILE}: [merge] cargo = {:?} is not a known value; accepted values: {CARGO_VALUES}", rules.merge.cargo));
+        }
+        Ok(rules)
     }
 }
 
@@ -135,8 +167,16 @@ pub struct Gate {
 /// touched workspace crates, each touched standalone crate (checked, or tested), and the
 /// declared gates whose paths it touches.
 pub fn plan(rules: &Rules, changed: &[String], crates: &[Crate], has_workspace: bool, range: &str, allow: &[String]) -> Vec<Gate> {
+    plan_with(rules, changed, crates, has_workspace, range, allow, false).0
+}
+
+/// [`plan`] with `--full` (`full`: run the tests of touched crates whatever `cargo` says), and
+/// the log lines saying which cargo gate runs or is skipped and which setting decided it.
+pub fn plan_with(rules: &Rules, changed: &[String], crates: &[Crate], has_workspace: bool, range: &str, allow: &[String], full: bool) -> (Vec<Gate>, Vec<String>) {
     let t = rules.merge.timeout_min;
+    let mode = cargo_mode(&rules.merge.cargo).unwrap_or(CargoMode::Touched);
     let mut gates = Vec::new();
+    let mut notes = Vec::new();
     if rules.merge.diffgate {
         let mut run = format!("diffgate --repo . --range {range}");
         for a in allow {
@@ -144,45 +184,89 @@ pub fn plan(rules: &Rules, changed: &[String], crates: &[Crate], has_workspace: 
         }
         gates.push(Gate { name: "diffgate".into(), run, timeout_min: 10 });
     }
-    if rules.merge.cargo != "off" {
-        let tests = rules.merge.cargo != "check";
-        let mut members = BTreeSet::new();
-        let mut standalone = BTreeSet::new();
-        let mut root_manifest = false;
-        for p in changed {
-            if p == "Cargo.toml" || p == "Cargo.lock" {
-                root_manifest = true;
+    let run_check = mode != CargoMode::None;
+    let tests = mode == CargoMode::Touched || full;
+    let under = |list: &[String], dir: &str| list.iter().any(|s| dir == s.trim_end_matches('/'));
+    let mut members = BTreeSet::new();
+    let mut standalone = BTreeSet::new();
+    let mut test_members = BTreeSet::new();
+    let mut test_standalone = BTreeSet::new();
+    let mut root_manifest = false;
+    for p in changed {
+        if p == "Cargo.toml" || p == "Cargo.lock" {
+            root_manifest = true;
+        }
+        if let Some(c) = owner(p, crates) {
+            if under(&rules.merge.skip, &c.dir) {
+                continue;
             }
-            if let Some(c) = owner(p, crates) {
-                if rules.merge.skip.iter().any(|s| c.dir == s.trim_end_matches('/')) {
-                    continue;
+            let tested = !under(&rules.merge.test_skip, &c.dir);
+            if c.standalone {
+                standalone.insert(c.dir.clone());
+                if tested {
+                    test_standalone.insert(c.dir.clone());
                 }
-                if c.standalone {
-                    standalone.insert(c.dir.clone());
-                } else if !c.dir.is_empty() || !has_workspace {
-                    members.insert(c.name.clone());
+            } else if !c.dir.is_empty() || !has_workspace {
+                members.insert(c.name.clone());
+                if tested {
+                    test_members.insert(c.name.clone());
                 }
             }
         }
+    }
+    let cargo_setting = format!("cargo = {:?}", rules.merge.cargo);
+    // Checks.
+    if run_check {
         if has_workspace && (root_manifest || !members.is_empty()) {
             gates.push(Gate { name: "cargo check (workspace)".into(), run: "cargo check --quiet --workspace".into(), timeout_min: t });
         }
-        if !members.is_empty() && (tests || !has_workspace) {
+        if !tests && !has_workspace && !members.is_empty() {
             let ps: Vec<String> = members.iter().map(|m| format!("-p {m}")).collect();
-            let (verb, what) = if tests { ("test", "cargo test (touched crates)") } else { ("check", "cargo check (touched crates)") };
-            gates.push(Gate { name: what.into(), run: format!("cargo {verb} --quiet {}", ps.join(" ")), timeout_min: t });
+            gates.push(Gate { name: "cargo check (touched crates)".into(), run: format!("cargo check --quiet {}", ps.join(" ")), timeout_min: t });
         }
-        let verb = if tests { "test" } else { "check" };
-        for dir in &standalone {
-            gates.push(Gate { name: format!("cargo {verb} ({dir})"), run: format!("cargo {verb} --quiet --manifest-path {dir}/Cargo.toml"), timeout_min: t });
+        if !tests {
+            for dir in &standalone {
+                gates.push(Gate { name: format!("cargo check ({dir})"), run: format!("cargo check --quiet --manifest-path {dir}/Cargo.toml"), timeout_min: t });
+            }
         }
     }
+    // Tests.
+    if tests {
+        if !test_members.is_empty() {
+            let ps: Vec<String> = test_members.iter().map(|m| format!("-p {m}")).collect();
+            gates.push(Gate { name: "cargo test (touched crates)".into(), run: format!("cargo test --quiet {}", ps.join(" ")), timeout_min: t });
+        }
+        for dir in &test_standalone {
+            gates.push(Gate { name: format!("cargo test ({dir})"), run: format!("cargo test --quiet --manifest-path {dir}/Cargo.toml"), timeout_min: t });
+        }
+    }
+    let ran = |prefix: &str| gates.iter().any(|g| g.name.starts_with(prefix));
+    notes.push(if !run_check {
+        format!("cargo check: skipped ({cargo_setting})")
+    } else if ran("cargo check") {
+        format!("cargo check: runs ({cargo_setting})")
+    } else {
+        format!("cargo check: nothing to check ({cargo_setting}; no touched crate)")
+    });
+    notes.push(if ran("cargo test") {
+        if mode == CargoMode::Touched {
+            format!("cargo test: runs ({cargo_setting})")
+        } else {
+            format!("cargo test: runs (--full overrides {cargo_setting})")
+        }
+    } else if !tests {
+        format!("cargo test: skipped ({cargo_setting}; --full runs the tests of touched crates)")
+    } else if !members.is_empty() || !standalone.is_empty() {
+        "cargo test: skipped (every touched crate is in test_skip)".to_string()
+    } else {
+        format!("cargo test: nothing to test ({cargo_setting}; no touched crate)")
+    });
     for g in &rules.gates {
         if g.paths.is_empty() || changed.iter().any(|p| g.paths.iter().any(|pre| p.starts_with(pre.as_str()))) {
             gates.push(Gate { name: g.name.clone(), run: g.run.clone(), timeout_min: g.timeout_min.unwrap_or(t) });
         }
     }
-    gates
+    (gates, notes)
 }
 
 /// `'…'` for a POSIX shell.
@@ -269,5 +353,100 @@ mod tests {
         r.merge.cargo = "off".into();
         r.merge.diffgate = false;
         assert!(plan(&r, &changed(&["crates/lucina-agentd/src/a.rs"]), &crates(), true, "A..B", &[]).is_empty());
+    }
+
+    #[test]
+    fn cargo_values_are_validated() {
+        assert_eq!(cargo_mode("check"), Some(CargoMode::Check));
+        assert_eq!(cargo_mode("touched"), Some(CargoMode::Touched));
+        assert_eq!(cargo_mode("none"), Some(CargoMode::None));
+        assert_eq!(cargo_mode("off"), Some(CargoMode::None));
+        assert_eq!(cargo_mode("nonee"), None);
+        // Missing key: today's default, "touched".
+        assert_eq!(Rules::parse("[merge]\ndiffgate = true\n").unwrap().merge.cargo, "touched");
+        for v in ["check", "touched", "none"] {
+            assert_eq!(Rules::parse(&format!("[merge]\ncargo = \"{v}\"\n")).unwrap().merge.cargo, v);
+        }
+        let e = Rules::parse("[merge]\ncargo = \"nope\"\n").unwrap_err();
+        assert!(e.contains(".lucina/pipeline.toml") && e.contains("\"nope\"") && e.contains("check, touched, none"), "{e}");
+        let r = Rules::parse("[merge]\ntest_skip = [\"crates/lucina-agents\"]\n").unwrap();
+        assert_eq!(r.merge.test_skip, vec!["crates/lucina-agents".to_string()]);
+    }
+
+    fn names(g: &[Gate]) -> Vec<&str> {
+        g.iter().map(|g| g.name.as_str()).collect()
+    }
+
+    fn with(cargo: &str, test_skip: &[&str]) -> Rules {
+        let mut r = Rules::default();
+        r.merge.cargo = cargo.into();
+        r.merge.test_skip = test_skip.iter().map(|s| s.to_string()).collect();
+        r
+    }
+
+    fn two() -> Vec<String> {
+        vec!["crates/lucina-agentd/src/a.rs".into(), "crates/lucina-agents/src/b.rs".into()]
+    }
+
+    #[test]
+    fn cargo_none_runs_no_cargo_gate_but_diffgate_and_declared_gates() {
+        let mut r = with("none", &[]);
+        r.gates.push(GateRule { name: "web".into(), paths: vec!["web/".into()], run: "make web".into(), timeout_min: None });
+        let mut ch = two();
+        ch.push("crates/secretary-pixiv/src/x.rs".into());
+        ch.push("web/a.ts".into());
+        let (g, notes) = plan_with(&r, &ch, &crates(), true, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "web"]);
+        assert_eq!(notes[0], "cargo check: skipped (cargo = \"none\")");
+        assert!(notes[1].starts_with("cargo test: skipped (cargo = \"none\""), "{notes:?}");
+    }
+
+    #[test]
+    fn cargo_none_with_full_still_tests_touched_crates() {
+        let mut ch = two();
+        ch.push("crates/secretary-pixiv/src/x.rs".into());
+        let (g, notes) = plan_with(&with("none", &["crates/lucina-agents"]), &ch, &crates(), true, "A..B", &[], true);
+        assert_eq!(names(&g), ["diffgate", "cargo test (touched crates)", "cargo test (crates/secretary-pixiv)"]);
+        assert_eq!(g[1].run, "cargo test --quiet -p lucina-agentd");
+        assert_eq!(notes[0], "cargo check: skipped (cargo = \"none\")");
+        assert_eq!(notes[1], "cargo test: runs (--full overrides cargo = \"none\")");
+    }
+
+    #[test]
+    fn check_and_touched_are_unchanged() {
+        let (g, n) = plan_with(&with("check", &[]), &two(), &crates(), true, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)"]);
+        assert_eq!(n[0], "cargo check: runs (cargo = \"check\")");
+        assert!(n[1].starts_with("cargo test: skipped (cargo = \"check\""));
+        let (g, n) = plan_with(&with("check", &[]), &two(), &crates(), true, "A..B", &[], true);
+        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)", "cargo test (touched crates)"]);
+        assert_eq!(n[1], "cargo test: runs (--full overrides cargo = \"check\")");
+        let (g, n) = plan_with(&with("touched", &[]), &two(), &crates(), true, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)", "cargo test (touched crates)"]);
+        assert_eq!(g[2].run, "cargo test --quiet -p lucina-agentd -p lucina-agents");
+        assert_eq!(n[1], "cargo test: runs (cargo = \"touched\")");
+    }
+
+    #[test]
+    fn test_skip_leaves_a_crate_out_of_the_test_gate_only() {
+        let (g, _) = plan_with(&with("touched", &["crates/lucina-agents/"]), &two(), &crates(), true, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)", "cargo test (touched crates)"]);
+        assert_eq!(g[2].run, "cargo test --quiet -p lucina-agentd");
+        // `skip` keeps its meaning: out of both.
+        let mut r = with("touched", &[]);
+        r.merge.skip = vec!["crates/lucina-agents".into()];
+        let ch = vec!["crates/lucina-agents/src/b.rs".to_string()];
+        assert_eq!(names(&plan_with(&r, &ch, &crates(), true, "A..B", &[], false).0), ["diffgate"]);
+    }
+
+    #[test]
+    fn all_touched_crates_in_test_skip_skips_the_test_gate_with_a_reason() {
+        let r = with("touched", &["crates/lucina-agentd", "crates/secretary-pixiv"]);
+        let ch = vec!["crates/lucina-agentd/src/a.rs".to_string(), "crates/secretary-pixiv/src/x.rs".to_string()];
+        let (g, n) = plan_with(&r, &ch, &crates(), true, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)"]);
+        assert_eq!(n[1], "cargo test: skipped (every touched crate is in test_skip)");
+        // The whole workspace is never run instead.
+        assert!(g.iter().all(|g| !g.run.contains("--workspace") || g.run.starts_with("cargo check")));
     }
 }
