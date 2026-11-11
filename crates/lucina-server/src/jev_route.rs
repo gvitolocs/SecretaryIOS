@@ -511,13 +511,23 @@ mod tests {
     #[test]
     fn jev_first_routes_agent_task_and_no_tier0_rule_can() {
         assert_eq!(jev_first(Some(("agent_task", 0.8)), None), Ok(()));
-        assert_eq!(jev_first(Some(("agent_task", 0.5)), None), Err("below_threshold"));
+        assert_eq!(
+            jev_first(Some(("agent_task", 0.5)), None),
+            Err("below_threshold")
+        );
         assert!(SIDE_EFFECT_INTENTS.contains(&"agent_task"));
-        assert_eq!(lucina_intent::tier0::default_reply_mode("agent_task"), "direct");
+        assert_eq!(
+            lucina_intent::tier0::default_reply_mode("agent_task"),
+            "direct"
+        );
         assert!(INTENT_OPTIONS.iter().any(|(n, _)| *n == "agent_task"));
         // No regex rule names it: the intent table and its reply mode are the only places.
         let source = include_str!("../../lucina-intent/src/tier0.rs");
-        assert_eq!(source.matches("\"agent_task\"").count(), 2, "only the intent list and its reply mode");
+        assert_eq!(
+            source.matches("\"agent_task\"").count(),
+            2,
+            "only the intent list and its reply mode"
+        );
         let s = lucina_intent::heuristics::Settings::default();
         for m in [
             "Accendi i Anespici e passami Pokémon Diamante su questo DSi",

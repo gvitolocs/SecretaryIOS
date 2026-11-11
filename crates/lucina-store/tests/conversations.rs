@@ -361,12 +361,20 @@ fn timeline_mine_keeps_old_web_rows_with_new_dsi_rows() {
     let dir = tempfile::tempdir().unwrap();
     let s = TimelineStore::new(dir.path().join("timeline.jsonl"), 100000, true);
     // The DSi wrote `web` before the `dsi` channel existed; the same device writes `dsi` now.
-    let old = s.append(input("web", Some("Dsi-1"), "old web row")).unwrap();
-    let new = s.append(input("dsi", Some("Dsi-1"), "new dsi row")).unwrap();
+    let old = s
+        .append(input("web", Some("Dsi-1"), "old web row"))
+        .unwrap();
+    let new = s
+        .append(input("dsi", Some("Dsi-1"), "new dsi row"))
+        .unwrap();
     let reply = s.append(input("dsi", Some("Dsi-1"), "reply")).unwrap();
     let old_legacy = s.append(input("web", None, "web before devices")).unwrap();
-    let other = s.append(input("dsi", Some("Other-9"), "another device")).unwrap();
-    let mac = s.append(input("mac", Some("Mac-1"), "from the mac")).unwrap();
+    let other = s
+        .append(input("dsi", Some("Other-9"), "another device"))
+        .unwrap();
+    let mac = s
+        .append(input("mac", Some("Mac-1"), "from the mac"))
+        .unwrap();
     let ids = |device: &str, channel: &str| -> Vec<String> {
         let mine = ConversationFilter::Mine {
             device: device.into(),

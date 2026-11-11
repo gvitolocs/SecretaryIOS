@@ -1967,7 +1967,14 @@ async fn json_turn(
 
     // He asks for something on one of his devices or machines that she has no tool for: an agent does
     // it. Jev routes this; no text is matched (crate::act).
-    if let Some(f) = act_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence, cmid).await {
+    if let Some(f) = act_turn::try_turn(
+        t,
+        &prepared.classification.intent,
+        prepared.classification.confidence,
+        cmid,
+    )
+    .await
+    {
         return f;
     }
 
@@ -3424,7 +3431,10 @@ async fn tools_turn(
     };
     // The device the message came from, as a fact of the turn (no message text is matched).
     let voice_system = format!("{voice_system} {}", juno_fact(&st, &session, mcp));
-    let voice_system = format!("{voice_system} {}", crate::device::system_fact(&channel, mcp));
+    let voice_system = format!(
+        "{voice_system} {}",
+        crate::device::system_fact(&channel, mcp)
+    );
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
         .with_reply_to(reply_to);

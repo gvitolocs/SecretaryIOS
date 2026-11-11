@@ -78,7 +78,9 @@ pub(crate) fn app_channel(
     source: Option<&str>,
     session: Option<&str>,
 ) -> String {
-    let user_agent = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok());
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
     secretary_core::channel::client_channel(claimed, source, session, user_agent)
 }
 

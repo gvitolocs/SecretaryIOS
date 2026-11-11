@@ -733,18 +733,26 @@ async fn chat_channel_dsi_and_mac_are_forwarded() {
     assert_eq!(s, 200);
     assert_eq!(last_channel(), "dsi", "fortuna- session");
 
-    let (s, _) = h.json(chat(Some("mac"), None, json!({"message": "ciao"}))).await;
+    let (s, _) = h
+        .json(chat(Some("mac"), None, json!({"message": "ciao"})))
+        .await;
     assert_eq!(s, 200);
     assert_eq!(last_channel(), "mac");
-    let (s, _) = h.json(chat(Some("dsi"), None, json!({"message": "ciao"}))).await;
+    let (s, _) = h
+        .json(chat(Some("dsi"), None, json!({"message": "ciao"})))
+        .await;
     assert_eq!(s, 200);
     assert_eq!(last_channel(), "dsi");
-    let (s, _) = h.json(chat(Some("web"), None, json!({"message": "ciao"}))).await;
+    let (s, _) = h
+        .json(chat(Some("web"), None, json!({"message": "ciao"})))
+        .await;
     assert_eq!(s, 200);
     assert_eq!(last_channel(), "web", "a plain web client stays web");
 
     let before = h.mock.seen("/api/secretary/chat").len();
-    let (s, b) = h.json(chat(Some("nope"), None, json!({"message": "ciao"}))).await;
+    let (s, b) = h
+        .json(chat(Some("nope"), None, json!({"message": "ciao"})))
+        .await;
     assert_eq!((s, code(&b)), (400, "bad_request"));
     assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
 }

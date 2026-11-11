@@ -1668,7 +1668,8 @@ fn timeline_list(st: &AppState, uri: &Uri) -> ApiResult {
         }
     } else if let Some(scope) = scope {
         let device = query_param(uri, "device").filter(|d| valid_device(d));
-        let channel = query_param(uri, "channel").filter(|c| secretary_core::channel::APP_CHANNELS.contains(&c.as_str()));
+        let channel = query_param(uri, "channel")
+            .filter(|c| secretary_core::channel::APP_CHANNELS.contains(&c.as_str()));
         match (scope.as_str(), device, channel) {
             ("mine", Some(device), Some(channel)) => ConversationFilter::Mine { device, channel },
             _ => {
