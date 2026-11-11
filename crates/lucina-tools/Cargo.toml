@@ -17,6 +17,7 @@ lucina-meshy = { path = "../lucina-meshy" }
 lucina-delegate = { path = "../lucina-delegate" }
 lucina-computer-use = { path = "../lucina-computer-use" }
 lucina-flaws = { path = "../lucina-flaws" }
+lucina-parcels = { path = "../lucina-parcels" }
 lucina-ops = { path = "../lucina-ops" }
 lucina-phone-core = { path = "../lucina-phone-core" }
 futures-util = { workspace = true }

@@ -1,0 +1,7 @@
+{
+ "error": "This carrier needs the recipient's postcode",
+ "field": "postcode",
+ "hint": {
+  "kind": "input_required"
+ }
+}

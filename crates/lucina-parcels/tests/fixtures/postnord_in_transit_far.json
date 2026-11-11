@@ -1,0 +1,43 @@
+{
+ "carrier": "postnord",
+ "source": "postnord",
+ "result": {
+  "status": "in_transit",
+  "current_stage": "in_transit",
+  "last_status_text": "The shipment item is under transportation.",
+  "last_update": "2026-09-27T18:11:43Z",
+  "expected_delivery": null,
+  "sender_name": "Amazon",
+  "service_name": "PostNord Home",
+  "destination_country": "DK",
+  "weight_kg": 6.58,
+  "dimensions_text": "67 \u00d7 53 \u00d7 34 cm",
+  "events": [
+   {
+    "time": "2026-09-27T18:11:43Z",
+    "description": "The shipment item is under transportation.",
+    "provider_code": "EN_ROUTE",
+    "location": "TAASTRUP TERMINAL",
+    "stage": "in_transit",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-27T18:11:43Z"
+   },
+   {
+    "time": "2026-09-25T18:07:00Z",
+    "description": "We have received a notification from your shipper that they are preparing an item for you. The tracking information will be updated when the parcel is handed over to PostNord.",
+    "provider_code": "INFORMED",
+    "location": "PostNord",
+    "stage": "registered",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-25T18:07:00Z"
+   }
+  ]
+ },
+ "attempts": [
+  {
+   "source": "postnord",
+   "kind": "ok",
+   "durationMs": 431
+  }
+ ]
+}

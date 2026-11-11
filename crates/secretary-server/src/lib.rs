@@ -36,6 +36,7 @@ pub mod vault;
 pub mod notes;
 pub mod notify;
 pub mod flaws;
+pub mod parcels;
 pub mod ops;
 pub mod reach;
 pub mod owner;
@@ -362,6 +363,7 @@ pub fn app(state: AppState) -> Router {
         .merge(reach::routes())
         .merge(au::routes())
         .merge(callers::routes())
+        .merge(parcels::routes())
         .merge(desk::routes())
         .merge(owner_secrets::routes());
     if state.upstream.is_some() {

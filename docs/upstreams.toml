@@ -265,6 +265,25 @@ confidence = "likely"
 rely_on = ["tui", "session", "providers", "mcp", "lsp"]
 notes = "SecretaryCode (LucinaCode) forks OpenCode; baseline commit e6689ca says v2.1.4, which does not match upstream's release numbering (latest v1.19.5), so dev-branch commits since an approximate date are watched. Re-pin to the exact fork commit once found."
 
+[[upstream]]
+id = "universal-parcel-scraper"
+name = "Universal Parcel Scraper"
+url = "https://github.com/plhery/universal-parcel-scraper"
+source = "github"
+repo = "plhery/universal-parcel-scraper"
+branch = "main"
+track = "releases"
+pin = "v0.637.1"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-parcels" },
+]
+licence_upstream = "Apache-2.0"
+licence_ours = "MIT"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["HTTP API /v1/track and /v1/detect", "stage names (data/stages.json)", "error hint kinds", "PostNord, GLS, DAO, Bring, DHL, UPS adapters", "Docker image ghcr.io/plhery/universal-parcel-scraper"]
+notes = "Adopted as-is 2026-11-11: runs unmodified as the pinned Docker image (user unit lucina-parcel-scraper, 127.0.0.1:8796, clone for reading at ~/Projects/Lucina/universal-parcel-scraper). No code copied; crates/lucina-parcels is our Rust client, store and schedule. LICENSE read: Apache-2.0 core; the optional trawl/ image is AGPL-3.0 and is not used. A new pin means: pull the new image tag, change the unit, rerun the lucina-parcels fixture tests. Decision record: docs/lucina-rust/parcels.md."
+
 # ───────────────────────── Ink / reader ─────────────────────────
 
 [[upstream]]

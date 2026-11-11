@@ -1,0 +1,6 @@
+{
+ "error": "No shipment found for this tracking number",
+ "hint": {
+  "kind": "not_found"
+ }
+}

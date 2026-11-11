@@ -128,6 +128,8 @@ pub struct Config {
     pub ops: crate::ops::OpsSettings,
     /// The flaw tracker (`LUCINA_FLAWS*`, crate::flaws).
     pub flaws: crate::flaws::FlawSettings,
+    /// Parcel tracking (`LUCINA_PARCELS*`, crate::parcels).
+    pub parcels: crate::parcels::ParcelSettings,
     pub data_dir: PathBuf,
     pub persona: String,
     pub host_label: String,
@@ -713,6 +715,7 @@ impl Config {
             discord_token: crate::discord::token_from_lookup(&get),
             ops: crate::ops::OpsSettings::from_lookup(&get, &data_dir),
             flaws: crate::flaws::FlawSettings::from_lookup(&get, &data_dir),
+            parcels: crate::parcels::ParcelSettings::from_lookup(&get, &data_dir),
             data_dir,
         })
     }

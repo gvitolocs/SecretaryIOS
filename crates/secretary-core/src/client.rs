@@ -544,6 +544,95 @@ impl Call {
         Ok(Self::new(Method::POST, &["callers", "allow"]).with_body(body))
     }
 
+    /// `GET /parcels`: the parcels Lucina follows, with `digestHour`.
+    pub fn parcels_list() -> Self {
+        Self::new(Method::GET, &["parcels"])
+    }
+
+    /// `POST /parcels` `{number, carrier?, label?}`: follow a parcel (number 4-80 characters,
+    /// carrier at most 40, label at most 80; no other keys).
+    pub fn parcels_add(body: Value) -> Result<Self> {
+        Self::parcel_body(&body, &["number", "carrier", "label"])?;
+        let number_ok = body
+            .get("number")
+            .and_then(Value::as_str)
+            .is_some_and(|n| (4..=80).contains(&n.trim().chars().count()));
+        if !number_ok {
+            return Err(Error::Invalid {
+                field: "number",
+                message: "must be 4 to 80 characters".into(),
+            });
+        }
+        Self::parcel_text(&body, "carrier", 40)?;
+        Self::parcel_text(&body, "label", 80)?;
+        // A carrier lookup can take a minute: the long deadline.
+        let mut c = Self::new(Method::POST, &["parcels"]).with_body(body);
+        c.class = TimeoutClass::Chat;
+        Ok(c)
+    }
+
+    /// `GET /parcels/{id}`.
+    pub fn parcels_get(id: &str) -> Result<Self> {
+        Self::parcel_id(id)?;
+        Ok(Self::new(Method::GET, &["parcels", id]))
+    }
+
+    /// `POST /parcels/{id}/refresh`: check the carrier now (unless checked under 10 minutes ago).
+    pub fn parcels_refresh(id: &str) -> Result<Self> {
+        Self::parcel_id(id)?;
+        let mut c = Self::new(Method::POST, &["parcels", id, "refresh"]);
+        c.class = TimeoutClass::Chat;
+        Ok(c)
+    }
+
+    /// `PATCH /parcels/{id}` `{label: text | null}` (at most 80 characters; no other keys).
+    pub fn parcels_rename(id: &str, body: Value) -> Result<Self> {
+        Self::parcel_id(id)?;
+        Self::parcel_body(&body, &["label"])?;
+        if body.get("label").is_none() {
+            return Err(Error::Invalid {
+                field: "label",
+                message: "is required (text or null)".into(),
+            });
+        }
+        Self::parcel_text(&body, "label", 80)?;
+        Ok(Self::new(Method::PATCH, &["parcels", id]).with_body(body))
+    }
+
+    /// `DELETE /parcels/{id}`: stop following a parcel and forget it.
+    pub fn parcels_remove(id: &str) -> Result<Self> {
+        Self::parcel_id(id)?;
+        Ok(Self::new(Method::DELETE, &["parcels", id]))
+    }
+
+    fn parcel_id(id: &str) -> Result<()> {
+        let ok = id.strip_prefix("pc-").is_some_and(|h| {
+            h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::Invalid { field: "id", message: "must be pc- and 8 lowercase hex digits".into() })
+        }
+    }
+
+    fn parcel_body(body: &Value, allowed: &[&str]) -> Result<()> {
+        match body.as_object() {
+            Some(o) if o.keys().all(|k| allowed.contains(&k.as_str())) => Ok(()),
+            Some(_) => Err(Error::Invalid { field: "body", message: format!("only {} are allowed", allowed.join(", ")) }),
+            None => Err(Error::Invalid { field: "body", message: "must be a JSON object".into() }),
+        }
+    }
+
+    /// `key` is absent, null, or text of at most `max` characters.
+    fn parcel_text(body: &Value, key: &'static str, max: usize) -> Result<()> {
+        match body.get(key) {
+            None | Some(Value::Null) => Ok(()),
+            Some(Value::String(s)) if s.trim().chars().count() <= max => Ok(()),
+            _ => Err(Error::Invalid { field: key, message: format!("must be text of at most {max} characters, or null") }),
+        }
+    }
+
     /// `GET /au/health`: whether AU Find answers (`{reachable, af_server, error?}`).
     pub fn au_health() -> Self {
         Self::new(Method::GET, &["au", "health"]).bare()
@@ -2081,6 +2170,47 @@ mod tests {
             json!({"numbers": ["1"], "context": {"contact": "x".repeat(9000)}}),
         ] {
             assert!(Call::callers_screen(bad.clone()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn parcels_calls() {
+        let c = client("http://h:1");
+        assert_eq!(c.url(&Call::parcels_list()).as_str(), "http://h:1/api/secretary/parcels");
+        let a = Call::parcels_add(json!({"number": "3UW1S8IAAKA23", "carrier": "poste-italiane", "label": "Shoes"})).unwrap();
+        assert_eq!((a.method.as_str(), c.url(&a).as_str()), ("POST", "http://h:1/api/secretary/parcels"));
+        assert!(Call::parcels_add(json!({"number": "ABCD"})).is_ok());
+        for bad in [
+            json!([]),
+            json!({}),
+            json!({"number": "abc"}),
+            json!({"number": " ab  "}),
+            json!({"number": "1".repeat(81)}),
+            json!({"number": 12345}),
+            json!({"number": "ABCD", "extra": 1}),
+            json!({"number": "ABCD", "label": "x".repeat(81)}),
+            json!({"number": "ABCD", "label": 5}),
+            json!({"number": "ABCD", "carrier": "c".repeat(41)}),
+        ] {
+            assert!(Call::parcels_add(bad.clone()).is_err(), "{bad}");
+        }
+        let id = "pc-1a2b3c4d";
+        assert_eq!(c.url(&Call::parcels_get(id).unwrap()).as_str(), "http://h:1/api/secretary/parcels/pc-1a2b3c4d");
+        let r = Call::parcels_refresh(id).unwrap();
+        assert_eq!((r.method.as_str(), c.url(&r).as_str()), ("POST", "http://h:1/api/secretary/parcels/pc-1a2b3c4d/refresh"));
+        let d = Call::parcels_remove(id).unwrap();
+        assert_eq!((d.method.as_str(), c.url(&d).as_str()), ("DELETE", "http://h:1/api/secretary/parcels/pc-1a2b3c4d"));
+        let p = Call::parcels_rename(id, json!({"label": null})).unwrap();
+        assert_eq!(p.method.as_str(), "PATCH");
+        assert!(Call::parcels_rename(id, json!({"label": "Headphones"})).is_ok());
+        for bad in [json!({}), json!({"label": 1}), json!({"label": "x".repeat(81)}), json!({"label": "a", "number": "b"}), json!("x")] {
+            assert!(Call::parcels_rename(id, bad.clone()).is_err(), "{bad}");
+        }
+        for bad in ["", "pc-1", "pc-1A2B3C4D", "pc-1a2b3c4dd", "fl-1a2b3c4d", "../x", "pc-1a2b3c4g"] {
+            assert!(Call::parcels_get(bad).is_err(), "{bad}");
+            assert!(Call::parcels_refresh(bad).is_err(), "{bad}");
+            assert!(Call::parcels_remove(bad).is_err(), "{bad}");
+            assert!(Call::parcels_rename(bad, json!({"label": null})).is_err(), "{bad}");
         }
     }
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Universal Parcel Scraper (plhery/universal-parcel-scraper 0.637.1) for Lucina parcel tracking, 127.0.0.1:8796
+After=docker.service network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f lucina-parcel-scraper
+ExecStart=/usr/bin/docker run --rm --name lucina-parcel-scraper --memory 1g --cpus 1 -p 127.0.0.1:8796:8080 -e SCRAPER_PROVIDERS=UPU ghcr.io/plhery/universal-parcel-scraper:0.637.1
+ExecStop=/usr/bin/docker stop lucina-parcel-scraper
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target

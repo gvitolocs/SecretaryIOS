@@ -49,6 +49,7 @@ pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
 mod flaw_turn;
+mod parcel_turn;
 mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
@@ -1932,6 +1933,11 @@ async fn json_turn(
 
     // A flaw he noticed ("emoji are boxes"): into the tracker in his words (crate::flaws).
     if let Some(f) = flaw_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence) {
+        return f;
+    }
+
+    // A parcel to follow ("track this 3UW1S8IAAKA23"), or where his parcels are (crate::parcels).
+    if let Some(f) = parcel_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence).await {
         return f;
     }
 

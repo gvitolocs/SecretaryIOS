@@ -25,6 +25,8 @@
 //!   `instagram_stories`, the watchlist tools, `pixiv_search`, `pixiv_ranking`, `save_to_gallery` ([`tools::plugins`]; safe Pixiv only); `drive`
 //!   (Lucina's own Google Drive, read-only, registered by the server when
 //!   `LUCINA_DRIVE=true` and the grant exists, see [`google`]).
+//!   `parcel` (the owner's parcels, followed through the local parcel scraper; owner-only,
+//!   [`tools::parcels`]),
 //!   `juno_tools`, `juno_call`, `juno_screenshot`, `juno_bash` (the owner's laptop over
 //!   the server's Juno bridge, owner's registry only; [`tools::juno`]).
 //! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
@@ -261,6 +263,8 @@ pub struct ToolEnv {
     pub ops: Option<Arc<lucina_ops::Ops>>,
     /// The flaw tracker (`flaw`, `message_claude` with `issue`).
     pub flaws: Option<Arc<lucina_flaws::Flaws>>,
+    /// Parcel tracking (`parcel`); `None`: `LUCINA_PARCELS=off`.
+    pub parcels: Option<Arc<lucina_parcels::Service>>,
     /// Messages to Claude, Grok and Lucina Agents (`LUCINA_REACH`); `None`: off.
     pub reach: Option<Arc<tools::reach::Reach>>,
     /// af-server (AU Find) base URL (`LUCINA_AU_URL`); `None`: `LUCINA_AU=off`.
@@ -323,6 +327,7 @@ impl ToolEnv {
             approvals: None,
             ops: None,
             flaws: None,
+            parcels: None,
             reach: None,
             au_url: None,
             callers: None,
@@ -529,6 +534,7 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &[
     "secrets_audit",
     // A flaw report can start a coding agent.
     "flaw",
+    "parcel",
     // The Instagram / Pixiv plugins (`tools::plugins::NAMES`): owner's chat only.
     "instagram_profile",
     "instagram_stories",
@@ -554,6 +560,7 @@ pub const NO_MCP_TOOLS: &[&str] = &[
     "secrets_status",
     "secrets_audit",
     "flaw",
+    "parcel",
     "instagram_profile",
     "instagram_stories",
     "instagram_watchlist",

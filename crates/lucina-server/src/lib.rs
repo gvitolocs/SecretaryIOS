@@ -43,6 +43,7 @@ pub mod juno;
 pub mod notebooks;
 pub mod lan;
 pub mod flaws;
+pub mod parcels;
 pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
@@ -298,6 +299,7 @@ impl AppState {
         env.ops = ops.clone();
         let flaws = flaws::open(&cfg.flaws);
         env.flaws = flaws.clone();
+        env.parcels = parcels::open(&cfg.parcels, cfg.time_zone);
         // Messages to Claude, Grok and Lucina Agents (crate::reach); the sink is set below.
         env.reach = reach::build(&cfg.data_dir, ops.clone());
         env.reminders = Some(reminders.clone());
@@ -500,6 +502,12 @@ impl AppState {
             registry
                 .register(Arc::new(lucina_tools::tools::flaw::FlawTool))
                 .expect("flaw tool registers");
+        }
+        // Parcel tracking: owner's turns only (OWNER_ONLY_TOOLS).
+        if env.parcels.is_some() && cfg.tools.allows("parcel") {
+            registry
+                .register(Arc::new(lucina_tools::tools::parcels::ParcelTool))
+                .expect("parcel tool registers");
         }
         // Root commands after the owner's approval of the exact commands (crate lucina_approvals).
         if approvals.is_some() && cfg.tools.allows("root_exec") {
@@ -828,6 +836,9 @@ impl AppState {
         }
         if let Some(h) = flaws::spawn(self) {
             self.supervisor.watch("flaw tracker", h);
+        }
+        if let Some(h) = parcels::spawn(self) {
+            self.supervisor.watch("parcel tracker", h);
         }
         if let Some(h) = about::spawn(self) {
             self.supervisor.watch("about you", h);

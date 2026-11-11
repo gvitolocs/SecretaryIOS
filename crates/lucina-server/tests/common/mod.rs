@@ -56,6 +56,8 @@ pub async fn harness_with(
     // Hermetic: never read 180.dk from tests (tests/callers.rs points it at a fake site).
     cfg.callers_public_url = None;
     cfg.callers_it_url = None;
+    // Hermetic: never call the live parcel scraper (tests/parcels.rs points it at a stub).
+    cfg.parcels.enabled = false;
     // The tests' dates and reminders are written for Rome; the production default is Europe/Copenhagen.
     cfg.time_zone = chrono_tz::Europe::Rome;
     cfg.recovery_companion_path = Some(dir.path().join("none.md"));
