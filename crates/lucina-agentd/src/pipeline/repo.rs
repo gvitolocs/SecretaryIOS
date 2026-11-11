@@ -12,6 +12,9 @@
 //! timeout_min = 45               # per gate
 //! skip = ["firmware/lucinavoice"] # crate dirs the cargo gates leave alone (other toolchains)
 //! test_skip = ["crates/big"]     # crate dirs left out of the test gate only (still checked, unless cargo = "none")
+//! gate_files = ["tools/gates/"]  # extra files the gates call (plain path, or `dir/` / `dir/**` prefix); changing one,
+//!                                # or anything in `.lucina/` or a script a `[[gate]]` run command names, needs
+//!                                # `lagent merge --allow gate-change="why"`
 //!
 //! [[gate]]                       # extra gates, run when a changed path starts with one of `paths`
 //! name = "web build"
@@ -53,6 +56,11 @@ pub struct MergeRules {
     pub skip: Vec<String>,
     #[serde(default)]
     pub test_skip: Vec<String>,
+    /// Extra files the gates call (helper scripts, tools): a plain path, or a prefix ending in
+    /// `/` or `/**`. Together with `.lucina/` and the scripts named by `[[gate]]` `run` commands
+    /// they are the "gate files" of [`gate_files_changed`].
+    #[serde(default)]
+    pub gate_files: Vec<String>,
 }
 
 impl Default for MergeRules {
@@ -63,6 +71,7 @@ impl Default for MergeRules {
             timeout_min: 45,
             skip: Vec::new(),
             test_skip: Vec::new(),
+            gate_files: Vec::new(),
         }
     }
 }
@@ -204,7 +213,7 @@ pub fn plan_with(
     let mut notes = Vec::new();
     if rules.merge.diffgate {
         let mut run = format!("diffgate --repo . --range {range}");
-        for a in allow {
+        for a in allow.iter().filter(|a| !is_gate_change(a)) {
             run.push_str(&format!(" --allow {}", shell_quote(a)));
         }
         gates.push(Gate {
@@ -332,6 +341,94 @@ pub fn plan_with(
     (gates, notes)
 }
 
+/// The `--allow` rule that waives the gate-change refusal (it is ours, not a diffgate rule).
+pub const GATE_CHANGE: &str = "gate-change";
+
+/// Is this `--allow` entry the gate-change waiver (with or without a reason)?
+fn is_gate_change(entry: &str) -> bool {
+    entry == GATE_CHANGE || entry.starts_with("gate-change=")
+}
+
+/// The reason of a `gate-change=<reason>` entry; `None` when there is none or it is empty.
+pub fn gate_change_reason(allow: &[String]) -> Option<String> {
+    allow
+        .iter()
+        .filter_map(|a| a.strip_prefix("gate-change="))
+        .map(str::trim)
+        .find(|r| !r.is_empty())
+        .map(str::to_string)
+}
+
+/// Does `path` match a `[merge] gate_files` entry: the same path, or under a `dir/` or `dir/**` prefix?
+fn gate_file_matches(entry: &str, path: &str) -> bool {
+    let prefix = entry.strip_suffix("**").unwrap_or(entry);
+    if prefix.ends_with('/') {
+        path.starts_with(prefix)
+    } else {
+        path == entry
+    }
+}
+
+/// A script-like name: no extension (`scripts/check-fast`) or a script extension. Data files a gate
+/// only reads (`test -f b.txt`, `Cargo.lock`) are not gate files; name those in `gate_files` if they matter.
+fn is_script_name(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => {
+            matches!(
+                ext,
+                "sh" | "bash" | "zsh" | "py" | "pl" | "rb" | "js" | "mjs" | "cjs" | "ts"
+            )
+        }
+        _ => true,
+    }
+}
+
+/// The files a gate `run` command names: whitespace-separated tokens (quotes, parentheses and `;`
+/// trimmed, a leading `./` dropped) for which `exists` is true. Interpreters (`bash`), flags and
+/// arguments are not files of the repo and fall away.
+pub fn run_command_files(run: &str, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    for tok in run.split_whitespace() {
+        let tok = tok.trim_matches(|c| matches!(c, '"' | '\'' | '(' | ')' | ';'));
+        let tok = tok.strip_prefix("./").unwrap_or(tok);
+        if tok.is_empty() || tok.starts_with('-') || tok.starts_with('/') || tok.contains("..") {
+            continue;
+        }
+        if is_script_name(tok) && exists(tok) && !out.iter().any(|o| o == tok) {
+            out.push(tok.to_string());
+        }
+    }
+    out
+}
+
+/// The changed files that are gate files: anything under `.lucina/`, a script a `[[gate]]` `run`
+/// command names (`exists` says whether a token is a file of the candidate or the base), and the
+/// paths of `[merge] gate_files`. Pure: the caller supplies `exists`.
+pub fn gate_files_changed(
+    rules: &Rules,
+    changed: &[String],
+    exists: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut scripts: BTreeSet<String> = BTreeSet::new();
+    for g in &rules.gates {
+        scripts.extend(run_command_files(&g.run, exists));
+    }
+    changed
+        .iter()
+        .filter(|f| {
+            f.starts_with(".lucina/")
+                || scripts.contains(f.as_str())
+                || rules
+                    .merge
+                    .gate_files
+                    .iter()
+                    .any(|e| gate_file_matches(e, f))
+        })
+        .cloned()
+        .collect()
+}
+
 /// `'…'` for a POSIX shell.
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
@@ -364,6 +461,144 @@ mod tests {
                 standalone: true,
             },
         ]
+    }
+
+    fn gate_rules() -> Rules {
+        let mut r = Rules::default();
+        r.gates.push(GateRule {
+            name: "proofs".into(),
+            paths: vec![],
+            run: "bash scripts/gate-github-checks.sh".into(),
+            timeout_min: None,
+        });
+        r.gates.push(GateRule {
+            name: "fast".into(),
+            paths: vec![],
+            run: "scripts/check-fast --base HEAD^1 --merge-gate".into(),
+            timeout_min: None,
+        });
+        r.gates.push(GateRule {
+            name: "apply".into(),
+            paths: vec![],
+            run: "(cd tools && bash scripts/x.sh apply)".into(),
+            timeout_min: None,
+        });
+        r
+    }
+
+    fn files(l: &[&str]) -> Vec<String> {
+        l.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn exists(p: &str) -> bool {
+        matches!(
+            p,
+            "scripts/gate-github-checks.sh" | "scripts/check-fast" | "scripts/x.sh" | "tools/h.sh"
+        )
+    }
+
+    #[test]
+    fn no_gate_file_changed() {
+        let r = gate_rules();
+        let c = files(&["src/main.rs", "docs/a.md", "scripts/other.sh"]);
+        assert!(gate_files_changed(&r, &c, &exists).is_empty());
+    }
+
+    #[test]
+    fn pipeline_toml_and_lucina_dir_are_gate_files() {
+        let r = gate_rules();
+        let c = files(&["a.rs", ".lucina/pipeline.toml", ".lucina/other"]);
+        assert_eq!(
+            gate_files_changed(&r, &c, &exists),
+            files(&[".lucina/pipeline.toml", ".lucina/other"])
+        );
+    }
+
+    #[test]
+    fn scripts_named_by_run_commands_are_gate_files() {
+        let r = gate_rules();
+        let c = files(&[
+            "scripts/gate-github-checks.sh",
+            "scripts/check-fast",
+            "scripts/x.sh",
+            "scripts/y.sh",
+        ]);
+        assert_eq!(
+            gate_files_changed(&r, &c, &exists),
+            files(&[
+                "scripts/gate-github-checks.sh",
+                "scripts/check-fast",
+                "scripts/x.sh"
+            ])
+        );
+        // Data files a gate only reads are not gate files.
+        assert!(run_command_files("test -f b.txt", &|p| p == "b.txt").is_empty());
+        // Interpreters, flags and arguments are not files.
+        assert_eq!(
+            run_command_files("bash scripts/x.sh apply", &exists),
+            files(&["scripts/x.sh"])
+        );
+        assert_eq!(
+            run_command_files("scripts/check-fast --base HEAD^1 --merge-gate", &exists),
+            files(&["scripts/check-fast"])
+        );
+        assert_eq!(
+            run_command_files("bash ./scripts/x.sh", &exists),
+            files(&["scripts/x.sh"])
+        );
+    }
+
+    #[test]
+    fn gate_files_key_matches_paths_and_prefixes() {
+        let mut r = gate_rules();
+        r.merge.gate_files = files(&["tools/h.sh", "helpers/", "lib/**"]);
+        let c = files(&[
+            "tools/h.sh",
+            "tools/h.sh.bak",
+            "helpers/a/b.sh",
+            "helpers",
+            "lib/x/y",
+            "libx/y",
+        ]);
+        assert_eq!(
+            gate_files_changed(&r, &c, &exists),
+            files(&["tools/h.sh", "helpers/a/b.sh", "lib/x/y"])
+        );
+        let t = Rules::parse("[merge]\ngate_files = [\"a/\"]\n").unwrap();
+        assert_eq!(t.merge.gate_files, files(&["a/"]));
+    }
+
+    #[test]
+    fn gate_change_allow_needs_a_reason_and_is_not_given_to_diffgate() {
+        assert_eq!(
+            gate_change_reason(&files(&["gate-change=second look"])),
+            Some("second look".into())
+        );
+        assert_eq!(gate_change_reason(&files(&["gate-change="])), None);
+        assert_eq!(gate_change_reason(&files(&["gate-change=  "])), None);
+        assert_eq!(gate_change_reason(&files(&["gate-change"])), None);
+        assert_eq!(gate_change_reason(&files(&["todo=docs"])), None);
+        let g = plan(
+            &Rules::default(),
+            &files(&["a.md"]),
+            &[],
+            false,
+            "A..B",
+            &files(&["gate-change=why", "todo=docs"]),
+        );
+        assert_eq!(
+            g[0].run,
+            "diffgate --repo . --range A..B --allow 'todo=docs'"
+        );
+        let g = plan(
+            &Rules::default(),
+            &files(&["a.md"]),
+            &[],
+            false,
+            "A..B",
+            &files(&["gate-change=why"]),
+        );
+        assert_eq!(g[0].run, "diffgate --repo . --range A..B");
     }
 
     #[test]

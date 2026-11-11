@@ -464,6 +464,51 @@ impl Exec {
                 .map(str::to_string)
                 .collect();
             self.say(&format!("{method}: {} file(s) changed", changed.len()));
+            // A branch's gate scripts run from the candidate tree, so a branch that edits one is
+            // judged by its own edit: that needs an explicit, logged allow. Renames count as a
+            // delete plus an add here, so a moved gate script is seen at both paths.
+            let all_changed: Vec<String> = self
+                .git(
+                    &dir,
+                    &["diff", "--name-only", "--no-renames", &base, &candidate],
+                )
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect();
+            let gate_changes = {
+                let exists = |p: &str| {
+                    dir.join(p).is_file()
+                        || self
+                            .git(&repo, &["cat-file", "-e", &format!("{base}:{p}")])
+                            .is_ok()
+                };
+                repo::gate_files_changed(&rules, &all_changed, &exists)
+            };
+            if !gate_changes.is_empty() {
+                match repo::gate_change_reason(&self.spec.allow) {
+                    None => {
+                        return Outcome {
+                            ok: false,
+                            code: "GATE_CHANGE_NEEDS_ALLOW".into(),
+                            message: format!(
+                                "{branch} changes the files its own gates run from: {}. Take a second look at the diff of those files, then rerun with --allow gate-change=\"<why>\"",
+                                gate_changes.join(", ")
+                            ),
+                            method: Some(method.into()),
+                            gate_changes,
+                            ..Outcome::default()
+                        };
+                    }
+                    Some(reason) => {
+                        for f in &gate_changes {
+                            self.say(&format!(
+                                "GATE CHANGED by this merge: {f} (allowed: {reason})"
+                            ));
+                        }
+                    }
+                }
+            }
             let (crates, has_workspace) = self.crates(&dir);
             let range = format!("{base}..{candidate}");
             let (gates, notes) = repo::plan_with(
@@ -486,6 +531,7 @@ impl Exec {
                     message: format!("gate failed: {g} (lagent job logs {})", self.spec.job_id),
                     method: Some(method.into()),
                     gates: results,
+                    gate_changes,
                     ..Outcome::default()
                 };
             }
@@ -512,6 +558,7 @@ impl Exec {
                         landed: Some(candidate),
                         method: Some(method.into()),
                         gates: results,
+                        gate_changes,
                         ..Outcome::default()
                     }
                 }
@@ -529,6 +576,7 @@ impl Exec {
                         message: why,
                         method: Some(method.into()),
                         gates: results,
+                        gate_changes,
                         conflicts,
                         ..Outcome::default()
                     };
@@ -1022,6 +1070,84 @@ mod tests {
         let x = Exec::open(root.path(), spec(root.path(), root.path(), "b", "abc")).unwrap();
         assert!(x.path.split(':').any(|d| d == "/usr/sbin"), "{}", x.path);
         assert!(x.path.split(':').any(|d| d == "/sbin"), "{}", x.path);
+    }
+
+    /// A repo whose rules have one passing gate that runs `scripts/gate.sh`; returns (origin, repo).
+    fn gate_repo(root: &Path) -> (PathBuf, PathBuf) {
+        let (origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::create_dir_all(repo.join("scripts")).unwrap();
+        std::fs::write(repo.join("scripts/gate.sh"), "exit 0\n").unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\n[[gate]]\nname = \"g\"\nrun = \"bash scripts/gate.sh\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        (origin, repo)
+    }
+
+    #[test]
+    fn a_merge_that_edits_a_gate_script_needs_an_allow() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo) = gate_repo(root);
+        let before = git(&origin, &["rev-parse", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "scripts/gate.sh", "exit 0 # edited\n", "edit gate");
+        let out = exec(root, spec(root, &repo, "topic", &head));
+        assert_eq!(out.code, "GATE_CHANGE_NEEDS_ALLOW");
+        assert!(!out.ok);
+        assert_eq!(out.gate_changes, vec!["scripts/gate.sh".to_string()]);
+        assert!(out.gates.is_empty(), "no gate ran");
+        assert!(
+            out.message.contains("scripts/gate.sh") && out.message.contains("--allow gate-change")
+        );
+        assert_eq!(git(&origin, &["rev-parse", "main"]), before);
+        // An empty reason is still a refusal.
+        let mut s = spec(root, &repo, "topic", &head);
+        s.allow = vec!["gate-change=".into()];
+        assert_eq!(exec(root, s).code, "GATE_CHANGE_NEEDS_ALLOW");
+        assert_eq!(git(&origin, &["rev-parse", "main"]), before);
+    }
+
+    #[test]
+    fn an_allowed_gate_change_merges_and_is_logged() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo) = gate_repo(root);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "scripts/gate.sh", "exit 0 # edited\n", "edit gate");
+        let mut s = spec(root, &repo, "topic", &head);
+        s.allow = vec!["gate-change=reviewed the diff".into()];
+        let dir = root.join("job-allowed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = Exec::open(&dir, s).unwrap().merge();
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        assert_eq!(out.gate_changes, vec!["scripts/gate.sh".to_string()]);
+        assert_eq!(out.gates.len(), 1);
+        assert_ne!(git(&origin, &["rev-parse", "main"]), head);
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(
+            log.contains(
+                "GATE CHANGED by this merge: scripts/gate.sh (allowed: reviewed the diff)"
+            ),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_merge_without_gate_files_is_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (_origin, repo) = gate_repo(root);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let out = exec(root, spec(root, &repo, "topic", &head));
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        assert!(out.gate_changes.is_empty());
     }
 
     #[test]

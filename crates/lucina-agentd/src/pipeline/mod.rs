@@ -178,6 +178,10 @@ pub struct Outcome {
     /// Files that conflicted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<String>,
+    /// Merge: gate files (`.lucina/`, scripts the gates run, `[merge] gate_files`) this merge changes.
+    /// Set when the merge was refused for it (`GATE_CHANGE_NEEDS_ALLOW`) or let through by `--allow gate-change`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_changes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
