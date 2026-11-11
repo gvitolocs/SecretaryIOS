@@ -100,7 +100,10 @@ pub enum JobState {
 
 impl JobState {
     pub fn done(self) -> bool {
-        matches!(self, JobState::Succeeded | JobState::Failed | JobState::Cancelled)
+        matches!(
+            self,
+            JobState::Succeeded | JobState::Failed | JobState::Cancelled
+        )
     }
 }
 
@@ -178,6 +181,16 @@ pub struct Outcome {
     /// Files that conflicted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<String>,
+    /// Merge: gate files (`.lucina/`, scripts the gates run, `[merge] gate_files`) this merge changes.
+    /// Set when the merge was refused for it (`GATE_CHANGE_NEEDS_ALLOW`) or let through by `--allow gate-change`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_changes: Vec<String>,
+    /// Merge: the trunk had no pipeline file and this merge's added one judged the merge (`--allow gate-change`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rules_from_merge: bool,
+    /// Merge: the reason of the `spec-change` allow the gates were run with (lagent only carries it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_change: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -261,30 +274,52 @@ impl Config {
         let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
         let lagent = std::env::var_os("LUCINA_AGENTD_LAGENT")
             .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lagent"))).filter(|p| p.is_file()))
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.join("lagent")))
+                    .filter(|p| p.is_file())
+            })
             .unwrap_or_else(|| home.join(".local/bin/lagent"));
-        let systemd = std::env::var("LUCINA_AGENTD_PIPELINE_SPAWN").map(|v| v != "direct").unwrap_or(true)
+        let systemd = std::env::var("LUCINA_AGENTD_PIPELINE_SPAWN")
+            .map(|v| v != "direct")
+            .unwrap_or(true)
             && std::env::var_os("XDG_RUNTIME_DIR").is_some()
             && crate::process::resolve_program("systemd-run").is_some();
-        let projects = std::env::var_os("WT_PROJECTS").map(PathBuf::from).unwrap_or_else(|| home.join("Projects"));
+        let projects = std::env::var_os("WT_PROJECTS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("Projects"));
         Config {
             dir: state_dir.join("pipeline"),
             lagent,
             systemd,
-            target_root: std::env::var_os("LUCINA_AGENTD_TARGET_ROOT").map(PathBuf::from).unwrap_or_else(|| home.join(".cache/cargo-target")),
-            work_root: std::env::var_os("WT_ROOT").map(PathBuf::from).unwrap_or_else(|| projects.join(".worktrees")),
-            lock: std::env::var_os("LUCINA_AGENTD_MERGE_LOCK").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(MERGE_LOCK)),
+            target_root: std::env::var_os("LUCINA_AGENTD_TARGET_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".cache/cargo-target")),
+            work_root: std::env::var_os("WT_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| projects.join(".worktrees")),
+            lock: std::env::var_os("LUCINA_AGENTD_MERGE_LOCK")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(MERGE_LOCK)),
         }
     }
 
     /// The lock a job holds. Each repo has its own, so a long LucinaOS gate never holds up
     /// SecretaryIOS; deploys and SecretaryIOS keep the one deploy-guard checks.
     pub fn lock_for(&self, repo: &str, kind: JobKind) -> PathBuf {
-        let name = Path::new(repo).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = Path::new(repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if kind == JobKind::Deploy || name == "SecretaryIOS" {
             return self.lock.clone();
         }
-        let stem = self.lock.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let stem = self
+            .lock
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
         self.lock.with_file_name(format!("{stem}-{name}.lock"))
     }
 
@@ -297,7 +332,10 @@ impl Config {
 pub const MERGE_LOCK: &str = "/tmp/lucina-merge.lock";
 
 pub fn new_id(prefix: &str) -> String {
-    format!("{prefix}_{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
+    format!(
+        "{prefix}_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    )
 }
 
 /// The pipeline's tables in the agents database.
@@ -326,7 +364,11 @@ impl Pipeline {
             )
         })?;
         std::fs::create_dir_all(config.dir.join("jobs"))?;
-        Ok(Pipeline { store, config, wake: Arc::new(tokio::sync::Notify::new()) })
+        Ok(Pipeline {
+            store,
+            config,
+            wake: Arc::new(tokio::sync::Notify::new()),
+        })
     }
 
     fn put(&self, table: &str, id: &str, json: String) -> Result<(), StoreError> {
@@ -336,8 +378,20 @@ impl Pipeline {
         Ok(())
     }
 
-    fn get<T: serde::de::DeserializeOwned>(&self, table: &str, key: &str, id: &str) -> Result<Option<T>, StoreError> {
-        let json: Option<String> = self.store.with_db(|db| db.query_row(&format!("SELECT record FROM {table} WHERE {key} = ?1"), params![id], |r| r.get(0)).optional())?;
+    fn get<T: serde::de::DeserializeOwned>(
+        &self,
+        table: &str,
+        key: &str,
+        id: &str,
+    ) -> Result<Option<T>, StoreError> {
+        let json: Option<String> = self.store.with_db(|db| {
+            db.query_row(
+                &format!("SELECT record FROM {table} WHERE {key} = ?1"),
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()
+        })?;
         Ok(match json {
             Some(j) => Some(serde_json::from_str(&j)?),
             None => None,
@@ -350,7 +404,9 @@ impl Pipeline {
             let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
             rows.collect::<Result<Vec<_>, _>>()
         })?;
-        rows.iter().map(|j| serde_json::from_str(j).map_err(StoreError::from)).collect()
+        rows.iter()
+            .map(|j| serde_json::from_str(j).map_err(StoreError::from))
+            .collect()
     }
 
     pub fn save_task(&self, t: &Task) -> Result<(), StoreError> {
@@ -358,11 +414,14 @@ impl Pipeline {
     }
 
     pub fn task(&self, workspace_id: &str) -> Option<Task> {
-        self.get("pipeline_tasks", "id", workspace_id).ok().flatten()
+        self.get("pipeline_tasks", "id", workspace_id)
+            .ok()
+            .flatten()
     }
 
     pub fn tasks(&self) -> Vec<Task> {
-        self.all("SELECT record FROM pipeline_tasks ORDER BY id").unwrap_or_default()
+        self.all("SELECT record FROM pipeline_tasks ORDER BY id")
+            .unwrap_or_default()
     }
 
     pub fn update_task(&self, workspace_id: &str, f: impl FnOnce(&mut Task)) -> Option<Task> {
@@ -374,7 +433,10 @@ impl Pipeline {
 
     pub fn save_job(&self, j: &Job) -> Result<(), StoreError> {
         let json = serde_json::to_string(j)?;
-        let state = serde_json::to_value(j.state)?.as_str().unwrap_or_default().to_string();
+        let state = serde_json::to_value(j.state)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         self.store.with_db(|db| {
             db.execute(
                 "INSERT INTO pipeline_jobs (id, seq, state, record) VALUES (?1, ?2, ?3, ?4)
@@ -386,7 +448,15 @@ impl Pipeline {
     }
 
     pub fn next_seq(&self) -> i64 {
-        self.store.with_db(|db| db.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM pipeline_jobs", [], |r| r.get(0))).unwrap_or(1)
+        self.store
+            .with_db(|db| {
+                db.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM pipeline_jobs",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap_or(1)
     }
 
     pub fn job(&self, id: &str) -> Option<Job> {
@@ -395,12 +465,18 @@ impl Pipeline {
 
     /// Newest first, at most `limit`.
     pub fn jobs(&self, limit: usize) -> Vec<Job> {
-        self.all(&format!("SELECT record FROM pipeline_jobs ORDER BY seq DESC LIMIT {limit}")).unwrap_or_default()
+        self.all(&format!(
+            "SELECT record FROM pipeline_jobs ORDER BY seq DESC LIMIT {limit}"
+        ))
+        .unwrap_or_default()
     }
 
     /// Queued and running jobs, oldest first.
     pub fn active_jobs(&self) -> Vec<Job> {
-        self.all("SELECT record FROM pipeline_jobs WHERE state IN ('queued', 'running') ORDER BY seq").unwrap_or_default()
+        self.all(
+            "SELECT record FROM pipeline_jobs WHERE state IN ('queued', 'running') ORDER BY seq",
+        )
+        .unwrap_or_default()
     }
 
     pub fn update_job(&self, id: &str, f: impl FnOnce(&mut Job)) -> Option<Job> {
@@ -415,7 +491,8 @@ impl Pipeline {
     }
 
     pub fn leases(&self) -> Vec<Lease> {
-        self.all("SELECT record FROM device_leases ORDER BY device").unwrap_or_default()
+        self.all("SELECT record FROM device_leases ORDER BY device")
+            .unwrap_or_default()
     }
 
     pub fn save_lease(&self, l: &Lease) -> Result<(), StoreError> {
@@ -423,7 +500,12 @@ impl Pipeline {
     }
 
     pub fn drop_lease(&self, device: &str) -> Result<(), StoreError> {
-        self.store.with_db(|db| db.execute("DELETE FROM device_leases WHERE device = ?1", params![device]))?;
+        self.store.with_db(|db| {
+            db.execute(
+                "DELETE FROM device_leases WHERE device = ?1",
+                params![device],
+            )
+        })?;
         Ok(())
     }
 
@@ -432,7 +514,8 @@ impl Pipeline {
     }
 
     pub fn claude_sessions(&self) -> Vec<ClaudeSession> {
-        self.all("SELECT record FROM claude_sessions").unwrap_or_default()
+        self.all("SELECT record FROM claude_sessions")
+            .unwrap_or_default()
     }
 
     pub fn save_claude_session(&self, s: &ClaudeSession) -> Result<(), StoreError> {
@@ -440,7 +523,8 @@ impl Pipeline {
     }
 
     pub fn drop_claude_session(&self, id: &str) -> Result<(), StoreError> {
-        self.store.with_db(|db| db.execute("DELETE FROM claude_sessions WHERE id = ?1", params![id]))?;
+        self.store
+            .with_db(|db| db.execute("DELETE FROM claude_sessions WHERE id = ?1", params![id]))?;
         Ok(())
     }
 }
@@ -486,7 +570,10 @@ mod tests {
                 requested_by: None,
                 keep: false,
                 priority: false,
-                spec: Spec { job_id: id.to_string(), ..spec.clone() },
+                spec: Spec {
+                    job_id: id.to_string(),
+                    ..spec.clone()
+                },
                 created_at: format!("t{i}"),
                 started_at: None,
                 finished_at: None,
@@ -496,16 +583,29 @@ mod tests {
             };
             p.save_job(&j).unwrap();
         }
-        assert_eq!(p.active_jobs().iter().map(|j| j.seq).collect::<Vec<_>>(), vec![1, 2]);
-        p.update_job("job_1", |j| j.state = JobState::Succeeded).unwrap();
+        assert_eq!(
+            p.active_jobs().iter().map(|j| j.seq).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        p.update_job("job_1", |j| j.state = JobState::Succeeded)
+            .unwrap();
         assert_eq!(p.active_jobs().len(), 1);
         assert_eq!(p.jobs(10)[0].job_id, "job_2");
         // One lock for every repo: the one deploy-guard checks and hand merges take.
         assert_eq!(MERGE_LOCK, "/tmp/lucina-merge.lock");
         let c = Config::from_env(dir.path());
         assert_eq!(c.lock, PathBuf::from(MERGE_LOCK));
-        assert_eq!(c.lock_for("/p/Lucina/SecretaryIOS", JobKind::Merge), PathBuf::from(MERGE_LOCK));
-        assert_eq!(c.lock_for("/p/Lucina/LucinaOS", JobKind::Merge), PathBuf::from("/tmp/lucina-merge-LucinaOS.lock"));
-        assert_eq!(c.lock_for("/p/Lucina/LucinaOS", JobKind::Deploy), PathBuf::from(MERGE_LOCK));
+        assert_eq!(
+            c.lock_for("/p/Lucina/SecretaryIOS", JobKind::Merge),
+            PathBuf::from(MERGE_LOCK)
+        );
+        assert_eq!(
+            c.lock_for("/p/Lucina/LucinaOS", JobKind::Merge),
+            PathBuf::from("/tmp/lucina-merge-LucinaOS.lock")
+        );
+        assert_eq!(
+            c.lock_for("/p/Lucina/LucinaOS", JobKind::Deploy),
+            PathBuf::from(MERGE_LOCK)
+        );
     }
 }

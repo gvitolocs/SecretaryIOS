@@ -40,6 +40,31 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
   - `skip = ["path"]` leaves crates out of both cargo gates; `test_skip = ["path"]` leaves them out of the test gate only.
     If every touched crate is in `test_skip`, the test gate is reported as skipped (never the whole workspace).
   - The job log has one line per cargo gate (`cargo check: ...`, `cargo test: ...`) saying whether it runs or is skipped, and why.
+  - **A merge that changes its own gates needs an explicit allow.** The gate commands run from the merge candidate, so a
+    branch that edits a gate script would be judged by its own edit. The *gate files* are: everything under `.lucina/`,
+    every file a `[[gate]]` `run` command names (`bash scripts/x.sh apply` names `scripts/x.sh`; interpreters, flags and
+    arguments are ignored, and a token counts only if it is a script-like file, no extension or `.sh`/`.bash`/`.zsh`/`.py`/`.pl`/`.rb`/`.js`/`.mjs`/`.cjs`/`.ts`, of the candidate or of the trunk), and the paths in
+    `[merge] gate_files = ["tools/ci/", "scripts/helper.sh"]` (a plain path, or a prefix ending in `/` or `/**`; use it for
+    helper scripts and tools the gates call). If the merge changes any of them (renames count at both paths) and the job has no
+    `--allow gate-change="<why>"`, it stops before any gate runs with `GATE_CHANGE_NEEDS_ALLOW`, listing the files. Look at
+    the diff of those files a second time, then run `lagent merge … --allow gate-change="<why>"`; an empty reason is still
+    refused. With the allow, the job log has one line per file before the gates run (`GATE CHANGED by this merge: <path>
+    (allowed: <why>)`), and the files are in the result's `gateChanges`. The `gate-change` entry is ours: it is not passed to
+    diffgate. A merge that changes no gate file behaves as before.
+  - **Bootstrap: a trunk with no `.lucina/pipeline.toml`.** The trunk's rules are the defaults (`cargo = "touched"`), which a
+    host may be unable to pass, so the first pipeline file could never land. When the trunk has no pipeline file, the merge adds
+    one and the job carries `--allow gate-change="<why>"`, the rules of this one merge are read from the added file. The job log
+    says `RULES TAKEN FROM THIS MERGE: the trunk has no .lucina/pipeline.toml (allowed: <why>)` before the gates run (plus
+    `diffgate is OFF in the rules this merge adds` if the file sets `diffgate = false`), and the result has `rulesFromMerge`.
+    A file that does not parse, or has an unknown `cargo` value, fails the job as `RULES_INVALID`. Without the allow the merge
+    is refused as above, and the message says the added file's rules would apply. When the trunk already has a pipeline file,
+    the merge that changes it is always judged by the trunk's version.
+  - **`--allow spec-change="<why>"` and the gates' environment.** `spec-change` is the second allow rule that is ours (like
+    `gate-change`, never passed to diffgate; an empty reason counts as absent). Every gate command of a merge job except diffgate
+    gets the job's allows in its environment: `LAGENT_ALLOW` (all entries, one per line, as given), and
+    `LAGENT_ALLOW_GATE_CHANGE` / `LAGENT_ALLOW_SPEC_CHANGE` holding the reason (unset when absent or empty). The log prints
+    `SPEC CHANGE allowed for this merge: <why>` and the result has `specChange`. lagent does not decide what a specification
+    is: a gate script such as the proof-statement check in `scripts/check-fast` reads the variable and decides.
 - **Deploys** go through `lagent deploy <runtime>`: recipes in `.lucina/pipeline.toml` cover `lucina-agentd`, `lucina-rs`,
   `lucina-media`, `lucina-memo`, `secretary-server`, `secretary-mcp` and `web`. A runtime without one gets `NO_RECIPE`; add it, or deploy by
   hand as in "Deploying" below, always through deploy-guard. A hand deploy holds the merge lock and stalls the queue.
