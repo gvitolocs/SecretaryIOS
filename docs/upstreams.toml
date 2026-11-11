@@ -1321,3 +1321,42 @@ relation = "reference"
 confidence = "confirmed"
 rely_on = ["LLInt interpreter design (llint/)", "register bytecode and UnlinkedCodeBlock (bytecode/)", "MarkedSpace size-class heap and eden collection (heap/)", "bytecode cache (runtime/CachedTypes.cpp)"]
 notes = "Owner decision 2026-11-08: LucinaJavascript is interpreter-first with no JIT, modelled on JSC's LLInt ('this is our way to go'); V8 and SpiderMonkey are references for streaming parse and the code/stencil cache only. Records: adopt the LLInt design (register bytecode, cheap dispatch, inline caches on property access and calls, lazy UnlinkedFunctionExecutable re-parse, which LucinaJS already does since 2026-11-08); adapt the heap (non-moving MarkedSpace with size classes and an eden mode, to replace the copying semispace whose copy window is LucinaJS's memory gap); reference the bytecode cache (CachedTypes); reject the JITs (Baseline, DFG, FTL): no executable memory. Licences: llint/ and bytecode/ files are Apple BSD-2-Clause (reusable with notice); heap/, parser/ and most of runtime/ are LGPL-2.0-or-later (KJS heritage): copy behaviour, not code, from those. Ported as Rust, not C++/offlineasm."
+
+# ───────────────────────── LucinaNet (history depth, docs/specs/history-depth.md there) ─────────────────────────
+
+[[upstream]]
+id = "firefox-shistory"
+name = "Firefox session history / DocumentViewer cache (nsSHistory)"
+url = "https://github.com/mozilla/gecko-dev"
+source = "github"
+repo = "mozilla/gecko-dev"
+branch = "master"
+track = "commits"
+pin = "f6049f2e8076d51d0e9e77928b5697a59407c1d2"
+pin_date = "2025-07-07"
+paths = ["docshell/shistory/nsSHistory.cpp", "docshell/shistory/nsSHistory.h", "modules/libpref/init/all.js"]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaNet", path = "crates/lucinanet-history", base = "main" }]
+licence_upstream = "MPL-2.0"
+licence_ours = "MPL-2.0"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["CalcMaxTotalViewers formula (bias 14) and cap 8", "VIEWER_WINDOW = 3", "contentViewerTimeout default 30 min", "memory-pressure evicts all viewers"]
+notes = "Read 2026-11-11 from raw.githubusercontent.com/mozilla/gecko-dev; the mirror head was 5836a062 (2025-07-08), months behind mozilla-central, so re-read searchfox. Spec: LucinaNet docs/specs/history-depth.md."
+
+[[upstream]]
+id = "chromium-bfcache"
+name = "Chromium back/forward cache (BackForwardCacheImpl)"
+url = "https://chromium.googlesource.com/chromium/src"
+source = "git"
+branch = "main"
+track = "commits"
+pin = "2656708d386d0176b57be845a59098c23ef375b1"
+pin_date = "2026-11-11"
+paths = ["content/browser/back_forward_cache/back_forward_cache_impl.cc"]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaNet", path = "crates/lucinanet-history", base = "main" }]
+licence_upstream = "BSD-3-Clause"
+licence_ours = "MPL-2.0"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["time to live 600 s", "cache_size 6", "pressure limits: moderate 3, critical 0"]
+notes = "Read 2026-11-11 from chromium.googlesource.com at the pin. Spec: LucinaNet docs/specs/history-depth.md."
