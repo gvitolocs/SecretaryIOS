@@ -103,8 +103,8 @@ used to put its own line on it. So the pipeline keeps a **commit ledger**.
 - The ledger is `commit-ledger.jsonl` in the daemon's state directory (`~/.local/share/lucina-agentd`), mode 0600, append
   only, one JSON object per commit with `prev` = the SHA-256 of the previous line (64 zeros for the first). `lagent attest`
   and `lagent ledger` work on that file directly (flock-ed), not through the daemon; `--state-dir` or
-  `LUCINA_AGENTD_STATE_DIR` point them at another directory. The chain catches an edited or removed middle line, not lines
-  cut from the end; the threat model is forgetfulness, not a malicious agent.
+  `LUCINA_AGENTD_STATE_DIR` point them at another directory. The chain catches an edited or removed middle line, not
+  lines cut from the end or an edit of the last line; the threat model is forgetfulness, not a malicious agent.
 - The merge gates get `LAGENT_COMMIT_LEDGER=<absolute path>` in their environment, and the merge job's log says how many
   of the branch's non-merge commits have an entry. The queue itself refuses nothing: the gate tool reads the file.
 - **The table** of model id to trailer name is built in: `claude-sonnet-5-5` = `Claude Sonnet 5.5`, `claude-opus-5-5` =

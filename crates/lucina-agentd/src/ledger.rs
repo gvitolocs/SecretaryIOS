@@ -11,7 +11,7 @@
 //!
 //! Threat model: honest mistakes and forgetfulness, not a malicious agent (every agent is the same
 //! Unix user). The chain detects an edited or removed line in the middle; it cannot detect lines
-//! cut from the end.
+//! cut from the end, or an edit of the last line.
 //!
 //! [`attest`] refuses (and writes nothing for any commit of the call) when a commit has no
 //! `Co-Authored-By` trailer, its trailer names another model than the declared one, or the model is
