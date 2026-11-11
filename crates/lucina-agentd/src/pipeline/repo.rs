@@ -11,7 +11,7 @@
 //!                                # "none" runs no cargo gate (`--full` still tests touched crates)
 //! timeout_min = 45               # per gate
 //! skip = ["firmware/lucinavoice"] # crate dirs the cargo gates leave alone (other toolchains)
-//! test_skip = ["crates/big"]     # crate dirs left out of the test gate only (still checked)
+//! test_skip = ["crates/big"]     # crate dirs left out of the test gate only (still checked, unless cargo = "none")
 //!
 //! [[gate]]                       # extra gates, run when a changed path starts with one of `paths`
 //! name = "web build"
@@ -220,14 +220,14 @@ pub fn plan_with(rules: &Rules, changed: &[String], crates: &[Crate], has_worksp
         if has_workspace && (root_manifest || !members.is_empty()) {
             gates.push(Gate { name: "cargo check (workspace)".into(), run: "cargo check --quiet --workspace".into(), timeout_min: t });
         }
-        if !tests && !has_workspace && !members.is_empty() {
-            let ps: Vec<String> = members.iter().map(|m| format!("-p {m}")).collect();
+        // Crates the tests cover need no separate check; a crate left out of the tests (test_skip) is still checked.
+        let check_members: Vec<&String> = members.iter().filter(|m| !tests || !test_members.contains(*m)).collect();
+        if !has_workspace && !check_members.is_empty() {
+            let ps: Vec<String> = check_members.iter().map(|m| format!("-p {m}")).collect();
             gates.push(Gate { name: "cargo check (touched crates)".into(), run: format!("cargo check --quiet {}", ps.join(" ")), timeout_min: t });
         }
-        if !tests {
-            for dir in &standalone {
-                gates.push(Gate { name: format!("cargo check ({dir})"), run: format!("cargo check --quiet --manifest-path {dir}/Cargo.toml"), timeout_min: t });
-            }
+        for dir in standalone.iter().filter(|d| !tests || !test_standalone.contains(*d)) {
+            gates.push(Gate { name: format!("cargo check ({dir})"), run: format!("cargo check --quiet --manifest-path {dir}/Cargo.toml"), timeout_min: t });
         }
     }
     // Tests.
@@ -444,9 +444,37 @@ mod tests {
         let r = with("touched", &["crates/lucina-agentd", "crates/secretary-pixiv"]);
         let ch = vec!["crates/lucina-agentd/src/a.rs".to_string(), "crates/secretary-pixiv/src/x.rs".to_string()];
         let (g, n) = plan_with(&r, &ch, &crates(), true, "A..B", &[], false);
-        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)"]);
+        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)", "cargo check (crates/secretary-pixiv)"]);
         assert_eq!(n[1], "cargo test: skipped (every touched crate is in test_skip)");
         // The whole workspace is never run instead.
         assert!(g.iter().all(|g| !g.run.contains("--workspace") || g.run.starts_with("cargo check")));
+    }
+
+    #[test]
+    fn a_test_skip_crate_is_still_checked_where_the_mode_checks() {
+        let px = vec!["crates/secretary-pixiv/src/x.rs".to_string()];
+        let skip = ["crates/secretary-pixiv"];
+        // touched: standalone crate in test_skip gets a check gate and no test gate.
+        let (g, n) = plan_with(&with("touched", &skip), &px, &crates(), true, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "cargo check (crates/secretary-pixiv)"]);
+        assert_eq!(n[0], "cargo check: runs (cargo = \"touched\")");
+        assert_eq!(n[1], "cargo test: skipped (every touched crate is in test_skip)");
+        // check + --full: the same.
+        let (g, n) = plan_with(&with("check", &skip), &px, &crates(), true, "A..B", &[], true);
+        assert_eq!(names(&g), ["diffgate", "cargo check (crates/secretary-pixiv)"]);
+        assert_eq!(n[1], "cargo test: skipped (every touched crate is in test_skip)");
+        // none + --full: no check, no test.
+        let (g, _) = plan_with(&with("none", &skip), &px, &crates(), true, "A..B", &[], true);
+        assert_eq!(names(&g), ["diffgate"]);
+        // A workspace member in test_skip: the workspace check covers it, nothing else.
+        let m = vec!["crates/lucina-agents/src/b.rs".to_string()];
+        let (g, _) = plan_with(&with("touched", &["crates/lucina-agents"]), &m, &crates(), true, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "cargo check (workspace)"]);
+        // Without a workspace: a tested member needs no check, a test_skip member gets `cargo check -p`.
+        let both = two();
+        let (g, _) = plan_with(&with("touched", &["crates/lucina-agents"]), &both, &crates(), false, "A..B", &[], false);
+        assert_eq!(names(&g), ["diffgate", "cargo check (touched crates)", "cargo test (touched crates)"]);
+        assert_eq!(g[1].run, "cargo check --quiet -p lucina-agents");
+        assert_eq!(g[2].run, "cargo test --quiet -p lucina-agentd");
     }
 }
