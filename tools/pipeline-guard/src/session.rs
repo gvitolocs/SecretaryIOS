@@ -34,7 +34,10 @@ const LOG_MAX_BYTES: u64 = 64 * 1024;
 const REMOTE_LAGENT: &str = "/home/nez/.local/bin/lagent";
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn state_dir() -> PathBuf {
@@ -47,21 +50,34 @@ fn log(line: &str) {
         let _ = std::fs::remove_file(&path);
     }
     let _ = std::fs::create_dir_all(state_dir());
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "{} {line}", now_ms() / 1000);
     }
 }
 
 /// The session's id: the desktop app's (`local_…`) when there is one, else Claude Code's.
 pub fn session_id(host_session: Option<&str>, payload: &Value) -> Option<String> {
-    let id = host_session.filter(|s| !s.is_empty()).or(payload["session_id"].as_str())?;
-    let valid = (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+    let id = host_session
+        .filter(|s| !s.is_empty())
+        .or(payload["session_id"].as_str())?;
+    let valid = (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
     valid.then(|| id.to_string())
 }
 
 /// The worktree root a path is in, as nezopt calls it. The dot directories are the pipeline's own.
 pub fn worktree_of(text: &str) -> Vec<String> {
-    let Ok(re) = Regex::new(r#"(?:/home/nez|/Users/giuseppe/mnt/nezopt|~)/Projects/\.worktrees/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"#) else { return Vec::new() };
+    let Ok(re) = Regex::new(
+        r#"(?:/home/nez|/Users/giuseppe/mnt/nezopt|~)/Projects/\.worktrees/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"#,
+    ) else {
+        return Vec::new();
+    };
     let mut out: Vec<String> = Vec::new();
     for c in re.captures_iter(text) {
         if c[2].starts_with('.') {
@@ -81,12 +97,19 @@ pub fn pointed_paths(payload: &Value) -> Vec<String> {
     let mut out = worktree_of(payload["cwd"].as_str().unwrap_or_default());
     let tool = payload["tool_name"].as_str().unwrap_or_default();
     let found = match tool {
-        "Edit" | "Write" | "NotebookEdit" | "MultiEdit" => {
-            worktree_of(payload["tool_input"]["file_path"].as_str().or(payload["tool_input"]["notebook_path"].as_str()).unwrap_or_default())
-        }
+        "Edit" | "Write" | "NotebookEdit" | "MultiEdit" => worktree_of(
+            payload["tool_input"]["file_path"]
+                .as_str()
+                .or(payload["tool_input"]["notebook_path"].as_str())
+                .unwrap_or_default(),
+        ),
         "Bash" => {
-            let command = payload["tool_input"]["command"].as_str().unwrap_or_default();
-            if Regex::new(r"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*commit\b").is_ok_and(|r| r.is_match(command)) {
+            let command = payload["tool_input"]["command"]
+                .as_str()
+                .unwrap_or_default();
+            if Regex::new(r"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*commit\b")
+                .is_ok_and(|r| r.is_match(command))
+            {
                 worktree_of(command)
             } else {
                 Vec::new()
@@ -104,12 +127,18 @@ pub fn pointed_paths(payload: &Value) -> Vec<String> {
 
 /// `lagent task start|adopt` over a bare `ssh`: its answer names the workspace.
 pub fn named_workspaces(payload: &Value) -> Vec<String> {
-    let command = payload["tool_input"]["command"].as_str().unwrap_or_default();
-    if payload["tool_name"] != "Bash" || !Regex::new(r"\blagent\s+task\s+(start|adopt)\b").is_ok_and(|r| r.is_match(command)) {
+    let command = payload["tool_input"]["command"]
+        .as_str()
+        .unwrap_or_default();
+    if payload["tool_name"] != "Bash"
+        || !Regex::new(r"\blagent\s+task\s+(start|adopt)\b").is_ok_and(|r| r.is_match(command))
+    {
         return Vec::new();
     }
     let answer = payload["tool_response"].to_string();
-    let Ok(re) = Regex::new(r"wks_[0-9a-f]{16}") else { return Vec::new() };
+    let Ok(re) = Regex::new(r"wks_[0-9a-f]{16}") else {
+        return Vec::new();
+    };
     let mut out: Vec<String> = Vec::new();
     for m in re.find_iter(&answer) {
         if !out.iter().any(|w| w == m.as_str()) {
@@ -122,18 +151,27 @@ pub fn named_workspaces(payload: &Value) -> Vec<String> {
 /// A tool call worth reporting whatever the throttle says: it may have just given the session
 /// a workspace.
 fn tool_call_matters(payload: &Value) -> bool {
-    !pointed_paths(payload).is_empty() && payload["tool_name"] != "Read" || !named_workspaces(payload).is_empty()
+    !pointed_paths(payload).is_empty() && payload["tool_name"] != "Read"
+        || !named_workspaces(payload).is_empty()
 }
 
 /// Whether a PostToolUse beat is due.
 pub fn tool_beat_due(now: u64, last: u64, tracked: Option<bool>, matters: bool) -> bool {
-    let every = if tracked == Some(false) { TOOL_EVERY_UNTRACKED_MS } else { TOOL_EVERY_TRACKED_MS };
+    let every = if tracked == Some(false) {
+        TOOL_EVERY_UNTRACKED_MS
+    } else {
+        TOOL_EVERY_TRACKED_MS
+    };
     (matters && tracked != Some(true)) || now.saturating_sub(last) >= every
 }
 
 /// What a session reads when messages reach it.
 pub fn message_text(commands: &[Value]) -> Option<String> {
-    let texts: Vec<&str> = commands.iter().filter(|c| c["command"]["kind"] == "send").filter_map(|c| c["command"]["prompt"].as_str()).collect();
+    let texts: Vec<&str> = commands
+        .iter()
+        .filter(|c| c["command"]["kind"] == "send")
+        .filter_map(|c| c["command"]["prompt"].as_str())
+        .collect();
     if texts.is_empty() {
         return None;
     }
@@ -148,7 +186,11 @@ pub fn message_text(commands: &[Value]) -> Option<String> {
 }
 
 fn command_ids(commands: &[Value]) -> Vec<String> {
-    commands.iter().filter_map(|c| c["commandId"].as_str()).map(str::to_string).collect()
+    commands
+        .iter()
+        .filter_map(|c| c["commandId"].as_str())
+        .map(str::to_string)
+        .collect()
 }
 
 struct State {
@@ -159,13 +201,18 @@ struct State {
 impl State {
     fn load(session: &str) -> State {
         let path = state_dir().join(format!("{session}.json"));
-        let v = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| json!({}));
+        let v = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| json!({}));
         State { path, v }
     }
 
     fn save(&self) {
         let _ = std::fs::create_dir_all(state_dir());
-        let tmp = self.path.with_extension(format!("tmp{}", std::process::id()));
+        let tmp = self
+            .path
+            .with_extension(format!("tmp{}", std::process::id()));
         if std::fs::write(&tmp, self.v.to_string()).is_ok() {
             let _ = std::fs::rename(&tmp, &self.path);
         }
@@ -184,7 +231,12 @@ fn ssh_host(state: &mut State) -> String {
             return h.to_string();
         }
     }
-    let home = Command::new("nc").args(["-z", "-G", "2", "nezopt.fritz.box", "22"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    let home = Command::new("nc")
+        .args(["-z", "-G", "2", "nezopt.fritz.box", "22"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
     let host = if home { "nezopt" } else { "nezopt-remote" };
     state.v["host"] = json!(host);
     state.v["hostAtMs"] = json!(now);
@@ -201,13 +253,34 @@ fn lagent(state: &mut State, args: &[&str], input: &str) -> Option<Value> {
         let host = ssh_host(state);
         let home = std::env::var("HOME").unwrap_or_default();
         let mut c = Command::new("ssh");
-        c.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1"])
-            .args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={home}/.ssh/cm-lagent-%r@%h"), "-o", "ControlPersist=120"])
-            .arg(host)
-            .arg(format!("{REMOTE_LAGENT} --json {}", args.join(" ")));
+        c.args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=1",
+        ])
+        .args([
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            &format!("ControlPath={home}/.ssh/cm-lagent-%r@%h"),
+            "-o",
+            "ControlPersist=120",
+        ])
+        .arg(host)
+        .arg(format!("{REMOTE_LAGENT} --json {}", args.join(" ")));
         c
     };
-    let mut child = match cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+    let mut child = match cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
         Ok(c) => c,
         Err(e) => {
             log(&format!("lagent {args:?}: {e}"));
@@ -228,7 +301,10 @@ fn lagent(state: &mut State, args: &[&str], input: &str) -> Option<Value> {
         return None;
     };
     if !out.status.success() {
-        log(&format!("lagent {args:?}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        log(&format!(
+            "lagent {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
         return None;
     }
     serde_json::from_slice(&out.stdout).ok()
@@ -239,17 +315,28 @@ fn desktop_title(session: &str, state: &mut State) -> Option<String> {
     if !session.starts_with("local_") {
         return None;
     }
-    let known = state.v["titleFile"].as_str().map(PathBuf::from).filter(|p| p.is_file());
+    let known = state.v["titleFile"]
+        .as_str()
+        .map(PathBuf::from)
+        .filter(|p| p.is_file());
     let file = known.or_else(|| {
-        let root = PathBuf::from(std::env::var("HOME").ok()?).join("Library/Application Support/Claude/claude-code-sessions");
+        let root = PathBuf::from(std::env::var("HOME").ok()?)
+            .join("Library/Application Support/Claude/claude-code-sessions");
         let name = format!("{session}.json");
         std::fs::read_dir(root).ok()?.flatten().find_map(|a| {
-            std::fs::read_dir(a.path()).ok()?.flatten().map(|b| b.path().join(&name)).find(|p| p.is_file())
+            std::fs::read_dir(a.path())
+                .ok()?
+                .flatten()
+                .map(|b| b.path().join(&name))
+                .find(|p| p.is_file())
         })
     })?;
     state.v["titleFile"] = json!(file.display().to_string());
     let v: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
-    v["title"].as_str().filter(|t| !t.trim().is_empty()).map(str::to_string)
+    v["title"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string)
 }
 
 fn this_host() -> &'static str {
@@ -280,7 +367,10 @@ fn ack(session: &str, state: &mut State, ids: &[String]) {
 
 /// Exit 0 with this context for the model, on the events that take it.
 fn print_context(event: &str, text: &str) {
-    println!("{}", json!({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}));
+    println!(
+        "{}",
+        json!({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}})
+    );
     let _ = std::io::stdout().flush();
 }
 
@@ -289,7 +379,12 @@ fn alive(claude_pid: Option<&str>) -> bool {
         return false;
     }
     match claude_pid {
-        Some(pid) => Command::new("kill").args(["-0", pid]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()),
+        Some(pid) => Command::new("kill")
+            .args(["-0", pid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success()),
         None => true,
     }
 }
@@ -325,16 +420,24 @@ fn stop_and_watch(session: &str, payload: &Value) -> i32 {
         if waited >= WATCH_FOR_MS {
             return 0;
         }
-        std::thread::sleep(if waited < POLL_FAST_FOR_MS { POLL_FAST } else { POLL_SLOW });
+        std::thread::sleep(if waited < POLL_FAST_FOR_MS {
+            POLL_FAST
+        } else {
+            POLL_SLOW
+        });
         let mut state = State::load(session);
         // A newer Stop runs its own loop, and a newer prompt or tool call means a turn is on.
-        if state.v["watch"].as_u64() != Some(started) || state.v["activeMs"].as_u64().is_some_and(|t| t > started) {
+        if state.v["watch"].as_u64() != Some(started)
+            || state.v["activeMs"].as_u64().is_some_and(|t| t > started)
+        {
             return 0;
         }
         if !alive(claude_pid.as_deref()) {
             return 0;
         }
-        let Some(reply) = beat(session, &mut state, json!({"event": "poll"})) else { continue };
+        let Some(reply) = beat(session, &mut state, json!({"event": "poll"})) else {
+            continue;
+        };
         state.save();
         if let Some(code) = wake(session, &mut state, &reply) {
             return code;
@@ -359,10 +462,17 @@ pub fn run(input: &str) -> i32 {
     if std::env::var("LUCINA_AGENT_ID").is_ok_and(|a| !a.is_empty()) {
         return 0;
     }
-    let Ok(payload) = serde_json::from_str::<Value>(input) else { return 0 };
+    let Ok(payload) = serde_json::from_str::<Value>(input) else {
+        return 0;
+    };
     let host_session = std::env::var("CLAUDE_CODE_HOST_SESSION_ID").ok();
-    let Some(session) = session_id(host_session.as_deref(), &payload) else { return 0 };
-    let event = payload["hook_event_name"].as_str().unwrap_or_default().to_string();
+    let Some(session) = session_id(host_session.as_deref(), &payload) else {
+        return 0;
+    };
+    let event = payload["hook_event_name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     if event == "Stop" {
         return stop_and_watch(&session, &payload);
     }
@@ -372,7 +482,9 @@ pub fn run(input: &str) -> i32 {
     state.v["activeMs"] = json!(now);
     let tracked = state.tracked();
     let body = match event.as_str() {
-        "SessionStart" => json!({"event": "start", "paths": pointed_paths(&payload), "title": desktop_title(&session, &mut state)}),
+        "SessionStart" => {
+            json!({"event": "start", "paths": pointed_paths(&payload), "title": desktop_title(&session, &mut state)})
+        }
         "UserPromptSubmit" => {
             let mut b = json!({"event": "prompt", "paths": pointed_paths(&payload), "title": desktop_title(&session, &mut state)});
             if tracked != Some(false) {
@@ -414,21 +526,48 @@ mod tests {
     #[test]
     fn the_desktop_id_names_the_session() {
         let p = json!({"session_id": "fe5b42cf-182a-4727-a036-91538adafec7"});
-        assert_eq!(session_id(Some("local_abc"), &p).as_deref(), Some("local_abc"));
-        assert_eq!(session_id(None, &p).as_deref(), Some("fe5b42cf-182a-4727-a036-91538adafec7"));
-        assert_eq!(session_id(Some(""), &p).as_deref(), Some("fe5b42cf-182a-4727-a036-91538adafec7"));
+        assert_eq!(
+            session_id(Some("local_abc"), &p).as_deref(),
+            Some("local_abc")
+        );
+        assert_eq!(
+            session_id(None, &p).as_deref(),
+            Some("fe5b42cf-182a-4727-a036-91538adafec7")
+        );
+        assert_eq!(
+            session_id(Some(""), &p).as_deref(),
+            Some("fe5b42cf-182a-4727-a036-91538adafec7")
+        );
         assert_eq!(session_id(None, &json!({})), None);
-        assert_eq!(session_id(Some("a b; rm"), &p), None, "goes into a remote command line");
+        assert_eq!(
+            session_id(Some("a b; rm"), &p),
+            None,
+            "goes into a remote command line"
+        );
     }
 
     #[test]
     fn worktree_paths_are_nezopts() {
         let want = vec!["/home/nez/Projects/.worktrees/SecretaryIOS/x-y".to_string()];
-        assert_eq!(worktree_of("/Users/giuseppe/mnt/nezopt/Projects/.worktrees/SecretaryIOS/x-y/crates/a.rs"), want);
-        assert_eq!(worktree_of("cd /home/nez/Projects/.worktrees/SecretaryIOS/x-y && ls"), want);
+        assert_eq!(
+            worktree_of(
+                "/Users/giuseppe/mnt/nezopt/Projects/.worktrees/SecretaryIOS/x-y/crates/a.rs"
+            ),
+            want
+        );
+        assert_eq!(
+            worktree_of("cd /home/nez/Projects/.worktrees/SecretaryIOS/x-y && ls"),
+            want
+        );
         assert_eq!(worktree_of("cd ~/Projects/.worktrees/SecretaryIOS/x-y; ls ~/Projects/.worktrees/SecretaryIOS/x-y"), want);
-        assert!(worktree_of("/home/nez/Projects/.worktrees/SecretaryIOS/.landing/x").is_empty(), "the pipeline's own");
-        assert!(worktree_of("/home/nez/Projects/Lucina/SecretaryIOS").is_empty(), "a main checkout is no workspace");
+        assert!(
+            worktree_of("/home/nez/Projects/.worktrees/SecretaryIOS/.landing/x").is_empty(),
+            "the pipeline's own"
+        );
+        assert!(
+            worktree_of("/home/nez/Projects/Lucina/SecretaryIOS").is_empty(),
+            "a main checkout is no workspace"
+        );
     }
 
     #[test]
@@ -436,12 +575,36 @@ mod tests {
         let wt = "/Users/giuseppe/mnt/nezopt/Projects/.worktrees/R/w";
         let want = vec!["/home/nez/Projects/.worktrees/R/w".to_string()];
         let call = |tool: &str, input: Value| json!({"cwd": "/Users/giuseppe/mnt/nezopt/Projects/Lucina", "tool_name": tool, "tool_input": input});
-        assert_eq!(pointed_paths(&call("Edit", json!({"file_path": format!("{wt}/a.rs")}))), want);
-        assert_eq!(pointed_paths(&call("Write", json!({"file_path": format!("{wt}/a.rs")}))), want);
-        assert!(pointed_paths(&call("Read", json!({"file_path": format!("{wt}/a.rs")}))).is_empty());
-        assert!(pointed_paths(&call("Bash", json!({"command": format!("git -C {wt} log")}))).is_empty());
-        assert_eq!(pointed_paths(&call("Bash", json!({"command": format!("cd {wt} && git commit -m x")}))), want);
-        assert_eq!(pointed_paths(&call("Bash", json!({"command": format!("git -C {wt} commit -m x")}))), want);
+        assert_eq!(
+            pointed_paths(&call("Edit", json!({"file_path": format!("{wt}/a.rs")}))),
+            want
+        );
+        assert_eq!(
+            pointed_paths(&call("Write", json!({"file_path": format!("{wt}/a.rs")}))),
+            want
+        );
+        assert!(
+            pointed_paths(&call("Read", json!({"file_path": format!("{wt}/a.rs")}))).is_empty()
+        );
+        assert!(pointed_paths(&call(
+            "Bash",
+            json!({"command": format!("git -C {wt} log")})
+        ))
+        .is_empty());
+        assert_eq!(
+            pointed_paths(&call(
+                "Bash",
+                json!({"command": format!("cd {wt} && git commit -m x")})
+            )),
+            want
+        );
+        assert_eq!(
+            pointed_paths(&call(
+                "Bash",
+                json!({"command": format!("git -C {wt} commit -m x")})
+            )),
+            want
+        );
         // The session's own cwd counts, whatever the tool.
         let inside = json!({"cwd": format!("{wt}/crates"), "tool_name": "Read", "tool_input": {}});
         assert_eq!(pointed_paths(&inside), want);
@@ -451,32 +614,60 @@ mod tests {
     fn a_tasks_answer_names_its_workspace() {
         let answer = json!({"stdout": "Task x on branch y.\n  workspace  wks_7bea30e6571a431c\n"});
         let call = |c: &str| json!({"tool_name": "Bash", "tool_input": {"command": c}, "tool_response": answer});
-        assert_eq!(named_workspaces(&call("ssh nezopt '~/.local/bin/lagent task start \"x\"'")), ["wks_7bea30e6571a431c"]);
-        assert_eq!(named_workspaces(&call("lagent task adopt /x")), ["wks_7bea30e6571a431c"]);
-        assert!(named_workspaces(&call("lagent board")).is_empty(), "a board names everyone's");
+        assert_eq!(
+            named_workspaces(&call("ssh nezopt '~/.local/bin/lagent task start \"x\"'")),
+            ["wks_7bea30e6571a431c"]
+        );
+        assert_eq!(
+            named_workspaces(&call("lagent task adopt /x")),
+            ["wks_7bea30e6571a431c"]
+        );
+        assert!(
+            named_workspaces(&call("lagent board")).is_empty(),
+            "a board names everyone's"
+        );
     }
 
     #[test]
     fn beats_after_a_tool_are_throttled() {
         assert!(!tool_beat_due(10_000, 9_000, Some(true), false));
         assert!(tool_beat_due(30_000, 10_000, Some(true), false));
-        assert!(!tool_beat_due(100_000, 10_000, Some(false), false), "untracked: rarely");
+        assert!(
+            !tool_beat_due(100_000, 10_000, Some(false), false),
+            "untracked: rarely"
+        );
         assert!(tool_beat_due(200_000, 10_000, Some(false), false));
-        assert!(tool_beat_due(10_000, 9_000, Some(false), true), "it may just have got a workspace");
+        assert!(
+            tool_beat_due(10_000, 9_000, Some(false), true),
+            "it may just have got a workspace"
+        );
         assert!(tool_beat_due(10_000, 9_000, None, true));
-        assert!(!tool_beat_due(10_000, 9_000, Some(true), true), "already known: no extra beats");
+        assert!(
+            !tool_beat_due(10_000, 9_000, Some(true), true),
+            "already known: no extra beats"
+        );
     }
 
     #[test]
     fn messages_read_as_messages() {
         assert_eq!(message_text(&[]), None);
-        assert_eq!(message_text(&[json!({"command": {"kind": "stop"}})]), None, "only a message reaches a session");
+        assert_eq!(
+            message_text(&[json!({"command": {"kind": "stop"}})]),
+            None,
+            "only a message reaches a session"
+        );
         let t = message_text(&[
             json!({"commandId": "c1", "command": {"kind": "send", "prompt": "first"}}),
             json!({"commandId": "c2", "command": {"kind": "send", "prompt": "second"}}),
         ])
         .unwrap();
-        assert!(t.contains("first") && t.contains("second") && t.contains("lucina_reply"), "{t}");
-        assert_eq!(command_ids(&[json!({"commandId": "c1"}), json!({})]), ["c1"]);
+        assert!(
+            t.contains("first") && t.contains("second") && t.contains("lucina_reply"),
+            "{t}"
+        );
+        assert_eq!(
+            command_ids(&[json!({"commandId": "c1"}), json!({})]),
+            ["c1"]
+        );
     }
 }
