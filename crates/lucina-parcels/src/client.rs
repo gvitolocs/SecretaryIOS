@@ -192,7 +192,7 @@ fn parse_events(events: &[Value]) -> Vec<Event> {
             ))
         })
         .collect();
-    dated.sort_by(|a, b| b.0.cmp(&a.0));
+    dated.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     dated.into_iter().take(MAX_EVENTS).map(|(_, e)| e).collect()
 }
 
