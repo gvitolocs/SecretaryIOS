@@ -188,6 +188,9 @@ pub struct Outcome {
     /// Merge: the trunk had no pipeline file and this merge's added one judged the merge (`--allow gate-change`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rules_from_merge: bool,
+    /// Merge: the reason of the `spec-change` allow the gates were run with (lagent only carries it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_change: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

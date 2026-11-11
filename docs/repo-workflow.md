@@ -59,6 +59,12 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
     A file that does not parse, or has an unknown `cargo` value, fails the job as `RULES_INVALID`. Without the allow the merge
     is refused as above, and the message says the added file's rules would apply. When the trunk already has a pipeline file,
     the merge that changes it is always judged by the trunk's version.
+  - **`--allow spec-change="<why>"` and the gates' environment.** `spec-change` is the second allow rule that is ours (like
+    `gate-change`, never passed to diffgate; an empty reason counts as absent). Every gate command of a merge job except diffgate
+    gets the job's allows in its environment: `LAGENT_ALLOW` (all entries, one per line, as given), and
+    `LAGENT_ALLOW_GATE_CHANGE` / `LAGENT_ALLOW_SPEC_CHANGE` holding the reason (unset when absent or empty). The log prints
+    `SPEC CHANGE allowed for this merge: <why>` and the result has `specChange`. lagent does not decide what a specification
+    is: a gate script such as the proof-statement check in `scripts/check-fast` reads the variable and decides.
 - **Deploys** go through `lagent deploy <runtime>`: recipes in `.lucina/pipeline.toml` cover `lucina-agentd`, `lucina-rs`,
   `lucina-media`, `lucina-memo`, `secretary-server`, `secretary-mcp` and `web`. A runtime without one gets `NO_RECIPE`; add it, or deploy by
   hand as in "Deploying" below, always through deploy-guard. A hand deploy holds the merge lock and stalls the queue.

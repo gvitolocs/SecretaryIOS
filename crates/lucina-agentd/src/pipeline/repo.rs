@@ -344,19 +344,49 @@ pub fn plan_with(
 /// The `--allow` rule that waives the gate-change refusal (it is ours, not a diffgate rule).
 pub const GATE_CHANGE: &str = "gate-change";
 
-/// Is this `--allow` entry the gate-change waiver (with or without a reason)?
+/// The `--allow` rule a gate command reads from its environment (`LAGENT_ALLOW_SPEC_CHANGE`):
+/// lagent does not decide what a specification is, it only carries the allow and logs it.
+pub const SPEC_CHANGE: &str = "spec-change";
+
+/// Is this `--allow` entry one of ours (gate-change, spec-change; with or without a reason),
+/// not a diffgate rule?
 fn is_gate_change(entry: &str) -> bool {
-    entry == GATE_CHANGE || entry.starts_with("gate-change=")
+    [GATE_CHANGE, SPEC_CHANGE]
+        .iter()
+        .any(|r| entry == *r || entry.strip_prefix(r).is_some_and(|t| t.starts_with('=')))
+}
+
+/// The reason of a `<rule>=<reason>` entry; `None` when there is none or it is empty.
+fn allow_reason(allow: &[String], rule: &str) -> Option<String> {
+    allow
+        .iter()
+        .filter_map(|a| a.strip_prefix(rule).and_then(|t| t.strip_prefix('=')))
+        .map(str::trim)
+        .find(|r| !r.is_empty())
+        .map(str::to_string)
 }
 
 /// The reason of a `gate-change=<reason>` entry; `None` when there is none or it is empty.
 pub fn gate_change_reason(allow: &[String]) -> Option<String> {
-    allow
-        .iter()
-        .filter_map(|a| a.strip_prefix("gate-change="))
-        .map(str::trim)
-        .find(|r| !r.is_empty())
-        .map(str::to_string)
+    allow_reason(allow, GATE_CHANGE)
+}
+
+/// The reason of a `spec-change=<reason>` entry; `None` when there is none or it is empty.
+pub fn spec_change_reason(allow: &[String]) -> Option<String> {
+    allow_reason(allow, SPEC_CHANGE)
+}
+
+/// The environment of every gate command but diffgate: `LAGENT_ALLOW` (all entries, one per line,
+/// as given) and `LAGENT_ALLOW_GATE_CHANGE` / `LAGENT_ALLOW_SPEC_CHANGE` when that rule has a reason.
+pub fn allow_env(allow: &[String]) -> Vec<(String, String)> {
+    let mut env = vec![("LAGENT_ALLOW".to_string(), allow.join("\n"))];
+    if let Some(r) = gate_change_reason(allow) {
+        env.push(("LAGENT_ALLOW_GATE_CHANGE".into(), r));
+    }
+    if let Some(r) = spec_change_reason(allow) {
+        env.push(("LAGENT_ALLOW_SPEC_CHANGE".into(), r));
+    }
+    env
 }
 
 /// Whose rules judge a merge.
@@ -618,6 +648,33 @@ mod tests {
             &files(&["gate-change=why"]),
         );
         assert_eq!(g[0].run, "diffgate --repo . --range A..B");
+    }
+
+    #[test]
+    fn spec_change_is_ours_and_carried_to_gates_by_environment() {
+        let a = files(&["spec-change=why", "gate-change=", "todo=docs"]);
+        assert_eq!(spec_change_reason(&a), Some("why".into()));
+        assert_eq!(spec_change_reason(&files(&["spec-change="])), None);
+        assert_eq!(spec_change_reason(&files(&["spec-changed=x"])), None);
+        let g = plan(&Rules::default(), &files(&["a.md"]), &[], false, "A..B", &a);
+        assert_eq!(
+            g[0].run,
+            "diffgate --repo . --range A..B --allow 'todo=docs'"
+        );
+        assert_eq!(
+            allow_env(&a),
+            vec![
+                (
+                    "LAGENT_ALLOW".to_string(),
+                    "spec-change=why\ngate-change=\ntodo=docs".to_string()
+                ),
+                ("LAGENT_ALLOW_SPEC_CHANGE".to_string(), "why".to_string())
+            ]
+        );
+        assert_eq!(
+            allow_env(&[]),
+            vec![("LAGENT_ALLOW".to_string(), String::new())]
+        );
     }
 
     #[test]

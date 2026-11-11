@@ -74,6 +74,8 @@ struct Exec {
     log: File,
     path: String,
     members: Option<Members>,
+    /// The job's allows as gate-command environment (empty while diffgate or a non-merge command runs).
+    gate_env: Vec<(String, String)>,
 }
 
 struct Members {
@@ -98,6 +100,7 @@ impl Exec {
             std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())
         );
         Ok(Exec {
+            gate_env: Vec::new(),
             spec,
             log,
             path,
@@ -186,6 +189,10 @@ impl Exec {
             .env("LAGENT_JOB", &self.spec.job_id)
             .env("LAGENT_FORCE", if self.spec.force { "1" } else { "" })
             .env("CARGO_TERM_COLOR", "never")
+            .env_remove("LAGENT_ALLOW")
+            .env_remove("LAGENT_ALLOW_GATE_CHANGE")
+            .env_remove("LAGENT_ALLOW_SPEC_CHANGE")
+            .envs(self.gate_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err))
@@ -351,6 +358,11 @@ impl Exec {
         let mut results = Vec::new();
         for g in gates {
             self.say(&format!("gate: {}", g.name));
+            self.gate_env = if g.name == "diffgate" {
+                Vec::new()
+            } else {
+                repo::allow_env(&self.spec.allow)
+            };
             let t = Instant::now();
             let mut ok = self.sh(dir, &g.run, g.timeout_min);
             let mut flaky = false;
@@ -375,6 +387,7 @@ impl Exec {
                 return (results, Some(g.name.clone()));
             }
         }
+        self.gate_env = Vec::new();
         (results, None)
     }
 
@@ -555,6 +568,10 @@ impl Exec {
             for n in &notes {
                 self.say(n);
             }
+            let spec_change = repo::spec_change_reason(&self.spec.allow);
+            if let Some(r) = &spec_change {
+                self.say(&format!("SPEC CHANGE allowed for this merge: {r}"));
+            }
             let (results, failed) = self.run_gates(&dir, &gates);
             if let Some(g) = failed {
                 return Outcome {
@@ -565,6 +582,7 @@ impl Exec {
                     gates: results,
                     gate_changes,
                     rules_from_merge,
+                    spec_change: spec_change.clone(),
                     ..Outcome::default()
                 };
             }
@@ -593,6 +611,7 @@ impl Exec {
                         gates: results,
                         gate_changes,
                         rules_from_merge,
+                        spec_change: spec_change.clone(),
                         ..Outcome::default()
                     }
                 }
@@ -612,6 +631,7 @@ impl Exec {
                         gates: results,
                         gate_changes,
                         rules_from_merge,
+                        spec_change: spec_change.clone(),
                         conflicts,
                         ..Outcome::default()
                     };
@@ -1290,6 +1310,45 @@ mod tests {
         assert_eq!(out.code, "GATE_FAILED", "{}", out.message);
         assert!(!out.rules_from_merge);
         assert_eq!(git(&origin, &["rev-parse", "main"]), before);
+    }
+
+    #[test]
+    fn gate_commands_see_the_spec_change_allow() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (_origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\n[[gate]]\nname = \"needs spec\"\nrun = \"test -n \\\"$LAGENT_ALLOW_SPEC_CHANGE\\\" && test -z \\\"$LAGENT_ALLOW_GATE_CHANGE\\\" && printf %s \\\"$LAGENT_ALLOW\\\" | grep -qx 'spec-change=proof reworded'\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        // Without the allow the gate fails; an empty reason is the same as none.
+        assert_eq!(
+            exec(root, spec(root, &repo, "topic", &head)).code,
+            "GATE_FAILED"
+        );
+        let mut s = spec(root, &repo, "topic", &head);
+        s.allow = vec!["spec-change=".into()];
+        assert_eq!(exec(root, s).code, "GATE_FAILED");
+        // With it the gate sees the variables and the log and outcome say so.
+        let mut s = spec(root, &repo, "topic", &head);
+        s.allow = vec!["spec-change=proof reworded".into()];
+        let dir = root.join("job-spec");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = Exec::open(&dir, s).unwrap().merge();
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        assert_eq!(out.spec_change.as_deref(), Some("proof reworded"));
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(
+            log.contains("SPEC CHANGE allowed for this merge: proof reworded"),
+            "{log}"
+        );
     }
 
     #[test]
