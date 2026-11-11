@@ -219,6 +219,12 @@ lagent device release iphone
 
   Don't work around it. If `lagent` refuses, report why to the coordinator.
 
+- On the owner's Mac, in every session (Lucina or not), the same hook also denies pattern-based process kills run
+  locally: `pkill`, `killall`, `xargs kill` and `kill $(pgrep …)` (also inside `$( )`, backticks, groups and `bash -c`).
+  Text for another host passes: `ssh nezopt 'pkill -f "[b]uild.sh"'`. So do `kill <pid>`, `kill $pid`, and words that
+  only mention the names (`echo pkill`, `git commit -m "no pkill"`). Reason: on 2026-11-11 a worker ran `pkill -f` in
+  the Mac shell instead of on nezopt and stopped about 200 of the owner's processes. `LAGENT_BYPASS=<reason>` still works.
+
 ## Standalone crates
 
 The workspace is the root `Cargo.toml`. These crates stay outside it on purpose, each with its own
