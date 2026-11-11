@@ -1466,3 +1466,42 @@ relation = "reference"
 confidence = "unconfirmed"
 rely_on = ["M4 Air J713 feature claims"]
 notes = "Claims are leads until its code confirms them. Alpha."
+
+# ───────────────────────── LucinaNet (history depth, docs/specs/history-depth.md there) ─────────────────────────
+
+[[upstream]]
+id = "firefox-shistory"
+name = "Firefox session history / DocumentViewer cache (nsSHistory)"
+url = "https://github.com/mozilla/gecko-dev"
+source = "github"
+repo = "mozilla/gecko-dev"
+branch = "master"
+track = "commits"
+pin = "f6049f2e8076d51d0e9e77928b5697a59407c1d2"
+pin_date = "2025-07-07"
+paths = ["docshell/shistory/nsSHistory.cpp", "docshell/shistory/nsSHistory.h", "modules/libpref/init/all.js"]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaNet", path = "crates/lucinanet-history", base = "main" }]
+licence_upstream = "MPL-2.0"
+licence_ours = "MPL-2.0"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["CalcMaxTotalViewers formula (bias 14) and cap 8", "VIEWER_WINDOW = 3", "contentViewerTimeout default 30 min", "memory-pressure evicts all viewers"]
+notes = "Read 2026-11-11 from raw.githubusercontent.com/mozilla/gecko-dev; the mirror head was 5836a062 (2025-07-08), months behind mozilla-central, so re-read searchfox. Spec: LucinaNet docs/specs/history-depth.md."
+
+[[upstream]]
+id = "chromium-bfcache"
+name = "Chromium back/forward cache (BackForwardCacheImpl)"
+url = "https://chromium.googlesource.com/chromium/src"
+source = "git"
+branch = "main"
+track = "commits"
+pin = "2656708d386d0176b57be845a59098c23ef375b1"
+pin_date = "2026-11-11"
+paths = ["content/browser/back_forward_cache/back_forward_cache_impl.cc"]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaNet", path = "crates/lucinanet-history", base = "main" }]
+licence_upstream = "BSD-3-Clause"
+licence_ours = "MPL-2.0"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["time to live 600 s", "cache_size 6", "pressure limits: moderate 3, critical 0"]
+notes = "Read 2026-11-11 from chromium.googlesource.com at the pin. Spec: LucinaNet docs/specs/history-depth.md."
