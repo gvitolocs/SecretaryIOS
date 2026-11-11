@@ -75,7 +75,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn is_full_hex(s: &str) -> bool {
-    s.len() == 40 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 40
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// The ledger file.
@@ -307,11 +309,17 @@ pub struct RepoCtx {
 /// trunk ref, decided like the daemon does (origin's HEAD, else main/master; the trunk's
 /// `.lucina/pipeline.toml` may name another trunk).
 pub fn repo_ctx(dir: &Path) -> Result<RepoCtx, String> {
-    let common = git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .map_err(|e| format!("not a git repository: {} ({e})", dir.display()))?;
+    let common = git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .map_err(|e| format!("not a git repository: {} ({e})", dir.display()))?;
     let common = PathBuf::from(common);
     let root = if common.file_name().is_some_and(|n| n == ".git") {
-        common.parent().map(Path::to_path_buf).unwrap_or(common.clone())
+        common
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or(common.clone())
     } else {
         common.clone()
     };
@@ -319,14 +327,26 @@ pub fn repo_ctx(dir: &Path) -> Result<RepoCtx, String> {
         .file_name()
         .map(|n| n.to_string_lossy().trim_end_matches(".git").to_string())
         .unwrap_or_default();
-    let remote = git(dir, &["remote", "get-url", "origin"]).ok().map(|_| "origin");
-    let branch_exists =
-        |b: &str| git(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]).is_ok();
+    let remote = git(dir, &["remote", "get-url", "origin"])
+        .ok()
+        .map(|_| "origin");
+    let branch_exists = |b: &str| {
+        git(
+            dir,
+            &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")],
+        )
+        .is_ok()
+    };
     let default = remote
         .and_then(|r| {
             git(
                 dir,
-                &["symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{r}/HEAD")],
+                &[
+                    "symbolic-ref",
+                    "--quiet",
+                    "--short",
+                    &format!("refs/remotes/{r}/HEAD"),
+                ],
             )
             .ok()
             .map(|s| s.trim_start_matches(&format!("{r}/")).to_string())
@@ -352,7 +372,12 @@ pub fn repo_ctx(dir: &Path) -> Result<RepoCtx, String> {
     let trunk_ref = at(&trunk);
     git(
         dir,
-        &["rev-parse", "--verify", "-q", &format!("{trunk_ref}^{{commit}}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("{trunk_ref}^{{commit}}"),
+        ],
     )
     .map_err(|_| format!("the trunk {trunk_ref} does not exist in {}", dir.display()))?;
     Ok(RepoCtx {
@@ -365,7 +390,10 @@ pub fn repo_ctx(dir: &Path) -> Result<RepoCtx, String> {
 /// The model table of the trunk: `[attribution.models]` of its `.lucina/pipeline.toml`, else the
 /// built-in default. Never read from the branch.
 pub fn trunk_models(ctx: &RepoCtx) -> Result<BTreeMap<String, String>, String> {
-    match git(&ctx.dir, &["show", &format!("{}:{PIPELINE_FILE}", ctx.trunk_ref)]) {
+    match git(
+        &ctx.dir,
+        &["show", &format!("{}:{PIPELINE_FILE}", ctx.trunk_ref)],
+    ) {
         Ok(text) => Ok(Rules::parse(&text)?
             .attribution
             .models
@@ -446,7 +474,12 @@ pub fn attest(ledger: &Ledger, dir: &Path, a: &AttestArgs) -> Result<Vec<Line>, 
     let shas: Vec<String> = match &a.selection {
         Selection::Default => git(
             dir,
-            &["rev-list", "--no-merges", "--reverse", &format!("{}..HEAD", ctx.trunk_ref)],
+            &[
+                "rev-list",
+                "--no-merges",
+                "--reverse",
+                &format!("{}..HEAD", ctx.trunk_ref),
+            ],
         )
         .map_err(other)?
         .lines()
@@ -458,8 +491,11 @@ pub fn attest(ledger: &Ledger, dir: &Path, a: &AttestArgs) -> Result<Vec<Line>, 
             .map(str::to_string)
             .collect(),
         Selection::Commit(rev) => {
-            let sha = git(dir, &["rev-parse", "--verify", &format!("{rev}^{{commit}}")])
-                .map_err(other)?;
+            let sha = git(
+                dir,
+                &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
+            )
+            .map_err(other)?;
             let parents = git(dir, &["rev-list", "--parents", "-n", "1", &sha]).map_err(other)?;
             if parents.split_whitespace().count() > 2 {
                 Vec::new() // a merge commit is skipped
@@ -479,7 +515,8 @@ pub fn attest(ledger: &Ledger, dir: &Path, a: &AttestArgs) -> Result<Vec<Line>, 
         let names = trailer_names(dir, &sha).map_err(other)?;
         let subject = git(dir, &["log", "-1", "--format=%s", &sha]).map_err(other)?;
         let short = &sha[..12];
-        let fix = "amend the commit so its trailer names the model that wrote it, then attest again";
+        let fix =
+            "amend the commit so its trailer names the model that wrote it, then attest again";
         if names.is_empty() {
             refusals.push(format!(
                 "commit {short} ({subject}) has no Co-Authored-By trailer, but you declared {} (expected \"Co-Authored-By: {expected} <...>\"); {fix}",
@@ -528,8 +565,18 @@ pub fn attest(ledger: &Ledger, dir: &Path, a: &AttestArgs) -> Result<Vec<Line>, 
 
 /// For the merge log: of the branch's non-merge commits `base..head`, how many have an entry for
 /// this repo. Returns `(commits, attested)`.
-pub fn count_attested(ledger: &Path, repo_dir: &Path, repo_name: &str, base: &str, head: &str) -> Option<(usize, usize)> {
-    let list = git(repo_dir, &["rev-list", "--no-merges", &format!("{base}..{head}")]).ok()?;
+pub fn count_attested(
+    ledger: &Path,
+    repo_dir: &Path,
+    repo_name: &str,
+    base: &str,
+    head: &str,
+) -> Option<(usize, usize)> {
+    let list = git(
+        repo_dir,
+        &["rev-list", "--no-merges", &format!("{base}..{head}")],
+    )
+    .ok()?;
     let commits: Vec<&str> = list.lines().collect();
     let have: BTreeSet<String> = Ledger::new(ledger)
         .read_lenient()
@@ -622,7 +669,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&ledger.path).unwrap().permissions().mode();
+            let mode = std::fs::metadata(&ledger.path)
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
         // Flip a byte in the middle line (a letter of the session).
@@ -647,19 +697,28 @@ mod tests {
         let (_r, repo, ledger) = setup();
         commit(&repo, "b", "1", "opus wrote it", Some(OPUS));
         let err = attest(&ledger, &repo, &args("claude-sonnet-5-5")).unwrap_err();
-        let LedgerError::Refused(m) = err else { panic!() };
-        assert!(m[0].contains("Claude Opus 5.5") && m[0].contains("claude-sonnet-5-5"), "{m:?}");
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
+        assert!(
+            m[0].contains("Claude Opus 5.5") && m[0].contains("claude-sonnet-5-5"),
+            "{m:?}"
+        );
         assert!(m[0].contains("amend the commit"), "{m:?}");
         assert!(lines(&ledger).is_empty());
 
         g(&repo, &["reset", "-q", "--hard", "main"]);
         commit(&repo, "b", "1", "no trailer", None);
         let err = attest(&ledger, &repo, &args("claude-sonnet-5-5")).unwrap_err();
-        let LedgerError::Refused(m) = err else { panic!() };
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
         assert!(m[0].contains("no Co-Authored-By trailer"), "{m:?}");
 
         let err = attest(&ledger, &repo, &args("gpt-9")).unwrap_err();
-        let LedgerError::Refused(m) = err else { panic!() };
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
         assert!(m[0].contains("not in the attribution table"), "{m:?}");
         assert!(lines(&ledger).is_empty());
     }
@@ -679,7 +738,9 @@ mod tests {
             ],
         );
         let err = attest(&ledger, &repo, &args("claude-sonnet-5-5")).unwrap_err();
-        let LedgerError::Refused(m) = err else { panic!() };
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
         assert!(m[0].contains("not clear which model"), "{m:?}");
     }
 
@@ -708,8 +769,15 @@ mod tests {
         let mut d = ledger.read().unwrap()[0].clone();
         d.model = "claude-opus-5-5".into();
         let err = ledger.append(vec![d]).unwrap_err();
-        let LedgerError::Refused(m) = err else { panic!() };
-        assert!(m[0].contains(&c[..12]) && m[0].contains("claude-sonnet-5-5") && m[0].contains("claude-opus-5-5"), "{m:?}");
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
+        assert!(
+            m[0].contains(&c[..12])
+                && m[0].contains("claude-sonnet-5-5")
+                && m[0].contains("claude-opus-5-5"),
+            "{m:?}"
+        );
         assert_eq!(lines(&ledger).len(), 1);
     }
 
@@ -721,12 +789,20 @@ mod tests {
         let cm = commit(&repo, "m", "1", "on main", Some(SONNET));
         g(&repo, &["checkout", "-q", "topic"]);
         // A merge commit with a message that has no trailer.
-        g(&repo, &["merge", "-q", "--no-ff", "-m", "merge main", "main"]);
+        g(
+            &repo,
+            &["merge", "-q", "--no-ff", "-m", "merge main", "main"],
+        );
         let c2 = commit(&repo, "c", "1", "two", Some(SONNET));
         let mut a = args("claude-sonnet-5-5");
         a.selection = Selection::Range(format!("{c1}~1..HEAD"));
         let out = attest(&ledger, &repo, &a).unwrap();
-        let got: Vec<String> = ledger.read().unwrap().into_iter().map(|e| e.commit).collect();
+        let got: Vec<String> = ledger
+            .read()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.commit)
+            .collect();
         // c1, the commit that came in from main, and c2; the merge commit itself is not there.
         assert_eq!(out.len(), 3);
         let mut want = vec![c1, cm, c2];
@@ -754,11 +830,16 @@ mod tests {
         .unwrap();
         commit(&repo, "b", "1", "new model", Some("New Bie"));
         let err = attest(&ledger, &repo, &args("newbie")).unwrap_err();
-        let LedgerError::Refused(m) = err else { panic!() };
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
         assert!(m[0].contains("not in the attribution table"), "{m:?}");
         // Once the trunk has the table, it is honoured, and replaces the default.
         g(&repo, &["checkout", "-q", "main"]);
-        g(&repo, &["checkout", "-q", "topic", "--", ".lucina/pipeline.toml"]);
+        g(
+            &repo,
+            &["checkout", "-q", "topic", "--", ".lucina/pipeline.toml"],
+        );
         g(&repo, &["commit", "-q", "-m", "table"]);
         g(&repo, &["checkout", "-q", "topic"]);
         g(&repo, &["merge", "-q", "main"]);
@@ -779,7 +860,13 @@ mod tests {
         let mut a = args("claude-sonnet-5-5");
         a.selection = Selection::Commit(c1);
         attest(&ledger, &repo, &a).unwrap();
-        assert_eq!(count_attested(&ledger.path, &repo, "proj", "main", "topic"), Some((2, 1)));
-        assert_eq!(count_attested(&ledger.path, &repo, "other", "main", "topic"), Some((2, 0)));
+        assert_eq!(
+            count_attested(&ledger.path, &repo, "proj", "main", "topic"),
+            Some((2, 1))
+        );
+        assert_eq!(
+            count_attested(&ledger.path, &repo, "other", "main", "topic"),
+            Some((2, 0))
+        );
     }
 }

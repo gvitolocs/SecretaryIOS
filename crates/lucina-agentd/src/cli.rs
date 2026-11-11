@@ -16,15 +16,19 @@ use crate::config::{default_socket, shorten_path};
 
 mod attest;
 mod device;
-mod term;
 mod orch;
 mod pipe;
 mod rewind;
 mod session;
+mod term;
 mod ws;
 
 #[derive(Parser, Debug)]
-#[command(name = "lagent", about = "Lucina Agents: control coding agents from the command line", version)]
+#[command(
+    name = "lagent",
+    about = "Lucina Agents: control coding agents from the command line",
+    version
+)]
 pub struct Cli {
     /// Output format: table, json
     #[arg(short = 'o', long = "format", global = true, default_value = "table")]
@@ -462,7 +466,11 @@ pub struct CmdError {
 
 impl CmdError {
     fn new(code: &str, message: impl Into<String>) -> Self {
-        CmdError { code: code.into(), message: message.into(), details: None }
+        CmdError {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+        }
     }
 
     fn details(mut self, d: &str) -> Self {
@@ -474,7 +482,11 @@ impl CmdError {
 impl From<ClientError> for CmdError {
     fn from(e: ClientError) -> Self {
         match e {
-            ClientError::Api { code, message, .. } => CmdError { code, message, details: None },
+            ClientError::Api { code, message, .. } => CmdError {
+                code,
+                message,
+                details: None,
+            },
             other => CmdError::new("DAEMON_UNREACHABLE", other.to_string()),
         }
     }
@@ -499,7 +511,11 @@ fn parse_duration_ms(s: &str) -> Option<u64> {
     } else {
         (s, 1000)
     };
-    num.trim().parse::<f64>().ok().filter(|n| *n > 0.0).map(|n| (n * mult as f64) as u64)
+    num.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|n| *n > 0.0)
+        .map(|n| (n * mult as f64) as u64)
 }
 
 fn kv(list: &[String], code: &str) -> Result<serde_json::Map<String, Value>, CmdError> {
@@ -514,8 +530,13 @@ fn kv(list: &[String], code: &str) -> Result<serde_json::Map<String, Value>, Cmd
 }
 
 fn relative_time(iso: &str) -> String {
-    let then = chrono::DateTime::parse_from_rfc3339(iso).map(|d| d.timestamp()).unwrap_or(0);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let then = chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|d| d.timestamp())
+        .unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let s = (now - then).max(0);
     if s < 60 {
         "just now".into()
@@ -633,7 +654,10 @@ fn single(v: Value, keys: &[&str]) -> Output {
     let rows: Vec<Vec<String>> = vec![keys.iter().map(|k| s(&v[*k])).collect()];
     let headers: Vec<String> = keys.iter().map(|k| upper_snake(k)).collect();
     let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
-    Output { text: table(&headers, &rows), json: Some(v) }
+    Output {
+        text: table(&headers, &rows),
+        json: Some(v),
+    }
 }
 
 fn upper_snake(k: &str) -> String {
@@ -648,7 +672,11 @@ fn upper_snake(k: &str) -> String {
 }
 
 /// Projected timeline items (Paseo `fetchProjectedTimelineItems`).
-async fn projected_items(client: &Client, id: &str, subagent: Option<&str>) -> Result<Vec<TimelineItem>, CmdError> {
+async fn projected_items(
+    client: &Client,
+    id: &str,
+    subagent: Option<&str>,
+) -> Result<Vec<TimelineItem>, CmdError> {
     let path = match subagent {
         Some(sub) => format!("/agents/{id}/provider-subagents/{sub}/timeline"),
         None => format!("/agents/{id}/timeline"),
@@ -678,7 +706,13 @@ fn transcript(items: &[TimelineItem], tail: Option<usize>) -> String {
     if tail == Some(0) {
         return String::new();
     }
-    curate_activity(items, &CurateOptions { max_items: tail.unwrap_or(0), ..CurateOptions::default() })
+    curate_activity(
+        items,
+        &CurateOptions {
+            max_items: tail.unwrap_or(0),
+            ..CurateOptions::default()
+        },
+    )
 }
 
 /// How a command words "no such agent" (Paseo's differ per command).
@@ -691,23 +725,40 @@ enum NotFound {
 }
 
 async fn resolve_as(client: &Client, id: &str, style: NotFound) -> Result<Value, CmdError> {
-    client.get(&format!("/agents/{id}")).await.map_err(|e| match e {
-        ClientError::Api { status: 404, .. } => match style {
-            NotFound::Matching => CmdError::new("AGENT_NOT_FOUND", format!("No agent found matching: {id}"))
-                .details("Use `lagent ls` to list available agents"),
-            NotFound::Plain => CmdError::new("AGENT_NOT_FOUND", format!("Agent not found: {id}"))
-                .details("Use \"lagent ls\" to list available agents"),
-        },
-        other => other.into(),
-    })
+    client
+        .get(&format!("/agents/{id}"))
+        .await
+        .map_err(|e| match e {
+            ClientError::Api { status: 404, .. } => match style {
+                NotFound::Matching => {
+                    CmdError::new("AGENT_NOT_FOUND", format!("No agent found matching: {id}"))
+                        .details("Use `lagent ls` to list available agents")
+                }
+                NotFound::Plain => {
+                    CmdError::new("AGENT_NOT_FOUND", format!("Agent not found: {id}"))
+                        .details("Use \"lagent ls\" to list available agents")
+                }
+            },
+            other => other.into(),
+        })
 }
 
 async fn resolve(client: &Client, id: &str) -> Result<Value, CmdError> {
     resolve_as(client, id, NotFound::Matching).await
 }
 
-async fn wait_for(client: &Client, id: &str, timeout_ms: u64, gate: bool) -> Result<Value, CmdError> {
-    Ok(client.post(&format!("/agents/{id}/wait?timeoutMs={timeout_ms}&gate={gate}"), &json!({})).await?)
+async fn wait_for(
+    client: &Client,
+    id: &str,
+    timeout_ms: u64,
+    gate: bool,
+) -> Result<Value, CmdError> {
+    Ok(client
+        .post(
+            &format!("/agents/{id}/wait?timeoutMs={timeout_ms}&gate={gate}"),
+            &json!({}),
+        )
+        .await?)
 }
 
 /// Paseo `permitLsSchema` items.
@@ -745,11 +796,21 @@ fn permit_output(items: Vec<Value>) -> Output {
             ]
         })
         .collect();
-    Output { text: table(&["REQUEST ID", "AGENT", "TOOL", "RESULT"], &rows), json: Some(Value::Array(items)) }
+    Output {
+        text: table(&["REQUEST ID", "AGENT", "TOOL", "RESULT"], &rows),
+        json: Some(Value::Array(items)),
+    }
 }
 
 /// `lagent permit allow|deny` (Paseo `createAllowCommand` / `createDenyCommand`).
-async fn permit_answer(client: &Client, agent: &str, req_id: Option<&str>, all: bool, response: Value, deny: bool) -> Result<Output, CmdError> {
+async fn permit_answer(
+    client: &Client,
+    agent: &str,
+    req_id: Option<&str>,
+    all: bool,
+    response: Value,
+    deny: bool,
+) -> Result<Output, CmdError> {
     let result = if deny { "denied" } else { "allowed" };
     if agent.starts_with("ext_") {
         let body = json!({"behavior": response["behavior"], "message": response["message"]});
@@ -758,36 +819,73 @@ async fn permit_answer(client: &Client, agent: &str, req_id: Option<&str>, all: 
         return Ok(permit_output(vec![item]));
     }
     if deny && !all && req_id.is_none() {
-        return Err(CmdError::new("MISSING_ARGUMENT", "Request ID is required unless --all is specified")
-            .details("Usage: lagent permit deny <agent> <req_id> or lagent permit deny <agent> --all"));
+        return Err(CmdError::new(
+            "MISSING_ARGUMENT",
+            "Request ID is required unless --all is specified",
+        )
+        .details(
+            "Usage: lagent permit deny <agent> <req_id> or lagent permit deny <agent> --all",
+        ));
     }
     let snap = resolve_as(client, agent, NotFound::Plain).await?;
     let agent_id = snap["id"].as_str().unwrap_or_default().to_string();
-    let pending = snap["pendingPermissions"].as_array().cloned().unwrap_or_default();
+    let pending = snap["pendingPermissions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     if pending.is_empty() {
-        return Err(CmdError::new("NO_PENDING_PERMISSIONS", format!("No pending permissions for agent {}", &agent_id[..agent_id.len().min(7)])));
+        return Err(CmdError::new(
+            "NO_PENDING_PERMISSIONS",
+            format!(
+                "No pending permissions for agent {}",
+                &agent_id[..agent_id.len().min(7)]
+            ),
+        ));
     }
     let chosen: Vec<Value> = match req_id.filter(|_| !all) {
         None => pending.clone(),
-        Some(r) => match pending.iter().find(|p| p["id"].as_str().is_some_and(|id| id == r || id.starts_with(r))) {
+        Some(r) => match pending.iter().find(|p| {
+            p["id"]
+                .as_str()
+                .is_some_and(|id| id == r || id.starts_with(r))
+        }) {
             Some(p) => vec![p.clone()],
             None => {
-                let ids: Vec<String> = pending.iter().map(|p| s(&p["id"]).chars().take(8).collect()).collect();
-                return Err(CmdError::new("PERMISSION_NOT_FOUND", format!("Permission request not found: {r}")).details(&format!("Available requests: {}", ids.join(", "))));
+                let ids: Vec<String> = pending
+                    .iter()
+                    .map(|p| s(&p["id"]).chars().take(8).collect())
+                    .collect();
+                return Err(CmdError::new(
+                    "PERMISSION_NOT_FOUND",
+                    format!("Permission request not found: {r}"),
+                )
+                .details(&format!("Available requests: {}", ids.join(", "))));
             }
         },
     };
     let mut items = Vec::new();
     for p in &chosen {
         let rid = s(&p["id"]);
-        match client.post(&format!("/agents/{agent_id}/permissions/{rid}"), &response).await {
+        match client
+            .post(&format!("/agents/{agent_id}/permissions/{rid}"), &response)
+            .await
+        {
             Ok(_) => items.push(permit_result(&agent_id, p, result)),
-            Err(ClientError::Api { code, message, .. }) if code == "PERMISSION_FORBIDDEN" || code == "PERMISSION_EXPIRED" || code == "PERMISSION_ALREADY_ANSWERED" => {
+            Err(ClientError::Api { code, message, .. })
+                if code == "PERMISSION_FORBIDDEN"
+                    || code == "PERMISSION_EXPIRED"
+                    || code == "PERMISSION_ALREADY_ANSWERED" =>
+            {
                 return Err(CmdError::new(&code, message));
             }
             Err(e) => {
-                return Err(CmdError::new("PERMISSION_RESPONSE_UNCONFIRMED", format!("Permission response unconfirmed for request {rid}: {e}"))
-                    .details("Use \"lagent permit ls\" to check whether the request is still pending"));
+                return Err(CmdError::new(
+                    "PERMISSION_RESPONSE_UNCONFIRMED",
+                    format!("Permission response unconfirmed for request {rid}: {e}"),
+                )
+                .details(
+                    "Use \"lagent permit ls\" to check whether the request is still pending",
+                ));
             }
         }
     }
@@ -797,7 +895,10 @@ async fn permit_answer(client: &Client, agent: &str, req_id: Option<&str>, all: 
 /// Agents selected by an id, `--all` or `--cwd` (Paseo stop/delete).
 async fn targets(client: &Client, args: &TargetArgs) -> Result<Vec<Value>, CmdError> {
     if args.id.is_none() && !args.all && args.cwd.is_none() {
-        return Err(CmdError::new("MISSING_ARGUMENT", "Agent ID required unless --all or --cwd is specified"));
+        return Err(CmdError::new(
+            "MISSING_ARGUMENT",
+            "Agent ID required unless --all or --cwd is specified",
+        ));
     }
     if let Some(id) = &args.id {
         return Ok(vec![resolve(client, id).await?]);
@@ -808,7 +909,9 @@ async fn targets(client: &Client, args: &TargetArgs) -> Result<Vec<Value>, CmdEr
         .into_iter()
         .filter(|a| a["archivedAt"].is_null())
         .filter(|a| match &args.cwd {
-            Some(cwd) => a["cwd"].as_str().is_some_and(|c| c == cwd || c.starts_with(&format!("{}/", cwd.trim_end_matches('/')))),
+            Some(cwd) => a["cwd"].as_str().is_some_and(|c| {
+                c == cwd || c.starts_with(&format!("{}/", cwd.trim_end_matches('/')))
+            }),
             None => true,
         })
         .collect())
@@ -820,15 +923,20 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Run(a) => {
             let wait = !a.no_wait && !a.background;
             let timeout_ms = match &a.wait_timeout {
-                Some(t) => parse_duration_ms(t).ok_or_else(|| CmdError::new("INVALID_TIMEOUT", "Invalid --wait-timeout value"))?,
+                Some(t) => parse_duration_ms(t).ok_or_else(|| {
+                    CmdError::new("INVALID_TIMEOUT", "Invalid --wait-timeout value")
+                })?,
                 None => 0,
             };
             let cwd = match &a.cwd {
                 Some(c) => c.clone(),
-                None => std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_else(|_| ".".into()),
+                None => std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| ".".into()),
             };
             if a.prompt.trim().is_empty() {
-                return Err(CmdError::new("MISSING_PROMPT", "A prompt is required").details("Usage: lagent run [options] <prompt>"));
+                return Err(CmdError::new("MISSING_PROMPT", "A prompt is required")
+                    .details("Usage: lagent run [options] <prompt>"));
             }
             let (workspace_id, cwd) = ws::for_run(&client, a, &cwd).await?;
             let body = json!({
@@ -854,8 +962,15 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 let mut grants = Vec::new();
                 for g in &a.preapprove {
                     match g.split_once('/') {
-                        Some((server, tool)) if !server.is_empty() && !tool.is_empty() => grants.push(json!({"kind": "mcp", "server": server, "tool": tool})),
-                        _ => return Err(CmdError::new("INVALID_PREAPPROVE", format!("Invalid --preapprove value: {g} (expected SERVER/TOOL)"))),
+                        Some((server, tool)) if !server.is_empty() && !tool.is_empty() => {
+                            grants.push(json!({"kind": "mcp", "server": server, "tool": tool}))
+                        }
+                        _ => {
+                            return Err(CmdError::new(
+                                "INVALID_PREAPPROVE",
+                                format!("Invalid --preapprove value: {g} (expected SERVER/TOOL)"),
+                            ))
+                        }
                     }
                 }
                 body["toolPolicy"] = json!({"preapproved": grants});
@@ -877,7 +992,11 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 };
                 (state["final"].clone(), status)
             } else {
-                let st = if created["status"] == "running" { "running" } else { "created" };
+                let st = if created["status"] == "running" {
+                    "running"
+                } else {
+                    "created"
+                };
                 (created, st.to_string())
             };
             let mut result = json!({
@@ -890,9 +1009,15 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             if a.gate && wait {
                 result["gate"] = agent["gate"].clone();
                 result["verdict"] = agent["gate"]["verdict"].clone();
-                return Ok(single(result, &["agentId", "status", "provider", "cwd", "title", "verdict"]));
+                return Ok(single(
+                    result,
+                    &["agentId", "status", "provider", "cwd", "title", "verdict"],
+                ));
             }
-            Ok(single(result, &["agentId", "status", "provider", "cwd", "title"]))
+            Ok(single(
+                result,
+                &["agentId", "status", "provider", "cwd", "title"],
+            ))
         }
         Command::Ls(a) => {
             let v = client.get(&format!("/agents?archived={}", a.all)).await?;
@@ -907,7 +1032,11 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 agents.retain(|x| x["status"] == st.as_str());
             }
             if let Some(cwd) = &a.cwd {
-                agents.retain(|x| x["cwd"].as_str().is_some_and(|c| c == cwd || c.starts_with(&format!("{}/", cwd.trim_end_matches('/')))));
+                agents.retain(|x| {
+                    x["cwd"].as_str().is_some_and(|c| {
+                        c == cwd || c.starts_with(&format!("{}/", cwd.trim_end_matches('/')))
+                    })
+                });
             }
             let labels = kv(&a.label, "INVALID_LABEL")?;
             agents.retain(|x| labels.iter().all(|(k, v)| x["labels"][k] == *v));
@@ -924,10 +1053,22 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let items: Vec<Value> = agents.iter().map(ls_item).collect();
             let rows: Vec<Vec<String>> = items
                 .iter()
-                .map(|i| ["shortId", "name", "provider", "thinking", "status", "cwd", "created"].iter().map(|k| s(&i[*k])).collect())
+                .map(|i| {
+                    [
+                        "shortId", "name", "provider", "thinking", "status", "cwd", "created",
+                    ]
+                    .iter()
+                    .map(|k| s(&i[*k]))
+                    .collect()
+                })
                 .collect();
             Ok(Output {
-                text: table(&["AGENT ID", "NAME", "PROVIDER", "THINKING", "STATUS", "CWD", "CREATED"], &rows),
+                text: table(
+                    &[
+                        "AGENT ID", "NAME", "PROVIDER", "THINKING", "STATUS", "CWD", "CREATED",
+                    ],
+                    &rows,
+                ),
                 json: Some(Value::Array(items)),
             })
         }
@@ -935,11 +1076,16 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let agent = resolve(&client, &a.id).await?;
             let id = agent["id"].as_str().unwrap_or_default().to_string();
             let tail = match &a.tail {
-                Some(t) => Some(t.parse::<usize>().map_err(|_| CmdError::new("INVALID_TAIL", format!("Invalid --tail value: {t}")))?),
+                Some(t) => Some(t.parse::<usize>().map_err(|_| {
+                    CmdError::new("INVALID_TAIL", format!("Invalid --tail value: {t}"))
+                })?),
                 None => None,
             };
             if a.follow && a.subagent.is_some() {
-                return Err(CmdError::new("INVALID_ARGUMENT", "--follow is not supported with --subagent"));
+                return Err(CmdError::new(
+                    "INVALID_ARGUMENT",
+                    "--follow is not supported with --subagent",
+                ));
             }
             let items: Vec<TimelineItem> = projected_items(&client, &id, a.subagent.as_deref())
                 .await?
@@ -953,30 +1099,51 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 }
                 println!("\n--- Following logs (Ctrl+C to stop) ---\n");
                 follow(&client, &id, a.filter.clone(), false).await?;
-                return Ok(Output { json: None, text: String::new() });
+                return Ok(Output {
+                    json: None,
+                    text: String::new(),
+                });
             }
-            Ok(Output { json: None, text: transcript(&items, tail) })
+            Ok(Output {
+                json: None,
+                text: transcript(&items, tail),
+            })
         }
         Command::Attach { id } => {
             let agent = resolve(&client, id).await?;
             let id = agent["id"].as_str().unwrap_or_default().to_string();
             follow(&client, &id, None, true).await?;
-            Ok(Output { json: None, text: String::new() })
+            Ok(Output {
+                json: None,
+                text: String::new(),
+            })
         }
         Command::Send(a) => {
             let prompt = match (&a.prompt, &a.prompt_flag) {
-                (Some(_), Some(_)) => return Err(CmdError::new("CONFLICTING_PROMPT_INPUT", "Provide exactly one of prompt argument, --prompt, or --prompt-file")),
+                (Some(_), Some(_)) => {
+                    return Err(CmdError::new(
+                        "CONFLICTING_PROMPT_INPUT",
+                        "Provide exactly one of prompt argument, --prompt, or --prompt-file",
+                    ))
+                }
                 (Some(p), None) | (None, Some(p)) => p.clone(),
-                (None, None) => return Err(CmdError::new("MISSING_PROMPT", "A prompt is required")),
+                (None, None) => {
+                    return Err(CmdError::new("MISSING_PROMPT", "A prompt is required"))
+                }
             };
             let agent = resolve(&client, &a.id).await?;
             let id = agent["id"].as_str().unwrap_or_default().to_string();
             let is_session = agent["provider"] == SESSION_PROVIDER;
             let behavior = a.behavior.clone().unwrap_or_else(|| "interrupt".into());
             client
-                .post(&format!("/agents/{id}/send"), &json!({"prompt": prompt, "activeTurnBehavior": behavior}))
+                .post(
+                    &format!("/agents/{id}/send"),
+                    &json!({"prompt": prompt, "activeTurnBehavior": behavior}),
+                )
                 .await
-                .map_err(|e| CmdError::new("SEND_FAILED", format!("Failed to send message: {e}")))?;
+                .map_err(|e| {
+                    CmdError::new("SEND_FAILED", format!("Failed to send message: {e}"))
+                })?;
             let result = if is_session {
                 json!({"agentId": id, "status": "queued", "message": "Queued: the Claude session reads it at its next tool call or prompt, or wakes up for it when idle. Nothing waits for an answer here."})
             } else if a.no_wait {
@@ -984,10 +1151,18 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             } else {
                 let state = wait_for(&client, &id, 600_000, false).await?;
                 match state["status"].as_str() {
-                    Some("timeout") => json!({"agentId": id, "status": "timeout", "message": "Timed out waiting for agent to finish"}),
-                    Some("permission") => json!({"agentId": id, "status": "permission", "message": "Agent is waiting for permission"}),
-                    Some("error") => json!({"agentId": id, "status": "error", "message": state["error"].as_str().unwrap_or("Agent finished with error")}),
-                    _ => json!({"agentId": id, "status": "completed", "message": "Agent completed processing the message"}),
+                    Some("timeout") => {
+                        json!({"agentId": id, "status": "timeout", "message": "Timed out waiting for agent to finish"})
+                    }
+                    Some("permission") => {
+                        json!({"agentId": id, "status": "permission", "message": "Agent is waiting for permission"})
+                    }
+                    Some("error") => {
+                        json!({"agentId": id, "status": "error", "message": state["error"].as_str().unwrap_or("Agent finished with error")})
+                    }
+                    _ => {
+                        json!({"agentId": id, "status": "completed", "message": "Agent completed processing the message"})
+                    }
                 }
             };
             Ok(single(result, &["agentId", "status", "message"]))
@@ -1008,7 +1183,10 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 match client.post(&format!("/agents/{id}/stop"), &json!({})).await {
                     Ok(v) if v["stopped"] == true => stopped.push(Value::String(id)),
                     Ok(_) => {}
-                    Err(e) => eprintln!("Warning: Failed to stop agent {}: {e}", &id[..id.len().min(7)]),
+                    Err(e) => eprintln!(
+                        "Warning: Failed to stop agent {}: {e}",
+                        &id[..id.len().min(7)]
+                    ),
                 }
             }
             let result = json!({"stoppedCount": stopped.len(), "agentIds": stopped});
@@ -1019,15 +1197,23 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let id = agent["id"].as_str().unwrap_or_default().to_string();
             let (timeout_ms, label) = match &a.timeout {
                 Some(t) => {
-                    let ms = parse_duration_ms(t).ok_or_else(|| CmdError::new("INVALID_TIMEOUT", "Invalid timeout value"))?;
+                    let ms = parse_duration_ms(t)
+                        .ok_or_else(|| CmdError::new("INVALID_TIMEOUT", "Invalid timeout value"))?;
                     let secs = ms / 1000;
-                    (ms, Some(format!("{secs} second{}", if secs == 1 { "" } else { "s" })))
+                    (
+                        ms,
+                        Some(format!("{secs} second{}", if secs == 1 { "" } else { "s" })),
+                    )
                 }
                 None => (0, None),
             };
             let state = wait_for(&client, &id, timeout_ms, a.gate).await?;
-            let recent = projected_items(&client, &id, None).await.ok().map(|items| transcript(&items, Some(5)));
-            let with_recent = |msg: String| match recent.as_deref().filter(|t| !t.trim().is_empty()) {
+            let recent = projected_items(&client, &id, None)
+                .await
+                .ok()
+                .map(|items| transcript(&items, Some(5)));
+            let with_recent = |msg: String| match recent.as_deref().filter(|t| !t.trim().is_empty())
+            {
                 Some(t) => format!("{msg}\nLast 5 activity items:\n{t}"),
                 None => msg,
             };
@@ -1040,15 +1226,21 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                     json!({"agentId": id, "status": "timeout", "message": with_recent(msg)})
                 }
                 Some("permission") => {
-                    let kind = state["final"]["pendingPermissions"][0]["kind"].as_str().map(str::to_string);
+                    let kind = state["final"]["pendingPermissions"][0]["kind"]
+                        .as_str()
+                        .map(str::to_string);
                     let msg = match kind {
                         Some(k) => format!("Agent is waiting for permission: {k}"),
                         None => "Agent is waiting for permission".into(),
                     };
                     json!({"agentId": id, "status": "permission", "message": msg})
                 }
-                Some("error") => json!({"agentId": id, "status": "error", "message": state["error"].as_str().unwrap_or("Agent finished with error")}),
-                _ => json!({"agentId": id, "status": "idle", "message": with_recent("Agent is idle.".into())}),
+                Some("error") => {
+                    json!({"agentId": id, "status": "error", "message": state["error"].as_str().unwrap_or("Agent finished with error")})
+                }
+                _ => {
+                    json!({"agentId": id, "status": "idle", "message": with_recent("Agent is idle.".into())})
+                }
             };
             Ok(single(result, &["agentId", "status", "message"]))
         }
@@ -1057,7 +1249,10 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let id = agent["id"].as_str().unwrap_or_default().to_string();
             let short = &id[..id.len().min(7)];
             if !agent["archivedAt"].is_null() {
-                return Err(CmdError::new("AGENT_ALREADY_ARCHIVED", format!("Agent {short} is already archived")));
+                return Err(CmdError::new(
+                    "AGENT_ALREADY_ARCHIVED",
+                    format!("Agent {short} is already archived"),
+                ));
             }
             // A Claude session's refusal comes from the daemon, which knows if it is live.
             if agent["status"] == "running" && !a.force && agent["provider"] != SESSION_PROVIDER {
@@ -1068,14 +1263,24 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let v = client
                 .post(&format!("/agents/{id}/archive"), &json!({}))
                 .await
-                .map_err(|e| CmdError::new("ARCHIVE_FAILED", format!("Failed to archive agent: {e}")))?;
-            Ok(single(json!({"agentId": id, "status": "archived", "archivedAt": v["archivedAt"]}), &["agentId", "status", "archivedAt"]))
+                .map_err(|e| {
+                    CmdError::new("ARCHIVE_FAILED", format!("Failed to archive agent: {e}"))
+                })?;
+            Ok(single(
+                json!({"agentId": id, "status": "archived", "archivedAt": v["archivedAt"]}),
+                &["agentId", "status", "archivedAt"],
+            ))
         }
         Command::Unarchive { id } => {
             let agent = resolve(&client, id).await?;
             let id = agent["id"].as_str().unwrap_or_default().to_string();
-            let v = client.post(&format!("/agents/{id}/unarchive"), &json!({})).await?;
-            Ok(single(json!({"agentId": id, "status": v["status"]}), &["agentId", "status"]))
+            let v = client
+                .post(&format!("/agents/{id}/unarchive"), &json!({}))
+                .await?;
+            Ok(single(
+                json!({"agentId": id, "status": v["status"]}),
+                &["agentId", "status"],
+            ))
         }
         Command::Delete(a) => {
             let agents = targets(&client, a).await?;
@@ -1083,20 +1288,36 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let only = agents.len() == 1;
             for agent in agents {
                 let id = agent["id"].as_str().unwrap_or_default().to_string();
-                match client.request("DELETE", &format!("/agents/{id}"), None).await {
+                match client
+                    .request("DELETE", &format!("/agents/{id}"), None)
+                    .await
+                {
                     Ok(_) => deleted.push(Value::String(id)),
-                    Err(e) if only && agent["provider"] == SESSION_PROVIDER => return Err(CmdError::new("NOT_SUPERVISED", e.to_string())),
-                    Err(e) => eprintln!("Warning: Failed to delete agent {}: {e}", &id[..id.len().min(7)]),
+                    Err(e) if only && agent["provider"] == SESSION_PROVIDER => {
+                        return Err(CmdError::new("NOT_SUPERVISED", e.to_string()))
+                    }
+                    Err(e) => eprintln!(
+                        "Warning: Failed to delete agent {}: {e}",
+                        &id[..id.len().min(7)]
+                    ),
                 }
             }
-            Ok(single(json!({"deletedCount": deleted.len(), "agentIds": deleted}), &["deletedCount", "agentIds"]))
+            Ok(single(
+                json!({"deletedCount": deleted.len(), "agentIds": deleted}),
+                &["deletedCount", "agentIds"],
+            ))
         }
         Command::Inspect { id } => {
             let agent = resolve_as(&client, id, NotFound::Plain).await?;
             let mut data = inspect_data(&agent);
             // Lucina only, and only when the provider ran subagents (Paseo's key set stays the same).
             let subs = match agent["id"].as_str() {
-                Some(id) => client.get(&format!("/agents/{id}/provider-subagents")).await.ok().and_then(|v| v["subagents"].as_array().cloned()).unwrap_or_default(),
+                Some(id) => client
+                    .get(&format!("/agents/{id}/provider-subagents"))
+                    .await
+                    .ok()
+                    .and_then(|v| v["subagents"].as_array().cloned())
+                    .unwrap_or_default(),
                 None => Vec::new(),
             };
             if !subs.is_empty() {
@@ -1107,18 +1328,62 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 );
             }
             let mut rows = Vec::new();
-            for key in ["Id", "Name", "Provider", "Model", "Thinking", "Status", "Archived", "ArchivedAt", "Mode", "Cwd", "CreatedAt", "UpdatedAt"] {
-                let value = if key == "Cwd" { shorten_path(data[key].as_str().unwrap_or_default()) } else { s(&data[key]) };
+            for key in [
+                "Id",
+                "Name",
+                "Provider",
+                "Model",
+                "Thinking",
+                "Status",
+                "Archived",
+                "ArchivedAt",
+                "Mode",
+                "Cwd",
+                "CreatedAt",
+                "UpdatedAt",
+            ] {
+                let value = if key == "Cwd" {
+                    shorten_path(data[key].as_str().unwrap_or_default())
+                } else {
+                    s(&data[key])
+                };
                 rows.push(vec![key.to_string(), value]);
             }
             rows.push(vec!["PendingPermissions".into(), {
-                let p = data["PendingPermissions"].as_array().cloned().unwrap_or_default();
-                if p.is_empty() { "[]".into() } else { p.iter().map(|x| format!("{} ({})", s(&x["id"]), s(&x["tool"]))).collect::<Vec<_>>().join(", ") }
+                let p = data["PendingPermissions"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                if p.is_empty() {
+                    "[]".into()
+                } else {
+                    p.iter()
+                        .map(|x| format!("{} ({})", s(&x["id"]), s(&x["tool"])))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
             }]);
             if !subs.is_empty() {
-                rows.push(vec!["Subagents".into(), subs.iter().map(|x| format!("{} ({}, {}): {}", s(&x["id"]), x["title"].as_str().unwrap_or("-"), s(&x["status"]), x["description"].as_str().unwrap_or("-"))).collect::<Vec<_>>().join("\n")]);
+                rows.push(vec![
+                    "Subagents".into(),
+                    subs.iter()
+                        .map(|x| {
+                            format!(
+                                "{} ({}, {}): {}",
+                                s(&x["id"]),
+                                x["title"].as_str().unwrap_or("-"),
+                                s(&x["status"]),
+                                x["description"].as_str().unwrap_or("-")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ]);
             }
-            Ok(Output { text: table(&["KEY", "VALUE"], &rows), json: Some(data) })
+            Ok(Output {
+                text: table(&["KEY", "VALUE"], &rows),
+                json: Some(data),
+            })
         }
         Command::Providers => {
             let v = client.get("/providers").await?;
@@ -1127,39 +1392,79 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 .iter()
                 .map(|p| vec![s(&p["id"]), s(&p["label"]), s(&p["defaultModeId"])])
                 .collect();
-            Ok(Output { text: table(&["PROVIDER", "LABEL", "DEFAULT MODE"], &rows), json: Some(Value::Array(list)) })
+            Ok(Output {
+                text: table(&["PROVIDER", "LABEL", "DEFAULT MODE"], &rows),
+                json: Some(Value::Array(list)),
+            })
         }
         Command::Permit(PermitCommand::Ls { external }) => {
-            let v = client.get("/agents?archived=true").await.map_err(|e| CmdError::new("LIST_PERMISSIONS_FAILED", format!("Failed to list permissions: {e}")))?;
+            let v = client.get("/agents?archived=true").await.map_err(|e| {
+                CmdError::new(
+                    "LIST_PERMISSIONS_FAILED",
+                    format!("Failed to list permissions: {e}"),
+                )
+            })?;
             let mut items = Vec::new();
             for agent in v["agents"].as_array().cloned().unwrap_or_default() {
-                for p in agent["pendingPermissions"].as_array().cloned().unwrap_or_default() {
+                for p in agent["pendingPermissions"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                {
                     items.push(permit_item(&agent, &p));
                 }
             }
             if *external {
                 let ext = client.get("/permissions").await?;
-                for p in ext["permissions"].as_array().cloned().unwrap_or_default().into_iter().filter(|p| p["kind"] == "external") {
+                for p in ext["permissions"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|p| p["kind"] == "external")
+                {
                     items.push(json!({"id": p["id"], "agentId": p["source"], "agentShortId": p["source"], "name": p["title"], "description": p["description"].as_str().unwrap_or("-")}));
                 }
             }
             let rows: Vec<Vec<String>> = items
                 .iter()
-                .map(|i| vec![s(&i["agentShortId"]), s(&i["id"]).chars().take(8).collect(), s(&i["name"]), s(&i["description"])])
+                .map(|i| {
+                    vec![
+                        s(&i["agentShortId"]),
+                        s(&i["id"]).chars().take(8).collect(),
+                        s(&i["name"]),
+                        s(&i["description"]),
+                    ]
+                })
                 .collect();
-            Ok(Output { text: table(&["AGENT", "REQ_ID", "TOOL", "DESCRIPTION"], &rows), json: Some(Value::Array(items)) })
+            Ok(Output {
+                text: table(&["AGENT", "REQ_ID", "TOOL", "DESCRIPTION"], &rows),
+                json: Some(Value::Array(items)),
+            })
         }
-        Command::Permit(PermitCommand::Allow { agent, req_id, all, input }) => {
+        Command::Permit(PermitCommand::Allow {
+            agent,
+            req_id,
+            all,
+            input,
+        }) => {
             let mut response = json!({"behavior": "allow"});
             if let Some(raw) = input {
                 let parsed: Value = serde_json::from_str(raw).map_err(|e| {
-                    CmdError::new("INVALID_JSON", format!("Invalid JSON for --input: {e}")).details("Provide valid JSON, e.g., --input '{\"key\": \"value\"}'")
+                    CmdError::new("INVALID_JSON", format!("Invalid JSON for --input: {e}"))
+                        .details("Provide valid JSON, e.g., --input '{\"key\": \"value\"}'")
                 })?;
                 response["updatedInput"] = parsed;
             }
             permit_answer(&client, agent, req_id.as_deref(), *all, response, false).await
         }
-        Command::Permit(PermitCommand::Deny { agent, req_id, all, message, interrupt }) => {
+        Command::Permit(PermitCommand::Deny {
+            agent,
+            req_id,
+            all,
+            message,
+            interrupt,
+        }) => {
             let mut response = json!({"behavior": "deny"});
             if let Some(m) = message {
                 response["message"] = json!(m);
@@ -1182,12 +1487,22 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Rewind(a) => rewind::rewind(&client, a).await,
         Command::Fork(a) => rewind::fork(&client, a).await,
         Command::Mcp => {
-            crate::mcp::serve(client).await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
-            Ok(Output { json: None, text: String::new() })
+            crate::mcp::serve(client)
+                .await
+                .map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
+            Ok(Output {
+                json: None,
+                text: String::new(),
+            })
         }
         Command::JunoMcp => {
-            crate::juno_mcp::serve().await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
-            Ok(Output { json: None, text: String::new() })
+            crate::juno_mcp::serve()
+                .await
+                .map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
+            Ok(Output {
+                json: None,
+                text: String::new(),
+            })
         }
         Command::Task(cmd) => pipe::task(&client, cmd).await,
         Command::Merge(a) => pipe::merge(&client, a).await,
@@ -1208,7 +1523,12 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
 
 /// Stream an agent's timeline (Paseo `createFollowTranscriptWriter`, simplified:
 /// one line per projected text chunk run). `until_idle` stops when a turn ends.
-async fn follow(client: &Client, id: &str, filter: Option<String>, until_idle: bool) -> Result<(), CmdError> {
+async fn follow(
+    client: &Client,
+    id: &str,
+    filter: Option<String>,
+    until_idle: bool,
+) -> Result<(), CmdError> {
     use std::io::Write;
     let id = id.to_string();
     let mut chain: Option<&'static str> = None;
@@ -1220,13 +1540,17 @@ async fn follow(client: &Client, id: &str, filter: Option<String>, until_idle: b
             let event = &ev["event"];
             match event["type"].as_str() {
                 Some("timeline") => {
-                    let Ok(item) = serde_json::from_value::<TimelineItem>(event["item"].clone()) else { return true };
+                    let Ok(item) = serde_json::from_value::<TimelineItem>(event["item"].clone())
+                    else {
+                        return true;
+                    };
                     if !matches_filter(&item, filter.as_deref()) {
                         return true;
                     }
                     let mut out = std::io::stdout();
                     match &item {
-                        TimelineItem::AssistantMessage { text, .. } | TimelineItem::Reasoning { text } => {
+                        TimelineItem::AssistantMessage { text, .. }
+                        | TimelineItem::Reasoning { text } => {
                             let kind = item.kind();
                             if chain != Some(kind) {
                                 if chain.is_some() {
@@ -1288,7 +1612,10 @@ pub fn render(cli: &Cli, result: Result<Output, CmdError>) -> i32 {
                 if let Some(d) = &e.details {
                     err["details"] = Value::String(d.clone());
                 }
-                eprintln!("{}", serde_json::to_string_pretty(&json!({"error": err})).unwrap_or_default());
+                eprintln!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({"error": err})).unwrap_or_default()
+                );
             } else {
                 match &e.details {
                     Some(d) => eprintln!("Error: {}\n{d}", e.message),

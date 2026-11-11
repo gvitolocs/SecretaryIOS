@@ -73,14 +73,22 @@ fn env(name: &str) -> Option<String> {
 }
 
 fn session() -> String {
-    for k in ["LAGENT_SESSION", "CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_SESSION_ID"] {
+    for k in [
+        "LAGENT_SESSION",
+        "CLAUDE_CODE_HOST_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+    ] {
         if let Some(v) = env(k) {
             return v;
         }
     }
     let user = env("USER").unwrap_or_else(|| "unknown".into());
     let host = env("HOSTNAME")
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "unknown".into());
     format!("{user}@{host}")
@@ -123,11 +131,19 @@ pub fn attest(a: &AttestCli) -> Result<Output, CmdError> {
     };
     let args = AttestArgs {
         model,
-        kind: a.kind.clone().or_else(|| env("LAGENT_ACTOR_KIND")).unwrap_or_else(|| "lead".into()),
+        kind: a
+            .kind
+            .clone()
+            .or_else(|| env("LAGENT_ACTOR_KIND"))
+            .unwrap_or_else(|| "lead".into()),
         lane: lane.unwrap_or_default(),
         session: session(),
         declared_by: declared_by.into(),
-        workspace: a.workspace.clone().or_else(|| env("LAGENT_WORKSPACE")).unwrap_or_default(),
+        workspace: a
+            .workspace
+            .clone()
+            .or_else(|| env("LAGENT_WORKSPACE"))
+            .unwrap_or_default(),
         selection,
     };
     let dir = match &a.repo {
@@ -140,11 +156,21 @@ pub fn attest(a: &AttestCli) -> Result<Output, CmdError> {
     for l in &lines {
         match &l.appended {
             Appended::Written(e) => {
-                text.push(format!("attested {} {} ({})", &e.commit[..12], e.model, l.subject));
+                text.push(format!(
+                    "attested {} {} ({})",
+                    &e.commit[..12],
+                    e.model,
+                    l.subject
+                ));
                 js.push(json!({"status": "attested", "entry": entry_json(e)}));
             }
             Appended::Already(e) => {
-                text.push(format!("already attested {} {} ({})", &e.commit[..12], e.model, l.subject));
+                text.push(format!(
+                    "already attested {} {} ({})",
+                    &e.commit[..12],
+                    e.model,
+                    l.subject
+                ));
                 js.push(json!({"status": "already", "entry": entry_json(e)}));
             }
         }
@@ -152,7 +178,10 @@ pub fn attest(a: &AttestCli) -> Result<Output, CmdError> {
     if lines.is_empty() {
         text.push("no commits to attest".into());
     }
-    Ok(Output { json: Some(Value::Array(js)), text: text.join("\n") })
+    Ok(Output {
+        json: Some(Value::Array(js)),
+        text: text.join("\n"),
+    })
 }
 
 pub fn ledger_cmd(cmd: &LedgerCommand) -> Result<Output, CmdError> {
@@ -161,26 +190,53 @@ pub fn ledger_cmd(cmd: &LedgerCommand) -> Result<Output, CmdError> {
             let l = ledger_for(state_dir);
             match l.read() {
                 Ok(es) => Ok(Output {
-                    json: Some(json!({"ok": true, "entries": es.len(), "path": l.path.display().to_string()})),
-                    text: format!("ok: {} entr{} in {}", es.len(), if es.len() == 1 { "y" } else { "ies" }, l.path.display()),
+                    json: Some(
+                        json!({"ok": true, "entries": es.len(), "path": l.path.display().to_string()}),
+                    ),
+                    text: format!(
+                        "ok: {} entr{} in {}",
+                        es.len(),
+                        if es.len() == 1 { "y" } else { "ies" },
+                        l.path.display()
+                    ),
                 }),
                 Err(b) => Err(CmdError::new(
                     "LEDGER_BROKEN",
-                    format!("{}: broken at line {}: {}", l.path.display(), b.line, b.reason),
+                    format!(
+                        "{}: broken at line {}: {}",
+                        l.path.display(),
+                        b.line,
+                        b.reason
+                    ),
                 )),
             }
         }
-        LedgerCommand::Show { commit, repo, state_dir } => {
+        LedgerCommand::Show {
+            commit,
+            repo,
+            state_dir,
+        } => {
             let l = ledger_for(state_dir);
             let mut es = l.read().map_err(|b| {
-                CmdError::new("LEDGER_BROKEN", format!("{}: broken at line {}: {}", l.path.display(), b.line, b.reason))
+                CmdError::new(
+                    "LEDGER_BROKEN",
+                    format!(
+                        "{}: broken at line {}: {}",
+                        l.path.display(),
+                        b.line,
+                        b.reason
+                    ),
+                )
             })?;
             if let Some(r) = repo {
                 let ctx = ledger::repo_ctx(r).map_err(|e| CmdError::new("NOT_A_REPO", e))?;
                 es.retain(|e| e.repo == ctx.name);
             }
             if let Some(c) = commit {
-                let dir = repo.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+                let dir = repo
+                    .clone()
+                    .or_else(|| std::env::current_dir().ok())
+                    .unwrap_or_default();
                 let full = std::process::Command::new("git")
                     .arg("-C")
                     .arg(&dir)
@@ -208,7 +264,10 @@ pub fn ledger_cmd(cmd: &LedgerCommand) -> Result<Output, CmdError> {
                 .collect();
             Ok(Output {
                 json: Some(Value::Array(es.iter().map(entry_json).collect())),
-                text: table(&["COMMIT", "REPO", "MODEL", "KIND", "LANE", "BY", "TIME"], &rows),
+                text: table(
+                    &["COMMIT", "REPO", "MODEL", "KIND", "LANE", "BY", "TIME"],
+                    &rows,
+                ),
             })
         }
     }
