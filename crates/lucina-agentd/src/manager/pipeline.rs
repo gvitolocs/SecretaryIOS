@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 
 use super::{Manager, ManagerError};
 use crate::now_iso;
-use crate::pipeline::{self, repo::Rules, Job, JobKind, JobState, Lease, Outcome, Pipeline, Spec, Task};
+use crate::pipeline::{
+    self, repo::Rules, Job, JobKind, JobState, Lease, Outcome, Pipeline, Spec, Task,
+};
 use crate::workspaces::{git, procs, CreateWorkspace, WsError};
 
 /// How long a lease lasts unless asked otherwise, and at most.
@@ -138,11 +140,30 @@ fn invalid(m: impl Into<String>) -> ManagerError {
 
 async fn repo_info(path: &Path) -> Result<RepoInfo, ManagerError> {
     let info = git::info(path).await;
-    let root = info.main_root.clone().or_else(|| info.repo_root().map(Path::to_path_buf)).ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))?;
-    let name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let remote = git::read(&root, &["remote", "get-url", "origin"]).await.map(|_| "origin".to_string());
+    let root = info
+        .main_root
+        .clone()
+        .or_else(|| info.repo_root().map(Path::to_path_buf))
+        .ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))?;
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let remote = git::read(&root, &["remote", "get-url", "origin"])
+        .await
+        .map(|_| "origin".to_string());
     let default = match &remote {
-        Some(r) => git::read(&root, &["symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{r}/HEAD")]).await.map(|s| s.trim_start_matches(&format!("{r}/")).to_string()),
+        Some(r) => git::read(
+            &root,
+            &[
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                &format!("refs/remotes/{r}/HEAD"),
+            ],
+        )
+        .await
+        .map(|s| s.trim_start_matches(&format!("{r}/")).to_string()),
         None => None,
     };
     let default = match default {
@@ -161,7 +182,12 @@ async fn repo_info(path: &Path) -> Result<RepoInfo, ManagerError> {
         .and_then(|t| Rules::parse(&t).ok())
         .and_then(|r| r.trunk)
         .unwrap_or(default);
-    Ok(RepoInfo { root, name, remote, trunk })
+    Ok(RepoInfo {
+        root,
+        name,
+        remote,
+        trunk,
+    })
 }
 
 fn slug(title: &str) -> String {
@@ -171,17 +197,27 @@ fn slug(title: &str) -> String {
 }
 
 fn minutes_from_now(m: i64) -> String {
-    (chrono::Utc::now() + chrono::Duration::minutes(m)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    (chrono::Utc::now() + chrono::Duration::minutes(m))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn expired(iso: &str) -> bool {
-    chrono::DateTime::parse_from_rfc3339(iso).map(|t| t < chrono::Utc::now()).unwrap_or(true)
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|t| t < chrono::Utc::now())
+        .unwrap_or(true)
 }
 
 /// Seconds since a commit or index change in the worktree.
 async fn idle_secs(dir: &Path) -> Option<i64> {
-    let ct: i64 = git::read(dir, &["log", "-1", "--format=%ct", "HEAD"]).await?.parse().ok()?;
-    let index = git::read(dir, &["rev-parse", "--path-format=absolute", "--git-path", "index"]).await;
+    let ct: i64 = git::read(dir, &["log", "-1", "--format=%ct", "HEAD"])
+        .await?
+        .parse()
+        .ok()?;
+    let index = git::read(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )
+    .await;
     let mt = index
         .and_then(|p| std::fs::metadata(p).ok())
         .and_then(|m| m.modified().ok())
@@ -199,19 +235,32 @@ impl Manager {
     /// The commit ledger in the state directory (`pipeline.config.dir` is `<state>/pipeline`).
     fn ledger_path(&self) -> String {
         let dir = &self.pipeline().config.dir;
-        dir.parent().unwrap_or(dir).join(crate::ledger::FILE).display().to_string()
+        dir.parent()
+            .unwrap_or(dir)
+            .join(crate::ledger::FILE)
+            .display()
+            .to_string()
     }
 
     /// `lagent task start`: fetch, make a worktree from the trunk, register the task.
-    pub async fn start_task(&self, req: StartTask) -> Result<(Task, WorkspaceRecord), ManagerError> {
+    pub async fn start_task(
+        &self,
+        req: StartTask,
+    ) -> Result<(Task, WorkspaceRecord), ManagerError> {
         if req.title.trim().is_empty() {
             return Err(invalid("A task needs a title"));
         }
         let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo))).await?;
         if let Some(r) = &repo.remote {
-            git::must(&repo.root, &["fetch", "-q", r]).await.map_err(|e| ManagerError::from(WsError::Git(format!("fetch: {e}"))))?;
+            git::must(&repo.root, &["fetch", "-q", r])
+                .await
+                .map_err(|e| ManagerError::from(WsError::Git(format!("fetch: {e}"))))?;
         }
-        let branch = req.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| slug(&req.title));
+        let branch = req
+            .branch
+            .clone()
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| slug(&req.title));
         if branch.is_empty() {
             return Err(invalid("Give the task a --branch"));
         }
@@ -243,18 +292,27 @@ impl Manager {
             merged_at: None,
             stale_decision: None,
         };
-        self.pipeline().save_task(&task).map_err(ManagerError::Store)?;
+        self.pipeline()
+            .save_task(&task)
+            .map_err(ManagerError::Store)?;
         Ok((task, w))
     }
 
     /// `lagent task adopt`: take over a worktree someone made by hand, so it merges
     /// through the queue and is archived after.
-    pub async fn adopt_task(&self, req: AdoptTask) -> Result<(Task, WorkspaceRecord), ManagerError> {
+    pub async fn adopt_task(
+        &self,
+        req: AdoptTask,
+    ) -> Result<(Task, WorkspaceRecord), ManagerError> {
         let dir = git::canon(Path::new(&req.path));
         let repo = repo_info(&dir).await?;
         let w = match self.workspaces().find_by_cwd(&dir.display().to_string()) {
             Some(w) => w,
-            None => self.workspaces().adopt(&dir, req.title.clone(), &repo.base_ref()).await?,
+            None => {
+                self.workspaces()
+                    .adopt(&dir, req.title.clone(), &repo.base_ref())
+                    .await?
+            }
         };
         if let Some(t) = self.pipeline().task(&w.workspace_id) {
             // Adopting again is how a session takes a task back (it lost its link, or changed).
@@ -273,7 +331,11 @@ impl Manager {
         }
         let task = Task {
             workspace_id: w.workspace_id.clone(),
-            title: req.title.clone().or(w.title.clone()).unwrap_or_else(|| w.display_name.clone()),
+            title: req
+                .title
+                .clone()
+                .or(w.title.clone())
+                .unwrap_or_else(|| w.display_name.clone()),
             repo: repo.root.display().to_string(),
             branch: w.branch.clone().unwrap_or_default(),
             trunk: repo.trunk,
@@ -288,58 +350,105 @@ impl Manager {
             merged_at: None,
             stale_decision: None,
         };
-        self.pipeline().save_task(&task).map_err(ManagerError::Store)?;
+        self.pipeline()
+            .save_task(&task)
+            .map_err(ManagerError::Store)?;
         Ok((task, w))
     }
 
     /// A project's checkout moved on disk: the project, its workspaces and its tasks follow.
-    pub fn move_project(&self, id: &str, path: &str, name: Option<String>) -> Result<Value, ManagerError> {
+    pub fn move_project(
+        &self,
+        id: &str,
+        path: &str,
+        name: Option<String>,
+    ) -> Result<Value, ManagerError> {
         let old = self.workspaces().project(id).map(|p| p.root_path);
-        let (project, moved, skipped) = self.workspaces().move_project(id, Path::new(path), name)?;
+        let (project, moved, skipped) =
+            self.workspaces().move_project(id, Path::new(path), name)?;
         for t in self.pipeline().tasks() {
             if Some(&t.repo) == old.as_ref() {
-                self.pipeline().update_task(&t.workspace_id, |t| t.repo = project.root_path.clone());
+                self.pipeline()
+                    .update_task(&t.workspace_id, |t| t.repo = project.root_path.clone());
             }
         }
-        let list = |v: &[(String, String)]| v.iter().map(|(w, c)| json!({"workspaceId": w, "cwd": c})).collect::<Vec<_>>();
+        let list = |v: &[(String, String)]| {
+            v.iter()
+                .map(|(w, c)| json!({"workspaceId": w, "cwd": c}))
+                .collect::<Vec<_>>()
+        };
         Ok(json!({"project": project, "moved": list(&moved), "skipped": list(&skipped)}))
     }
 
     /// A workspace by id, path or branch.
     fn find_workspace(&self, key: &str) -> Option<WorkspaceRecord> {
         let key = key.trim().trim_end_matches('/');
-        if let Some(w) = self.workspaces().get(key).filter(|w| w.archived_at.is_none()) {
+        if let Some(w) = self
+            .workspaces()
+            .get(key)
+            .filter(|w| w.archived_at.is_none())
+        {
             return Some(w);
         }
         let list = self.workspaces().list(true);
-        list.iter().find(|w| w.cwd == key).or_else(|| list.iter().find(|w| w.branch.as_deref() == Some(key))).cloned()
+        list.iter()
+            .find(|w| w.cwd == key)
+            .or_else(|| list.iter().find(|w| w.branch.as_deref() == Some(key)))
+            .cloned()
     }
 
     /// `lagent merge`: queue the workspace's committed head (idempotent while one is queued).
     pub async fn queue_merge(&self, req: MergeRequest) -> Result<Job, ManagerError> {
-        let w = self.find_workspace(&req.workspace).ok_or_else(|| ManagerError::NotFound(format!("Workspace not found: {}", req.workspace)))?;
+        let w = self.find_workspace(&req.workspace).ok_or_else(|| {
+            ManagerError::NotFound(format!("Workspace not found: {}", req.workspace))
+        })?;
         if w.kind != WorkspaceKind::Worktree {
-            return Err(invalid(format!("{} is not a worktree: only task worktrees merge through the queue", w.cwd)));
+            return Err(invalid(format!(
+                "{} is not a worktree: only task worktrees merge through the queue",
+                w.cwd
+            )));
         }
         let dir = PathBuf::from(&w.cwd);
-        let branch = git::info(&dir).await.branch.or(w.branch.clone()).ok_or_else(|| invalid("The workspace is on a detached HEAD; check out its branch"))?;
+        let branch = git::info(&dir)
+            .await
+            .branch
+            .or(w.branch.clone())
+            .ok_or_else(|| invalid("The workspace is on a detached HEAD; check out its branch"))?;
         let repo = repo_info(&dir).await?;
         if branch == repo.trunk {
-            return Err(invalid(format!("The workspace is on {} itself", repo.trunk)));
+            return Err(invalid(format!(
+                "The workspace is on {} itself",
+                repo.trunk
+            )));
         }
         if git::is_dirty(&dir).await {
             return Err(invalid(format!("{} has uncommitted changes: commit them (or stash what isn't part of the task), then merge", w.cwd)));
         }
-        let head = git::read(&dir, &["rev-parse", "HEAD"]).await.ok_or_else(|| invalid("Cannot read the workspace's HEAD"))?;
-        if let Some(j) = self.pipeline().active_jobs().into_iter().find(|j| j.kind == JobKind::Merge && j.workspace_id.as_deref() == Some(w.workspace_id.as_str())) {
+        let head = git::read(&dir, &["rev-parse", "HEAD"])
+            .await
+            .ok_or_else(|| invalid("Cannot read the workspace's HEAD"))?;
+        if let Some(j) = self.pipeline().active_jobs().into_iter().find(|j| {
+            j.kind == JobKind::Merge && j.workspace_id.as_deref() == Some(w.workspace_id.as_str())
+        }) {
             if j.spec.head.as_deref() == Some(head.as_str()) {
                 return Ok(j);
             }
-            return Err(ManagerError::Busy(format!("{} is already queued ({}) at another commit; wait for it or cancel it", w.name(), j.job_id)));
+            return Err(ManagerError::Busy(format!(
+                "{} is already queued ({}) at another commit; wait for it or cancel it",
+                w.name(),
+                j.job_id
+            )));
         }
         if self.pipeline().task(&w.workspace_id).is_none() {
             // A workspace made without `task start` becomes a task on its first merge.
-            let _ = self.adopt_task(AdoptTask { path: w.cwd.clone(), title: w.title.clone(), owner: req.requested_by.clone(), session: None }).await;
+            let _ = self
+                .adopt_task(AdoptTask {
+                    path: w.cwd.clone(),
+                    title: w.title.clone(),
+                    owner: req.requested_by.clone(),
+                    session: None,
+                })
+                .await;
         }
         let id = pipeline::new_id("job");
         let spec = Spec {
@@ -348,9 +457,21 @@ impl Manager {
             repo: repo.root.display().to_string(),
             trunk: repo.trunk.clone(),
             remote: repo.remote.clone(),
-            work_root: self.pipeline().config.work_root.join(&repo.name).display().to_string(),
+            work_root: self
+                .pipeline()
+                .config
+                .work_root
+                .join(&repo.name)
+                .display()
+                .to_string(),
             target_root: Some(self.pipeline().config.target_root.clone()),
-            target_dir: self.pipeline().config.target_root.join(format!("{}-landing", repo.name)).display().to_string(),
+            target_dir: self
+                .pipeline()
+                .config
+                .target_root
+                .join(format!("{}-landing", repo.name))
+                .display()
+                .to_string(),
             branch: Some(branch.clone()),
             head: Some(head),
             title: Some(w.name().to_string()),
@@ -381,8 +502,11 @@ impl Manager {
             outcome: None,
             after: None,
         };
-        self.pipeline().save_job(&job).map_err(ManagerError::Store)?;
-        self.pipeline().update_task(&w.workspace_id, |t| t.last_job = Some(id));
+        self.pipeline()
+            .save_job(&job)
+            .map_err(ManagerError::Store)?;
+        self.pipeline()
+            .update_task(&w.workspace_id, |t| t.last_job = Some(id));
         self.pipeline().wake.notify_one();
         Ok(job)
     }
@@ -390,11 +514,19 @@ impl Manager {
     /// `lagent deploy`: queue a deploy of the trunk's tip (resolved when it runs).
     pub async fn queue_deploy(&self, req: DeployRequest) -> Result<Job, ManagerError> {
         let runtime = req.runtime.trim().to_string();
-        if runtime.is_empty() || !runtime.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if runtime.is_empty()
+            || !runtime
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(invalid(format!("Invalid runtime: {runtime}")));
         }
         let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo))).await?;
-        if let Some(j) = self.pipeline().active_jobs().into_iter().find(|j| j.kind == JobKind::Deploy && j.runtime.as_deref() == Some(runtime.as_str()) && j.state == JobState::Queued) {
+        if let Some(j) = self.pipeline().active_jobs().into_iter().find(|j| {
+            j.kind == JobKind::Deploy
+                && j.runtime.as_deref() == Some(runtime.as_str())
+                && j.state == JobState::Queued
+        }) {
             return Ok(j);
         }
         let id = pipeline::new_id("job");
@@ -404,9 +536,21 @@ impl Manager {
             repo: repo.root.display().to_string(),
             trunk: repo.trunk.clone(),
             remote: repo.remote.clone(),
-            work_root: self.pipeline().config.work_root.join(&repo.name).display().to_string(),
+            work_root: self
+                .pipeline()
+                .config
+                .work_root
+                .join(&repo.name)
+                .display()
+                .to_string(),
             target_root: Some(self.pipeline().config.target_root.clone()),
-            target_dir: self.pipeline().config.target_root.join(format!("{}-deploy", repo.name)).display().to_string(),
+            target_dir: self
+                .pipeline()
+                .config
+                .target_root
+                .join(format!("{}-deploy", repo.name))
+                .display()
+                .to_string(),
             branch: None,
             head: None,
             title: None,
@@ -437,21 +581,29 @@ impl Manager {
             outcome: None,
             after: None,
         };
-        self.pipeline().save_job(&job).map_err(ManagerError::Store)?;
+        self.pipeline()
+            .save_job(&job)
+            .map_err(ManagerError::Store)?;
         self.pipeline().wake.notify_one();
         Ok(job)
     }
 
     pub fn job(&self, id: &str) -> Result<Job, ManagerError> {
-        self.pipeline().job(id).ok_or_else(|| ManagerError::NotFound(format!("Job not found: {id}")))
+        self.pipeline()
+            .job(id)
+            .ok_or_else(|| ManagerError::NotFound(format!("Job not found: {id}")))
     }
 
     /// A job's log from byte `offset`.
     pub fn job_log(&self, id: &str, offset: u64) -> Result<(u64, String), ManagerError> {
         self.job(id)?;
-        let bytes = std::fs::read(self.pipeline().config.job_dir(id).join("log")).unwrap_or_default();
+        let bytes =
+            std::fs::read(self.pipeline().config.job_dir(id).join("log")).unwrap_or_default();
         let start = (offset as usize).min(bytes.len());
-        Ok((bytes.len() as u64, String::from_utf8_lossy(&bytes[start..]).to_string()))
+        Ok((
+            bytes.len() as u64,
+            String::from_utf8_lossy(&bytes[start..]).to_string(),
+        ))
     }
 
     pub async fn cancel_job(&self, id: &str) -> Result<Job, ManagerError> {
@@ -469,7 +621,12 @@ impl Manager {
             .update_job(id, |j| {
                 j.state = JobState::Cancelled;
                 j.finished_at = Some(now_iso());
-                j.outcome = Some(Outcome { ok: false, code: "CANCELLED".into(), message: "cancelled".into(), ..Outcome::default() });
+                j.outcome = Some(Outcome {
+                    ok: false,
+                    code: "CANCELLED".into(),
+                    message: "cancelled".into(),
+                    ..Outcome::default()
+                });
             })
             .ok_or_else(|| ManagerError::NotFound(format!("Job not found: {id}")))?;
         self.pipeline().wake.notify_one();
@@ -481,7 +638,10 @@ impl Manager {
         if self.job(id)?.state != JobState::Queued {
             return Err(invalid(format!("{id} is not queued")));
         }
-        let job = self.pipeline().update_job(id, |j| j.priority = true).ok_or_else(|| ManagerError::NotFound(format!("Job not found: {id}")))?;
+        let job = self
+            .pipeline()
+            .update_job(id, |j| j.priority = true)
+            .ok_or_else(|| ManagerError::NotFound(format!("Job not found: {id}")))?;
         self.pipeline().wake.notify_one();
         Ok(job)
     }
@@ -523,7 +683,10 @@ impl Manager {
                 busy.insert(job.repo.clone());
             }
         }
-        let mut queued: Vec<&Job> = active.iter().filter(|j| j.state == JobState::Queued).collect();
+        let mut queued: Vec<&Job> = active
+            .iter()
+            .filter(|j| j.state == JobState::Queued)
+            .collect();
         queued.sort_by_key(|j| (!j.priority, j.seq));
         for job in queued {
             if busy.insert(job.repo.clone()) {
@@ -535,7 +698,9 @@ impl Manager {
     /// Whether the job's executor is done (then the job is finished).
     async fn finish_if_done(&self, job: &Job) -> bool {
         let dir = self.pipeline().config.job_dir(&job.job_id);
-        let result = std::fs::read_to_string(dir.join("result.json")).ok().and_then(|s| serde_json::from_str::<Outcome>(&s).ok());
+        let result = std::fs::read_to_string(dir.join("result.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Outcome>(&s).ok());
         match result {
             Some(outcome) => self.finish_job(job, outcome).await,
             None if !runner_alive(job.runner.as_deref()).await => {
@@ -544,7 +709,15 @@ impl Manager {
                 let outcome = std::fs::read_to_string(dir.join("result.json"))
                     .ok()
                     .and_then(|s| serde_json::from_str::<Outcome>(&s).ok())
-                    .unwrap_or_else(|| Outcome { ok: false, code: "EXECUTOR_DIED".into(), message: format!("the job's process ended without a result (lagent job logs {})", job.job_id), ..Outcome::default() });
+                    .unwrap_or_else(|| Outcome {
+                        ok: false,
+                        code: "EXECUTOR_DIED".into(),
+                        message: format!(
+                            "the job's process ended without a result (lagent job logs {})",
+                            job.job_id
+                        ),
+                        ..Outcome::default()
+                    });
                 self.finish_job(job, outcome).await;
             }
             None => return false,
@@ -556,8 +729,26 @@ impl Manager {
         let cfg = &self.pipeline().config;
         let dir = cfg.job_dir(&job.job_id);
         let lock = cfg.lock_for(&job.repo, job.kind);
-        let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("job.json"), serde_json::to_vec_pretty(&job.spec).unwrap_or_default()));
-        let _ = std::fs::write(dir.join("log"), format!("[{}] {} job {} started; waiting for {}\n", chrono::Utc::now().format("%H:%M:%S"), if job.kind == JobKind::Merge { "merge" } else { "deploy" }, job.job_id, lock.display()));
+        let written = std::fs::create_dir_all(&dir).and_then(|_| {
+            std::fs::write(
+                dir.join("job.json"),
+                serde_json::to_vec_pretty(&job.spec).unwrap_or_default(),
+            )
+        });
+        let _ = std::fs::write(
+            dir.join("log"),
+            format!(
+                "[{}] {} job {} started; waiting for {}\n",
+                chrono::Utc::now().format("%H:%M:%S"),
+                if job.kind == JobKind::Merge {
+                    "merge"
+                } else {
+                    "deploy"
+                },
+                job.job_id,
+                lock.display()
+            ),
+        );
         let runner = match written {
             Ok(()) => start_runner(cfg, &job.job_id, &dir, &lock).await,
             Err(e) => Err(format!("cannot write the job: {e}")),
@@ -573,7 +764,12 @@ impl Manager {
             }
             Err(e) => {
                 tracing::warn!(job = %job.job_id, error = %e, "pipeline job did not start");
-                let outcome = Outcome { ok: false, code: "START_FAILED".into(), message: e, ..Outcome::default() };
+                let outcome = Outcome {
+                    ok: false,
+                    code: "START_FAILED".into(),
+                    message: e,
+                    ..Outcome::default()
+                };
                 self.finish_job(job, outcome).await;
             }
         }
@@ -594,11 +790,19 @@ impl Manager {
         if job.kind == JobKind::Deploy && outcome.code == "DEPLOYED" {
             self.note_flaw_deploy(job, &outcome).await;
         }
-        if job.kind == JobKind::Deploy && matches!(outcome.code.as_str(), "INSTALL_FAILED" | "UNHEALTHY" | "RECORD_FAILED") {
+        if job.kind == JobKind::Deploy
+            && matches!(
+                outcome.code.as_str(),
+                "INSTALL_FAILED" | "UNHEALTHY" | "RECORD_FAILED"
+            )
+        {
             if let Some(n) = &self.inner.options.notifier {
                 n.send(crate::notify::Push {
                     category: "agent",
-                    title: Some(format!("Deploy of {} failed", job.runtime.clone().unwrap_or_default())),
+                    title: Some(format!(
+                        "Deploy of {} failed",
+                        job.runtime.clone().unwrap_or_default()
+                    )),
                     body: outcome.message.clone(),
                     route: "/agents".into(),
                     dedup_key: format!("pipeline-{}", job.job_id),
@@ -606,7 +810,11 @@ impl Manager {
                 });
             }
         }
-        let state = if outcome.ok { JobState::Succeeded } else { JobState::Failed };
+        let state = if outcome.ok {
+            JobState::Succeeded
+        } else {
+            JobState::Failed
+        };
         tracing::info!(job = %job.job_id, code = %outcome.code, "pipeline job finished");
         self.pipeline().update_job(&job.job_id, |j| {
             j.state = state;
@@ -620,24 +828,53 @@ impl Manager {
 
     /// A flaw task landed: its commit goes on the flaw. A failure here never fails the merge.
     async fn note_flaw_merge(&self, ws: &str, landed: &str) {
-        let Some(t) = self.pipeline().task(ws) else { return };
-        let (Some(flaw), Some(target)) = (&t.flaw, &t.flaw_target) else { return };
+        let Some(t) = self.pipeline().task(ws) else {
+            return;
+        };
+        let (Some(flaw), Some(target)) = (&t.flaw, &t.flaw_target) else {
+            return;
+        };
         lucina_flaws_cli(&["flaws", "merged", flaw, target, landed]).await;
     }
 
     /// A deploy: every flaw fix on this repo that the deployed commit holds gets the new tag
     /// (`lucina-rs` keeps only runtimes that carry that target's fix).
     async fn note_flaw_deploy(&self, job: &Job, outcome: &Outcome) {
-        let (Some(runtime), Some(landed)) = (&job.runtime, &outcome.landed) else { return };
+        let (Some(runtime), Some(landed)) = (&job.runtime, &outcome.landed) else {
+            return;
+        };
         let repo = Path::new(&job.repo);
         let pattern = format!("deploy/{runtime}/*");
-        let Some(tag) = git::read(repo, &["tag", "--list", &pattern, "--points-at", landed, "--sort=-creatordate"]).await.and_then(|o| o.lines().next().map(str::to_owned)) else {
+        let Some(tag) = git::read(
+            repo,
+            &[
+                "tag",
+                "--list",
+                &pattern,
+                "--points-at",
+                landed,
+                "--sort=-creatordate",
+            ],
+        )
+        .await
+        .and_then(|o| o.lines().next().map(str::to_owned)) else {
             tracing::warn!(runtime = %runtime, "no deploy tag at the deployed commit");
             return;
         };
-        for t in self.pipeline().tasks().into_iter().filter(|t| t.repo == job.repo) {
-            let (Some(flaw), Some(target), Some(sha)) = (&t.flaw, &t.flaw_target, &t.merged_sha) else { continue };
-            if git::must(repo, &["merge-base", "--is-ancestor", sha, landed]).await.is_ok() {
+        for t in self
+            .pipeline()
+            .tasks()
+            .into_iter()
+            .filter(|t| t.repo == job.repo)
+        {
+            let (Some(flaw), Some(target), Some(sha)) = (&t.flaw, &t.flaw_target, &t.merged_sha)
+            else {
+                continue;
+            };
+            if git::must(repo, &["merge-base", "--is-ancestor", sha, landed])
+                .await
+                .is_ok()
+            {
                 lucina_flaws_cli(&["flaws", "deployed", flaw, target, runtime, &tag]).await;
             }
         }
@@ -651,20 +888,37 @@ impl Manager {
             t.merged_sha = Some(landed.to_string());
             t.merged_at = Some(now.clone());
         });
-        let Some(w) = self.workspaces().get(ws).filter(|w| w.archived_at.is_none()) else { return "the workspace was already archived".into() };
+        let Some(w) = self
+            .workspaces()
+            .get(ws)
+            .filter(|w| w.archived_at.is_none())
+        else {
+            return "the workspace was already archived".into();
+        };
         let dir = PathBuf::from(&w.cwd);
         let head = git::read(&dir, &["rev-parse", "HEAD"]).await;
         if head.as_deref() != job.spec.head.as_deref() || git::is_dirty(&dir).await {
-            return "kept: the workspace changed after the merged commit; merge again for the rest".into();
+            return "kept: the workspace changed after the merged commit; merge again for the rest"
+                .into();
         }
         if let Err(e) = git::must(&dir, &["reset", "-q", "--keep", landed]).await {
             return format!("kept: could not move the branch to the merged commit: {e}");
         }
         if job.keep {
             self.workspaces().restart_at(ws, landed);
-            return format!("kept: the workspace now starts at {}", &landed[..landed.len().min(10)]);
+            return format!(
+                "kept: the workspace now starts at {}",
+                &landed[..landed.len().min(10)]
+            );
         }
-        match self.archive_workspace(ws, Trigger::Merged, Some(format!("merged into main by {}", job.job_id))).await {
+        match self
+            .archive_workspace(
+                ws,
+                Trigger::Merged,
+                Some(format!("merged into main by {}", job.job_id)),
+            )
+            .await
+        {
             Ok(w) => match w.removed_reason {
                 Some(r) if r.starts_with("worktree kept") => format!("archived; {r}"),
                 _ => "archived: worktree and branch removed".into(),
@@ -686,39 +940,78 @@ impl Manager {
 
     pub fn lease_device(&self, device: &str, req: LeaseRequest) -> Result<Lease, ManagerError> {
         if !pipeline::DEVICES.iter().any(|(d, _)| *d == device) {
-            return Err(ManagerError::NotFound(format!("Unknown device: {device} (devices: {})", pipeline::DEVICES.iter().map(|d| d.0).collect::<Vec<_>>().join(", "))));
+            return Err(ManagerError::NotFound(format!(
+                "Unknown device: {device} (devices: {})",
+                pipeline::DEVICES
+                    .iter()
+                    .map(|d| d.0)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
         }
         if req.holder.trim().is_empty() {
             return Err(invalid("A lease needs a holder (the session id)"));
         }
-        if let Some(l) = self.pipeline().lease(device).filter(|l| !expired(&l.expires_at)) {
+        if let Some(l) = self
+            .pipeline()
+            .lease(device)
+            .filter(|l| !expired(&l.expires_at))
+        {
             if l.holder != req.holder {
-                return Err(ManagerError::Busy(format!("{device} is leased to {} until {} ({})", l.holder, l.expires_at, l.purpose)));
+                return Err(ManagerError::Busy(format!(
+                    "{device} is leased to {} until {} ({})",
+                    l.holder, l.expires_at, l.purpose
+                )));
             }
         }
-        let minutes = req.minutes.unwrap_or(LEASE_DEFAULT_MIN).clamp(1, LEASE_MAX_MIN);
-        let prior = self.pipeline().lease(device).filter(|l| l.holder == req.holder && !expired(&l.expires_at));
+        let minutes = req
+            .minutes
+            .unwrap_or(LEASE_DEFAULT_MIN)
+            .clamp(1, LEASE_MAX_MIN);
+        let prior = self
+            .pipeline()
+            .lease(device)
+            .filter(|l| l.holder == req.holder && !expired(&l.expires_at));
         let lease = Lease {
             device: device.to_string(),
             holder: req.holder.clone(),
-            purpose: req.purpose.clone().or(prior.as_ref().map(|p| p.purpose.clone())).unwrap_or_default(),
-            acquired_at: prior.as_ref().map(|p| p.acquired_at.clone()).unwrap_or_else(now_iso),
+            purpose: req
+                .purpose
+                .clone()
+                .or(prior.as_ref().map(|p| p.purpose.clone()))
+                .unwrap_or_default(),
+            acquired_at: prior
+                .as_ref()
+                .map(|p| p.acquired_at.clone())
+                .unwrap_or_else(now_iso),
             expires_at: minutes_from_now(minutes),
-            workspace_id: req.workspace_id.clone().or(prior.and_then(|p| p.workspace_id)),
+            workspace_id: req
+                .workspace_id
+                .clone()
+                .or(prior.and_then(|p| p.workspace_id)),
         };
-        self.pipeline().save_lease(&lease).map_err(ManagerError::Store)?;
+        self.pipeline()
+            .save_lease(&lease)
+            .map_err(ManagerError::Store)?;
         Ok(lease)
     }
 
     pub fn release_device(&self, device: &str, req: ReleaseRequest) -> Result<Value, ManagerError> {
-        let Some(l) = self.pipeline().lease(device) else { return Ok(json!({"device": device, "released": false})) };
+        let Some(l) = self.pipeline().lease(device) else {
+            return Ok(json!({"device": device, "released": false}));
+        };
         if l.holder != req.holder && !expired(&l.expires_at) {
             if !req.force || req.reason.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(ManagerError::Forbidden(format!("{device} is leased to {}; --force --reason releases it anyway", l.holder)));
+                return Err(ManagerError::Forbidden(format!(
+                    "{device} is leased to {}; --force --reason releases it anyway",
+                    l.holder
+                )));
             }
             tracing::warn!(device, holder = %l.holder, by = %req.holder, reason = ?req.reason, "lease released by force");
         }
-        self.pipeline().drop_lease(device).map_err(ManagerError::Store)?;
+        self.pipeline()
+            .drop_lease(device)
+            .map_err(ManagerError::Store)?;
         Ok(json!({"device": device, "released": true, "holder": l.holder}))
     }
 
@@ -730,20 +1023,36 @@ impl Manager {
         let live_sessions = self.live_sessions_by_workspace();
         let mut rows = Vec::new();
         let mut repos: Vec<(PathBuf, String)> = Vec::new();
-        let worktrees: Vec<WorkspaceRecord> = self.workspaces().list(true).into_iter().filter(|w| w.kind == WorkspaceKind::Worktree).collect();
-        let usage = procs::usage(&worktrees.iter().map(|w| PathBuf::from(&w.cwd)).collect::<Vec<_>>());
+        let worktrees: Vec<WorkspaceRecord> = self
+            .workspaces()
+            .list(true)
+            .into_iter()
+            .filter(|w| w.kind == WorkspaceKind::Worktree)
+            .collect();
+        let usage = procs::usage(
+            &worktrees
+                .iter()
+                .map(|w| PathBuf::from(&w.cwd))
+                .collect::<Vec<_>>(),
+        );
         for (w, used) in worktrees.iter().zip(&usage) {
             let dir = PathBuf::from(&w.cwd);
             let task = tasks.iter().find(|t| t.workspace_id == w.workspace_id);
-            let active = jobs.iter().find(|j| j.workspace_id.as_deref() == Some(w.workspace_id.as_str()) && !j.state.done());
-            let last = jobs.iter().find(|j| j.workspace_id.as_deref() == Some(w.workspace_id.as_str()));
+            let active = jobs.iter().find(|j| {
+                j.workspace_id.as_deref() == Some(w.workspace_id.as_str()) && !j.state.done()
+            });
+            let last = jobs
+                .iter()
+                .find(|j| j.workspace_id.as_deref() == Some(w.workspace_id.as_str()));
             let dirty = git::is_dirty(&dir).await;
             let base = w.base_ref.clone().unwrap_or_else(|| "origin/main".into());
             let ahead = git::ahead_behind(&dir, &base).await;
             let idle = idle_secs(&dir).await;
             let underway = git::in_progress(&dir).await;
             let detached = git::info(&dir).await.branch.is_none();
-            let merged = ahead.is_some_and(|(a, _)| a == 0) && w.base_sha.as_deref() != git::read(&dir, &["rev-parse", "HEAD"]).await.as_deref();
+            let merged = ahead.is_some_and(|(a, _)| a == 0)
+                && w.base_sha.as_deref()
+                    != git::read(&dir, &["rev-parse", "HEAD"]).await.as_deref();
             let state = match active.map(|j| j.state) {
                 Some(JobState::Queued) => "merge_queued",
                 Some(JobState::Running) => "merging",
@@ -781,12 +1090,19 @@ impl Manager {
         }
         // Worktrees nobody registered (made by hand): adopt or archive them.
         let mut unmanaged = Vec::new();
-        let known: Vec<String> = self.workspaces().list(true).iter().map(|w| w.cwd.clone()).collect();
+        let known: Vec<String> = self
+            .workspaces()
+            .list(true)
+            .iter()
+            .map(|w| w.cwd.clone())
+            .collect();
         for (root, _) in &repos {
             for (path, branch) in git::worktrees(root).await {
                 let p = path.display().to_string();
                 // Dot directories are the pipeline's and deploys' own detached trees.
-                let hidden = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
+                let hidden = path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'));
                 if path == *root || known.contains(&p) || hidden {
                     continue;
                 }
@@ -800,7 +1116,9 @@ impl Manager {
         let mut main_checkouts = Vec::new();
         for (root, used) in roots.iter().zip(&root_usage) {
             // Not trimmed: each line starts with two status columns, the first often a space.
-            let status = git::must(root, &["status", "--porcelain", "--untracked-files=normal"]).await.unwrap_or_default();
+            let status = git::must(root, &["status", "--porcelain", "--untracked-files=normal"])
+                .await
+                .unwrap_or_default();
             let files: Vec<&str> = status.lines().map(|l| l.get(3..).unwrap_or(l)).collect();
             if files.is_empty() && used.procs == 0 {
                 continue;
@@ -830,11 +1148,22 @@ impl Manager {
 /// `lucina-rs flaws …` (`LUCINA_AGENTD_LUCINA_RS`, default `~/.local/bin/lucina-rs`): the tracker's
 /// database belongs to Lucina, and agentd doesn't link it.
 async fn lucina_flaws_cli(args: &[&str]) {
-    let bin = std::env::var_os("LUCINA_AGENTD_LUCINA_RS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/bin/lucina-rs"));
-    let run = tokio::process::Command::new(&bin).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).kill_on_drop(true).output();
+    let bin = std::env::var_os("LUCINA_AGENTD_LUCINA_RS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/bin/lucina-rs")
+        });
+    let run = tokio::process::Command::new(&bin)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
     match tokio::time::timeout(Duration::from_secs(20), run).await {
         Ok(Ok(o)) if o.status.success() => {}
-        Ok(Ok(o)) => tracing::warn!(?args, stderr = %String::from_utf8_lossy(&o.stderr), "flaw not updated"),
+        Ok(Ok(o)) => {
+            tracing::warn!(?args, stderr = %String::from_utf8_lossy(&o.stderr), "flaw not updated")
+        }
         Ok(Err(e)) => tracing::warn!(?args, error = %e, "flaw not updated"),
         Err(_) => tracing::warn!(?args, "flaw not updated: timed out"),
     }
@@ -843,9 +1172,15 @@ async fn lucina_flaws_cli(args: &[&str]) {
 /// The last `n` entries of deploy-guard's history.
 fn recent_deploys(n: usize) -> Vec<Value> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let dir = std::env::var("DEPLOY_GUARD_LEDGER").unwrap_or_else(|_| format!("{home}/.local/state/deploy-guard"));
+    let dir = std::env::var("DEPLOY_GUARD_LEDGER")
+        .unwrap_or_else(|_| format!("{home}/.local/state/deploy-guard"));
     let text = std::fs::read_to_string(Path::new(&dir).join("history.jsonl")).unwrap_or_default();
-    let mut v: Vec<Value> = text.lines().rev().take(n).filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let mut v: Vec<Value> = text
+        .lines()
+        .rev()
+        .take(n)
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
     for d in &mut v {
         if let Some(note) = d["note"].as_str() {
             if note.len() > 200 {
@@ -858,7 +1193,12 @@ fn recent_deploys(n: usize) -> Vec<Value> {
 
 /// Start the executor under the merge lock: a transient systemd unit (it outlives agentd
 /// restarts and agentd's own deploys), else a child process. Returns the runner.
-async fn start_runner(cfg: &pipeline::Config, id: &str, dir: &Path, lock: &Path) -> Result<String, String> {
+async fn start_runner(
+    cfg: &pipeline::Config,
+    id: &str,
+    dir: &Path,
+    lock: &Path,
+) -> Result<String, String> {
     let lagent = cfg.lagent.display().to_string();
     let path = std::env::var("PATH").unwrap_or_default();
     if cfg.systemd {
@@ -879,7 +1219,10 @@ async fn start_runner(cfg: &pipeline::Config, id: &str, dir: &Path, lock: &Path)
             .await
             .map_err(|e| format!("systemd-run: {e}"))?;
         if !out.status.success() {
-            return Err(format!("systemd-run: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            return Err(format!(
+                "systemd-run: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
         return Ok(unit);
     }
@@ -903,7 +1246,9 @@ async fn start_runner(cfg: &pipeline::Config, id: &str, dir: &Path, lock: &Path)
 
 async fn runner_alive(runner: Option<&str>) -> bool {
     match runner {
-        Some(r) if r.starts_with("pid:") => Path::new(&format!("/proc/{}", r.trim_start_matches("pid:"))).exists(),
+        Some(r) if r.starts_with("pid:") => {
+            Path::new(&format!("/proc/{}", r.trim_start_matches("pid:"))).exists()
+        }
         Some(unit) => tokio::process::Command::new("systemctl")
             .args(["--user", "is-active", "--quiet", unit])
             .status()
@@ -918,6 +1263,9 @@ async fn stop_runner(runner: &str) {
     if let Some(pid) = runner.strip_prefix("pid:") {
         let _ = tokio::process::Command::new("kill").arg(pid).status().await;
     } else {
-        let _ = tokio::process::Command::new("systemctl").args(["--user", "stop", runner]).status().await;
+        let _ = tokio::process::Command::new("systemctl")
+            .args(["--user", "stop", runner])
+            .status()
+            .await;
     }
 }

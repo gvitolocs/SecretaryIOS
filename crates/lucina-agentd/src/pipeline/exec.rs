@@ -1433,7 +1433,9 @@ mod tests {
         assert_eq!(out.code, "MERGED", "{}", out.message);
         let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
         assert!(
-            log.contains("commit ledger: 1 of 2 non-merge commit(s) of the branch have a ledger entry"),
+            log.contains(
+                "commit ledger: 1 of 2 non-merge commit(s) of the branch have a ledger entry"
+            ),
             "{log}"
         );
     }
