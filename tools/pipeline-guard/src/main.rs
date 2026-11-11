@@ -32,6 +32,7 @@ pub fn without_heredocs(command: &str) -> String {
     let Ok(start) = Regex::new(r#"<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)['"]?"#) else {
         return command.to_string();
     };
+    let shell = Regex::new(r"(^|[\s;&|(])(bash|sh|zsh|ssh|sudo)\b").ok();
     let mut out = String::new();
     let mut until: Option<(String, bool)> = None;
     for line in command.split('\n') {
@@ -53,8 +54,7 @@ pub fn without_heredocs(command: &str) -> String {
         if let Some(c) = start.captures(line) {
             // A body a shell runs (`bash <<EOF`, `ssh host <<EOF`) is commands: keep it.
             let before = &line[..c.get(0).map(|m| m.start()).unwrap_or(0)];
-            let runs = Regex::new(r"(^|[\s;&|(])(bash|sh|zsh|ssh|sudo)\b")
-                .is_ok_and(|r| r.is_match(before));
+            let runs = shell.as_ref().is_some_and(|r| r.is_match(before));
             if !runs {
                 until = Some((c[2].to_string(), c[0].starts_with("<<-")));
             }
