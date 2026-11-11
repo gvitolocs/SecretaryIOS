@@ -135,7 +135,7 @@ impl RecentChat {
 
     /// Drop one buffer's turns (a self-test starting clean).
     pub fn clear(&self, chat_id: &str) {
-        let snapshot = self.with(|map| map.remove(chat_id).map(|_| serde_json::to_string_pretty(map).ok()).flatten());
+        let snapshot = self.with(|map| map.remove(chat_id).and_then(|_| serde_json::to_string_pretty(map).ok()));
         if let (Some(p), Some(text)) = (&self.path, snapshot) {
             if let Err(e) = write_atomic(p, format!("{text}\n").as_bytes()) {
                 tracing::warn!(error = %e.kind(), "recent chat persist failed");
