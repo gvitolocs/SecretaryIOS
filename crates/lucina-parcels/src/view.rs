@@ -58,10 +58,7 @@ pub fn next_check(
 ) -> Option<DateTime<Utc>> {
     match schedule_of(p, now, cfg) {
         Cadence::Stopped => None,
-        Cadence::Hourly => Some(
-            p.last_checked
-                .map_or(now, |t| t + Duration::minutes(60)),
-        ),
+        Cadence::Hourly => Some(p.last_checked.map_or(now, |t| t + Duration::minutes(60))),
         Cadence::Daily => {
             let today = now.with_timezone(&cfg.tz).date_naive();
             let mut date = today;
@@ -81,12 +78,7 @@ pub fn next_check(
 }
 
 /// The contract's `Parcel`.
-pub fn view(
-    p: &Parcel,
-    now: DateTime<Utc>,
-    cfg: &ScheduleCfg,
-    digest_sent: Option<&str>,
-) -> Value {
+pub fn view(p: &Parcel, now: DateTime<Utc>, cfg: &ScheduleCfg, digest_sent: Option<&str>) -> Value {
     let schedule = match schedule_of(p, now, cfg) {
         Cadence::Hourly => "hourly",
         Cadence::Daily => "daily",

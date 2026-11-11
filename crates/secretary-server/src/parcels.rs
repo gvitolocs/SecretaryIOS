@@ -39,13 +39,15 @@ fn unavailable(e: secretary_core::Error) -> ApiError {
 /// Like [`unavailable`], except that Lucina's own "no such parcel" is the app's 404.
 fn item_error(e: secretary_core::Error) -> ApiError {
     match e {
-        secretary_core::Error::Api { status: 404, code, message } if code == "not_found" => {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                message.unwrap_or_else(|| "no such parcel".into()),
-            )
-        }
+        secretary_core::Error::Api {
+            status: 404,
+            code,
+            message,
+        } if code == "not_found" => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            message.unwrap_or_else(|| "no such parcel".into()),
+        ),
         other => unavailable(other),
     }
 }
@@ -73,7 +75,11 @@ async fn list(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
     forward(&st, &headers, Call::parcels_list(), unavailable).await
 }
 
-async fn add(State(st): State<AppState>, headers: HeaderMap, JsonBody(body): JsonBody<Value>) -> ApiResult {
+async fn add(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
     forward(&st, &headers, Call::parcels_add(body)?, unavailable).await
 }
 
@@ -81,22 +87,38 @@ async fn one(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<Stri
     forward(&st, &headers, Call::parcels_get(&id)?, item_error).await
 }
 
-async fn rename(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+async fn rename(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
     forward(&st, &headers, Call::parcels_rename(&id, body)?, item_error).await
 }
 
-async fn remove(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn remove(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     forward(&st, &headers, Call::parcels_remove(&id)?, item_error).await
 }
 
-async fn refresh(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn refresh(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     forward(&st, &headers, Call::parcels_refresh(&id)?, item_error).await
 }
 
 /// Owner routes (behind `auth::require_device`).
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/v1/parcels", get(list).post(add).layer(DefaultBodyLimit::max(BODY_LIMIT)))
+        .route(
+            "/v1/parcels",
+            get(list).post(add).layer(DefaultBodyLimit::max(BODY_LIMIT)),
+        )
         .route("/v1/parcels/{id}", get(one).patch(rename).delete(remove))
         .route("/v1/parcels/{id}/refresh", post(refresh))
 }

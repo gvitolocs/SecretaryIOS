@@ -66,8 +66,11 @@ pub fn normalize_number(s: &str) -> String {
 
 /// `pc-` and eight lowercase hex digits.
 pub fn valid_id(id: &str) -> bool {
-    id.strip_prefix("pc-")
-        .is_some_and(|h| h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    id.strip_prefix("pc-").is_some_and(|h| {
+        h.len() == 8
+            && h.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 fn new_id() -> String {
@@ -217,7 +220,12 @@ impl Store {
 
     /// By id only (the apps' key).
     pub fn get_id(&self, id: &str) -> Option<Parcel> {
-        self.lock().file.parcels.iter().find(|p| p.id == id).cloned()
+        self.lock()
+            .file
+            .parcels
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
     }
 
     pub fn remove(&self, key: &str) -> Option<Parcel> {

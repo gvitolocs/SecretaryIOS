@@ -109,7 +109,6 @@ pub async fn deliver(st: &AppState, messages: &[OwnerMessage]) {
     }
 }
 
-
 /// A tracking number the API accepts: 4 to 80 characters.
 const NUMBER_CHARS: std::ops::RangeInclusive<usize> = 4..=80;
 const LABEL_MAX: usize = 80;
@@ -163,7 +162,11 @@ pub async fn route(
     body: Body,
 ) -> Result<Response, ApiError> {
     let svc = st.tool_env.parcels.clone().ok_or_else(|| {
-        ApiError::new(404, "parcels_disabled", "Parcel tracking is off (LUCINA_PARCELS)")
+        ApiError::new(
+            404,
+            "parcels_disabled",
+            "Parcel tracking is off (LUCINA_PARCELS)",
+        )
     })?;
     let only = |allowed: &[&str]| -> Result<(), ApiError> {
         if allowed.contains(&method.as_str()) {
@@ -174,7 +177,12 @@ pub async fn route(
     };
     let now = Utc::now();
     let one = |p: &lucina_parcels::Parcel| ok(json!({ "parcel": svc.view(p, now) }));
-    match parts.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match parts
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         [] => {
             only(&["GET", "POST"])?;
             if *method == Method::GET {
@@ -190,9 +198,7 @@ pub async fn route(
             object(&b, &["number", "carrier", "label"])?;
             let number = text_field(&b, "number", usize::MAX)?.unwrap_or_default();
             if !NUMBER_CHARS.contains(&number.chars().count()) {
-                return Err(ApiError::bad_request(
-                    "number must be 4 to 80 characters",
-                ));
+                return Err(ApiError::bad_request("number must be 4 to 80 characters"));
             }
             let carrier = text_field(&b, "carrier", CARRIER_MAX)?;
             let label = text_field(&b, "label", LABEL_MAX)?;
