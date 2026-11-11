@@ -1564,3 +1564,23 @@ relation = "reference"
 confidence = "likely"
 rely_on = ["install flow", "boot object handling"]
 notes = "Alphas every 1 to 6 days (alpha 9 on 23 Oct, alpha 19 on 9 Nov). Read-only reference for the owner decisions D1 to D3; nothing is run."
+
+[[upstream]]
+id = "apple-xnu"
+name = "apple-oss-distributions/xnu (macOS kernel, behaviour reference for the Mac port)"
+url = "https://github.com/apple-oss-distributions/xnu"
+source = "github"
+repo = "apple-oss-distributions/xnu"
+track = "tags"
+pin = "xnu-12377.121.6"
+pin_date = "2026-06-17"
+paths = ["osfmk/arm64", "osfmk/arm", "osfmk/kern", "osfmk/vm", "bsd/kern", "pexpert/pexpert/arm64", "iokit/Kernel"]
+local = "/home/nez/Projects/ReverseEngineering/asahi-m4/xnu"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/research/mac-m4/xnu", base = "origin/main" }]
+licence_upstream = "APSL-2.0 (APPLE_LICENSE)"
+licence_ours = "n/a (reference only; no code copied)"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["idle and retention WFI path", "sched_clutch and Edge", "memorystatus and jetsam", "timer coalescing", "board_config.h T8132"]
+notes = "Read under APSL 2.0 as a behaviour reference; no AI-policy file in the tree (checked 2026-11-11). Sheets in LucinaOS docs/research/mac-m4/xnu."
