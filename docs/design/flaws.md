@@ -8,7 +8,8 @@ Crate `crates/lucina-flaws`, SQLite at `<LUCINA_DATA_DIR>/flaws/flaws.db`, in th
 
 ## What is stored
 
-- `flaws`: the owner's exact words, title, severity, state, `duplicate_of`, `discovered_from`, thread, reporter, gate.
+- `flaws`: the owner's exact words, title, severity, state, `duplicate_of`, `discovered_from`, thread, reporter, gate, and
+  which step of the chain its triage agent ran on.
 - `flaw_targets`: one row per flaw and platform (web, mac, android, ios, juno; Minerva and Diana later): layer (server,
   core, client), status, evidence, workspace, agent or session holding it, commit, deploy tag, build, attempts.
 - `flaw_events`: the history. Append-only, enforced by triggers.
@@ -41,6 +42,14 @@ is a DeepSeek model that isn't a `-free` one. A chain the environment asks for t
 reason; it never quietly dispatches on another agent. With no chain set, `LUCINA_FLAWS_PROVIDER`, `_MODEL` and
 `_PROBE_LANE` build exactly one step, each with its own default, the way they did before.
 
+**Triage's cheap end.** `LUCINA_FLAWS_TRIAGE_STEPS` (1) is how many steps from the top of the chain may look at a report.
+Triage is cheap work, so it never reaches a step below that count, however ready one is; of the steps it may use it takes
+the first whose probe says ready, walking down, and waits when none of them does. One free lane being out of quota for
+hours therefore no longer stops every new report: with 2 the second cheap step takes the triage. A count above the chain is
+the whole chain; 0 or something that isn't a number stops the server with the reason. Which step a triage agent ran on is
+stored with the flaw (`flaws.triage_step`, nothing before the chain is a step), so a triage that ends on a limit marks out
+that step's lane, not always the first one.
+
 `crate::flaws::tick`, every minute in lucina-rs:
 
 1. **Reconcile.** For each target an agent holds: a merged task records the commit and becomes `fixed`; an agent that ended
@@ -48,7 +57,8 @@ reason; it never quietly dispatches on another agent. With no chain set, `LUCINA
    stopped; a flaw that became a duplicate or was dismissed stops its agent.
 2. **Triage.** A report with clients nobody looked at gets one agent, once, that reads the code and sets status and layer
    (`LUCINA_FLAWS_AUTO_TRIAGE`). This is what turns a plain "emoji are boxes" into a target that can start. The rows it
-   leaves open stay open. Triage always runs on the first step of the chain, or waits: it never escalates.
+   leaves open stay open. It runs on the cheap end of the chain only, `LUCINA_FLAWS_TRIAGE_STEPS` steps of it, and waits
+   when none of those has quota: it never reaches an expensive step.
 3. **Start.** Every `affected` target with a layer, held by nobody: worst first, at most `LUCINA_FLAWS_MAX_RUNNING` (2) per
    repo, triage agents included, so nezopt doesn't overheat. A claim is atomic, so nothing starts twice, and a failed start
    gives it back. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
