@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    check_transition, Evidence, FlawError, FlawState, Gate, Layer, Platform, Result, Severity, TargetStatus,
+    check_transition, Evidence, FlawError, FlawState, Gate, Layer, Platform, Result, Severity, Step, TargetStatus,
 };
 
 const SCHEMA: &str = r#"
@@ -684,14 +684,16 @@ impl Flaws {
         })
     }
 
-    /// The task and agent a claim turned into.
-    pub fn attach(&self, id: &str, p: Platform, workspace: &str, agent: &str, actor: &str) -> Result<Target> {
+    /// The task and agent a claim turned into, and which step of the chain runs it: his history
+    /// says what the work was done with.
+    pub fn attach(&self, id: &str, p: Platform, workspace: &str, agent: &str, run: &Step, actor: &str) -> Result<Target> {
         self.tx(|c| {
             c.execute(
                 "UPDATE flaw_targets SET workspace=?1, agent=?2, updated_at=?3 WHERE flaw_id=?4 AND platform=?5",
                 params![workspace, agent, now(), id, p.as_str()],
             )?;
-            event(c, id, Some(p), "started", actor, json!({"workspace": workspace, "agent": agent}))?;
+            let started_by = json!({"workspace": workspace, "agent": agent, "provider": run.provider, "model": run.model, "probe_lane": run.probe_lane});
+            event(c, id, Some(p), "started", actor, started_by)?;
             target_of(c, id, p)
         })
     }
@@ -982,7 +984,7 @@ mod tests {
         let f = report(&s, "x", &[Platform::Web]);
         layer(&s, &f.id, Platform::Web);
         s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
-        s.attach(&f.id, Platform::Web, "/w", "a1", "d").unwrap();
+        s.attach(&f.id, Platform::Web, "/w", "a1", &Step::new("claude", Some("claude-opus-5-5"), Some("claude-cli")), "d").unwrap();
         let t = s.release(&f.id, Platform::Web, "ended without a commit", 2, "d").unwrap();
         assert_eq!((t.status, t.agent), (TargetStatus::Affected, None));
         s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
