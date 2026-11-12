@@ -146,7 +146,7 @@ pub struct Policy {
     pub mode: String,
     /// `LUCINA_FLAWS_REPO`: server, core and every client but Juno.
     pub secretary_repo: PathBuf,
-    /// `LUCINA_FLAWS_LUCINAOS_REPO`: Juno's client code.
+    /// `LUCINA_FLAWS_LUCINAOS_REPO`: Juno's client and core code.
     pub lucinaos_repo: PathBuf,
 }
 
@@ -257,7 +257,9 @@ impl Policy {
 
     pub fn repo_for(&self, platform: Platform, layer: Layer) -> &std::path::Path {
         match (platform, layer) {
-            (Platform::Juno, Layer::Client) => &self.lucinaos_repo,
+            // Juno's code lives in LucinaOS: clients (lucina-app-*) and core alike
+            // (lucina-remote, lucina-data). Only a server-layer fix belongs here.
+            (Platform::Juno, Layer::Client | Layer::Core) => &self.lucinaos_repo,
             _ => &self.secretary_repo,
         }
     }
@@ -523,6 +525,10 @@ mod tests {
         assert_eq!(p.effort, "medium");
         assert_eq!(
             p.repo_for(Platform::Juno, Layer::Client),
+            Path::new("/h/Projects/Lucina/LucinaOS")
+        );
+        assert_eq!(
+            p.repo_for(Platform::Juno, Layer::Core),
             Path::new("/h/Projects/Lucina/LucinaOS")
         );
         assert_eq!(
@@ -865,6 +871,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             [juno.id.as_str()]
         );
+    }
+
+    #[test]
+    fn a_juno_core_fix_starts_in_lucinaos_not_secretaryios() {
+        let s = Flaws::in_memory().unwrap();
+        let f = s
+            .report(
+                NewFlaw {
+                    words: "lucina-data leaves /data unmounted".into(),
+                    affected: vec![Platform::Juno],
+                    ..NewFlaw::default()
+                },
+                "o",
+            )
+            .unwrap()
+            .flaw
+            .flaw;
+        s.set_target(
+            &f.id,
+            Platform::Juno,
+            TargetUpdate {
+                layer: Some(Layer::Core),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
+        let picks = policy().pick(s.due().unwrap(), &HashMap::new());
+        assert_eq!(picks.len(), 1);
+        assert_eq!(picks[0].repo, "/h/Projects/Lucina/LucinaOS");
+        // The per-repo cap counts LucinaOS work, whichever layer it is.
+        let running = HashMap::from([("/h/Projects/Lucina/LucinaOS".to_owned(), 2)]);
+        assert!(policy().pick(s.due().unwrap(), &running).is_empty());
     }
 
     #[test]
