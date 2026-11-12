@@ -8,6 +8,9 @@
 //!
 //! The owner's rule (2026-11-12): the agents she starts are the free ones first and a Claude
 //! model last — a chain of steps ([`Step`]), one per attempt, escalating only after a failed try.
+//! Looking at a report stays cheap work: the first few steps of the chain, never an expensive one
+//! ([`Policy::triage_steps`], 2026-11-12 again after the free lane was out for hours and nothing
+//! new got looked at).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,6 +32,8 @@ pub const DEFAULT_PROBE_LANE: &str = "claude-cli";
 /// The chain the owner decided on 2026-11-12: free agents first, a Claude model last.
 pub const DEFAULT_CHAIN: &str = "opencode:opencode/deepseek-v4.1-flash-free@zen-deepseek-flash, \
      claude:claude-sonnet-5-5@claude-sonnet, claude:claude-opus-5-5@claude-cli";
+/// `LUCINA_FLAWS_TRIAGE_STEPS`: how many steps from the top of the chain may look at a report.
+pub const DEFAULT_TRIAGE_STEPS: usize = 1;
 
 /// One agent in the chain: what to run, and which lane to ask about its quota.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +120,12 @@ pub struct Policy {
     /// step; a step whose probe lane says it is out of quota is passed over for the one below it,
     /// never come back up to. Always at least one step ([`DEFAULT_CHAIN`]).
     pub chain: Vec<Step>,
+    /// `LUCINA_FLAWS_TRIAGE_STEPS`: how many steps from the top of the chain may look at a report.
+    /// Triage is the cheap work, so it never reaches a step below this count: one ([`DEFAULT_TRIAGE_STEPS`])
+    /// is only the chain's first step, which is free in [`DEFAULT_CHAIN`]; more of them are there for a
+    /// first step that runs out of quota often. Past the end of the chain it is the whole chain; 0 or
+    /// not a number stops the server, the way a bad chain does.
+    pub triage_steps: usize,
     pub effort: String,
     pub mode: String,
     /// `LUCINA_FLAWS_REPO`: server, core and every client but Juno.
@@ -124,11 +135,35 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// `Err`: the chain is set but can't be used, which stops the server rather than quietly
-    /// running something else.
+    /// `Err`: the chain is set but can't be run, or the number of triage steps isn't a number of
+    /// steps, which stops the server rather than quietly running something else.
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>, home: &std::path::Path) -> Result<Self, String> {
         let val = |k: &str| get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         let num = |k: &str, d: u64| val(k).and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0).unwrap_or(d);
+        let chain = match val("LUCINA_FLAWS_CHAIN") {
+            Some(spec) => parse_chain(&spec)?,
+            // The old three variables, any of them set: one step, with their defaults.
+            None if ["LUCINA_FLAWS_PROVIDER", "LUCINA_FLAWS_MODEL", "LUCINA_FLAWS_PROBE_LANE"].iter().any(|k| val(k).is_some()) => {
+                let step = Step {
+                    provider: val("LUCINA_FLAWS_PROVIDER").unwrap_or_else(|| DEFAULT_PROVIDER.into()),
+                    model: Some(val("LUCINA_FLAWS_MODEL").unwrap_or_else(|| DEFAULT_MODEL.into())),
+                    probe_lane: Some(val("LUCINA_FLAWS_PROBE_LANE").unwrap_or_else(|| DEFAULT_PROBE_LANE.into())),
+                };
+                match step.refusal() {
+                    Some(why) => return Err(format!("LUCINA_FLAWS_PROVIDER/MODEL: {why}")),
+                    None => vec![step],
+                }
+            }
+            None => parse_chain(DEFAULT_CHAIN)?,
+        };
+        // Triage's cheap end: the same kind of error as a bad chain, never a quiet default.
+        let triage_steps = match val("LUCINA_FLAWS_TRIAGE_STEPS") {
+            Some(v) => v.parse::<usize>().map_err(|_| format!("LUCINA_FLAWS_TRIAGE_STEPS: `{v}` is not a number of chain steps"))?,
+            None => DEFAULT_TRIAGE_STEPS,
+        };
+        if triage_steps == 0 {
+            return Err("LUCINA_FLAWS_TRIAGE_STEPS: no step at all means no triage; say that with LUCINA_FLAWS_AUTO_TRIAGE=off".to_owned());
+        }
         Ok(Self {
             auto_dispatch: !matches!(val("LUCINA_FLAWS_AUTO_DISPATCH").as_deref(), Some("off" | "false" | "0")),
             auto_triage: !matches!(val("LUCINA_FLAWS_AUTO_TRIAGE").as_deref(), Some("off" | "false" | "0")),
@@ -137,22 +172,8 @@ impl Policy {
             agent_minutes: num("LUCINA_FLAWS_AGENT_MINUTES", DEFAULT_AGENT_MINUTES as u64) as i64,
             owner_gates: Gate::ALL.to_vec(),
             owner_eyes: vec![Platform::Ios],
-            chain: match val("LUCINA_FLAWS_CHAIN") {
-                Some(spec) => parse_chain(&spec)?,
-                // The old three variables, any of them set: one step, with their defaults.
-                None if ["LUCINA_FLAWS_PROVIDER", "LUCINA_FLAWS_MODEL", "LUCINA_FLAWS_PROBE_LANE"].iter().any(|k| val(k).is_some()) => {
-                    let step = Step {
-                        provider: val("LUCINA_FLAWS_PROVIDER").unwrap_or_else(|| DEFAULT_PROVIDER.into()),
-                        model: Some(val("LUCINA_FLAWS_MODEL").unwrap_or_else(|| DEFAULT_MODEL.into())),
-                        probe_lane: Some(val("LUCINA_FLAWS_PROBE_LANE").unwrap_or_else(|| DEFAULT_PROBE_LANE.into())),
-                    };
-                    match step.refusal() {
-                        Some(why) => return Err(format!("LUCINA_FLAWS_PROVIDER/MODEL: {why}")),
-                        None => vec![step],
-                    }
-                }
-                None => parse_chain(DEFAULT_CHAIN)?,
-            },
+            triage_steps: triage_steps.min(chain.len()),
+            chain,
             effort: val("LUCINA_FLAWS_EFFORT").unwrap_or_else(|| "medium".into()),
             mode: "bypassPermissions".into(),
             secretary_repo: val("LUCINA_FLAWS_REPO").map_or_else(|| home.join("Projects/Lucina/SecretaryIOS"), PathBuf::from),
@@ -174,9 +195,11 @@ impl Policy {
         (self.start_step(attempt)..self.chain.len()).find(|i| ready.get(*i).copied().unwrap_or(false))
     }
 
-    /// Triage never escalates: the first step, or it waits.
+    /// Triage's step: of the first [`Policy::triage_steps`] steps, the first whose probe is ready,
+    /// walking down like [`Policy::step_for`]. A step below that count is never reached, however
+    /// ready it is, and a step that wasn't probed is not ready. `None`: triage waits for a lane.
     pub fn triage_step(&self, ready: &[bool]) -> Option<usize> {
-        ready.first().copied().unwrap_or(false).then_some(0)
+        (0..self.triage_steps.min(self.chain.len())).find(|i| ready.get(*i).copied().unwrap_or(false))
     }
 
     pub fn repo_for(&self, platform: Platform, layer: Layer) -> &std::path::Path {
@@ -492,9 +515,28 @@ mod tests {
     #[test]
     fn triage_never_escalates() {
         let p = policy();
+        assert_eq!(p.triage_steps, DEFAULT_TRIAGE_STEPS, "by default only the chain's first step, which is free");
         assert_eq!(p.triage_step(&[true, true, true]), Some(0));
         assert_eq!(p.triage_step(&[false, true, true]), None, "it waits for the first step to come back");
         assert_eq!(p.triage_step(&[]), None);
+    }
+
+    #[test]
+    fn triage_may_use_more_than_one_cheap_step() {
+        let p = one("LUCINA_FLAWS_TRIAGE_STEPS", "2");
+        assert_eq!(p.triage_step(&[true, true, true]), Some(0), "the cheapest ready one");
+        assert_eq!(p.triage_step(&[false, true, true]), Some(1), "the free lane is out: the next cheap one takes it");
+        assert_eq!(p.triage_step(&[false, false, true]), None, "an expensive step below the count is never reached");
+        assert_eq!(p.triage_step(&[false, false]), None, "a step that wasn't probed is not ready");
+        assert_eq!(p.triage_step(&[]), None);
+        // Past the end of the chain it is the whole chain.
+        assert_eq!(p.triage_steps, 2, "two of the three default steps");
+        assert_eq!(one("LUCINA_FLAWS_TRIAGE_STEPS", "9").triage_steps, p.chain.len(), "clamped to the chain");
+        // A count that isn't one, or none at all, stops the server: no quiet default.
+        for bad in ["0", "x"] {
+            let e = Policy::from_lookup(|k| (k == "LUCINA_FLAWS_TRIAGE_STEPS").then(|| bad.to_owned()), Path::new("/h")).unwrap_err();
+            assert!(e.contains("LUCINA_FLAWS_TRIAGE_STEPS"), "{bad}: {e}");
+        }
     }
 
     #[test]
