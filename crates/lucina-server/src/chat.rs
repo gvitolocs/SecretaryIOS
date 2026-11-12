@@ -2041,7 +2041,13 @@ async fn json_turn(
     }
 
     // A parcel to follow ("track this 3UW1S8IAAKA23"), or where his parcels are (crate::parcels).
-    if let Some(f) = parcel_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence).await {
+    if let Some(f) = parcel_turn::try_turn(
+        t,
+        &prepared.classification.intent,
+        prepared.classification.confidence,
+    )
+    .await
+    {
         return f;
     }
 
