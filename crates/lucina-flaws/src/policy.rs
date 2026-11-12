@@ -62,7 +62,7 @@ impl Step {
         let Some(provider) = word(provider) else {
             return Err(format!("`{s}` names no provider"));
         };
-        let step = Self { provider, model: model.and_then(|m| word(m)), probe_lane: lane.and_then(|l| word(l)) };
+        let step = Self { provider, model: model.and_then(word), probe_lane: lane.and_then(word) };
         match step.refusal() {
             Some(why) => Err(format!("`{s}`: {why}")),
             None => Ok(step),
@@ -75,7 +75,7 @@ impl Step {
         if self.provider.to_lowercase().contains("codex") {
             return Some("Codex is not used for Lucina");
         }
-        let Some(model) = self.model.as_deref() else { return None };
+        let model = self.model.as_deref()?;
         let model = model.to_lowercase();
         if !model.contains("deepseek") {
             return None;

@@ -220,17 +220,19 @@ pub trait Hands: Send + Sync {
 }
 
 /// Claim, make the worktree, start the agent, in that order; any failure gives the claim back.
-pub async fn start_fix(flaws: &Flaws, policy: &Policy, step: &Step, hands: &dyn Hands, pick_flaw: &Flaw, target: &Target, repo: &str, actor: &str) -> Result<Target, ApiError> {
+pub async fn start_fix(flaws: &Flaws, policy: &Policy, step: &Step, hands: &dyn Hands, pick_flaw: &Flaw, target: &Target, actor: &str) -> Result<Target, ApiError> {
     let p = target.platform;
     let id = pick_flaw.id.as_str();
-    let claimed = flaws.claim(id, p, repo, actor).map_err(api_error)?;
+    let layer = target.layer.ok_or_else(|| api_error(FlawError::NotClaimable(format!("{id} on {p} has no layer yet"))))?;
+    let repo = policy.repo_for(p, layer).display().to_string();
+    let claimed = flaws.claim(id, p, &repo, actor).map_err(api_error)?;
     let short = id.trim_start_matches("fl-");
     // The time: a task whose agent failed to start leaves its branch behind for the sweep.
     let branch = format!("flaw-{short}-{p}-{}-{}", claimed.attempts, Utc::now().format("%H%M%S"));
     let title = format!("Flaw {id} on {p}: {}", clip(&pick_flaw.title, 60));
     let started = async {
         allowed_model(&step.provider, step.model.as_deref())?;
-        let (ws, cwd) = hands.start_task(&title, repo, &branch, id, Some(p)).await?;
+        let (ws, cwd) = hands.start_task(&title, &repo, &branch, id, Some(p)).await?;
         let prompt = policy.brief(pick_flaw, &claimed, &cwd);
         let labels = json!({"from": "lucina", "flaw": id, "platform": p});
         let agent = hands.start_agent(policy, step, &cwd, &prompt, &title, labels).await?;
@@ -300,7 +302,7 @@ pub async fn dispatch_one(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, id:
     if running_counts(flaws).get(&repo).copied().unwrap_or(0) >= policy.max_running_per_repo {
         return Err(ApiError::new(409, "busy", format!("{} tasks already run in this repo", policy.max_running_per_repo)));
     }
-    start_fix(flaws, policy, step, hands, &d.flaw, target, &repo, actor).await
+    start_fix(flaws, policy, step, hands, &d.flaw, target, actor).await
 }
 
 /// Agents at work per repo, triage included. A session's own work isn't ours to count.
@@ -524,7 +526,7 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             debug_assert_eq!(verdict, Verdict::Start);
             // The free steps first: this attempt's own step, or the first ready one below it.
             let Some(step) = choose_step(hands, policy, pick.target.attempts + 1).await else { continue };
-            let _ = start_fix(flaws, policy, step, hands, &pick.flaw, &pick.target, &pick.repo, ACTOR).await;
+            let _ = start_fix(flaws, policy, step, hands, &pick.flaw, &pick.target, ACTOR).await;
         }
     }
     let untold = flaws.untold().unwrap_or_default();
