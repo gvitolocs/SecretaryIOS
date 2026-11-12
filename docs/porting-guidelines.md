@@ -51,7 +51,48 @@ source of truth (all Lucina)" (2026-11-01), "No Codex on Lucina" (2026-10-29), "
 - Evidence before claims: a status line links the test, trace or log that shows it.
 - Verus / Stateright / TLA+ where a proof buys a real guarantee; never claim more than the proof covers.
 
-## 6. Staying current with the upstream (the weekly watch)
+## 6. The old-against-new review, before a port slice merges
+
+- **The rule.** Before a port slice merges, the original and the new Rust are compared line by line. Two reviewers read
+  them side by side and answer one question: does the port behave the same. They run on free lanes, the no-cost model
+  lanes in the dispatch chain (`docs/design/flaws.md`), on model families other than the one that wrote the slice
+  (Claude, Qwen, DeepSeek, Gemini); the bans in section 9 still hold. Every finding cites the original's file and line
+  and the port's file and line. The lead decides each finding: accepted, or rejected with the reason. The slice merges
+  when both reviews come back with nothing open. The reviewers do not edit the port and do not edit tests.
+- **Why.** A compiler accepts every one of the mistakes below. Source: GitHub's account of porting the Copilot agent
+  runtime from TypeScript to Rust (Stephen Toub, The GitHub Blog, 2026-09-16), where dozens of regressions were
+  traced and every one of them had compiled; summary in the vault at `Harness/Events/2026-11-12`.
+- **The checklist**, one item per family of mistake, with what to look for:
+  - Number types and how they are written out. An integer that became a float and now prints `42.0`; a value that can
+    be fractional stored in an integer; signed against unsigned; the width.
+  - Defaults on empty values. JavaScript `a || b` replaces an empty string, zero and false; Rust `unwrap_or` only
+    replaces a missing value. The same for null against undefined against an absent key.
+  - Behaviour the old platform supplied without being asked: time zone and locale, the working directory, PATH and
+    other environment read at a different moment than before, flags a wrapper added to every spawned process,
+    encodings, line endings, file modes.
+  - Pairs. Where the original does two things together (mark aborted AND cancel the loop; persist AND update the live
+    state; open AND register for close), check both halves are in the port.
+  - Lifetimes of things referred to by a handle or id. Can the handle outlive the object; can an object be disposed in
+    the middle of a request; are generation counters and flags updated on both sides.
+  - Features left out. Every public entry point, callback, option and error path of the original exists in the port, or
+    is listed as deliberately dropped. A deleted or changed end-to-end test is a finding by itself.
+  - Replacement libraries. Where the port uses a different library than the original, how the two differ on malformed
+    input, limits, ordering and error reporting.
+  - Changes lost while the trunk moved. After merging the trunk into the port branch, every change the trunk made to
+    the original code since the port started is present in the port.
+  - Speed that the original had: caches and memoisation, streaming instead of reading whole files, borrowing instead of
+    copying large data, work kept off the thread that draws or serves.
+  - Order and timing. Events delivered in the same order; nothing that used to happen before a wait now happening
+    after it.
+- **What the oracle is.** The original's behaviour, and the end-to-end tests written against it before the slice starts
+  (section 5). A port slice does not change those tests, golden files, snapshots or parity fixtures; a slice that needs
+  to is stopped and brought to the lead. Translate first; redesign, optimisation and bug fixes are separate changes
+  after the slice has merged.
+- **How it runs here.** The lead starts the two review runs with a brief that names the original's path at its pinned
+  revision and the port's path. Reports go to the workspace's scratch folder (`~/scratch/…` on nezopt, never the repo).
+  Findings and the decision on each are recorded in the slice's adopt / adapt / reference / reject record (section 3).
+
+## 7. Staying current with the upstream (the weekly watch)
 
 - `docs/upstreams.toml` lists every upstream with the pin we are based on. `lucina-rs upstream check` runs every
   Monday: it fetches what changed since the pin, JEV scores it, and Lucina asks the owner
@@ -60,7 +101,7 @@ source of truth (all Lucina)" (2026-11-01), "No Codex on Lucina" (2026-10-29), "
   behaviour changes that matter to us, with tests, then move `pin` in `docs/upstreams.toml` to what you ported.
   Record changes you deliberately skip (and why) in the commit message.
 
-## 7. Giving back
+## 8. Giving back
 
 - Improvements of ours that the upstream lacks are listed as `[[upstream.contrib]]` in `docs/upstreams.toml`.
 - Draft only: no fork, push, issue or pull request upstream without the owner's explicit OK in chat. A draft is a
@@ -68,7 +109,7 @@ source of truth (all Lucina)" (2026-11-01), "No Codex on Lucina" (2026-10-29), "
 - Check the upstream's CONTRIBUTING rules, the licence direction, and that nothing private (keys, hostnames,
   owner data, vendor blobs) is in the change.
 
-## 8. How the work runs
+## 9. How the work runs
 
 - One task per Lucina Agents workspace (`lagent workspace create … --base origin/main`); merge to `main` inside
   `flock /tmp/lucina-merge.lock`; deploy only from `main` through deploy-guard; archive the workspace after.
