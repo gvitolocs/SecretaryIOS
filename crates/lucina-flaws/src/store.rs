@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    check_transition, Evidence, FlawError, FlawState, Gate, Layer, Platform, Result, Severity, Step, TargetStatus,
+    check_transition, Evidence, FlawError, FlawState, Gate, Layer, Platform, Result, Severity,
+    Step, TargetStatus,
 };
 
 const SCHEMA: &str = r#"
@@ -83,13 +84,18 @@ fn now() -> String {
 fn new_id() -> String {
     let mut b = [0u8; 4];
     getrandom::fill(&mut b).expect("the OS has randomness");
-    format!("fl-{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+    format!(
+        "fl-{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    )
 }
 
 /// A flaw id: `fl-` and 8 lowercase hex digits.
 pub fn valid_id(id: &str) -> bool {
     id.strip_prefix("fl-").is_some_and(|h| {
-        h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        h.len() == 8
+            && h.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
 }
 
@@ -105,7 +111,14 @@ fn clip(s: &str, max: usize) -> String {
 
 /// The title when none is given: the first line of his words.
 pub fn title_from(words: &str) -> String {
-    clip(words.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(""), MAX_TITLE)
+    clip(
+        words
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or(""),
+        MAX_TITLE,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,7 +347,14 @@ fn target_row(r: &Row<'_>) -> rusqlite::Result<Target> {
     })
 }
 
-fn event(c: &Connection, flaw: &str, platform: Option<Platform>, kind: &str, actor: &str, detail: Value) -> Result<()> {
+fn event(
+    c: &Connection,
+    flaw: &str,
+    platform: Option<Platform>,
+    kind: &str,
+    actor: &str,
+    detail: Value,
+) -> Result<()> {
     c.execute(
         "INSERT INTO flaw_events (flaw_id, platform, kind, actor, detail, at) VALUES (?1,?2,?3,?4,?5,?6)",
         params![flaw, platform.map(|p| p.as_str()), kind, actor, detail.to_string(), now()],
@@ -350,7 +370,9 @@ fn flaw_of(c: &Connection, id: &str) -> Result<Flaw> {
 
 fn targets_of(c: &Connection, id: &str) -> Result<Vec<Target>> {
     let mut s = c.prepare("SELECT * FROM flaw_targets WHERE flaw_id = ?1")?;
-    let mut out = s.query_map([id], target_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = s
+        .query_map([id], target_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     // The order the platforms are declared in, so every answer reads the same.
     out.sort_by_key(|t| t.platform);
     Ok(out)
@@ -386,7 +408,14 @@ fn recompute_state(c: &Connection, id: &str, actor: &str) -> Result<()> {
             "UPDATE flaws SET state = ?1, updated_at = ?2 WHERE id = ?3",
             params![state.as_str(), now(), id],
         )?;
-        event(c, id, None, "state", actor, json!({"from": f.state, "to": state}))?;
+        event(
+            c,
+            id,
+            None,
+            "state",
+            actor,
+            json!({"from": f.state, "to": state}),
+        )?;
     }
     Ok(())
 }
@@ -401,7 +430,9 @@ fn words_of(s: &str) -> HashSet<String> {
 /// A database from before the chain: `CREATE TABLE IF NOT EXISTS` never changes a table that is
 /// already there, so the step a triage agent ran on is added here. Nothing in it is a step yet.
 fn migrate(c: &Connection) -> Result<()> {
-    let has = c.prepare("SELECT 1 FROM pragma_table_info('flaws') WHERE name = 'triage_step'")?.exists([])?;
+    let has = c
+        .prepare("SELECT 1 FROM pragma_table_info('flaws') WHERE name = 'triage_step'")?
+        .exists([])?;
     if !has {
         c.execute("ALTER TABLE flaws ADD COLUMN triage_step INTEGER", [])?;
     }
@@ -411,8 +442,9 @@ fn migrate(c: &Connection) -> Result<()> {
 impl Flaws {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| FlawError::Invalid(format!("no directory for the flaw database: {e}")))?;
+            std::fs::create_dir_all(dir).map_err(|e| {
+                FlawError::Invalid(format!("no directory for the flaw database: {e}"))
+            })?;
         }
         Self::with(Connection::open(path)?)
     }
@@ -425,7 +457,9 @@ impl Flaws {
         c.busy_timeout(std::time::Duration::from_secs(5))?;
         c.execute_batch(SCHEMA)?;
         migrate(&c)?;
-        Ok(Self { conn: Mutex::new(c) })
+        Ok(Self {
+            conn: Mutex::new(c),
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -447,9 +481,16 @@ impl Flaws {
             return Err(FlawError::Invalid("a flaw needs the owner's words".into()));
         }
         if words.chars().count() > MAX_WORDS {
-            return Err(FlawError::Invalid(format!("words must be at most {MAX_WORDS} characters")));
+            return Err(FlawError::Invalid(format!(
+                "words must be at most {MAX_WORDS} characters"
+            )));
         }
-        let title = new.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).map_or_else(|| title_from(&words), |t| clip(t, MAX_TITLE));
+        let title = new
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map_or_else(|| title_from(&words), |t| clip(t, MAX_TITLE));
         let id = self.tx(|c| {
             if let Some(from) = &new.discovered_from {
                 flaw_of(c, from)?;
@@ -498,7 +539,10 @@ impl Flaws {
             })
             .take(3)
             .collect();
-        Ok(Reported { flaw: self.get(&id)?, possible_duplicates })
+        Ok(Reported {
+            flaw: self.get(&id)?,
+            possible_duplicates,
+        })
     }
 
     pub fn get(&self, id: &str) -> Result<Detail> {
@@ -520,7 +564,11 @@ impl Flaws {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(Detail { flaw, targets, events })
+        Ok(Detail {
+            flaw,
+            targets,
+            events,
+        })
     }
 
     /// Worst first, then newest. Words match the title and the owner's words.
@@ -529,9 +577,16 @@ impl Flaws {
         let mut sql = String::from("SELECT DISTINCT f.* FROM flaws f LEFT JOIN flaw_targets t ON t.flaw_id = f.id WHERE 1=1");
         let mut args: Vec<String> = Vec::new();
         if let Some(w) = q.q.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
-            args.push(format!("%{}%", w.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+            args.push(format!(
+                "%{}%",
+                w.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            ));
             let n = args.len();
-            sql.push_str(&format!(" AND (f.title LIKE ?{n} ESCAPE '\\' OR f.words LIKE ?{n} ESCAPE '\\')"));
+            sql.push_str(&format!(
+                " AND (f.title LIKE ?{n} ESCAPE '\\' OR f.words LIKE ?{n} ESCAPE '\\')"
+            ));
         }
         for (column, value) in [
             ("f.state", q.state.map(|s| s.as_str())),
@@ -548,7 +603,11 @@ impl Flaws {
         let mut out = s
             .query_map(rusqlite::params_from_iter(args.iter()), flaw_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        out.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| b.created_at.cmp(&a.created_at)));
+        out.sort_by(|a, b| {
+            b.severity
+                .cmp(&a.severity)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        });
         out.truncate(q.limit.unwrap_or(50).clamp(1, 200) as usize);
         Ok(out)
     }
@@ -558,11 +617,17 @@ impl Flaws {
             flaw_of(c, id)?;
             let at = now();
             if let Some(t) = p.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-                c.execute("UPDATE flaws SET title = ?1 WHERE id = ?2", params![clip(t, MAX_TITLE), id])?;
+                c.execute(
+                    "UPDATE flaws SET title = ?1 WHERE id = ?2",
+                    params![clip(t, MAX_TITLE), id],
+                )?;
                 event(c, id, None, "title", actor, json!({"title": t}))?;
             }
             if let Some(s) = p.severity {
-                c.execute("UPDATE flaws SET severity = ?1 WHERE id = ?2", params![s.as_str(), id])?;
+                c.execute(
+                    "UPDATE flaws SET severity = ?1 WHERE id = ?2",
+                    params![s.as_str(), id],
+                )?;
                 event(c, id, None, "severity", actor, json!({"severity": s}))?;
             }
             if let Some(t) = &p.thread {
@@ -570,39 +635,69 @@ impl Flaws {
                 event(c, id, None, "thread", actor, json!({"thread": t}))?;
             }
             if let Some(g) = p.gate {
-                c.execute("UPDATE flaws SET gate = ?1 WHERE id = ?2", params![g.as_str(), id])?;
+                c.execute(
+                    "UPDATE flaws SET gate = ?1 WHERE id = ?2",
+                    params![g.as_str(), id],
+                )?;
                 event(c, id, None, "gate", actor, json!({"gate": g}))?;
             }
             if let Some(d) = &p.decision_id {
-                c.execute("UPDATE flaws SET decision_id = ?1 WHERE id = ?2", params![d, id])?;
+                c.execute(
+                    "UPDATE flaws SET decision_id = ?1 WHERE id = ?2",
+                    params![d, id],
+                )?;
                 event(c, id, None, "decision", actor, json!({"decision_id": d}))?;
             }
             if let Some(of) = &p.duplicate_of {
                 if of == id {
-                    return Err(FlawError::Invalid("a flaw can't be a duplicate of itself".into()));
+                    return Err(FlawError::Invalid(
+                        "a flaw can't be a duplicate of itself".into(),
+                    ));
                 }
                 // No cycles: the flaw it points at must not lead back here.
                 let mut at_flaw = flaw_of(c, of)?;
                 while let Some(next) = at_flaw.duplicate_of.clone() {
                     if next == id {
-                        return Err(FlawError::Invalid(format!("{of} is already a duplicate of {id}")));
+                        return Err(FlawError::Invalid(format!(
+                            "{of} is already a duplicate of {id}"
+                        )));
                     }
                     at_flaw = flaw_of(c, &next)?;
                 }
-                c.execute("UPDATE flaws SET duplicate_of = ?1, state = 'duplicate' WHERE id = ?2", params![of, id])?;
+                c.execute(
+                    "UPDATE flaws SET duplicate_of = ?1, state = 'duplicate' WHERE id = ?2",
+                    params![of, id],
+                )?;
                 event(c, id, None, "duplicate", actor, json!({"of": of}))?;
             }
-            if let Some(why) = p.dismissed.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
-                c.execute("UPDATE flaws SET state = 'dismissed' WHERE id = ?1", params![id])?;
+            if let Some(why) = p
+                .dismissed
+                .as_deref()
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+            {
+                c.execute(
+                    "UPDATE flaws SET state = 'dismissed' WHERE id = ?1",
+                    params![id],
+                )?;
                 event(c, id, None, "dismissed", actor, json!({"why": why}))?;
             }
-            c.execute("UPDATE flaws SET updated_at = ?1 WHERE id = ?2", params![at, id])?;
+            c.execute(
+                "UPDATE flaws SET updated_at = ?1 WHERE id = ?2",
+                params![at, id],
+            )?;
             flaw_of(c, id)
         })
     }
 
     /// Change one target. The evidence rule is checked here, so no caller can skip it.
-    pub fn set_target(&self, id: &str, p: Platform, u: TargetUpdate, actor: &str) -> Result<Target> {
+    pub fn set_target(
+        &self,
+        id: &str,
+        p: Platform,
+        u: TargetUpdate,
+        actor: &str,
+    ) -> Result<Target> {
         self.tx(|c| {
             flaw_of(c, id)?;
             let cur = target_of(c, id, p)?;
@@ -703,7 +798,15 @@ impl Flaws {
 
     /// The task and agent a claim turned into, and which step of the chain runs it: his history
     /// says what the work was done with.
-    pub fn attach(&self, id: &str, p: Platform, workspace: &str, agent: &str, run: &Step, actor: &str) -> Result<Target> {
+    pub fn attach(
+        &self,
+        id: &str,
+        p: Platform,
+        workspace: &str,
+        agent: &str,
+        run: &Step,
+        actor: &str,
+    ) -> Result<Target> {
         self.tx(|c| {
             c.execute(
                 "UPDATE flaw_targets SET workspace=?1, agent=?2, updated_at=?3 WHERE flaw_id=?4 AND platform=?5",
@@ -717,7 +820,14 @@ impl Flaws {
 
     /// A claimed task ended without a fix: back to `affected` for another try, or `blocked`
     /// after `max_attempts`.
-    pub fn release(&self, id: &str, p: Platform, why: &str, max_attempts: u32, actor: &str) -> Result<Target> {
+    pub fn release(
+        &self,
+        id: &str,
+        p: Platform,
+        why: &str,
+        max_attempts: u32,
+        actor: &str,
+    ) -> Result<Target> {
         self.tx(|c| {
             let t = target_of(c, id, p)?;
             if t.status != TargetStatus::Fixing {
@@ -758,21 +868,60 @@ impl Flaws {
     /// A server or core fix is one fix: every target of the flaw waiting on that layer gets it.
     pub fn record_merge(&self, id: &str, p: Platform, commit: &str, actor: &str) -> Result<Target> {
         let targets = self.get(id)?.targets;
-        let cur = targets.iter().find(|t| t.platform == p).ok_or(FlawError::NotFound)?.clone();
-        let shared = cur.layer.filter(|l| matches!(l, Layer::Server | Layer::Core));
-        for t in targets.iter().filter(|t| t.platform != p && shared.is_some() && t.layer == shared) {
+        let cur = targets
+            .iter()
+            .find(|t| t.platform == p)
+            .ok_or(FlawError::NotFound)?
+            .clone();
+        let shared = cur
+            .layer
+            .filter(|l| matches!(l, Layer::Server | Layer::Core));
+        for t in targets
+            .iter()
+            .filter(|t| t.platform != p && shared.is_some() && t.layer == shared)
+        {
             if matches!(t.status, TargetStatus::Fixing | TargetStatus::Affected) {
                 let note = format!("merged with {p}: the same fix");
-                self.set_target(id, t.platform, TargetUpdate { status: Some(TargetStatus::Fixed), commit: Some(commit.to_owned()), note: Some(note), ..TargetUpdate::default() }, actor)?;
+                self.set_target(
+                    id,
+                    t.platform,
+                    TargetUpdate {
+                        status: Some(TargetStatus::Fixed),
+                        commit: Some(commit.to_owned()),
+                        note: Some(note),
+                        ..TargetUpdate::default()
+                    },
+                    actor,
+                )?;
             }
         }
-        let status = matches!(cur.status, TargetStatus::Fixing | TargetStatus::Affected).then_some(TargetStatus::Fixed);
-        self.set_target(id, p, TargetUpdate { status, commit: Some(commit.to_owned()), note: Some("merged".into()), ..TargetUpdate::default() }, actor)
+        let status = matches!(cur.status, TargetStatus::Fixing | TargetStatus::Affected)
+            .then_some(TargetStatus::Fixed);
+        self.set_target(
+            id,
+            p,
+            TargetUpdate {
+                status,
+                commit: Some(commit.to_owned()),
+                note: Some("merged".into()),
+                ..TargetUpdate::default()
+            },
+            actor,
+        )
     }
 
     /// `lagent deploy` recorded a tag holding this target's fix.
     pub fn record_deploy(&self, id: &str, p: Platform, tag: &str, actor: &str) -> Result<Target> {
-        self.set_target(id, p, TargetUpdate { deploy_tag: Some(tag.to_owned()), note: Some("deployed".into()), ..TargetUpdate::default() }, actor)
+        self.set_target(
+            id,
+            p,
+            TargetUpdate {
+                deploy_tag: Some(tag.to_owned()),
+                note: Some("deployed".into()),
+                ..TargetUpdate::default()
+            },
+            actor,
+        )
     }
 
     fn pairs(&self, wher: &str) -> Result<Vec<(Flaw, Target)>> {
@@ -808,21 +957,33 @@ impl Flaws {
                AND (t.status = 'untriaged' OR (t.status = 'affected' AND t.layer IS NULL))
              ORDER BY f.created_at",
         )?;
-        let out = s.query_map([], flaw_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let out = s
+            .query_map([], flaw_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(out)
     }
 
     /// Triage agents not finished yet.
     pub fn triaging(&self) -> Result<Vec<Flaw>> {
         let c = self.lock();
-        let mut s = c.prepare("SELECT * FROM flaws WHERE triage_agent IS NOT NULL AND triaged_at IS NULL")?;
-        let out = s.query_map([], flaw_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut s =
+            c.prepare("SELECT * FROM flaws WHERE triage_agent IS NOT NULL AND triaged_at IS NULL")?;
+        let out = s
+            .query_map([], flaw_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(out)
     }
 
     /// An agent is looking at it; or, `done`, someone already did (`manual`). `step`: which step of
     /// the chain that agent runs on, so a limit of its lane is remembered for the next round.
-    pub fn start_triage(&self, id: &str, agent: &str, done: bool, step: Option<usize>, actor: &str) -> Result<()> {
+    pub fn start_triage(
+        &self,
+        id: &str,
+        agent: &str,
+        done: bool,
+        step: Option<usize>,
+        actor: &str,
+    ) -> Result<()> {
         self.tx(|c| {
             let at = now();
             c.execute(
@@ -836,14 +997,20 @@ impl Flaws {
     /// The triage agent never got to work: another one may start.
     pub fn reset_triage(&self, id: &str, why: &str, actor: &str) -> Result<()> {
         self.tx(|c| {
-            c.execute("UPDATE flaws SET triage_agent=NULL, triage_step=NULL, triaged_at=NULL WHERE id=?1", params![id])?;
+            c.execute(
+                "UPDATE flaws SET triage_agent=NULL, triage_step=NULL, triaged_at=NULL WHERE id=?1",
+                params![id],
+            )?;
             event(c, id, None, "triage_reset", actor, json!({"why": why}))
         })
     }
 
     pub fn finish_triage(&self, id: &str, why: &str, actor: &str) -> Result<()> {
         self.tx(|c| {
-            c.execute("UPDATE flaws SET triaged_at=?1 WHERE id=?2", params![now(), id])?;
+            c.execute(
+                "UPDATE flaws SET triaged_at=?1 WHERE id=?2",
+                params![now(), id],
+            )?;
             event(c, id, None, "triaged", actor, json!({"why": why}))
         })
     }
@@ -867,10 +1034,16 @@ impl Flaws {
 
     /// One row per live flaw, one cell per platform, for the owner to read at a glance.
     pub fn matrix(&self) -> Result<Value> {
-        let flaws = self.list(&ListQuery { limit: Some(200), ..ListQuery::default() })?;
+        let flaws = self.list(&ListQuery {
+            limit: Some(200),
+            ..ListQuery::default()
+        })?;
         let c = self.lock();
         let mut rows = Vec::new();
-        for f in flaws.iter().filter(|f| !matches!(f.state, FlawState::Duplicate | FlawState::Dismissed)) {
+        for f in flaws
+            .iter()
+            .filter(|f| !matches!(f.state, FlawState::Duplicate | FlawState::Dismissed))
+        {
             let mut cells = serde_json::Map::new();
             for t in targets_of(&c, &f.id)? {
                 cells.insert(
@@ -894,56 +1067,180 @@ mod tests {
     use crate::EvidenceKind;
 
     fn report(s: &Flaws, words: &str, affected: &[Platform]) -> Flaw {
-        s.report(NewFlaw { words: words.into(), affected: affected.to_vec(), ..NewFlaw::default() }, "owner").unwrap().flaw.flaw
+        s.report(
+            NewFlaw {
+                words: words.into(),
+                affected: affected.to_vec(),
+                ..NewFlaw::default()
+            },
+            "owner",
+        )
+        .unwrap()
+        .flaw
+        .flaw
     }
 
     fn layer(s: &Flaws, id: &str, p: Platform) {
-        s.set_target(id, p, TargetUpdate { layer: Some(Layer::Client), ..TargetUpdate::default() }, "t").unwrap();
+        s.set_target(
+            id,
+            p,
+            TargetUpdate {
+                layer: Some(Layer::Client),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
     }
 
     fn shot() -> Evidence {
-        Evidence { kind: EvidenceKind::Screenshot, reference: "a.png".into(), build: None, note: None }
+        Evidence {
+            kind: EvidenceKind::Screenshot,
+            reference: "a.png".into(),
+            build: None,
+            note: None,
+        }
     }
 
     #[test]
     fn a_report_keeps_his_words_and_opens_every_platform() {
         let s = Flaws::in_memory().unwrap();
-        let d = s.report(NewFlaw { words: "  gli emoji sono quadratini\nsu Juno ".into(), affected: vec![Platform::Juno], ..NewFlaw::default() }, "owner").unwrap().flaw;
+        let d = s
+            .report(
+                NewFlaw {
+                    words: "  gli emoji sono quadratini\nsu Juno ".into(),
+                    affected: vec![Platform::Juno],
+                    ..NewFlaw::default()
+                },
+                "owner",
+            )
+            .unwrap()
+            .flaw;
         assert_eq!(d.flaw.words, "gli emoji sono quadratini\nsu Juno");
         assert_eq!(d.flaw.title, "gli emoji sono quadratini");
         assert_eq!(d.flaw.severity, Severity::Low);
         assert_eq!(d.targets.len(), Platform::ALL.len());
-        let juno = d.targets.iter().find(|t| t.platform == Platform::Juno).unwrap();
+        let juno = d
+            .targets
+            .iter()
+            .find(|t| t.platform == Platform::Juno)
+            .unwrap();
         assert_eq!(juno.status, TargetStatus::Affected);
-        assert_eq!(juno.evidence.as_ref().unwrap().kind, EvidenceKind::OwnerReport);
-        assert!(d.targets.iter().filter(|t| t.platform != Platform::Juno).all(|t| t.status == TargetStatus::Untriaged));
-        assert!(s.report(NewFlaw { words: "  ".into(), ..NewFlaw::default() }, "o").is_err());
+        assert_eq!(
+            juno.evidence.as_ref().unwrap().kind,
+            EvidenceKind::OwnerReport
+        );
+        assert!(d
+            .targets
+            .iter()
+            .filter(|t| t.platform != Platform::Juno)
+            .all(|t| t.status == TargetStatus::Untriaged));
+        assert!(s
+            .report(
+                NewFlaw {
+                    words: "  ".into(),
+                    ..NewFlaw::default()
+                },
+                "o"
+            )
+            .is_err());
     }
 
     #[test]
     fn the_store_refuses_closing_without_evidence() {
         let s = Flaws::in_memory().unwrap();
         let f = report(&s, "x", &[]);
-        let e = s.set_target(&f.id, Platform::Web, TargetUpdate { status: Some(TargetStatus::NotAffected), ..TargetUpdate::default() }, "t").unwrap_err();
+        let e = s
+            .set_target(
+                &f.id,
+                Platform::Web,
+                TargetUpdate {
+                    status: Some(TargetStatus::NotAffected),
+                    ..TargetUpdate::default()
+                },
+                "t",
+            )
+            .unwrap_err();
         assert_eq!(e.code(), "evidence_required");
-        let read = Evidence { kind: EvidenceKind::CodeReading, reference: "rich.rs".into(), build: None, note: None };
-        let e = s.set_target(&f.id, Platform::Web, TargetUpdate { status: Some(TargetStatus::NotAffected), evidence: Some(read.clone()), ..TargetUpdate::default() }, "t").unwrap_err();
+        let read = Evidence {
+            kind: EvidenceKind::CodeReading,
+            reference: "rich.rs".into(),
+            build: None,
+            note: None,
+        };
+        let e = s
+            .set_target(
+                &f.id,
+                Platform::Web,
+                TargetUpdate {
+                    status: Some(TargetStatus::NotAffected),
+                    evidence: Some(read.clone()),
+                    ..TargetUpdate::default()
+                },
+                "t",
+            )
+            .unwrap_err();
         assert_eq!(e.code(), "evidence_required");
         // Nothing moved, nothing logged for the refusals.
         let d = s.get(&f.id).unwrap();
-        assert_eq!(d.targets.iter().find(|t| t.platform == Platform::Web).unwrap().status, TargetStatus::Untriaged);
+        assert_eq!(
+            d.targets
+                .iter()
+                .find(|t| t.platform == Platform::Web)
+                .unwrap()
+                .status,
+            TargetStatus::Untriaged
+        );
         assert_eq!(d.events.len(), 1);
         // Reading code opens it.
-        s.set_target(&f.id, Platform::Web, TargetUpdate { status: Some(TargetStatus::Affected), evidence: Some(read), ..TargetUpdate::default() }, "t").unwrap();
+        s.set_target(
+            &f.id,
+            Platform::Web,
+            TargetUpdate {
+                status: Some(TargetStatus::Affected),
+                evidence: Some(read),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
     }
 
     #[test]
     fn a_closed_target_can_not_be_rewritten_with_weak_evidence() {
         let s = Flaws::in_memory().unwrap();
         let f = report(&s, "x", &[]);
-        s.set_target(&f.id, Platform::Web, TargetUpdate { status: Some(TargetStatus::NotAffected), evidence: Some(shot()), ..TargetUpdate::default() }, "t").unwrap();
-        let read = Evidence { kind: EvidenceKind::CodeReading, reference: "rich.rs".into(), build: None, note: None };
-        assert_eq!(s.set_target(&f.id, Platform::Web, TargetUpdate { evidence: Some(read), ..TargetUpdate::default() }, "t").unwrap_err().code(), "evidence_required");
+        s.set_target(
+            &f.id,
+            Platform::Web,
+            TargetUpdate {
+                status: Some(TargetStatus::NotAffected),
+                evidence: Some(shot()),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
+        let read = Evidence {
+            kind: EvidenceKind::CodeReading,
+            reference: "rich.rs".into(),
+            build: None,
+            note: None,
+        };
+        assert_eq!(
+            s.set_target(
+                &f.id,
+                Platform::Web,
+                TargetUpdate {
+                    evidence: Some(read),
+                    ..TargetUpdate::default()
+                },
+                "t"
+            )
+            .unwrap_err()
+            .code(),
+            "evidence_required"
+        );
     }
 
     #[test]
@@ -952,11 +1249,30 @@ mod tests {
         let f = report(&s, "x", &[]);
         for p in Platform::ALL {
             assert_eq!(s.get(&f.id).unwrap().flaw.state, FlawState::Open, "{p}");
-            s.set_target(&f.id, *p, TargetUpdate { status: Some(TargetStatus::NotAffected), evidence: Some(shot()), ..TargetUpdate::default() }, "t").unwrap();
+            s.set_target(
+                &f.id,
+                *p,
+                TargetUpdate {
+                    status: Some(TargetStatus::NotAffected),
+                    evidence: Some(shot()),
+                    ..TargetUpdate::default()
+                },
+                "t",
+            )
+            .unwrap();
         }
         assert_eq!(s.get(&f.id).unwrap().flaw.state, FlawState::Resolved);
         // A regression reopens it.
-        s.set_target(&f.id, Platform::Ios, TargetUpdate { status: Some(TargetStatus::Affected), ..TargetUpdate::default() }, "t").unwrap();
+        s.set_target(
+            &f.id,
+            Platform::Ios,
+            TargetUpdate {
+                status: Some(TargetStatus::Affected),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
         assert_eq!(s.get(&f.id).unwrap().flaw.state, FlawState::Open);
     }
 
@@ -975,13 +1291,19 @@ mod tests {
     fn a_claim_is_taken_once_and_needs_a_layer() {
         let s = Flaws::in_memory().unwrap();
         let f = report(&s, "x", &[Platform::Web]);
-        assert_eq!(s.claim(&f.id, Platform::Web, "/r", "d").unwrap_err().code(), "not_claimable");
+        assert_eq!(
+            s.claim(&f.id, Platform::Web, "/r", "d").unwrap_err().code(),
+            "not_claimable"
+        );
         assert!(s.due().unwrap().is_empty(), "no layer, not due");
         layer(&s, &f.id, Platform::Web);
         assert_eq!(s.due().unwrap().len(), 1);
         let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
         assert_eq!((t.status, t.attempts), (TargetStatus::Fixing, 1));
-        assert_eq!(s.claim(&f.id, Platform::Web, "/r", "d").unwrap_err().code(), "not_claimable");
+        assert_eq!(
+            s.claim(&f.id, Platform::Web, "/r", "d").unwrap_err().code(),
+            "not_claimable"
+        );
         assert!(s.due().unwrap().is_empty());
         assert_eq!(s.get(&f.id).unwrap().flaw.state, FlawState::Fixing);
     }
@@ -991,9 +1313,24 @@ mod tests {
         let s = Flaws::in_memory().unwrap();
         let f = report(&s, "x", &[Platform::Juno]);
         layer(&s, &f.id, Platform::Juno);
-        s.set_target(&f.id, Platform::Juno, TargetUpdate { status: Some(TargetStatus::Fixing), session: Some("local_x".into()), ..TargetUpdate::default() }, "t").unwrap();
+        s.set_target(
+            &f.id,
+            Platform::Juno,
+            TargetUpdate {
+                status: Some(TargetStatus::Fixing),
+                session: Some("local_x".into()),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
         assert!(s.due().unwrap().is_empty());
-        assert_eq!(s.claim(&f.id, Platform::Juno, "/r", "d").unwrap_err().code(), "not_claimable");
+        assert_eq!(
+            s.claim(&f.id, Platform::Juno, "/r", "d")
+                .unwrap_err()
+                .code(),
+            "not_claimable"
+        );
     }
 
     #[test]
@@ -1002,8 +1339,18 @@ mod tests {
         let f = report(&s, "x", &[Platform::Web]);
         layer(&s, &f.id, Platform::Web);
         s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
-        s.attach(&f.id, Platform::Web, "/w", "a1", &Step::new("claude", Some("claude-opus-5-5"), Some("claude-cli")), "d").unwrap();
-        let t = s.release(&f.id, Platform::Web, "ended without a commit", 2, "d").unwrap();
+        s.attach(
+            &f.id,
+            Platform::Web,
+            "/w",
+            "a1",
+            &Step::new("claude", Some("claude-opus-5-5"), Some("claude-cli")),
+            "d",
+        )
+        .unwrap();
+        let t = s
+            .release(&f.id, Platform::Web, "ended without a commit", 2, "d")
+            .unwrap();
         assert_eq!((t.status, t.agent), (TargetStatus::Affected, None));
         s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
         let t = s.release(&f.id, Platform::Web, "again", 2, "d").unwrap();
@@ -1017,11 +1364,31 @@ mod tests {
         let f = report(&s, "x", &[Platform::Web]);
         layer(&s, &f.id, Platform::Web);
         s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
-        let t = s.record_merge(&f.id, Platform::Web, "abcdef1234", "lagent").unwrap();
-        assert_eq!((t.status, t.commit_sha.as_deref()), (TargetStatus::Fixed, Some("abcdef1234")));
-        assert_eq!(s.record_merge(&f.id, Platform::Web, "abcdef1234", "lagent").unwrap().status, TargetStatus::Fixed);
-        let t = s.record_deploy(&f.id, Platform::Web, "deploy/web/20261102T0100Z-abcdef12", "lagent").unwrap();
-        assert_eq!(t.deploy_tag.as_deref(), Some("deploy/web/20261102T0100Z-abcdef12"));
+        let t = s
+            .record_merge(&f.id, Platform::Web, "abcdef1234", "lagent")
+            .unwrap();
+        assert_eq!(
+            (t.status, t.commit_sha.as_deref()),
+            (TargetStatus::Fixed, Some("abcdef1234"))
+        );
+        assert_eq!(
+            s.record_merge(&f.id, Platform::Web, "abcdef1234", "lagent")
+                .unwrap()
+                .status,
+            TargetStatus::Fixed
+        );
+        let t = s
+            .record_deploy(
+                &f.id,
+                Platform::Web,
+                "deploy/web/20261102T0100Z-abcdef12",
+                "lagent",
+            )
+            .unwrap();
+        assert_eq!(
+            t.deploy_tag.as_deref(),
+            Some("deploy/web/20261102T0100Z-abcdef12")
+        );
         // Merged is not closed: only evidence closes it.
         assert_eq!(s.get(&f.id).unwrap().flaw.state, FlawState::Open);
     }
@@ -1029,24 +1396,74 @@ mod tests {
     #[test]
     fn duplicates_stop_work_and_never_form_a_cycle() {
         let s = Flaws::in_memory().unwrap();
-        let (a, b) = (report(&s, "aaaa one", &[Platform::Web]), report(&s, "bbbb two", &[Platform::Web]));
+        let (a, b) = (
+            report(&s, "aaaa one", &[Platform::Web]),
+            report(&s, "bbbb two", &[Platform::Web]),
+        );
         layer(&s, &b.id, Platform::Web);
-        s.patch(&b.id, FlawPatch { duplicate_of: Some(a.id.clone()), ..FlawPatch::default() }, "t").unwrap();
+        s.patch(
+            &b.id,
+            FlawPatch {
+                duplicate_of: Some(a.id.clone()),
+                ..FlawPatch::default()
+            },
+            "t",
+        )
+        .unwrap();
         assert_eq!(s.get(&b.id).unwrap().flaw.state, FlawState::Duplicate);
         assert!(s.due().unwrap().is_empty());
-        assert_eq!(s.claim(&b.id, Platform::Web, "/r", "d").unwrap_err().code(), "not_claimable");
-        assert!(s.patch(&a.id, FlawPatch { duplicate_of: Some(b.id.clone()), ..FlawPatch::default() }, "t").is_err());
-        assert!(s.patch(&a.id, FlawPatch { duplicate_of: Some(a.id.clone()), ..FlawPatch::default() }, "t").is_err());
+        assert_eq!(
+            s.claim(&b.id, Platform::Web, "/r", "d").unwrap_err().code(),
+            "not_claimable"
+        );
+        assert!(s
+            .patch(
+                &a.id,
+                FlawPatch {
+                    duplicate_of: Some(b.id.clone()),
+                    ..FlawPatch::default()
+                },
+                "t"
+            )
+            .is_err());
+        assert!(s
+            .patch(
+                &a.id,
+                FlawPatch {
+                    duplicate_of: Some(a.id.clone()),
+                    ..FlawPatch::default()
+                },
+                "t"
+            )
+            .is_err());
     }
 
     #[test]
     fn a_new_report_shows_likely_duplicates_and_discovered_from_links() {
         let s = Flaws::in_memory().unwrap();
         let a = report(&s, "emoji rendering as boxes", &[]);
-        let r = s.report(NewFlaw { words: "emoji rendering boxes again".into(), discovered_from: Some(a.id.clone()), ..NewFlaw::default() }, "agent").unwrap();
+        let r = s
+            .report(
+                NewFlaw {
+                    words: "emoji rendering boxes again".into(),
+                    discovered_from: Some(a.id.clone()),
+                    ..NewFlaw::default()
+                },
+                "agent",
+            )
+            .unwrap();
         assert_eq!(r.possible_duplicates[0].id, a.id);
         assert_eq!(r.flaw.flaw.discovered_from.as_deref(), Some(a.id.as_str()));
-        assert!(s.report(NewFlaw { words: "x".into(), discovered_from: Some("fl-00000000".into()), ..NewFlaw::default() }, "a").is_err());
+        assert!(s
+            .report(
+                NewFlaw {
+                    words: "x".into(),
+                    discovered_from: Some("fl-00000000".into()),
+                    ..NewFlaw::default()
+                },
+                "a"
+            )
+            .is_err());
     }
 
     #[test]
@@ -1054,16 +1471,36 @@ mod tests {
         let s = Flaws::in_memory().unwrap();
         let a = report(&s, "emoji 100% boxes", &[Platform::Web]);
         report(&s, "line breaks lost", &[]);
-        let q = |w: &str| ListQuery { q: Some(w.into()), ..ListQuery::default() };
+        let q = |w: &str| ListQuery {
+            q: Some(w.into()),
+            ..ListQuery::default()
+        };
         assert_eq!(s.list(&q("boxes")).unwrap()[0].id, a.id);
         assert_eq!(s.list(&q("100%")).unwrap().len(), 1);
         assert_eq!(s.list(&q("0%")).unwrap().len(), 1);
         assert!(s.list(&q("zzz")).unwrap().is_empty());
-        assert_eq!(s.list(&ListQuery { platform: Some(Platform::Web), status: Some(TargetStatus::Affected), ..ListQuery::default() }).unwrap().len(), 1);
+        assert_eq!(
+            s.list(&ListQuery {
+                platform: Some(Platform::Web),
+                status: Some(TargetStatus::Affected),
+                ..ListQuery::default()
+            })
+            .unwrap()
+            .len(),
+            1
+        );
         let m = s.matrix().unwrap();
-        assert_eq!(m["platforms"].as_array().unwrap().len(), Platform::ALL.len());
+        assert_eq!(
+            m["platforms"].as_array().unwrap().len(),
+            Platform::ALL.len()
+        );
         assert_eq!(m["rows"].as_array().unwrap().len(), 2);
-        let row = m["rows"].as_array().unwrap().iter().find(|r| r["id"] == a.id.as_str()).unwrap();
+        let row = m["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == a.id.as_str())
+            .unwrap();
         assert_eq!(row["cells"]["web"]["status"], "affected");
     }
 
@@ -1074,11 +1511,23 @@ mod tests {
         layer(&s, &f.id, Platform::Web);
         s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
         assert!(s.untold().unwrap().is_empty());
-        s.record_merge(&f.id, Platform::Web, "abcdef1", "l").unwrap();
+        s.record_merge(&f.id, Platform::Web, "abcdef1", "l")
+            .unwrap();
         assert_eq!(s.untold().unwrap().len(), 1);
-        s.mark_told(&f.id, Platform::Web, TargetStatus::Fixed).unwrap();
+        s.mark_told(&f.id, Platform::Web, TargetStatus::Fixed)
+            .unwrap();
         assert!(s.untold().unwrap().is_empty());
-        s.set_target(&f.id, Platform::Web, TargetUpdate { status: Some(TargetStatus::Verified), evidence: Some(shot()), ..TargetUpdate::default() }, "t").unwrap();
+        s.set_target(
+            &f.id,
+            Platform::Web,
+            TargetUpdate {
+                status: Some(TargetStatus::Verified),
+                evidence: Some(shot()),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
         assert_eq!(s.untold().unwrap().len(), 1);
     }
 
@@ -1099,7 +1548,9 @@ mod tests {
         layer(&s, &f.id, Platform::Web);
         for _ in 0..5 {
             s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
-            let t = s.give_back(&f.id, Platform::Web, "agentd is down", "d").unwrap();
+            let t = s
+                .give_back(&f.id, Platform::Web, "agentd is down", "d")
+                .unwrap();
             assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0));
         }
         assert_eq!(s.due().unwrap().len(), 1);
@@ -1111,16 +1562,33 @@ mod tests {
         let s = Flaws::in_memory().unwrap();
         let f = report(&s, "x", &[Platform::Web, Platform::Ios]);
         for p in [Platform::Web, Platform::Ios] {
-            s.set_target(&f.id, p, TargetUpdate { layer: Some(Layer::Server), ..TargetUpdate::default() }, "t").unwrap();
+            s.set_target(
+                &f.id,
+                p,
+                TargetUpdate {
+                    layer: Some(Layer::Server),
+                    ..TargetUpdate::default()
+                },
+                "t",
+            )
+            .unwrap();
         }
         assert_eq!(s.due().unwrap().len(), 2);
         s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
-        assert!(s.due().unwrap().is_empty(), "the sibling waits for the shared fix");
-        s.record_merge(&f.id, Platform::Web, "abcdef1", "l").unwrap();
+        assert!(
+            s.due().unwrap().is_empty(),
+            "the sibling waits for the shared fix"
+        );
+        s.record_merge(&f.id, Platform::Web, "abcdef1", "l")
+            .unwrap();
         let d = s.get(&f.id).unwrap();
         for p in [Platform::Web, Platform::Ios] {
             let t = d.targets.iter().find(|t| t.platform == p).unwrap();
-            assert_eq!((t.status, t.commit_sha.as_deref()), (TargetStatus::Fixed, Some("abcdef1")), "{p}");
+            assert_eq!(
+                (t.status, t.commit_sha.as_deref()),
+                (TargetStatus::Fixed, Some("abcdef1")),
+                "{p}"
+            );
         }
     }
 
@@ -1131,13 +1599,24 @@ mod tests {
         assert_eq!(s.triage_due().unwrap().len(), 1);
         s.start_triage(&f.id, "a1", false, Some(1), "d").unwrap();
         assert!(s.triage_due().unwrap().is_empty());
-        assert_eq!(s.triaging().unwrap()[0].triage_step, Some(1), "which step of the chain it runs on");
+        assert_eq!(
+            s.triaging().unwrap()[0].triage_step,
+            Some(1),
+            "which step of the chain it runs on"
+        );
         s.reset_triage(&f.id, "the lane is out", "d").unwrap();
-        assert_eq!(s.triage_due().unwrap()[0].triage_step, None, "no agent holds it, so no step either");
+        assert_eq!(
+            s.triage_due().unwrap()[0].triage_step,
+            None,
+            "no agent holds it, so no step either"
+        );
         s.start_triage(&f.id, "a1", false, Some(1), "d").unwrap();
         s.finish_triage(&f.id, "ended", "d").unwrap();
         assert!(s.triaging().unwrap().is_empty());
-        assert!(s.triage_due().unwrap().is_empty(), "the rows it left open stay open: no second agent");
+        assert!(
+            s.triage_due().unwrap().is_empty(),
+            "the rows it left open stay open: no second agent"
+        );
     }
 
     #[test]
@@ -1146,10 +1625,17 @@ mod tests {
         c.execute_batch(OLD_SCHEMA).unwrap();
         let s = Flaws::with(c).unwrap();
         let f = report(&s, "x", &[]);
-        assert_eq!(s.triaging().unwrap().len(), 0, "nothing in it is a step yet");
+        assert_eq!(
+            s.triaging().unwrap().len(),
+            0,
+            "nothing in it is a step yet"
+        );
         s.start_triage(&f.id, "manual", true, None, "d").unwrap();
         let reread = s.get(&f.id).unwrap().flaw;
-        assert_eq!((reread.triage_agent.as_deref(), reread.triage_step), (Some("manual"), None));
+        assert_eq!(
+            (reread.triage_agent.as_deref(), reread.triage_step),
+            (Some("manual"), None)
+        );
     }
 
     /// The table as it was before the chain: the same columns, no `triage_step`.
