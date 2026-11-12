@@ -194,6 +194,8 @@ pub struct Config {
     pub ops: crate::ops::OpsSettings,
     /// The flaw tracker (`LUCINA_FLAWS*`, crate::flaws).
     pub flaws: crate::flaws::FlawSettings,
+    /// Parcel tracking (`LUCINA_PARCELS*`, crate::parcels).
+    pub parcels: crate::parcels::ParcelSettings,
     /// The agent a request of his is carried out by (`LUCINA_ACT_*`, crate::act).
     pub act: ActConfig,
     pub data_dir: PathBuf,
@@ -806,6 +808,7 @@ impl Config {
             ops: crate::ops::OpsSettings::from_lookup(&get, &data_dir),
             flaws: crate::flaws::FlawSettings::from_lookup(&get, &data_dir)
                 .map_err(|e| anyhow::anyhow!("the flaws tracker won't run: {e}"))?,
+            parcels: crate::parcels::ParcelSettings::from_lookup(&get, &data_dir),
             act: ActConfig::from_lookup(&get),
             data_dir,
         })

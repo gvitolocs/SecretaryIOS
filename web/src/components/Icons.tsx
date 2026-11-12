@@ -423,6 +423,17 @@ export function GearIcon() {
   );
 }
 
+// Parcels plugin.
+
+export function ParcelIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3 4 7v10l8 4 8-4V7z" />
+      <path d="m4 7 8 4 8-4M12 11v10M8 5l8 4" />
+    </svg>
+  );
+}
+
 // Links tab.
 
 export function LinkIcon() {

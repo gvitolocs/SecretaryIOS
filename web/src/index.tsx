@@ -34,6 +34,7 @@ const NotesView = lazy(() => import("./views/Notes"));
 const KeepView = lazy(() => import("./views/Keep"));
 const NClientView = lazy(() => import("./views/NClient"));
 const LinksView = lazy(() => import("./views/Links"));
+const ParcelsView = lazy(() => import("./views/Parcels"));
 const TasksView = lazy(() => import("./views/Tasks"));
 const DeskView = lazy(() => import("./views/Desk"));
 const ModelsView = lazy(() => import("./views/Models"));
@@ -112,6 +113,7 @@ render(
       <Route path="/pokemon" component={PokemonView} />
       <Route path="/computer" component={ComputerView} />
       <Route path="/links" component={LinksView} />
+      <Route path="/parcels/:id?" component={ParcelsView} />
       <Route path="/library/:id?" component={LibraryView} />
       <Route path="/notes/:key?" component={NotesView} />
       <Route path="/keep/*rest" component={KeepView} />

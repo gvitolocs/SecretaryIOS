@@ -33,6 +33,7 @@ pub const INTENTS: &[&str] = &[
     "agent_task",
     "agent_message",
     "flaw_report",
+    "parcel_track",
     "lucina_log_inspect",
     "grocery.purchase",
     "grocery.consume",
@@ -127,6 +128,7 @@ pub fn default_reply_mode(intent: &str) -> &'static str {
         | "continue_current_topic"
         | "new_topic"
         | "flaw_report"
+        | "parcel_track"
         | "chat" => "chat",
         "list_reminders"
         | "oracle_monitor"

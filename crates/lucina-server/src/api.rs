@@ -499,6 +499,10 @@ async fn route(
     if resource == Some("ops") && parts.len() <= 3 {
         return crate::ops::route(st, method, uri, headers, &parts[1..], body).await;
     }
+    // The parcels Lucina follows (crate::parcels): the Parcels API of the apps.
+    if resource == Some("parcels") && parts.len() <= 3 {
+        return crate::parcels::route(st, method, &parts[1..], body).await;
+    }
     // The flaw tracker (crate::flaws): reports, the matrix, targets, dispatch.
     if resource == Some("flaws") && parts.len() <= 4 {
         return crate::flaws::route(st, method, uri, headers, &parts[1..], body).await;

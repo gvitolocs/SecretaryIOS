@@ -52,6 +52,7 @@ pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
 mod ops_turn;
+mod parcel_turn;
 pub mod plugin_turn;
 mod reach_turn;
 pub mod reply;
@@ -2033,6 +2034,17 @@ async fn json_turn(
         &prepared.classification.intent,
         prepared.classification.confidence,
         cmid,
+    )
+    .await
+    {
+        return f;
+    }
+
+    // A parcel to follow ("track this 3UW1S8IAAKA23"), or where his parcels are (crate::parcels).
+    if let Some(f) = parcel_turn::try_turn(
+        t,
+        &prepared.classification.intent,
+        prepared.classification.confidence,
     )
     .await
     {

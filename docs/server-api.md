@@ -2963,6 +2963,33 @@ The chat shows a model as the v1 `model3d` block (`meta.blocks`): `{type:
 "model3d", id, title, prompt?, animations?, credits?, formats?, poster?,
 video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 
+## Parcels
+
+The parcels Lucina follows for the owner (crate `lucina-parcels` in lucina-rs, design
+[`docs/lucina-rust/parcels.md`](lucina-rust/parcels.md)). Owner devices only (device token or web session; Lucina's
+service token is not accepted), forwarded to Lucina's `/api/secretary/parcels*`; her JSON passes through unchanged.
+`id` is `pc-` and 8 lowercase hex.
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/parcels` | — | `{parcels: [Parcel], digestHour}` — active first, newest change first, then the delivered and stopped ones |
+| POST | `/v1/parcels` | `{number (4-80 characters), carrier?, label? (≤ 80)}` | `{parcel}`: the carrier is detected when `carrier` is missing and the parcel is looked up once; a number already tracked gives that parcel again; 400 `bad_request` when `number` is missing, too short or too long, or the carrier calls it invalid |
+| GET | `/v1/parcels/{id}` | — | `{parcel}`; 404 `not_found` |
+| POST | `/v1/parcels/{id}/refresh` | — | `{parcel}`, looked up now unless it was checked less than 10 minutes ago (then as stored) |
+| PATCH | `/v1/parcels/{id}` | `{label}`, text of ≤ 80 characters or `null` | `{parcel}`; 400 `bad_request` for any other body |
+| DELETE | `/v1/parcels/{id}` | — | `{ok: true}`; 404 `not_found` |
+
+`Parcel` (camelCase, times RFC 3339 UTC): `{id, number, carrier, label, state, schedule, near, addedAt, lastChecked,
+nextCheck, lastError, status, events}`. `state` is `active`, `delivered` or `stopped`; `schedule` (`hourly`, `daily`,
+`stopped`) is how often Lucina checks it and `near` is why (`hourly` means it is close to its destination);
+`nextCheck` is when she next looks — an hour after `lastChecked` when hourly, the next digest hour when daily, `null`
+when stopped; `status` is `{stage, text, lastUpdate, expectedDelivery, location, destinationCountry}` or `null` before
+the first successful check; `events` are the carrier's scans, newest first, at most 50, each `{time, description,
+location, stage}`. `lastError` words a lookup that failed, the same line Lucina writes in his morning update.
+
+Lucina unreachable, timing out, failing, off (`LUCINA_PARCELS=off`) or without the routes → 503
+`parcels_unavailable`; her `404 not_found` for a parcel id reaches the app as a 404.
+
 ## Error codes
 
 | HTTP | `code` | Source | When |
@@ -3003,6 +3030,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 429 | `voice_busy` | server | `POST /v1/voice`: the device's previous turn is still running. |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |
+| 503 | `parcels_unavailable` | server | `/v1/parcels*`: Lucina is unreachable, off (`LUCINA_PARCELS=off`), or without the routes. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` or `/v1/notify` without `SECRETARY_SERVICE_TOKEN_FILE`. |
 | 404 | `subscription_not_found` | server | `DELETE /v1/push/subscriptions/{id}`, `POST /v1/push/test`. |

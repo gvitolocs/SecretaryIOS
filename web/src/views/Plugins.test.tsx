@@ -35,6 +35,12 @@ describe("Plugins", () => {
     expect(screen.getByRole("button", { name: /^Agents/ })).toHaveAttribute("data-plugin", "agents");
   });
 
+  it("has a Parcels card that opens /parcels", () => {
+    renderPlugins();
+    expect(PLUGINS.find((p) => p.id === "parcels")?.href).toBe("/parcels");
+    expect(screen.getByRole("button", { name: /^Parcels/ })).toHaveAttribute("data-plugin", "parcels");
+  });
+
   it("has a Voice devices card that opens /voice", () => {
     renderPlugins();
     expect(PLUGINS.find((p) => p.id === "voice")?.href).toBe("/voice");

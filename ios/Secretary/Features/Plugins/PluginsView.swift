@@ -46,6 +46,8 @@ struct Plugin: Identifiable {
                    detail: app.callers.extensionStatus == .disabled ? String(localized: "Turn on caller labels")
                        : String(localized: "Screen unknown numbers with Jev"),
                    isActive: app.callers.extensionStatus == .disabled) { app.showCallers = true },
+            Plugin(id: "parcels", icon: "shippingbox", title: "Parcels",
+                   detail: ParcelText.pluginDetail(parcels: app.parcels.hasLoaded ? app.parcels.parcels : nil)) { app.showParcels = true },
             Plugin(id: "qrSignIn", icon: "qrcode.viewfinder", title: "Scan QR code",
                    detail: String(localized: "Sign in another device")) { app.showQrSignIn = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
@@ -107,6 +109,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showAllChats) { AllChatsView() }
         .navigationDestination(isPresented: $app.showComputer) { LucinaComputerView() }
         .navigationDestination(isPresented: $app.showCallers) { CallersView() }
+        .navigationDestination(isPresented: $app.showParcels) { ParcelsView() }
         .navigationDestination(isPresented: $app.showCalendar) { CalendarScreen() }
         .navigationDestination(isPresented: $app.showInstagram) { InstagramScreen() }
         .navigationDestination(isPresented: $app.showPixiv) { PixivScreen() }

@@ -82,6 +82,8 @@ final class AppModel {
     var showAllChats = false
     /// "Who called?": caller screening with Jev and the Call Directory labels, a plugin.
     var showCallers = false
+    /// Parcels Lucina tracks for the owner (/v1/parcels), a plugin.
+    var showParcels = false
     /// Lucina's own calendar (/v1/calendar), a plugin (`/calendar`).
     var showCalendar = false
     /// `/calendar?event=<id>&at=<ms>` (a notification, a chat link): the event the calendar opens on.
@@ -130,6 +132,8 @@ final class AppModel {
     let server: ServerStore
     /// "Who called?": the Call Directory label list and the lookup (/v1/callers).
     let callers: CallersStore
+    /// The parcels Lucina tracks (/v1/parcels).
+    let parcels: ParcelsStore
     let health: HealthStore
     let lucina: LucinaStageController
     /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
@@ -215,6 +219,7 @@ final class AppModel {
         agents = PerfLog.measure("agents") { AgentsStore(api: { client.accessKey?.isEmpty == false ? AgentsAPI(client: client) : nil }) }
         server = ServerStore(api: { client.accessKey?.isEmpty == false ? ServerAPI(client: client) : nil })
         callers = CallersStore(api: { client.accessKey?.isEmpty == false ? CallersAPI(client: client) : nil }, manager: SystemCallDirectory())
+        parcels = ParcelsStore(api: { client.accessKey?.isEmpty == false ? ParcelsAPI(client: client) : nil })
         health = HealthStore(api: { SecretaryAPI(client: client) })
         // Cheap: no web view, model or voice engine until the Lucina tab first opens.
         lucina = PerfLog.measure("lucina") { LucinaStageController(client: client, chat: chat) }
@@ -344,6 +349,10 @@ final class AppModel {
             selectedTab = .plugins
             showCallers = true
         }
+        if launch.openParcels {
+            selectedTab = .plugins
+            showParcels = true
+        }
         if let route = launch.openRoute { open(route: route) }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
@@ -392,6 +401,7 @@ final class AppModel {
         agents.onTransportError = onError
         server.onTransportError = onError
         callers.onTransportError = onError
+        parcels.onTransportError = onError
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         shoppingV2.onTransportError = onError
@@ -520,6 +530,8 @@ final class AppModel {
         showServer = false
         callers.reset()
         showCallers = false
+        parcels.reset()
+        showParcels = false
         memos.reset()
         showMemos = false
         lucinaNotice = nil
@@ -708,6 +720,8 @@ struct LaunchOptions {
     var openPokemon = false
     /// `-SecretaryInitialTab callers`: start on "Who called?".
     var openCallers = false
+    /// `-SecretaryInitialTab parcels`: start on Parcels.
+    var openParcels = false
     /// `-SecretaryOpenRoute calendar` (any `open(route:)` path): start there.
     var openRoute: String?
     /// `-SecretaryInitialTab approval | approval-plain | approval-done | approval-already`: the approval prompt with fixture data.
@@ -727,6 +741,7 @@ struct LaunchOptions {
         openServer = defaults.string(forKey: "SecretaryInitialTab") == "server"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"
         openCallers = defaults.string(forKey: "SecretaryInitialTab") == "callers"
+        openParcels = defaults.string(forKey: "SecretaryInitialTab") == "parcels"
         openRoute = defaults.string(forKey: "SecretaryOpenRoute")
         approvalFixture = defaults.string(forKey: "SecretaryInitialTab").flatMap { $0.hasPrefix("approval") ? $0 : nil }
         #endif

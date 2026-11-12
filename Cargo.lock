@@ -3725,6 +3725,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-parcels"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "getrandom 0.3.4",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lucina-phone-core"
 version = "0.1.0"
 dependencies = [
@@ -3832,6 +3849,7 @@ dependencies = [
  "lucina-meshy",
  "lucina-notebooks",
  "lucina-ops",
+ "lucina-parcels",
  "lucina-phone-core",
  "lucina-prompter",
  "lucina-secrets",
@@ -3930,6 +3948,7 @@ dependencies = [
  "lucina-llm",
  "lucina-meshy",
  "lucina-ops",
+ "lucina-parcels",
  "lucina-phone-core",
  "lucina-secrets",
  "lucina-store",

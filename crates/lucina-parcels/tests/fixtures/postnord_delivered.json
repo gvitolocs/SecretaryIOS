@@ -1,0 +1,80 @@
+{
+ "carrier": "postnord",
+ "source": "postnord",
+ "result": {
+  "status": "delivered",
+  "current_stage": "delivered",
+  "last_status_text": "The shipment item has been delivered to the recipient",
+  "last_update": "2026-09-28T08:23:30Z",
+  "expected_delivery": null,
+  "delivered_at": "2026-09-28T08:23:30Z",
+  "sender_name": "Amazon",
+  "service_name": "PostNord Home",
+  "destination_country": "DK",
+  "weight_kg": 6.58,
+  "dimensions_text": "67 \u00d7 53 \u00d7 34 cm",
+  "events": [
+   {
+    "time": "2026-09-28T08:23:30Z",
+    "description": "The shipment item has been delivered.",
+    "provider_code": "DELIVERED",
+    "location": "AARHUS DEPOT",
+    "stage": "delivered",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-28T08:23:30Z"
+   },
+   {
+    "time": "2026-09-28T05:33:46Z",
+    "description": "The delivery of the shipment item is in progress.",
+    "provider_code": "EN_ROUTE",
+    "location": "AARHUS DEPOT",
+    "stage": "out_for_delivery",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-28T05:33:46Z"
+   },
+   {
+    "time": "2026-09-28T05:33:16Z",
+    "description": "The shipment item has arrived at the distribution terminal.",
+    "provider_code": "EN_ROUTE",
+    "location": "AARHUS DEPOT",
+    "stage": "in_transit",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-28T05:33:16Z"
+   },
+   {
+    "time": "2026-09-27T21:59:07Z",
+    "description": "The shipment item is under transportation.",
+    "provider_code": "EN_ROUTE",
+    "location": "AARHUS TERMINAL",
+    "stage": "in_transit",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-27T21:59:07Z"
+   },
+   {
+    "time": "2026-09-27T18:11:43Z",
+    "description": "The shipment item is under transportation.",
+    "provider_code": "EN_ROUTE",
+    "location": "TAULOV TERMINAL",
+    "stage": "in_transit",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-27T18:11:43Z"
+   },
+   {
+    "time": "2026-09-25T18:07:00Z",
+    "description": "We have received a notification from your shipper that they are preparing an item for you. The tracking information will be updated when the parcel is handed over to PostNord.",
+    "provider_code": "INFORMED",
+    "location": "PostNord",
+    "stage": "registered",
+    "stage_source": "carrier_map",
+    "instant": "2026-09-25T18:07:00Z"
+   }
+  ]
+ },
+ "attempts": [
+  {
+   "source": "postnord",
+   "kind": "ok",
+   "durationMs": 431
+  }
+ ]
+}

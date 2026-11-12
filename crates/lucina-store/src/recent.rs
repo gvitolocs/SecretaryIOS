@@ -135,7 +135,10 @@ impl RecentChat {
 
     /// Drop one buffer's turns (a self-test starting clean).
     pub fn clear(&self, chat_id: &str) {
-        let snapshot = self.with(|map| map.remove(chat_id).map(|_| serde_json::to_string_pretty(map).ok()).flatten());
+        let snapshot = self.with(|map| {
+            map.remove(chat_id)
+                .and_then(|_| serde_json::to_string_pretty(map).ok())
+        });
         if let (Some(p), Some(text)) = (&self.path, snapshot) {
             if let Err(e) = write_atomic(p, format!("{text}\n").as_bytes()) {
                 tracing::warn!(error = %e.kind(), "recent chat persist failed");
@@ -298,11 +301,24 @@ impl RecentChat {
 pub fn clip_memory_for_reply(memory: &str, max_chars: usize) -> String {
     // What she knows about him is never clipped away: a casual reply needs it most.
     if let Some(start) = memory.find(crate::about::SUMMARY_MARKER) {
-        let end = memory[start..].find("\n\n").map_or(memory.len(), |e| start + e);
-        let pinned: String = memory[start..end].chars().take(crate::about::SUMMARY_CHARS + 200).collect();
-        let rest = format!("{}{}", &memory[..start], memory[end..].trim_start_matches('\n'));
+        let end = memory[start..]
+            .find("\n\n")
+            .map_or(memory.len(), |e| start + e);
+        let pinned: String = memory[start..end]
+            .chars()
+            .take(crate::about::SUMMARY_CHARS + 200)
+            .collect();
+        let rest = format!(
+            "{}{}",
+            &memory[..start],
+            memory[end..].trim_start_matches('\n')
+        );
         let rest = clip_memory_for_reply(rest.trim(), max_chars);
-        return if rest.is_empty() { pinned } else { format!("{pinned}\n\n{rest}") };
+        return if rest.is_empty() {
+            pinned
+        } else {
+            format!("{pinned}\n\n{rest}")
+        };
     }
     let limit = max_chars.max(200);
     let chars: Vec<char> = memory.chars().collect();
@@ -470,8 +486,14 @@ mod tests {
 
     #[test]
     fn clipping_keeps_what_she_knows_about_him() {
-        let about = format!("{} (what you know):\n- [af-1] (work) He works 12 h/week", crate::about::SUMMARY_MARKER);
-        let recent = format!("{MARKER} (most recent last):\n{}", "user: hello\n".repeat(300));
+        let about = format!(
+            "{} (what you know):\n- [af-1] (work) He works 12 h/week",
+            crate::about::SUMMARY_MARKER
+        );
+        let recent = format!(
+            "{MARKER} (most recent last):\n{}",
+            "user: hello\n".repeat(300)
+        );
         let memory = format!("meta line\n\n{about}\n\nNotes: x\n\n{recent}");
         let out = clip_memory_for_reply(&memory, 1600);
         assert!(out.starts_with(&about));

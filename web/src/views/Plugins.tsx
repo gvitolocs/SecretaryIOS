@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, Show, type JSX } from "solid-js";
-import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, NotebookIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon, SpeakerIcon } from "../components/Icons";
+import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, NotebookIcon, PagesIcon, ParcelIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon, SpeakerIcon } from "../components/Icons";
 import { EmptyState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
@@ -70,6 +70,8 @@ export const PLUGINS: Plugin[] = [
   { id: "nclient", icon: PagesIcon, title: () => t("nclient.title"), detail: () => t("nclient.detail"), href: "/nclient", adult: true },
   { id: "keep", icon: BulbIcon, title: () => t("keep.title"), detail: () => t("keep.detail"), href: "/keep" },
   { id: "tasks", icon: CheckCircleIcon, title: () => t("plugins.tasks"), detail: () => t("plugins.tasksDetail"), href: "/tasks" },
+  // Parcels Lucina tracks: status, schedule and history (views/Parcels.tsx).
+  { id: "parcels", icon: ParcelIcon, title: () => t("parcels.title"), detail: () => t("parcels.detail"), href: "/parcels" },
   { id: "links", icon: LinkIcon, title: () => t("plugins.links"), detail: () => t("plugins.linksDetail"), href: "/links" },
   {
     id: "pokemon",

@@ -269,6 +269,13 @@ enum Cmd {
         #[arg(long, global = true)]
         db: Option<PathBuf>,
     },
+    /// The parcels Lucina follows (the file beside the running server; the server sees changes):
+    /// list, add <number> [--carrier c] [--label l], status <id|number|label>, remove <key>,
+    /// tick [--send]. A tick without --send prints what it would say and changes nothing.
+    Parcels {
+        #[command(subcommand)]
+        cmd: ParcelsCmd,
+    },
     /// Lucina's messages to Claude, Grok and Lucina Agents, through the running server:
     /// `reach inbox [--to claude] [--all]`, `reach show <id>`, `reach reply <id> --from <who> <text>`.
     Reach {
@@ -290,6 +297,31 @@ enum Cmd {
         /// File holding the bot token (mode 0600).
         #[arg(long)]
         token_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ParcelsCmd {
+    /// Every parcel with its last status.
+    List,
+    /// Follow a parcel (looked up once now).
+    Add {
+        number: String,
+        /// The scraper's carrier id (default: detected).
+        #[arg(long)]
+        carrier: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// One parcel, looked up again.
+    Status { key: String },
+    /// Stop following a parcel and forget it.
+    Remove { key: String },
+    /// Run one pass of the tracker. Without --send nothing is stored or sent.
+    Tick {
+        /// Look the parcels up for real, store the results, and tell the owner.
+        #[arg(long)]
+        send: bool,
     },
 }
 
@@ -979,6 +1011,85 @@ fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn parcels_cmd(cmd: ParcelsCmd) -> anyhow::Result<()> {
+    use lucina_parcels::text;
+    let svc = lucina_server::parcels::open_cli()?;
+    let now = chrono::Utc::now();
+    let view = |p: &lucina_parcels::Parcel| {
+        serde_json::json!({
+            "id": p.id, "name": text::name(p), "number": p.number, "state": p.state,
+            "status": p.status.as_ref().map(|s| text::status_line(s, svc.cfg.tz)),
+            "last_checked": p.last_checked, "last_error": p.last_error,
+        })
+    };
+    let out = match cmd {
+        ParcelsCmd::List => serde_json::Value::Array(svc.store.list().iter().map(view).collect()),
+        ParcelsCmd::Add {
+            number,
+            carrier,
+            label,
+        } => {
+            let a = svc
+                .add(&number, carrier.as_deref(), label.as_deref(), now, true)
+                .await;
+            let mut v = view(&a.parcel);
+            v["created"] = a.created.into();
+            v["saved"] = a.saved.into();
+            if let Err(e) = &a.lookup {
+                v["lookup"] = text::failure_line(e).into();
+            }
+            v
+        }
+        ParcelsCmd::Status { key } => {
+            let p = svc
+                .store
+                .get(&key)
+                .ok_or_else(|| anyhow::anyhow!("no parcel matches {key}"))?;
+            let looked = svc.refresh(&p, now).await;
+            let mut v = view(&svc.store.get(&p.id).unwrap_or(p));
+            if let Err(e) = &looked {
+                v["lookup"] = text::failure_line(e).into();
+            }
+            v
+        }
+        ParcelsCmd::Remove { key } => {
+            let p = svc
+                .store
+                .remove(&key)
+                .ok_or_else(|| anyhow::anyhow!("no parcel matches {key}"))?;
+            serde_json::json!({ "removed": text::name(&p) })
+        }
+        ParcelsCmd::Tick { send: false } => {
+            // A copy of the list in a scratch file: the lookups are real, nothing of ours changes.
+            let dir =
+                std::env::temp_dir().join(format!("lucina-parcels-dry-{}", std::process::id()));
+            std::fs::create_dir_all(&dir)?;
+            let copy = dir.join("parcels.json");
+            if svc.store.path().exists() {
+                std::fs::copy(svc.store.path(), &copy)?;
+            }
+            let scratch = lucina_parcels::Store::open(&copy);
+            let messages = lucina_parcels::tick(&scratch, &svc.scraper, now, &svc.cfg).await;
+            std::fs::remove_dir_all(&dir).ok();
+            serde_json::json!(messages.iter().map(|m| serde_json::json!({"kind": format!("{:?}", m.kind), "text": m.text, "dedupKey": m.dedup_key})).collect::<Vec<_>>())
+        }
+        ParcelsCmd::Tick { send: true } => {
+            let cfg = Config::from_env()?;
+            let state = AppState::build(cfg, None)?;
+            let svc = state
+                .tool_env
+                .parcels
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("parcel tracking is off"))?;
+            let messages = lucina_parcels::tick(&svc.store, &svc.scraper, now, &svc.cfg).await;
+            lucina_server::parcels::deliver(&state, &messages).await;
+            serde_json::json!({ "sent": messages.len() })
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
 async fn reach_cmd(cmd: ReachCmd) -> anyhow::Result<()> {
     use lucina_server::reach::cli;
     let out = match cmd {
@@ -1514,6 +1625,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::SecretKeep { cmd } => keep_cmd(cmd).await?,
         Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db)?,
+        Cmd::Parcels { cmd } => parcels_cmd(cmd).await?,
         Cmd::Reach { cmd } => reach_cmd(cmd).await?,
         Cmd::Jev { cmd } => jev_cmd(cmd).await?,
         Cmd::Upstream { cmd } => upstream_cmd(cmd).await?,
