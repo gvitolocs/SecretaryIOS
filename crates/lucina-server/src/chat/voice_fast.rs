@@ -282,7 +282,16 @@ pub(super) async fn route(
     let layers = info
         .layers
         .iter()
-        .map(|l| format!("{}:{}:{:.2}:{}ms{}", l.layer, l.verdict, l.confidence, l.ms, if l.used { ":used" } else { "" }))
+        .map(|l| {
+            format!(
+                "{}:{}:{:.2}:{}ms{}",
+                l.layer,
+                l.verdict,
+                l.confidence,
+                l.ms,
+                if l.used { ":used" } else { "" }
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     tracing::info!(target: "lucina_voice::route", event = "voice_route", intent = %info.intent,
@@ -521,7 +530,11 @@ async fn slots_layer(t: &Turn<'_>, plan: Plan) -> Option<Plan> {
                         ms,
                         used: split,
                     });
-                    Some(if split { Plan::ShoppingWrite(each) } else { plan })
+                    Some(if split {
+                        Plan::ShoppingWrite(each)
+                    } else {
+                        plan
+                    })
                 }
                 Err((reason, ms)) => {
                     push_failed("slots", reason, ms);
@@ -580,7 +593,10 @@ pub(super) fn risk_kind(intent: &str, message: &str) -> Option<&'static str> {
         return None;
     }
     // Plain conversation only counts when it names something that can be deleted.
-    let talk = matches!(intent, "chat" | "unknown" | "continue_current_topic" | "new_topic");
+    let talk = matches!(
+        intent,
+        "chat" | "unknown" | "continue_current_topic" | "new_topic"
+    );
     (!talk || obj.is_match(message)).then_some("delete")
 }
 
@@ -954,7 +970,11 @@ async fn shopping_pieces(t: &Turn<'_>, pieces: &[(String, String)]) -> Finish {
     let lang = lucina_grocery::message_language(&t.message, None);
     // The reply is English or Danish (shopping_reply), so is the word that joins the names.
     let joiner = if lang == "da" { " og " } else { " and " };
-    let kind = if intent.ends_with(".remove") { "removed" } else { "added" };
+    let kind = if intent.ends_with(".remove") {
+        "removed"
+    } else {
+        "added"
+    };
     let reply = crate::grocery_turn::shopping_reply(lang, kind, &names.join(joiner));
     let meta = list_id.map(|id| Meta {
         list_id: Some(id),
@@ -1113,7 +1133,9 @@ fn da_clock(h: u32, m: u32) -> String {
     format!("{h}.{m:02}")
 }
 
-const DA_DAYS: [&str; 7] = ["mandag", "tirsdag", "onsdag", "torsdag", "fredag", "lørdag", "søndag"];
+const DA_DAYS: [&str; 7] = [
+    "mandag", "tirsdag", "onsdag", "torsdag", "fredag", "lørdag", "søndag",
+];
 const DA_MONTHS: [&str; 12] = [
     "januar",
     "februar",
@@ -1374,20 +1396,38 @@ mod tests {
     #[test]
     fn product_phrases_split_on_the_usual_separators() {
         assert_eq!(split_products("latte e uova"), ["latte", "uova"]);
-        assert_eq!(split_products("latte, uova e pane"), ["latte", "uova", "pane"]);
+        assert_eq!(
+            split_products("latte, uova e pane"),
+            ["latte", "uova", "pane"]
+        );
         assert_eq!(split_products("milk and eggs"), ["milk", "eggs"]);
         assert_eq!(split_products("mælk og æg"), ["mælk", "æg"]);
         assert!(split_products("latte").is_empty());
-        assert!(split_products("a, b, c, d, e, f, g").is_empty(), "more than six is not a list");
+        assert!(
+            split_products("a, b, c, d, e, f, g").is_empty(),
+            "more than six is not a list"
+        );
     }
 
     #[test]
     fn a_reminder_parse_is_unsure_without_a_said_time_or_with_a_long_text() {
         // A relative timer and a clock time are sure.
-        assert!(!reminder_unsure("tra 20 minuti ricordami di spegnere il forno", "spegnere il forno", true));
-        assert!(!reminder_unsure("ricordami domani alle 9 di pagare", "pagare", false));
+        assert!(!reminder_unsure(
+            "tra 20 minuti ricordami di spegnere il forno",
+            "spegnere il forno",
+            true
+        ));
+        assert!(!reminder_unsure(
+            "ricordami domani alle 9 di pagare",
+            "pagare",
+            false
+        ));
         // A day with no hour is a default hour.
-        assert!(reminder_unsure("ricordami domani di chiamare Marco", "chiamare Marco", false));
+        assert!(reminder_unsure(
+            "ricordami domani di chiamare Marco",
+            "chiamare Marco",
+            false
+        ));
         // A long text rode a second clause along.
         assert!(reminder_unsure(
             "ricordami domani alle 9 di chiamare Marco e poi di portare fuori il cane e di comprare il latte",
@@ -1400,25 +1440,58 @@ mod tests {
 
     #[test]
     fn only_risky_actions_get_the_confirm_question() {
-        assert_eq!(risk_kind("agent_message", "dì a Claude di controllare"), Some("message"));
-        assert_eq!(risk_kind("social_post", "pubblica la notizia"), Some("post"));
-        assert_eq!(risk_kind("computer_task", "ordina la pizza su Wolt"), Some("purchase"));
-        assert_eq!(risk_kind("computer_task", "apri Outlook e leggi la posta"), None);
-        assert_eq!(risk_kind("calendar_event", "cancella l'appuntamento di domani"), Some("delete"));
-        assert_eq!(risk_kind("unknown", "elimina tutti i promemoria"), Some("delete"));
+        assert_eq!(
+            risk_kind("agent_message", "dì a Claude di controllare"),
+            Some("message")
+        );
+        assert_eq!(
+            risk_kind("social_post", "pubblica la notizia"),
+            Some("post")
+        );
+        assert_eq!(
+            risk_kind("computer_task", "ordina la pizza su Wolt"),
+            Some("purchase")
+        );
+        assert_eq!(
+            risk_kind("computer_task", "apri Outlook e leggi la posta"),
+            None
+        );
+        assert_eq!(
+            risk_kind("calendar_event", "cancella l'appuntamento di domani"),
+            Some("delete")
+        );
+        assert_eq!(
+            risk_kind("unknown", "elimina tutti i promemoria"),
+            Some("delete")
+        );
         // Plain talk about deleting is not a delete; reads and list edits are never asked about.
-        assert_eq!(risk_kind("chat", "come si elimina un messaggio su Telegram?"), None);
-        assert_eq!(risk_kind("grocery.shopping_list.remove", "togli il latte dalla lista"), None);
+        assert_eq!(
+            risk_kind("chat", "come si elimina un messaggio su Telegram?"),
+            None
+        );
+        assert_eq!(
+            risk_kind("grocery.shopping_list.remove", "togli il latte dalla lista"),
+            None
+        );
         assert_eq!(risk_kind("temporal_query", "che ore sono?"), None);
-        assert_eq!(risk_kind("schedule_reminder", "ricordami domani alle 9 di pagare"), None);
+        assert_eq!(
+            risk_kind("schedule_reminder", "ricordami domani alle 9 di pagare"),
+            None
+        );
     }
 
     #[test]
     fn the_confirmation_is_said_in_the_turns_language() {
-        assert!(confirm_question("message", "it").starts_with("Are you sure?"), "never Italian");
+        assert!(
+            confirm_question("message", "it").starts_with("Are you sure?"),
+            "never Italian"
+        );
         assert!(confirm_question("purchase", "en").starts_with("Are you sure?"));
         assert!(confirm_question("delete", "da").starts_with("Er du sikker?"));
-        assert!(!confirm_question("message", "it").contains("Claude"), "no transcript in the question");
+        assert!(
+            !confirm_question("message", "it").contains("Claude"),
+            "no transcript in the question"
+        );
     }
 
     use super::*;

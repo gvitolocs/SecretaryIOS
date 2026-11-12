@@ -148,7 +148,10 @@ pub async fn classify(
         tier0::from_model_json(
             &serde_json::json!({"intent": "chat", "confidence": confidence,
                 "reply_mode": "chat", "needs_memory": true, "needs_tools": false}),
-            user_text, recent, s)
+            user_text,
+            recent,
+            s,
+        )
     };
     // JEV first (owner's rule, 2026-10-28): Jev routes every turn it is sure of; the safety layers
     // stay on top (side-effect intents need their own rule to run directly, MCP turns consult).
@@ -161,7 +164,8 @@ pub async fn classify(
                 let (v, confidence) = jev.clone().expect("jev answered");
                 let mut c = tier0::from_model_json(&v, user_text, recent, s);
                 let agreed = rule.as_ref().is_some_and(|r| r.intent == c.intent);
-                let side_effect = crate::jev_route::SIDE_EFFECT_INTENTS.contains(&c.intent.as_str());
+                let side_effect =
+                    crate::jev_route::SIDE_EFFECT_INTENTS.contains(&c.intent.as_str());
                 let guard = match (side_effect && !agreed, mcp) {
                     (true, true) => "side_effect_on_mcp_turn:chat",
                     (true, false) => "side_effect_without_rule:planner",
@@ -189,9 +193,8 @@ pub async fn classify(
             }
         }
         // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
-        return crate::jev_route::rule_when_jev_unsure(rule).unwrap_or_else(|| {
-            chat(s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN))
-        });
+        return crate::jev_route::rule_when_jev_unsure(rule)
+            .unwrap_or_else(|| chat(s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN)));
     }
     if let Some(c) = rule {
         // A tier-0 regex rule gets Jev's second opinion; only a sure
@@ -312,10 +315,12 @@ const SHARED_HOURS: i64 = 3;
 fn shared_session<'a>(st: &'a AppState, keys: Keys<'_>) -> Option<&'a str> {
     let default = st.cfg.default_session.as_str();
     let key = keys.recent_key;
-    let app = key.starts_with("secretary_") && !key.starts_with("secretary_juno") && !crate::selftest::is_session(key);
-    (std::ptr::eq(keys.recent, &*st.recent) && app && key != default && !keys.voice).then_some(default)
+    let app = key.starts_with("secretary_")
+        && !key.starts_with("secretary_juno")
+        && !crate::selftest::is_session(key);
+    (std::ptr::eq(keys.recent, &*st.recent) && app && key != default && !keys.voice)
+        .then_some(default)
 }
-
 
 /// How far back the agents' jobs count as his recent requests.
 const DELEGATION_HOURS: i64 = 12;
@@ -360,14 +365,29 @@ fn delegation_block(st: &AppState, session: &str, now: chrono::DateTime<Utc>) ->
             None => format!("{asked} ({backend})"),
         };
         let state = match v["status"].as_str().unwrap_or("") {
-            "running" => format!("RUNNING since {} (cancel: delegation_cancel {id})", local(&v["createdAt"]).unwrap_or_default()),
-            "done" => format!("DONE at {}, answer already posted in the chat", local(&v["finishedAt"]).unwrap_or_default()),
+            "running" => format!(
+                "RUNNING since {} (cancel: delegation_cancel {id})",
+                local(&v["createdAt"]).unwrap_or_default()
+            ),
+            "done" => format!(
+                "DONE at {}, answer already posted in the chat",
+                local(&v["finishedAt"]).unwrap_or_default()
+            ),
             "error" => format!(
                 "FAILED at {}: {}",
                 local(&v["finishedAt"]).unwrap_or_default(),
-                v["error"].as_str().unwrap_or("no answer").chars().take(200).collect::<String>()
+                v["error"]
+                    .as_str()
+                    .unwrap_or("no answer")
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
             ),
-            other => format!("{} at {}", other.to_uppercase(), local(&v["finishedAt"]).unwrap_or_default()),
+            other => format!(
+                "{} at {}",
+                other.to_uppercase(),
+                local(&v["finishedAt"]).unwrap_or_default()
+            ),
         };
         let fallback = v["fallback"]["reason"]
             .as_str()
@@ -383,8 +403,15 @@ fn delegation_block(st: &AppState, session: &str, now: chrono::DateTime<Utc>) ->
             .chars()
             .take(240)
             .collect();
-        let gist = if gist.is_empty() { String::new() } else { format!(" Gist: {gist}") };
-        lines.push(format!("- [{id}] {head}: {state}.{fallback} Task: {}.{gist}", job.task.chars().take(120).collect::<String>()));
+        let gist = if gist.is_empty() {
+            String::new()
+        } else {
+            format!(" Gist: {gist}")
+        };
+        lines.push(format!(
+            "- [{id}] {head}: {state}.{fallback} Task: {}.{gist}",
+            job.task.chars().take(120).collect::<String>()
+        ));
     }
     if lines.is_empty() {
         return String::new();
@@ -425,7 +452,12 @@ pub async fn prepare_keyed(
         match shared {
             // A file he shared from the iPhone's share sheet lands in the app's default session: it is the
             // same conversation, so its last hours count as recent turns of this one.
-            Some(other) => keys.recent.render_with(keys.recent_key, &[other], now - chrono::Duration::hours(SHARED_HOURS), tz),
+            Some(other) => keys.recent.render_with(
+                keys.recent_key,
+                &[other],
+                now - chrono::Duration::hours(SHARED_HOURS),
+                tz,
+            ),
             None => keys.recent.render(keys.recent_key, tz),
         }
     } else {
@@ -460,7 +492,11 @@ pub async fn prepare_keyed(
         String::new()
     };
     // What she knows about him: every owner turn, whatever the policy (crate::about).
-    let about = if owner && st.about.cfg.enabled { crate::about::context_block(st, session) } else { String::new() };
+    let about = if owner && st.about.cfg.enabled {
+        crate::about::context_block(st, session)
+    } else {
+        String::new()
+    };
     // The other side of the Lucina Voice thread: the speaker's latest lines for an app turn, the app's for
     // a spoken one (the timeline is the record both read, whatever session each used).
     let other_surface = if owner && policy != Policy::PersonaOnly {

@@ -41,21 +41,21 @@ use crate::{jobs, AppState, PlannerMode};
 use lucina_store::recent::RecentChat;
 use lucina_store::timeline::{Attachment, TimelineStore};
 
+mod about_turn;
+mod act_turn;
 mod au_turn;
 pub mod callers_turn;
 pub mod drive_turn;
+mod flaw_turn;
 mod juno_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
-mod flaw_turn;
 mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
-mod about_turn;
-mod act_turn;
-mod secret_turn;
 pub mod reply;
+mod secret_turn;
 mod share_turn;
 mod voice_fast;
 mod youtube_turn;
@@ -142,12 +142,20 @@ fn voice_base(body: &Value) -> Option<Value> {
     let m = body.get("voiceMeta")?.as_object()?;
     let mut out = serde_json::Map::new();
     if let Some(id) = m.get("turnId").and_then(Value::as_str) {
-        out.insert("turnId".into(), json!(id.chars().take(64).collect::<String>()));
+        out.insert(
+            "turnId".into(),
+            json!(id.chars().take(64).collect::<String>()),
+        );
     }
     if let Some(ms) = m.get("ms").and_then(Value::as_object) {
         out.insert(
             "ms".into(),
-            Value::Object(ms.iter().take(16).map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Value::Object(
+                ms.iter()
+                    .take(16)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
         );
     }
     (!out.is_empty()).then_some(Value::Object(out))
@@ -271,12 +279,17 @@ async fn handle_chat_turn(
         }));
     }
     let (text, held) = crate::owner_secrets::mask_message(&st, &text, mcp_turn.is_none());
-    let keep_context = if held.is_empty() { String::new() } else { text.clone() };
+    let keep_context = if held.is_empty() {
+        String::new()
+    } else {
+        text.clone()
+    };
     // "Salva un segreto": before the model. His words are recorded unless they look like they hold
     // the value (`NAME value`, not token-shaped so not masked above): those go nowhere at all.
-    if let Some(words) = (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
-        .then(|| crate::owner_secrets::secret_words(&text))
-        .flatten()
+    if let Some(words) =
+        (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
+            .then(|| crate::owner_secrets::secret_words(&text))
+            .flatten()
     {
         let user = (!words.value_suspect)
             .then(|| {
@@ -284,14 +297,19 @@ async fn handle_chat_turn(
                     channel: channel.clone(),
                     role: "user".into(),
                     text: text.clone(),
-                    client_message_id: (!client_message_id.is_empty()).then(|| client_message_id.clone()),
+                    client_message_id: (!client_message_id.is_empty())
+                        .then(|| client_message_id.clone()),
                     reply_to: reply_to.clone(),
                     ..Default::default()
                 })
             })
             .flatten();
-        let (reply, lucina_item_id, rich) =
-            crate::owner_secrets::answer_secret_words(&st, &words, crate::owner_secrets::lang_of(&text)).await;
+        let (reply, lucina_item_id, rich) = crate::owner_secrets::answer_secret_words(
+            &st,
+            &words,
+            crate::owner_secrets::lang_of(&text),
+        )
+        .await;
         let mut out = json!({
             "reply": reply,
             "action": "secret_request",
@@ -358,7 +376,13 @@ async fn handle_chat_turn(
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let (keep_st, keep_session) = (st.clone(), session.clone());
     if mcp_turn.is_none() {
-        crate::about::observe(&st, &session, "chat", &cmid.clone().unwrap_or_default(), &text);
+        crate::about::observe(
+            &st,
+            &session,
+            "chat",
+            &cmid.clone().unwrap_or_default(),
+            &text,
+        );
     }
     let Some(cmid_value) = cmid.clone() else {
         let out = run_turn(
@@ -373,7 +397,14 @@ async fn handle_chat_turn(
             device_meta,
         )
         .await;
-        crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
+        crate::secret_keep::after_turn(
+            &keep_st,
+            &offer_timeline,
+            &held,
+            &keep_context,
+            offer_lang,
+            &keep_session,
+        );
         return out;
     };
     let key = format!("{session}:{cmid_value}");
@@ -424,7 +455,14 @@ async fn handle_chat_turn(
         Slot::Fresh(fut) => fut,
     };
     let out = shared.await;
-    crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
+    crate::secret_keep::after_turn(
+        &keep_st,
+        &offer_timeline,
+        &held,
+        &keep_context,
+        offer_lang,
+        &keep_session,
+    );
     if out.is_err() {
         st.client_messages
             .lock()
@@ -540,15 +578,26 @@ pub async fn channel_turn(
         .then(|| crate::owner_secrets::secret_words(&message))
         .flatten()
     {
-        let (mut reply, _, _) = crate::owner_secrets::answer_secret_words(&st, &words, offer_lang).await;
+        let (mut reply, _, _) =
+            crate::owner_secrets::answer_secret_words(&st, &words, offer_lang).await;
         reply.push_str(crate::owner_secrets::chat_app_note(offer_lang));
-        return Ok(json!({"reply": reply, "action": "secret_request", "sensitive": true, "job": null}));
+        return Ok(
+            json!({"reply": reply, "action": "secret_request", "sensitive": true, "job": null}),
+        );
     }
     if let Some(t) = origin.timeline_text.as_mut() {
-        let masked = if origin.owner { lucina_secrets::labelled::mask(t).into_owned() } else { t.clone() };
+        let masked = if origin.owner {
+            lucina_secrets::labelled::mask(t).into_owned()
+        } else {
+            t.clone()
+        };
         *t = lucina_secrets::redactor().redact(&masked).into_owned();
     }
-    let keep_context = if held.is_empty() { String::new() } else { message.clone() };
+    let keep_context = if held.is_empty() {
+        String::new()
+    } else {
+        message.clone()
+    };
     let keep_session = session.clone();
     if origin.owner {
         crate::about::observe(&st, &session, "chat", &channel, &message);
@@ -567,7 +616,14 @@ pub async fn channel_turn(
         Meta::default(),
     )
     .await;
-    crate::secret_keep::after_turn(&st, &st.timeline, &held, &keep_context, offer_lang, &keep_session);
+    crate::secret_keep::after_turn(
+        &st,
+        &st.timeline,
+        &held,
+        &keep_context,
+        offer_lang,
+        &keep_session,
+    );
     // The chat app keeps his message: its handler removes it where it can.
     out.map(|mut v| {
         if !held.is_empty() {
@@ -1002,7 +1058,8 @@ async fn run_turn_scoped(
     };
     // LucinaVoice, Jev fast path (docs/lucinavoice-protocol.md section 6): a spoken turn of the owner starts
     // Jev's intent call first of all, so it runs while the rest of the turn is prepared.
-    let voice_route = (voice_eligible && cancelled.is_none()).then(|| voice_fast::start(&st, &message));
+    let voice_route =
+        (voice_eligible && cancelled.is_none()).then(|| voice_fast::start(&st, &message));
     // A routed spoken turn writes its owner item once the route is known, so that the item carries it.
     let defer_user_item = voice_route.is_some();
 
@@ -1961,7 +2018,11 @@ async fn json_turn(
     }
 
     // A flaw he noticed ("emoji are boxes"): into the tracker in his words (crate::flaws).
-    if let Some(f) = flaw_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence) {
+    if let Some(f) = flaw_turn::try_turn(
+        t,
+        &prepared.classification.intent,
+        prepared.classification.confidence,
+    ) {
         return f;
     }
 
@@ -2045,9 +2106,9 @@ async fn json_turn(
         }
     };
     match &yn.outcome {
-        crate::jev_yesno::Outcome::Answer { reply } => badge(
-            Finish::reply(reply.clone(), crate::jev_yesno::ACTION).with("[jev yes/no]", None),
-        ),
+        crate::jev_yesno::Outcome::Answer { reply } => {
+            badge(Finish::reply(reply.clone(), crate::jev_yesno::ACTION).with("[jev yes/no]", None))
+        }
         crate::jev_yesno::Outcome::Pass { .. } => json_turn_rest(t, prepared, cmid).await,
         crate::jev_yesno::Outcome::Unsure { line } | crate::jev_yesno::Outcome::Hedge { line } => {
             let mut f = json_turn_rest(t, prepared, cmid).await;
@@ -2604,7 +2665,8 @@ async fn json_turn_planner(
                     "calendar_event" => return calendar_event_turn(t, &again, memory).await,
                     "schedule_reminder" => resolve_reminder(&t.message, &again, &o),
                     "reply" => {
-                        if let Some(text) = again["text"].as_str().filter(|x| !x.trim().is_empty()) {
+                        if let Some(text) = again["text"].as_str().filter(|x| !x.trim().is_empty())
+                        {
                             return Finish::reply(text.to_owned(), &action);
                         }
                         None
@@ -3063,7 +3125,8 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     (None, result.clone())
                 } else {
                     let (rich_msg, text, _) =
-                        rich_reply(&st, &result, &message, &action, "", false, &[], None, false).await;
+                        rich_reply(&st, &result, &message, &action, "", false, &[], None, false)
+                            .await;
                     (rich_msg, text)
                 };
                 let item = record(text, rich_msg.as_ref());
@@ -3787,13 +3850,29 @@ mod tests {
         };
         let m = tool_meta(&mark, &r);
         assert_eq!(
-            (m.kind.as_deref(), m.tool.as_deref(), m.ok, m.via.as_deref(), m.caller.as_deref(), m.conversation.as_deref()),
-            (Some("tool"), Some("media"), Some(true), Some("mcp"), Some("some-new-provider"), Some("lastphoto"))
+            (
+                m.kind.as_deref(),
+                m.tool.as_deref(),
+                m.ok,
+                m.via.as_deref(),
+                m.caller.as_deref(),
+                m.conversation.as_deref()
+            ),
+            (
+                Some("tool"),
+                Some("media"),
+                Some(true),
+                Some("mcp"),
+                Some("some-new-provider"),
+                Some("lastphoto")
+            )
         );
         // His own turn: no mark.
         let m = tool_meta(&Meta::default(), &r);
         assert!(m.via.is_none() && m.caller.is_none());
-        assert!(crate::secret_keep::agent_session("secretary_mcp-claude-lastphoto"));
+        assert!(crate::secret_keep::agent_session(
+            "secretary_mcp-claude-lastphoto"
+        ));
         assert!(crate::secret_keep::agent_session("mcp-some-new-provider"));
         assert!(!crate::secret_keep::agent_session("secretary_ios-1"));
     }

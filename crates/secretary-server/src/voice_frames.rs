@@ -451,7 +451,11 @@ mod tests {
                 let x = vec![100i16; n];
                 let want = (n - 1) * 16_000 / rate as usize + 1;
                 for chunk in [1usize, 3, 1000] {
-                    assert_eq!(resample(rate, &x, chunk).len(), want, "rate {rate} n {n} chunk {chunk}");
+                    assert_eq!(
+                        resample(rate, &x, chunk).len(),
+                        want,
+                        "rate {rate} n {n} chunk {chunk}"
+                    );
                 }
             }
         }

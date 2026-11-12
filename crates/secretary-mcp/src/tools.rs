@@ -189,11 +189,14 @@ impl SecretRequestArgs {
     fn validate(&self) -> Result<(), ToolError> {
         let slug = |field: &str, v: &str, max: usize| {
             let ok = (1..=max).contains(&v.len())
-                && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'));
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'));
             if ok {
                 Ok(())
             } else {
-                Err(bad(format!("`{field}` must be 1-{max} letters, digits, _ . @ or -")))
+                Err(bad(format!(
+                    "`{field}` must be 1-{max} letters, digits, _ . @ or -"
+                )))
             }
         };
         slug("name", &self.name, 256)?;
@@ -291,14 +294,15 @@ pub enum AddItem {
     },
 }
 
+/// One item to add, as `shopping_add` takes it: `(name, spec, quantity, unit)`.
+type AddedItem = (String, Option<String>, Option<f64>, Option<String>);
+
 /// `(name, spec, quantity, unit)` per item to add. A plain string is split
 /// into its items (docs/design/shopping-labels.md: never one item made of a
 /// sentence, never command words); a detailed item is taken as given. This
 /// server has no catalog, so a catalog name with a conjunction in it ("sale e
 /// pepe") is split too; send it as a detailed item to keep it whole.
-pub(crate) fn expand_add_items(
-    items: &[AddItem],
-) -> Vec<(String, Option<String>, Option<f64>, Option<String>)> {
+pub(crate) fn expand_add_items(items: &[AddItem]) -> Vec<AddedItem> {
     let mut out = Vec::new();
     for it in items {
         match it {
@@ -699,7 +703,10 @@ pub struct ToolSpec {
 pub fn also_allowed(name: &str) -> Option<Scope> {
     (name.starts_with("ops_")
         || name.starts_with("au_")
-        || matches!(name, "flaw_report" | "flaw_search" | "flaw_status" | "flaw_matrix" | "flaw_target")
+        || matches!(
+            name,
+            "flaw_report" | "flaw_search" | "flaw_status" | "flaw_matrix" | "flaw_target"
+        )
         || matches!(name, "caller_screen" | "lucina_inbox" | "lucina_reply"))
     .then_some(Scope::Agents)
 }
@@ -1477,7 +1484,8 @@ impl Tools<'_> {
         let mut ops = Vec::new();
         let mut names = Vec::new();
         for (i, (name, spec, quantity, unit)) in expand_add_items(&a.items).iter().enumerate() {
-            let (name, spec, quantity, unit) = (name.as_str(), spec.as_deref(), *quantity, unit.as_deref());
+            let (name, spec, quantity, unit) =
+                (name.as_str(), spec.as_deref(), *quantity, unit.as_deref());
             let name = check_text(&format!("items[{i}].name"), name, 200)?;
             let op_id = uuid::Uuid::new_v4().to_string();
             let mut op = json!({"opId": op_id, "type": "add", "name": name});
@@ -2929,7 +2937,15 @@ mod shopping_add_tests {
         let names: Vec<&str> = got.iter().map(|g| g.0.as_str()).collect();
         assert_eq!(
             names,
-            ["patatine fritte", "ricotta", "redbull", "mortadella", "baguettes", "sale e pepe", "latte"]
+            [
+                "patatine fritte",
+                "ricotta",
+                "redbull",
+                "mortadella",
+                "baguettes",
+                "sale e pepe",
+                "latte"
+            ]
         );
         assert_eq!(got[4].2, Some(4.0));
         assert_eq!(got[5].1.as_deref(), Some("fino"));

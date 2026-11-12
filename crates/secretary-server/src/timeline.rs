@@ -142,7 +142,11 @@ async fn page(
 
 /// `GET /v1/timeline/cards`: which items' buttons are closed, the same for every client.
 async fn cards(State(st): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(st.lucina()?.call::<serde_json::Value>(&Call::timeline_cards()).await?))
+    Ok(Json(
+        st.lucina()?
+            .call::<serde_json::Value>(&Call::timeline_cards())
+            .await?,
+    ))
 }
 
 /// `POST /v1/timeline/cards/{item}` with `{action}`: the owner used this button.
@@ -151,10 +155,16 @@ async fn choose_card(
     UrlPath(item): UrlPath<String>,
     JsonBody(body): JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(st.lucina()?.call::<serde_json::Value>(&Call::timeline_card_choice(&item, body)?).await?))
+    Ok(Json(
+        st.lucina()?
+            .call::<serde_json::Value>(&Call::timeline_card_choice(&item, body)?)
+            .await?,
+    ))
 }
 
-async fn conversations(State(st): State<AppState>) -> Result<Json<TimelineConversations>, ApiError> {
+async fn conversations(
+    State(st): State<AppState>,
+) -> Result<Json<TimelineConversations>, ApiError> {
     Ok(Json(st.lucina()?.timeline_conversations().await?))
 }
 

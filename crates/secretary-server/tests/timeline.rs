@@ -87,23 +87,21 @@ async fn mock_handler(
     };
     m.seen.lock().unwrap().push(seen.clone());
     match (method.as_str(), uri.path()) {
-        ("GET", "/api/secretary/timeline/conversations") => {
-            Json(json!({"ok": true, "data": {
-                "items": [{"key": "device:dev_1", "kind": "device", "title": "iPhone",
-                    "channel": "ios", "device": "dev_1", "deviceName": "iPhone",
-                    "count": 2, "lastId": "tl_3", "lastTs": 1761048003000_i64,
-                    "lastRole": "lucina", "lastText": "Ciao!", "future": true},
-                    {"key": "agent:claude", "kind": "agent", "title": "Claude",
-                    "channel": "other", "caller": "claude", "count": 1,
-                    "lastId": "tl_1", "lastTs": 1, "lastRole": "user", "lastText": "hi"},
-                    {"key": "voice", "kind": "voice", "title": "Lucina Voice",
-                    "channel": "voice", "count": 4,
-                    "lastId": "tl_20", "lastTs": 1761048009000_i64, "lastRole": "lucina",
-                    "lastText": "Sono le dieci."}],
-                "futurePage": 42
-            }}))
-            .into_response()
-        }
+        ("GET", "/api/secretary/timeline/conversations") => Json(json!({"ok": true, "data": {
+            "items": [{"key": "device:dev_1", "kind": "device", "title": "iPhone",
+                "channel": "ios", "device": "dev_1", "deviceName": "iPhone",
+                "count": 2, "lastId": "tl_3", "lastTs": 1761048003000_i64,
+                "lastRole": "lucina", "lastText": "Ciao!", "future": true},
+                {"key": "agent:claude", "kind": "agent", "title": "Claude",
+                "channel": "other", "caller": "claude", "count": 1,
+                "lastId": "tl_1", "lastTs": 1, "lastRole": "user", "lastText": "hi"},
+                {"key": "voice", "kind": "voice", "title": "Lucina Voice",
+                "channel": "voice", "count": 4,
+                "lastId": "tl_20", "lastTs": 1761048009000_i64, "lastRole": "lucina",
+                "lastText": "Sono le dieci."}],
+            "futurePage": 42
+        }}))
+        .into_response(),
         ("GET", "/api/secretary/timeline") => {
             if seen.query.as_deref() == Some("after=expired") {
                 return (
@@ -381,7 +379,6 @@ async fn timeline_query_is_validated_before_lucina() {
         "conversation=device:a:b",
         "conversation=",
         "conversation=device:%2F",
-
     ] {
         let (s, b) = h.json(h.get(&format!("/v1/timeline?{q}"))).await;
         assert_eq!(s, 400, "{q}: {b}");
@@ -934,7 +931,10 @@ async fn conversations_are_typed_and_keep_unknown_fields() {
     // The shared LucinaVoice thread is a conversation like any other (protocol section 7).
     assert_eq!(data.items[2].key, "voice");
     assert_eq!(data.items[2].title, "Lucina Voice");
-    assert_eq!(data.items[2].channel, secretary_core::models::Channel::Voice);
+    assert_eq!(
+        data.items[2].channel,
+        secretary_core::models::Channel::Voice
+    );
     assert_eq!(b["items"][2]["channel"], "voice");
     assert_eq!(serde_json::to_value(data).unwrap(), b);
     assert_eq!(b["futurePage"], 42);
