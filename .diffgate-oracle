@@ -1,0 +1,12 @@
+# Protected oracle paths for diffgate's oracle-changed rule (one gitignore-style glob per line). A file under these paths may be
+# ADDED; changing, deleting or renaming one away is refused. The list is read from the base revision, so a branch cannot narrow it.
+# A waiver (--allow oracle-changed=<reason>) is this repository's lead's decision, never a worker's: the reason says which behaviour
+# changed on purpose and who decided it. Approved by the coordinator 2026-11-12; adding or changing this file is a gate change.
+crates/lucina-deals/fixtures/golden/
+crates/lucina-vault/tests/fixture/
+crates/lucina-computer-use/tests/fixtures/
+crates/lucina-agents/tests/fixtures/
+crates/ink-obsidian/tests/fixtures/
+crates/lucina-server/tests/fixtures/
+crates/lucina-upstream/tests/fixtures/
+tools/parity/
