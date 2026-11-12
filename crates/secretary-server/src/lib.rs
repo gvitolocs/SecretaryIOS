@@ -9,21 +9,22 @@ pub mod agents;
 pub mod approvals;
 pub mod assets;
 pub mod au;
-pub mod callers;
 pub mod auth;
 pub mod avatar;
 pub mod avatar_looks;
 pub mod calendar;
+pub mod callers;
 pub mod calls;
 pub mod cli;
 pub mod computer;
-pub mod desk;
 pub mod config;
 pub mod debug_events;
+pub mod desk;
 pub mod device;
 pub mod devices;
 pub mod engines;
 pub mod error;
+pub mod flaws;
 pub mod google;
 pub mod health;
 pub mod insights;
@@ -32,18 +33,16 @@ pub mod library;
 pub mod links;
 pub mod models;
 pub mod notebooks;
-pub mod vault;
 pub mod notes;
 pub mod notify;
-pub mod flaws;
-pub mod parcels;
 pub mod ops;
-pub mod reach;
 pub mod owner;
 pub mod owner_secrets;
+pub mod parcels;
 pub mod proactive;
 pub mod qr_login;
 pub mod ratelimit;
+pub mod reach;
 pub mod routes;
 pub mod secrets;
 pub mod service;
@@ -56,15 +55,21 @@ pub mod timeline;
 pub mod todoist;
 pub mod tts;
 pub mod upstream;
+pub mod vault;
 pub mod voice;
 pub mod voice_filler;
 pub mod voice_frames;
+pub mod voice_learn;
 pub mod voice_level;
 pub mod voice_note;
-pub mod voice_learn;
 pub mod voice_pipe;
 // Plain `if` chains and guarded divisions stay as they are: the proofs read them.
-#[allow(clippy::manual_clamp, clippy::implicit_saturating_sub, clippy::len_zero, clippy::manual_checked_ops)]
+#[allow(
+    clippy::manual_clamp,
+    clippy::implicit_saturating_sub,
+    clippy::len_zero,
+    clippy::manual_checked_ops
+)]
 pub mod voice_rules;
 pub mod voice_split;
 pub mod voice_telemetry;
@@ -228,7 +233,11 @@ impl AppState {
             None => None,
         };
         let notebooks = match &cfg.lucina_token {
-            Some(t) => Some(notebooks::Notebooks::new(&cfg.lucina_url, t, cfg.agents.mcp_devices.clone())?),
+            Some(t) => Some(notebooks::Notebooks::new(
+                &cfg.lucina_url,
+                t,
+                cfg.agents.mcp_devices.clone(),
+            )?),
             None => None,
         };
         Ok(Self(Arc::new(Inner {
