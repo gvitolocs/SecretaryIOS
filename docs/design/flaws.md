@@ -36,10 +36,10 @@ All of it is `lucina_flaws::Policy`, from `LUCINA_FLAWS_*` with these defaults: 
 **The chain.** `LUCINA_FLAWS_CHAIN` is the list of agents a try can run on, cheapest first, as `provider:model@probe-lane`
 steps separated by commas. `:model` and `@probe-lane` may be left out; a step without a probe lane is always ready. The
 default is `opencode:opencode/deepseek-v4.1-flash-free@zen-deepseek-flash, claude:claude-sonnet-5-5@claude-sonnet,
-claude:claude-opus-5-5@claude-cli`: free agents first, a Claude model last. Codex is refused, and so is a DeepSeek model
-that isn't a `-free` one. A chain the environment asks for that can't be run stops the server with the reason; it never
-quietly dispatches on another agent. With no chain set, `LUCINA_FLAWS_PROVIDER`, `_MODEL` and `_PROBE_LANE` build exactly
-one step, each with its own default, the way they did before.
+claude:claude-opus-5-5@claude-cli`: free agents first, a Claude model last. Codex and anything OpenAI are refused, and so
+is a DeepSeek model that isn't a `-free` one. A chain the environment asks for that can't be run stops the server with the
+reason; it never quietly dispatches on another agent. With no chain set, `LUCINA_FLAWS_PROVIDER`, `_MODEL` and
+`_PROBE_LANE` build exactly one step, each with its own default, the way they did before.
 
 `crate::flaws::tick`, every minute in lucina-rs:
 

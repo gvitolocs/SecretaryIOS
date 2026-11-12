@@ -72,15 +72,14 @@ impl Step {
     /// Why this step may never run, as the words to say at startup. Same rule as
     /// `lucina_tools::tools::reach::allowed_model`, which checks it again when an agent starts.
     fn refusal(&self) -> Option<&'static str> {
-        if self.provider.to_lowercase().contains("codex") {
+        let all = format!("{} {}", self.provider, self.model.as_deref().unwrap_or("")).to_ascii_lowercase();
+        if all.contains("codex") || all.contains("gpt-") {
             return Some("Codex is not used for Lucina");
         }
-        let model = self.model.as_deref()?;
-        let model = model.to_lowercase();
-        if !model.contains("deepseek") {
+        if !all.contains("deepseek") {
             return None;
         }
-        let free = model.split(|c: char| c.is_whitespace() || c == '/').filter(|w| w.contains("deepseek")).all(|w| w.ends_with("-free"));
+        let free = all.split(|c: char| c.is_whitespace() || c == '/').filter(|w| w.contains("deepseek")).all(|w| w.ends_with("-free"));
         (!free).then_some("a paid DeepSeek model is never used; pick a free one")
     }
 }
@@ -111,10 +110,10 @@ pub struct Policy {
     pub owner_gates: Vec<Gate>,
     /// Platforms whose visual check is the owner's own eyes.
     pub owner_eyes: Vec<Platform>,
-    /// `LUCINA_FLAWS_CHAIN`: the agents to try, cheapest first, never Codex and never a paid
-    /// DeepSeek model. The first try runs on the first step, every failed one drops a step; a step
-    /// whose probe lane says it is out of quota is passed over for the one below it, never come
-    /// back up to. Always at least one step ([`DEFAULT_CHAIN`]).
+    /// `LUCINA_FLAWS_CHAIN`: the agents to try, cheapest first, never Codex or anything OpenAI and
+    /// never a paid DeepSeek model. The first try runs on the first step, every failed one drops a
+    /// step; a step whose probe lane says it is out of quota is passed over for the one below it,
+    /// never come back up to. Always at least one step ([`DEFAULT_CHAIN`]).
     pub chain: Vec<Step>,
     pub effort: String,
     pub mode: String,
@@ -419,7 +418,7 @@ mod tests {
 
     #[test]
     fn codex_and_a_paid_deepseek_model_are_refused_before_starting() {
-        for spec in ["codex", "claude:claude-sonnet-5-5, codex:claude", "opencode:deepseek-v4-pro", "claude:deepseek chat"] {
+        for spec in ["codex", "claude:claude-sonnet-5-5, codex:claude", "opencode:deepseek-v4-pro", "claude:deepseek chat", "openai:gpt-4o"] {
             let e = from_err(spec);
             assert!(e.contains("Codex") || e.contains("DeepSeek"), "{spec}: {e}");
         }
