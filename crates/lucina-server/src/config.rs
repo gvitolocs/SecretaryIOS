@@ -498,7 +498,10 @@ impl Config {
             voice_jev_cap: Duration::from_millis(num("LUCINA_VOICE_JEV_CAP_MS", 400).max(1)),
             voice_jev: None,
             voice_layers: !get("LUCINA_VOICE_LAYERS").is_some_and(|v| {
-                matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no")
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "false" | "0" | "no"
+                )
             }),
             voice_confirm_min: get("LUCINA_VOICE_CONFIRM_MIN")
                 .and_then(|v| v.trim().parse::<f64>().ok())
@@ -649,12 +652,26 @@ impl Config {
                 )
             }),
             callers_it_url: match get("LUCINA_CALLERS_IT_URL") {
-                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
+                Some(v)
+                    if matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "off" | "false" | "0" | "no" | ""
+                    ) =>
+                {
+                    None
+                }
                 Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),
                 None => Some(lucina_tools::tools::callers::SPAMCALLS_BASE.to_owned()),
             },
             callers_public_url: match get("LUCINA_CALLERS_PUBLIC_URL") {
-                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
+                Some(v)
+                    if matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "off" | "false" | "0" | "no" | ""
+                    ) =>
+                {
+                    None
+                }
                 Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),
                 None => Some(lucina_tools::tools::callers::PUBLIC_BASE.to_owned()),
             },
@@ -668,7 +685,14 @@ impl Config {
                 _ => None,
             },
             callers_digest_hour: match get("LUCINA_CALLERS_DIGEST_HOUR") {
-                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "no" | "") => None,
+                Some(v)
+                    if matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "off" | "false" | "no" | ""
+                    ) =>
+                {
+                    None
+                }
                 Some(v) => v.trim().parse().ok().filter(|h: &u32| *h < 24).or(Some(21)),
                 None => Some(21),
             },
