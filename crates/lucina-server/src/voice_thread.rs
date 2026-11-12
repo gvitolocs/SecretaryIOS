@@ -94,7 +94,7 @@ pub fn app_block(st: &AppState, now: DateTime<Utc>) -> String {
         };
         let channel = v["channel"].as_str().unwrap_or("");
         let meta = &v["meta"];
-        if !matches!(channel, "web" | "ios")
+        if !matches!(channel, "web" | "ios" | "dsi" | "mac")
             || meta["via"] == "mcp"
             || meta["kind"].is_string()
             || meta["tool"].is_string()

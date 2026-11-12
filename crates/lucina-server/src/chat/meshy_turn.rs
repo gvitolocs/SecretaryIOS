@@ -192,9 +192,11 @@ pub async fn confirm_by_id(st: &AppState, body: &Value) -> Result<Value, crate::
         Some("telegram") | None => "telegram",
         Some("web") => "web",
         Some("ios") => "ios",
+        Some("dsi") => "dsi",
+        Some("mac") => "mac",
         Some(_) => {
             return Err(ApiError::bad_request(
-                "channel must be telegram, web or ios",
+                "channel must be telegram, web, ios, dsi or mac",
             ))
         }
     };
@@ -270,6 +272,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
                     memory,
                     user_label: USER_LABEL,
                     platform: PLATFORM_LABEL,
+                    device: "",
                 };
                 let reply = st
                     .planner

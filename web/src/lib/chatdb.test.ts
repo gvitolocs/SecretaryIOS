@@ -11,6 +11,8 @@ describe("conversation keys", () => {
    [{ meta: { device: "D" } }, "device:D"],
    [{ channel: "ios", meta: { device: "I" } }, "device:I"],
    [{ channel: "web" }, "legacy:web"], [{ channel: "ios" }, "legacy:ios"],
+   [{ channel: "dsi", meta: { device: "D" } }, "device:D"], [{ channel: "mac", meta: { device: "M" } }, "device:M"],
+   [{ channel: "dsi" }, "legacy:dsi"], [{ channel: "mac" }, "legacy:mac"],
    [{ channel: "telegram" }, "telegram"], [{ channel: "discord" }, "discord"],
    [{ channel: "alexa" }, "alexa"], [{ channel: "voice", meta: { device: "esp" } }, "voice"], [{ channel: "voice" }, "voice"], [{ channel: "other" }, "lucina"],
  ] as [Partial<TimelineItem>, string][]) ("maps %j to %s", (extra, key) => expect(conversationKey(item("1", extra))).toBe(key));

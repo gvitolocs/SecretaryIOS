@@ -287,6 +287,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
                     memory,
                     user_label: USER_LABEL,
                     platform: PLATFORM_LABEL,
+                    device: "",
                 };
                 let reply = st
                     .planner
@@ -607,6 +608,7 @@ mod tests {
             memory: "",
             user_label: "Giuseppe",
             platform: "secretary",
+            device: "",
         };
         for session in ["secretary_juno-dev_K8bGH74HE4k", "secretary_web_plain"] {
             match planner_system(session) {

@@ -464,7 +464,11 @@ async fn route(
     if resource == Some("about") && parts.len() <= 3 {
         let rest: Vec<&str> = parts[1..].iter().map(String::as_str).collect();
         let m = method.as_str().to_owned();
-        let body = if matches!(m.as_str(), "POST" | "PATCH") { Some(read_json(body, 16 * 1024).await?) } else { None };
+        let body = if matches!(m.as_str(), "POST" | "PATCH") {
+            Some(read_json(body, 16 * 1024).await?)
+        } else {
+            None
+        };
         return Ok(ok(crate::about::route(st, &m, &rest, body).await?));
     }
     // The owner vault for devices that sync it themselves (crate::vault_sync): manifest, file, trash.
@@ -553,7 +557,9 @@ async fn route(
     if resource == Some("secrets") && id == Some("requests") && parts.len() <= 4 {
         return match (method.as_str(), extra, fourth) {
             ("GET", None, None) => Ok(ok(st.secret_requests.list())),
-            ("POST", Some(request), Some("dismiss")) => Ok(ok(st.secret_requests.dismiss(request)?)),
+            ("POST", Some(request), Some("dismiss")) => {
+                Ok(ok(st.secret_requests.dismiss(request)?))
+            }
             (_, None, None) => Err(ApiError::method_not_allowed(&["GET"])),
             (_, Some(_), Some("dismiss")) => Err(ApiError::method_not_allowed(&["POST"])),
             _ => Err(ApiError::not_found()),
@@ -565,7 +571,11 @@ async fn route(
             ("GET", None) => Ok(ok(crate::card_state::cards(&st.cfg.data_dir))),
             ("POST", Some(item)) => {
                 let body = read_json(body, 4 * 1024).await?;
-                Ok(ok(crate::card_state::choose(&st.cfg.data_dir, item, &body)?))
+                Ok(ok(crate::card_state::choose(
+                    &st.cfg.data_dir,
+                    item,
+                    &body,
+                )?))
             }
             (_, None) => Err(ApiError::method_not_allowed(&["GET"])),
             (_, Some(_)) => Err(ApiError::method_not_allowed(&["POST"])),
@@ -640,7 +650,10 @@ async fn route(
             only(&["POST"])?;
             let body = read_json(body, 16 * 1024).await?;
             if let Some(job) = body["job"].as_str() {
-                let found = st.secret_keep.job(job).ok_or_else(|| ApiError::new(404, "not_found", "no such job"))?;
+                let found = st
+                    .secret_keep
+                    .job(job)
+                    .ok_or_else(|| ApiError::new(404, "not_found", "no such job"))?;
                 return Ok(ok(found.outcome()));
             }
             Ok(ok(st.secret_keep.enqueue(&body)?.outcome()))
@@ -688,15 +701,26 @@ async fn route(
         (Some("jev"), Some("route")) => {
             only(&["POST"])?;
             let body = read_json(body, MAX_BODY_BYTES).await?;
-            let text = body["text"].as_str().map(str::trim).filter(|t| !t.is_empty())
+            let text = body["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
                 .ok_or_else(|| ApiError::bad_request("text is required"))?;
             let recent = body["recent"].as_str().unwrap_or("");
             let platform = body["platform"].as_str().unwrap_or("secretary");
             let mcp = body["mcp"].as_bool().unwrap_or(false);
             let rule = lucina_intent::tier0::classify_tier0(text, recent, &st.cfg.intent);
-            let t = crate::planner::TurnInput { user_text: text, memory: recent, user_label: USER_LABEL, platform };
+            let t = crate::planner::TurnInput {
+                user_text: text,
+                memory: recent,
+                user_label: USER_LABEL,
+                platform,
+                device: "",
+            };
             let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
-            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, mcp, false).await;
+            let routed =
+                crate::context::classify(st, text, recent, USER_LABEL, platform, "", mcp, false)
+                    .await;
             Ok(ok(json!({
                 "tier0": rule.as_ref().map(|c| c.intent.clone()),
                 "tier0Confidence": rule.as_ref().map(|c| c.confidence),
@@ -756,7 +780,10 @@ async fn route(
         (Some("jev"), Some("yesno")) => {
             only(&["POST"])?;
             let body = read_json(body, MAX_BODY_BYTES).await?;
-            let text = body["text"].as_str().map(str::trim).filter(|t| !t.is_empty())
+            let text = body["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
                 .ok_or_else(|| ApiError::bad_request("text is required"))?;
             let recent = body["recent"].as_str().unwrap_or("");
             let lang = match body["lang"].as_str() {
@@ -766,7 +793,10 @@ async fn route(
                 None => lucina_intent::lang::detect(text).map_or("en", |l| l.reply().code()),
             };
             let gate_only = body["gateOnly"].as_bool().unwrap_or(false);
-            Ok(ok(crate::jev_yesno::preview(st, text, recent, lang, gate_only).await))
+            Ok(ok(crate::jev_yesno::preview(
+                st, text, recent, lang, gate_only,
+            )
+            .await))
         }
         // Go-aheads for agents (crate::decide, docs/design/decisions-api.md).
         (Some("decisions"), None) => match method.as_str() {
@@ -1281,6 +1311,7 @@ async fn agenda(st: &AppState, bearer: crate::surface::BearerVerified, uri: &Uri
             memory: &memory,
             user_label: USER_LABEL,
             platform: PLATFORM_LABEL,
+            device: "",
         };
         let text = match st
             .planner
@@ -1667,12 +1698,13 @@ fn timeline_list(st: &AppState, uri: &Uri) -> ApiResult {
         }
     } else if let Some(scope) = scope {
         let device = query_param(uri, "device").filter(|d| valid_device(d));
-        let channel = query_param(uri, "channel").filter(|c| c == "web" || c == "ios");
+        let channel = query_param(uri, "channel")
+            .filter(|c| secretary_core::channel::APP_CHANNELS.contains(&c.as_str()));
         match (scope.as_str(), device, channel) {
             ("mine", Some(device), Some(channel)) => ConversationFilter::Mine { device, channel },
             _ => {
                 return Err(ApiError::bad_request(
-                    "scope=mine requires a valid device and web or ios channel",
+                    "scope=mine requires a valid device and a web, ios, dsi or mac channel",
                 ))
             }
         }

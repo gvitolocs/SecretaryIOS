@@ -66,6 +66,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("cursor_task", "Give a coding task to a coding agent (Cursor, Codex, Claude Code) on a project."),
     ("agent_message", "The owner asks Lucina to pass a message, question or issue report on to another assistant: Claude (the Claude Code coordinator of his projects), Grok Bot, or Lucina Agents (tell Claude that…, report this to Claude, ask Grok…, post it in Lucina agents, use Lucina agents)."),
     ("flaw_report", "The owner reports a small flaw he noticed in one of his own apps (Lucina's web app, Mac app, Android or iPhone app, or Juno): something that looks or behaves wrong, such as emoji shown as boxes, lost line breaks, a card or button still active after it was used, or a status that differs between clients. Not a question about how to use something, and not a request to pass a message on."),
+    ("agent_task", "The owner asks Lucina to carry out an action on one of his own devices or machines that she has no tool of her own for: start, open, switch on or copy something on his Nintendo DSi, a PC or server of his (nespc, nezopt), his laptop or another device, or get a game, file or program onto one of them. Not a job for her own sandbox computer or Android phone (computer_task), not a coding task on a project (cursor_task), not passing a message on (agent_message), and not a question about how to do it."),
     ("discord_admin", "Administer the Discord server: channels, roles, members."),
     ("grocery.purchase", "The user reports groceries they bought."),
     ("grocery.consume", "The user reports eating or using up part of a grocery item."),
@@ -108,6 +109,20 @@ pub(crate) fn intent_questions() -> Vec<(&'static str, Question)> {
     ]
 }
 
+/// Jev's state for the intent questions: facts only. `device` and `device_connected` join it when the
+/// owner's turn comes from a device we know (`crate::device`), and are absent otherwise.
+pub(crate) fn intent_state(t: &TurnInput<'_>, recent: &str) -> Value {
+    crate::device::with_device(
+        json!({
+            "platform": if t.platform.is_empty() { "unknown" } else { t.platform },
+            "user": t.user_label,
+            "recent_turns": recent,
+            "message": t.user_text,
+        }),
+        t.device,
+    )
+}
+
 /// The intent as the DeepSeek classifier's JSON plus Jev's confidence in it,
 /// or `None` when Jev is off or failed (the caller asks DeepSeek).
 pub async fn classify_intent(jev: &Jev, t: &TurnInput<'_>) -> Option<(Value, f64)> {
@@ -115,13 +130,11 @@ pub async fn classify_intent(jev: &Jev, t: &TurnInput<'_>) -> Option<(Value, f64
         return None;
     }
     let recent: String = t.memory.chars().take(1500).collect();
-    let state = json!({
-        "platform": if t.platform.is_empty() { "unknown" } else { t.platform },
-        "user": t.user_label,
-        "recent_turns": recent,
-        "message": t.user_text,
-    });
-    let d = jev.decide("intent", state, &intent_questions()).await.ok()?;
+    let state = intent_state(t, &recent);
+    let d = jev
+        .decide("intent", state, &intent_questions())
+        .await
+        .ok()?;
     intent_json(&d)
 }
 
@@ -160,7 +173,11 @@ pub fn checks_tier0(c: &lucina_intent::tier0::Classification) -> bool {
     !c.intent.starts_with("grocery.")
         && !matches!(
             c.intent.as_str(),
-            "computer_task" | "agent_message" | "flaw_report" | "lucina_log_inspect" | "study_focus_reminders"
+            "computer_task"
+                | "agent_message"
+                | "flaw_report"
+                | "lucina_log_inspect"
+                | "study_focus_reminders"
         )
         && lucina_jev::shared().available()
 }
@@ -185,7 +202,11 @@ pub const DOUBT_MIN: f64 = 0.6;
 /// a side-effect rule (a post, reviving Qwen, a spreadsheet write, a coding
 /// task…) Jev reads as something else, or a plain-chat rule (no tools) Jev
 /// reads as a request for an action.
-pub fn doubts(tier0: &lucina_intent::tier0::Classification, jev_intent: &str, confidence: f64) -> bool {
+pub fn doubts(
+    tier0: &lucina_intent::tier0::Classification,
+    jev_intent: &str,
+    confidence: f64,
+) -> bool {
     if jev_intent == tier0.intent || confidence < env_f64("LUCINA_JEV_DOUBT_MIN", DOUBT_MIN) {
         return false;
     }
@@ -203,6 +224,7 @@ pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "agent_message",
     "flaw_report",
     "computer_task",
+    "agent_task",
     "schedule_reminder",
     "calendar_event",
     "study_focus_reminders",
@@ -220,7 +242,10 @@ pub const SIDE_EFFECT_INTENTS: &[&str] = &[
 /// On an MCP turn (an agent's prose, not the owner's words), a side-effect tier-0 rule that Jev
 /// reads as anything else, at any confidence, gives way to plain chat: the cost of a wrong reply is a
 /// sentence, the cost of a wrong job is a Harness run or a reminder nobody asked for.
-pub fn mcp_falls_back_to_chat(tier0: &lucina_intent::tier0::Classification, jev_intent: &str) -> bool {
+pub fn mcp_falls_back_to_chat(
+    tier0: &lucina_intent::tier0::Classification,
+    jev_intent: &str,
+) -> bool {
     SIDE_EFFECT_INTENTS.contains(&tier0.intent.as_str()) && jev_intent != tier0.intent
 }
 
@@ -250,7 +275,11 @@ pub async fn mcp_delegation(jev: &Jev, caller: &str, message: &str) -> (bool, Op
         "Not one: a report, an update, an idea or findings shared with her, or a request to remember, acknowledge or answer it herself.",
     );
     let p = match jev
-        .decide("mcp_delegation", mcp_delegation_state(caller, message), &[("delegate", q)])
+        .decide(
+            "mcp_delegation",
+            mcp_delegation_state(caller, message),
+            &[("delegate", q)],
+        )
         .await
     {
         Ok(d) => d.yes("delegate"),
@@ -262,8 +291,12 @@ pub async fn mcp_delegation(jev: &Jev, caller: &str, message: &str) -> (bool, Op
 /// `LUCINA_JEV_FIRST` (off until calibrated): Jev routes every turn it is sure of, before the
 /// tier-0 rules (owner's rule, 2026-10-28: "for confidence over 75%, we trust Jeff").
 pub fn jev_first_enabled() -> bool {
-    std::env::var("LUCINA_JEV_FIRST")
-        .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+    std::env::var("LUCINA_JEV_FIRST").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "on" | "yes"
+        )
+    })
 }
 
 /// JEV-first trusts Jev from this confidence up (`LUCINA_JEV_FIRST_MIN`).
@@ -280,7 +313,12 @@ pub fn jev_first_min(intent: &str) -> f64 {
 }
 
 pub fn jev_first_min_from(intent: &str, global: Option<&str>, per_intent: Option<&str>) -> f64 {
-    let valid = |v: &str| v.trim().parse::<f64>().ok().filter(|v| (0.0..=1.0).contains(v));
+    let valid = |v: &str| {
+        v.trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| (0.0..=1.0).contains(v))
+    };
     per_intent
         .unwrap_or("")
         .split(',')
@@ -458,7 +496,10 @@ mod tests {
 
     #[test]
     fn mcp_delegation_state_is_short_facts_only() {
-        let long = format!("Research follow-up requested by Giuseppe on {}", "x".repeat(2000));
+        let long = format!(
+            "Research follow-up requested by Giuseppe on {}",
+            "x".repeat(2000)
+        );
         let s = mcp_delegation_state("chatgpt", &format!("  {long}"));
         assert_eq!(s.as_object().unwrap().len(), 2);
         assert_eq!(s["sender"], "chatgpt");
@@ -498,6 +539,41 @@ mod tests {
     }
 
     #[test]
+    fn jev_first_routes_agent_task_and_no_tier0_rule_can() {
+        assert_eq!(jev_first(Some(("agent_task", 0.8)), None), Ok(()));
+        assert_eq!(
+            jev_first(Some(("agent_task", 0.5)), None),
+            Err("below_threshold")
+        );
+        assert!(SIDE_EFFECT_INTENTS.contains(&"agent_task"));
+        assert_eq!(
+            lucina_intent::tier0::default_reply_mode("agent_task"),
+            "direct"
+        );
+        assert!(INTENT_OPTIONS.iter().any(|(n, _)| *n == "agent_task"));
+        // No regex rule names it: the intent table and its reply mode are the only places.
+        let source = include_str!("../../lucina-intent/src/tier0.rs");
+        assert_eq!(
+            source.matches("\"agent_task\"").count(),
+            2,
+            "only the intent list and its reply mode"
+        );
+        let s = lucina_intent::heuristics::Settings::default();
+        for m in [
+            "Accendi i Anespici e passami Pokémon Diamante su questo DSi",
+            "turn on nespc and put Pokémon Diamond on this DSi",
+            "tænd for min pc og læg et spil på min DSi",
+            "avvia il gioco sul DSi",
+            "copy the ROM from nespc to the DSi",
+            "open Safari on my Mac",
+            "start the game on my laptop",
+        ] {
+            let rule = lucina_intent::tier0::classify_tier0(m, "", &s);
+            assert!(rule.is_none_or(|c| c.intent != "agent_task"), "{m}");
+        }
+    }
+
+    #[test]
     fn overrides_need_confidence_and_never_reach_side_effect_intents() {
         assert!(overrides("social_post", "schedule_reminder", 0.95));
         assert!(!overrides("social_post", "schedule_reminder", 0.6));
@@ -506,46 +582,115 @@ mod tests {
         assert!(!overrides("chat", "chat", 0.99));
         let s = lucina_intent::heuristics::Settings::default();
         let post = lucina_intent::tier0::from_model_json(
-            &json!({"intent": "social_post", "confidence": 1.0, "needs_tools": true}), "x", "", &s);
+            &json!({"intent": "social_post", "confidence": 1.0, "needs_tools": true}),
+            "x",
+            "",
+            &s,
+        );
         assert!(doubts(&post, "schedule_reminder", 0.87));
         assert!(!doubts(&post, "social_post", 0.99));
         assert!(!doubts(&post, "schedule_reminder", 0.4));
         let chat = lucina_intent::tier0::from_model_json(
-            &json!({"intent": "chat", "confidence": 0.95, "reply_mode": "chat"}), "x", "", &s);
+            &json!({"intent": "chat", "confidence": 0.95, "reply_mode": "chat"}),
+            "x",
+            "",
+            &s,
+        );
         assert!(doubts(&chat, "computer_task", 0.6));
-        assert!(!doubts(&chat, "social_greeting", 0.9), "both are conversational");
+        assert!(
+            !doubts(&chat, "social_greeting", 0.9),
+            "both are conversational"
+        );
         assert!(!doubts(&chat, "unknown", 0.9));
     }
 
     #[test]
     fn jev_first_trusts_sure_answers_and_keeps_deterministic_routes() {
         let s = lucina_intent::heuristics::Settings::default();
-        let rule = |intent: &str| lucina_intent::tier0::from_model_json(
-            &json!({"intent": intent, "confidence": 1.0}), "x", "", &s);
+        let rule = |intent: &str| {
+            lucina_intent::tier0::from_model_json(
+                &json!({"intent": intent, "confidence": 1.0}),
+                "x",
+                "",
+                &s,
+            )
+        };
         assert_eq!(jev_first_min_from("chat", None, None), 0.75);
         assert_eq!(jev_first_min_from("chat", Some("0.8"), None), 0.8);
-        assert_eq!(jev_first_min_from("cursor_task", Some("0.8"), Some("cursor_task=0.95, chat=0.7")), 0.95);
-        assert_eq!(jev_first_min_from("chat", Some("x"), Some("chat=2")), 0.75, "bad values are ignored");
+        assert_eq!(
+            jev_first_min_from(
+                "cursor_task",
+                Some("0.8"),
+                Some("cursor_task=0.95, chat=0.7")
+            ),
+            0.95
+        );
+        assert_eq!(
+            jev_first_min_from("chat", Some("x"), Some("chat=2")),
+            0.75,
+            "bad values are ignored"
+        );
         assert_eq!(jev_first(None, None), Err("jev_unavailable"));
         assert_eq!(jev_first(Some(("unknown", 0.99)), None), Err("jev_unknown"));
-        assert_eq!(jev_first(Some(("chat", 0.99)), Some(&rule("computer_task"))), Err("deterministic_rule"));
-        assert_eq!(jev_first(Some(("chat", 0.99)), Some(&rule("grocery.shopping_list.add"))), Err("deterministic_rule"));
+        assert_eq!(
+            jev_first(Some(("chat", 0.99)), Some(&rule("computer_task"))),
+            Err("deterministic_rule")
+        );
+        assert_eq!(
+            jev_first(
+                Some(("chat", 0.99)),
+                Some(&rule("grocery.shopping_list.add"))
+            ),
+            Err("deterministic_rule")
+        );
         // The 2026-10-28 misroutes: Jev was unsure, so the rules (tightened) and consult mode still matter.
-        assert_eq!(jev_first(Some(("unknown", 0.28)), Some(&rule("cursor_task"))), Err("jev_unknown"));
-        assert_eq!(jev_first(Some(("computer_task", 0.49)), Some(&rule("schedule_reminder"))), Err("below_threshold"));
-        assert_eq!(jev_first(Some(("chat", 0.8)), Some(&rule("schedule_reminder"))), Ok(()));
+        assert_eq!(
+            jev_first(Some(("unknown", 0.28)), Some(&rule("cursor_task"))),
+            Err("jev_unknown")
+        );
+        assert_eq!(
+            jev_first(
+                Some(("computer_task", 0.49)),
+                Some(&rule("schedule_reminder"))
+            ),
+            Err("below_threshold")
+        );
+        assert_eq!(
+            jev_first(Some(("chat", 0.8)), Some(&rule("schedule_reminder"))),
+            Ok(())
+        );
     }
 
     #[test]
     fn only_deterministic_rules_survive_an_unsure_jev() {
         let s = lucina_intent::heuristics::Settings::default();
-        let rule = |intent: &str| lucina_intent::tier0::from_model_json(
-            &json!({"intent": intent, "confidence": 1.0, "needs_tools": true}), "x", "", &s);
+        let rule = |intent: &str| {
+            lucina_intent::tier0::from_model_json(
+                &json!({"intent": intent, "confidence": 1.0, "needs_tools": true}),
+                "x",
+                "",
+                &s,
+            )
+        };
         for intent in ["computer_task", "grocery.shopping_list.add"] {
-            assert_eq!(rule_when_jev_unsure(Some(rule(intent))).map(|c| c.intent).as_deref(), Some(intent));
+            assert_eq!(
+                rule_when_jev_unsure(Some(rule(intent)))
+                    .map(|c| c.intent)
+                    .as_deref(),
+                Some(intent)
+            );
         }
-        for intent in ["social_post", "cursor_task", "schedule_reminder", "list_reminders", "chat"] {
-            assert!(rule_when_jev_unsure(Some(rule(intent))).is_none(), "{intent}");
+        for intent in [
+            "social_post",
+            "cursor_task",
+            "schedule_reminder",
+            "list_reminders",
+            "chat",
+        ] {
+            assert!(
+                rule_when_jev_unsure(Some(rule(intent))).is_none(),
+                "{intent}"
+            );
         }
         assert!(rule_when_jev_unsure(None).is_none());
     }
@@ -553,14 +698,29 @@ mod tests {
     #[test]
     fn mcp_turns_fall_back_to_chat_when_jev_disagrees_with_a_side_effect_rule() {
         let s = lucina_intent::heuristics::Settings::default();
-        let rule = |intent: &str| lucina_intent::tier0::from_model_json(
-            &json!({"intent": intent, "confidence": 1.0, "needs_tools": true}), "x", "", &s);
+        let rule = |intent: &str| {
+            lucina_intent::tier0::from_model_json(
+                &json!({"intent": intent, "confidence": 1.0, "needs_tools": true}),
+                "x",
+                "",
+                &s,
+            )
+        };
         // The 2026-10-28 incident: tier 0 said cursor_task 0.9 (Jev: unknown 0.28) and
         // schedule_reminder 1.0 (Jev: computer_task 0.49).
         assert!(mcp_falls_back_to_chat(&rule("cursor_task"), "unknown"));
-        assert!(mcp_falls_back_to_chat(&rule("schedule_reminder"), "computer_task"));
-        assert!(!mcp_falls_back_to_chat(&rule("schedule_reminder"), "schedule_reminder"));
-        assert!(!mcp_falls_back_to_chat(&rule("list_reminders"), "chat"), "reads stay");
+        assert!(mcp_falls_back_to_chat(
+            &rule("schedule_reminder"),
+            "computer_task"
+        ));
+        assert!(!mcp_falls_back_to_chat(
+            &rule("schedule_reminder"),
+            "schedule_reminder"
+        ));
+        assert!(
+            !mcp_falls_back_to_chat(&rule("list_reminders"), "chat"),
+            "reads stay"
+        );
         assert!(!mcp_falls_back_to_chat(&rule("chat"), "cursor_task"));
     }
 
@@ -570,7 +730,8 @@ mod tests {
         // Jev's JSON in the classifier's shape: the travel guard still turns list_reminders into chat.
         let v = json!({"intent": "list_reminders", "confidence": 0.9, "reply_mode": "direct",
             "scope": "all", "needs_memory": false, "needs_tools": true});
-        let c = lucina_intent::tier0::from_model_json(&v, "a che ora parte il volo per CPH?", "", &s);
+        let c =
+            lucina_intent::tier0::from_model_json(&v, "a che ora parte il volo per CPH?", "", &s);
         assert_eq!(c.intent, "chat");
         let c = lucina_intent::tier0::from_model_json(&v, "che promemoria ho?", "", &s);
         assert_eq!(c.intent, "list_reminders");

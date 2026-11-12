@@ -10,6 +10,7 @@
 //! Product logic lives here or in Lucina — never in the iOS shell, and the
 //! server only authenticates, validates and forwards.
 
+pub mod channel;
 pub mod chat_stream;
 pub mod client;
 pub mod error;

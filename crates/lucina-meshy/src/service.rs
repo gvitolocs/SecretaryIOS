@@ -1137,7 +1137,7 @@ impl MeshyService {
 
 fn timeline_channel(c: &str) -> String {
     match c {
-        "web" | "ios" | "telegram" | "discord" => c.to_owned(),
+        "web" | "ios" | "dsi" | "mac" | "telegram" | "discord" => c.to_owned(),
         _ => "web".to_owned(),
     }
 }

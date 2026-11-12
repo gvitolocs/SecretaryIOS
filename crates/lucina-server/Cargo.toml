@@ -81,10 +81,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 calamine = "0.30"
 tar = "0.4"
 flate2 = "1"
+secretary-core = { path = "../secretary-core" }
 
 [dev-dependencies]
 lucina-approvals = { path = "../lucina-approvals", features = ["testing"] }
-secretary-core = { path = "../secretary-core" }
 secretary-server = { path = "../secretary-server" }
 reqwest = { workspace = true, features = ["stream", "multipart"] }
 wiremock = "0.6"

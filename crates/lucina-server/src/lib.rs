@@ -8,14 +8,15 @@
 //! are off; reminder writes are forwarded to the Node Lucina; Honcho is read
 //! only. See `README` in the crate docs of [`config`].
 
+pub mod about;
+pub mod act;
 pub mod agenda;
 pub mod agentd;
 pub mod api;
 pub mod au;
-pub mod callers;
 pub mod bot_hospital;
-pub mod model_try;
 pub mod bridges;
+pub mod callers;
 pub mod capabilities;
 pub mod card_state;
 pub mod chat;
@@ -24,31 +25,30 @@ pub mod computer_files;
 pub mod computer_view;
 pub mod config;
 pub mod context;
-pub mod decide;
 pub mod cua_wire;
 pub mod deals;
+pub mod decide;
 pub mod delegation;
 pub mod delivery_monitor;
 pub mod desk;
+pub mod device;
 pub mod discord;
 pub mod fake;
+pub mod flaws;
 pub mod geocode;
+pub mod grocery_turn;
 pub mod jev_drift;
 pub mod jev_route;
 pub mod jev_samples;
 pub mod jev_yesno;
-pub mod grocery_turn;
 pub mod jobs;
 pub mod juno;
-pub mod notebooks;
 pub mod lan;
-pub mod flaws;
+pub mod model_try;
+pub mod notebooks;
 pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
-pub mod about;
-pub mod secret_keep;
-pub mod secret_requests;
 pub mod parity;
 pub mod places;
 pub mod planner;
@@ -57,6 +57,8 @@ pub mod prompts;
 pub mod reach;
 pub mod reminder_delivery;
 pub mod rich;
+pub mod secret_keep;
+pub mod secret_requests;
 pub mod secrets;
 pub mod selftest;
 pub mod share;
@@ -64,19 +66,25 @@ pub mod shopping_mcp_gate;
 pub mod surface;
 pub mod telegram;
 pub mod upstream;
+pub mod vault_sync;
 pub mod video;
 pub mod voice;
 pub mod voice_learn;
+/// The glue around them (measure, lift, dBFS numbers), also secretary-server's own file.
+#[path = "../../secretary-server/src/voice_level.rs"]
+pub mod voice_level;
 /// The level rules of a recording, the very file secretary-server ships and Verus checks (one source of truth,
 /// `crates/secretary-server/src/voice_rules.rs`); lucina-server uses only the level part.
 #[path = "../../secretary-server/src/voice_rules.rs"]
 // The same allows as secretary-server's own `pub mod voice_rules`: the proofs read plain `if` chains and guarded divisions.
-#[allow(dead_code, clippy::manual_clamp, clippy::implicit_saturating_sub, clippy::len_zero, clippy::manual_checked_ops)]
+#[allow(
+    dead_code,
+    clippy::manual_clamp,
+    clippy::implicit_saturating_sub,
+    clippy::len_zero,
+    clippy::manual_checked_ops
+)]
 pub mod voice_rules;
-/// The glue around them (measure, lift, dBFS numbers), also secretary-server's own file.
-#[path = "../../secretary-server/src/voice_level.rs"]
-pub mod voice_level;
-pub mod vault_sync;
 pub mod voice_thread;
 
 use std::collections::HashMap;
@@ -214,10 +222,17 @@ impl AppState {
         let deepseek = Arc::new(DeepSeek::new(cfg.deepseek.clone())?);
         let mistral = Some(Arc::new(DeepSeek::new(cfg.mistral.clone())?)).filter(|m| m.has_key());
         if cfg.model_provider == ModelProvider::Mistral && mistral.is_none() {
-            tracing::error!("LUCINA_MODEL_PROVIDER=mistral but Mistral has no key: DeepSeek answers");
+            tracing::error!(
+                "LUCINA_MODEL_PROVIDER=mistral but Mistral has no key: DeepSeek answers"
+            );
         }
         let (model, usage, has_key): (Arc<dyn ChatModel>, Option<Arc<UsageTotals>>, KeyProbe) =
-            match (model, mistral.clone().filter(|_| cfg.model_provider == ModelProvider::Mistral)) {
+            match (
+                model,
+                mistral
+                    .clone()
+                    .filter(|_| cfg.model_provider == ModelProvider::Mistral),
+            ) {
                 (Some(m), _) => (m, None, Box::new(|| true)),
                 (None, Some(m)) => {
                     let usage = m.usage.clone();
@@ -227,7 +242,11 @@ impl AppState {
                 (None, None) => {
                     let usage = deepseek.usage.clone();
                     let probe = deepseek.clone();
-                    (deepseek.clone(), Some(usage), Box::new(move || probe.has_key()))
+                    (
+                        deepseek.clone(),
+                        Some(usage),
+                        Box::new(move || probe.has_key()),
+                    )
                 }
             };
         // The model is a sink: every prompt and reply goes through the redactor.
@@ -476,7 +495,9 @@ impl AppState {
         }
         if cfg.tools.allows("web_extract") {
             registry
-                .register(Arc::new(lucina_tools::tools::web::WebExtractTool { allow_loopback: false }))
+                .register(Arc::new(lucina_tools::tools::web::WebExtractTool {
+                    allow_loopback: false,
+                }))
                 .expect("web_extract registers");
         }
         // Lucina's own computers (LUCINA_COMPUTER_USE_ENABLED=true, crate lucina_computer_use).
@@ -538,7 +559,11 @@ impl AppState {
             selftest: Arc::new(secret_requests::SecretRequests::new(
                 &cfg.data_dir.join("selftest-secret-cards"),
                 selftest_timeline.clone(),
-                bridges::Secretary { http: env_http.clone(), url: None, token_file: None },
+                bridges::Secretary {
+                    http: env_http.clone(),
+                    url: None,
+                    token_file: None,
+                },
             )),
             default_project: cfg.secret_keep.default_project.clone(),
             default_environment: cfg.secret_keep.default_environment.clone(),
@@ -555,30 +580,44 @@ impl AppState {
         ));
         if cfg.tools.allows("secret_request") {
             registry
-                .register(Arc::new(lucina_tools::tools::secret_request::SecretRequestTool {
-                    asker: secret_requests.clone(),
-                }))
+                .register(Arc::new(
+                    lucina_tools::tools::secret_request::SecretRequestTool {
+                        asker: secret_requests.clone(),
+                    },
+                ))
                 .expect("secret_request registers");
         }
         if cfg.about.enabled && cfg.tools.allows("about_me") {
             registry
-                .register(Arc::new(lucina_tools::tools::about_me::AboutMeTool { memory: about.clone() }))
+                .register(Arc::new(lucina_tools::tools::about_me::AboutMeTool {
+                    memory: about.clone(),
+                }))
                 .expect("about_me registers");
         }
         if cfg.tools.allows("secret_tile") {
             registry
-                .register(Arc::new(lucina_tools::tools::secret_tile::SecretCardTool { opener: secret_cards.clone() }))
+                .register(Arc::new(lucina_tools::tools::secret_tile::SecretCardTool {
+                    opener: secret_cards.clone(),
+                }))
                 .expect("secret_tile registers");
         }
         if cfg.secret_keep.enabled && cfg.tools.allows("secret_keep") {
             registry
-                .register(Arc::new(lucina_tools::tools::secret_keep::SecretKeepTool { keeper: secret_keep.clone() }))
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretKeepTool {
+                    keeper: secret_keep.clone(),
+                }))
                 .expect("secret_keep registers");
             registry
-                .register(Arc::new(lucina_tools::tools::secret_keep::SecretScanTool { keeper: secret_keep.clone() }))
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretScanTool {
+                    keeper: secret_keep.clone(),
+                }))
                 .expect("secret_scan registers");
             registry
-                .register(Arc::new(lucina_tools::tools::secret_keep::SecretProjectTool { keeper: secret_keep.clone() }))
+                .register(Arc::new(
+                    lucina_tools::tools::secret_keep::SecretProjectTool {
+                        keeper: secret_keep.clone(),
+                    },
+                ))
                 .expect("secret_project registers");
         }
         // Juno, the owner's laptop (LUCINA_JUNO_TOOLS): owner turns only, so added after the MCP registries.
@@ -672,7 +711,10 @@ impl AppState {
             flaws,
             ingest,
             juno,
-            voice_jev: cfg.voice_jev.clone().map(|c| Arc::new(lucina_jev::Jev::new(c))),
+            voice_jev: cfg
+                .voice_jev
+                .clone()
+                .map(|c| Arc::new(lucina_jev::Jev::new(c))),
             vocab: Arc::new(lucina_vocab::Watched::new(cfg.vocab_path.clone())),
             vocab_write: Mutex::new(()),
             hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {

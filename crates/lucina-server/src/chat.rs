@@ -41,20 +41,21 @@ use crate::{jobs, AppState, PlannerMode};
 use lucina_store::recent::RecentChat;
 use lucina_store::timeline::{Attachment, TimelineStore};
 
+mod about_turn;
+mod act_turn;
 mod au_turn;
 pub mod callers_turn;
 pub mod drive_turn;
+mod flaw_turn;
 mod juno_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
-mod flaw_turn;
 mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
-mod about_turn;
-mod secret_turn;
 pub mod reply;
+mod secret_turn;
 mod share_turn;
 mod voice_fast;
 mod youtube_turn;
@@ -141,12 +142,20 @@ fn voice_base(body: &Value) -> Option<Value> {
     let m = body.get("voiceMeta")?.as_object()?;
     let mut out = serde_json::Map::new();
     if let Some(id) = m.get("turnId").and_then(Value::as_str) {
-        out.insert("turnId".into(), json!(id.chars().take(64).collect::<String>()));
+        out.insert(
+            "turnId".into(),
+            json!(id.chars().take(64).collect::<String>()),
+        );
     }
     if let Some(ms) = m.get("ms").and_then(Value::as_object) {
         out.insert(
             "ms".into(),
-            Value::Object(ms.iter().take(16).map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Value::Object(
+                ms.iter()
+                    .take(16)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
         );
     }
     (!out.is_empty()).then_some(Value::Object(out))
@@ -186,9 +195,18 @@ async fn handle_chat_turn(
     } else {
         channel
     };
-    if channel != "web" && channel != "ios" && channel != VOICE_CHANNEL {
-        return Err(ApiError::bad_request("channel must be web, ios or voice"));
+    if !secretary_core::channel::CHAT_CHANNELS.contains(&channel.as_str()) {
+        return Err(ApiError::bad_request(
+            "channel must be web, ios, dsi, mac or voice",
+        ));
     }
+    // The Fortuna firmware that predates the `dsi` channel says `web`: its source and session id say DSi.
+    let channel = secretary_core::channel::client_channel(
+        &channel,
+        body["source"].as_str(),
+        Some(requested.as_str()),
+        None,
+    );
     // The speaker's own thread has its own session unless the sender names one.
     let requested = if requested.is_empty() && channel == VOICE_CHANNEL {
         VOICE_SESSION.to_owned()
@@ -261,12 +279,17 @@ async fn handle_chat_turn(
         }));
     }
     let (text, held) = crate::owner_secrets::mask_message(&st, &text, mcp_turn.is_none());
-    let keep_context = if held.is_empty() { String::new() } else { text.clone() };
+    let keep_context = if held.is_empty() {
+        String::new()
+    } else {
+        text.clone()
+    };
     // "Salva un segreto": before the model. His words are recorded unless they look like they hold
     // the value (`NAME value`, not token-shaped so not masked above): those go nowhere at all.
-    if let Some(words) = (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
-        .then(|| crate::owner_secrets::secret_words(&text))
-        .flatten()
+    if let Some(words) =
+        (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
+            .then(|| crate::owner_secrets::secret_words(&text))
+            .flatten()
     {
         let user = (!words.value_suspect)
             .then(|| {
@@ -274,14 +297,19 @@ async fn handle_chat_turn(
                     channel: channel.clone(),
                     role: "user".into(),
                     text: text.clone(),
-                    client_message_id: (!client_message_id.is_empty()).then(|| client_message_id.clone()),
+                    client_message_id: (!client_message_id.is_empty())
+                        .then(|| client_message_id.clone()),
                     reply_to: reply_to.clone(),
                     ..Default::default()
                 })
             })
             .flatten();
-        let (reply, lucina_item_id, rich) =
-            crate::owner_secrets::answer_secret_words(&st, &words, crate::owner_secrets::lang_of(&text)).await;
+        let (reply, lucina_item_id, rich) = crate::owner_secrets::answer_secret_words(
+            &st,
+            &words,
+            crate::owner_secrets::lang_of(&text),
+        )
+        .await;
         let mut out = json!({
             "reply": reply,
             "action": "secret_request",
@@ -348,7 +376,13 @@ async fn handle_chat_turn(
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let (keep_st, keep_session) = (st.clone(), session.clone());
     if mcp_turn.is_none() {
-        crate::about::observe(&st, &session, "chat", &cmid.clone().unwrap_or_default(), &text);
+        crate::about::observe(
+            &st,
+            &session,
+            "chat",
+            &cmid.clone().unwrap_or_default(),
+            &text,
+        );
     }
     let Some(cmid_value) = cmid.clone() else {
         let out = run_turn(
@@ -363,7 +397,14 @@ async fn handle_chat_turn(
             device_meta,
         )
         .await;
-        crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
+        crate::secret_keep::after_turn(
+            &keep_st,
+            &offer_timeline,
+            &held,
+            &keep_context,
+            offer_lang,
+            &keep_session,
+        );
         return out;
     };
     let key = format!("{session}:{cmid_value}");
@@ -414,7 +455,14 @@ async fn handle_chat_turn(
         Slot::Fresh(fut) => fut,
     };
     let out = shared.await;
-    crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
+    crate::secret_keep::after_turn(
+        &keep_st,
+        &offer_timeline,
+        &held,
+        &keep_context,
+        offer_lang,
+        &keep_session,
+    );
     if out.is_err() {
         st.client_messages
             .lock()
@@ -530,15 +578,26 @@ pub async fn channel_turn(
         .then(|| crate::owner_secrets::secret_words(&message))
         .flatten()
     {
-        let (mut reply, _, _) = crate::owner_secrets::answer_secret_words(&st, &words, offer_lang).await;
+        let (mut reply, _, _) =
+            crate::owner_secrets::answer_secret_words(&st, &words, offer_lang).await;
         reply.push_str(crate::owner_secrets::chat_app_note(offer_lang));
-        return Ok(json!({"reply": reply, "action": "secret_request", "sensitive": true, "job": null}));
+        return Ok(
+            json!({"reply": reply, "action": "secret_request", "sensitive": true, "job": null}),
+        );
     }
     if let Some(t) = origin.timeline_text.as_mut() {
-        let masked = if origin.owner { lucina_secrets::labelled::mask(t).into_owned() } else { t.clone() };
+        let masked = if origin.owner {
+            lucina_secrets::labelled::mask(t).into_owned()
+        } else {
+            t.clone()
+        };
         *t = lucina_secrets::redactor().redact(&masked).into_owned();
     }
-    let keep_context = if held.is_empty() { String::new() } else { message.clone() };
+    let keep_context = if held.is_empty() {
+        String::new()
+    } else {
+        message.clone()
+    };
     let keep_session = session.clone();
     if origin.owner {
         crate::about::observe(&st, &session, "chat", &channel, &message);
@@ -557,7 +616,14 @@ pub async fn channel_turn(
         Meta::default(),
     )
     .await;
-    crate::secret_keep::after_turn(&st, &st.timeline, &held, &keep_context, offer_lang, &keep_session);
+    crate::secret_keep::after_turn(
+        &st,
+        &st.timeline,
+        &held,
+        &keep_context,
+        offer_lang,
+        &keep_session,
+    );
     // The chat app keeps his message: its handler removes it where it can.
     out.map(|mut v| {
         if !held.is_empty() {
@@ -822,12 +888,21 @@ impl Turn<'_> {
             .map_or(self.st.cfg.owner_peer_id.as_str(), |o| o.peer_id.as_str())
     }
 
+    /// The device fact Jev's state gets: the owner's own turn from the DSi or the Mac, nothing else.
+    fn device(&self) -> &'static str {
+        if self.guarded || self.origin.is_some() {
+            return "";
+        }
+        crate::device::jev_device_of_turn(&self.channel, self.mcp.is_some())
+    }
+
     fn input<'b>(&'b self, memory: &'b str, platform: &'b str) -> TurnInput<'b> {
         TurnInput {
             user_text: &self.message,
             memory,
             user_label: &self.user_label,
             platform,
+            device: self.device(),
         }
     }
 }
@@ -983,7 +1058,8 @@ async fn run_turn_scoped(
     };
     // LucinaVoice, Jev fast path (docs/lucinavoice-protocol.md section 6): a spoken turn of the owner starts
     // Jev's intent call first of all, so it runs while the rest of the turn is prepared.
-    let voice_route = (voice_eligible && cancelled.is_none()).then(|| voice_fast::start(&st, &message));
+    let voice_route =
+        (voice_eligible && cancelled.is_none()).then(|| voice_fast::start(&st, &message));
     // A routed spoken turn writes its owner item once the route is known, so that the item carries it.
     let defer_user_item = voice_route.is_some();
 
@@ -1047,6 +1123,11 @@ async fn run_turn_scoped(
     let base_system = match juno.as_str() {
         "" => base_system,
         juno => format!("{base_system} {juno}"),
+    };
+    // The DSi or the Mac he is writing from: on, connected, and not something she can act on herself.
+    let base_system = match crate::device::system_fact(&channel, mcp_turn.is_some()) {
+        "" => base_system,
+        fact => format!("{base_system} {fact}"),
     };
     // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
     let consult = mcp_turn
@@ -1151,6 +1232,7 @@ async fn run_turn_scoped(
                     voice: t.channel == VOICE_CHANNEL,
                     // A share's intent is his note, never the shared content's words.
                     intent_text: t.share.then_some(t.share_note.as_str()),
+                    device: t.device(),
                 },
                 &t.message,
                 &t.user_label,
@@ -1218,6 +1300,11 @@ async fn run_turn_scoped(
                         .to_owned()
                 } else {
                     game_system
+                };
+                // The DSi or the Mac he is writing from, in every model call of the turn.
+                let game_system = match crate::device::system_fact(&t.channel, t.mcp.is_some()) {
+                    "" => game_system,
+                    fact => format!("{game_system}\n{fact}").trim().to_owned(),
                 };
                 let finish = crate::planner::TURN_REPLY
                     .scope(
@@ -1789,7 +1876,7 @@ fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Fi
             let ack = plan["ack"]
                 .as_str()
                 .map(str::trim)
-                .filter(|a| action == "computer_task" && !a.is_empty())
+                .filter(|a| matches!(action, "computer_task" | "agent_task") && !a.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
                     format!(
@@ -1931,7 +2018,24 @@ async fn json_turn(
     }
 
     // A flaw he noticed ("emoji are boxes"): into the tracker in his words (crate::flaws).
-    if let Some(f) = flaw_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence) {
+    if let Some(f) = flaw_turn::try_turn(
+        t,
+        &prepared.classification.intent,
+        prepared.classification.confidence,
+    ) {
+        return f;
+    }
+
+    // He asks for something on one of his devices or machines that she has no tool for: an agent does
+    // it. Jev routes this; no text is matched (crate::act).
+    if let Some(f) = act_turn::try_turn(
+        t,
+        &prepared.classification.intent,
+        prepared.classification.confidence,
+        cmid,
+    )
+    .await
+    {
         return f;
     }
 
@@ -2002,9 +2106,9 @@ async fn json_turn(
         }
     };
     match &yn.outcome {
-        crate::jev_yesno::Outcome::Answer { reply } => badge(
-            Finish::reply(reply.clone(), crate::jev_yesno::ACTION).with("[jev yes/no]", None),
-        ),
+        crate::jev_yesno::Outcome::Answer { reply } => {
+            badge(Finish::reply(reply.clone(), crate::jev_yesno::ACTION).with("[jev yes/no]", None))
+        }
         crate::jev_yesno::Outcome::Pass { .. } => json_turn_rest(t, prepared, cmid).await,
         crate::jev_yesno::Outcome::Unsure { line } | crate::jev_yesno::Outcome::Hedge { line } => {
             let mut f = json_turn_rest(t, prepared, cmid).await;
@@ -2561,7 +2665,8 @@ async fn json_turn_planner(
                     "calendar_event" => return calendar_event_turn(t, &again, memory).await,
                     "schedule_reminder" => resolve_reminder(&t.message, &again, &o),
                     "reply" => {
-                        if let Some(text) = again["text"].as_str().filter(|x| !x.trim().is_empty()) {
+                        if let Some(text) = again["text"].as_str().filter(|x| !x.trim().is_empty())
+                        {
                             return Finish::reply(text.to_owned(), &action);
                         }
                         None
@@ -2963,6 +3068,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 .as_ref()
                 .map_or(USER_LABEL, |o| o.user_label.as_str()),
             platform: origin.as_ref().map_or(PLATFORM_LABEL, |o| o.platform_label),
+            device: "",
         };
         let outcome: Result<(String, String), String> = async {
             match action.as_str() {
@@ -2980,6 +3086,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 "computer_task" => {
                     run_computer_task(plan["task"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&message)).await
                 }
+                "agent_task" => crate::act::job(&st, &t, &plan, &job.id).await,
                 crate::video::ACTION => {
                     let cfg = &st.cfg.video;
                     crate::video::save_resume(cfg, &crate::video::Resume {
@@ -3018,7 +3125,8 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     (None, result.clone())
                 } else {
                     let (rich_msg, text, _) =
-                        rich_reply(&st, &result, &message, &action, "", false, &[], None, false).await;
+                        rich_reply(&st, &result, &message, &action, "", false, &[], None, false)
+                            .await;
                     (rich_msg, text)
                 };
                 let item = record(text, rich_msg.as_ref());
@@ -3386,6 +3494,10 @@ async fn tools_turn(
     };
     // The device the message came from, as a fact of the turn (no message text is matched).
     let voice_system = format!("{voice_system} {}", juno_fact(&st, &session, mcp));
+    let voice_system = format!(
+        "{voice_system} {}",
+        crate::device::system_fact(&channel, mcp)
+    );
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
         .with_reply_to(reply_to);
@@ -3424,6 +3536,7 @@ async fn tools_turn(
                 peer: &st.cfg.owner_peer_id,
                 voice: channel == VOICE_CHANNEL,
                 intent_text: None,
+                device: "",
             },
             &message,
             USER_LABEL,
@@ -3472,6 +3585,7 @@ async fn tools_turn(
         memory: &memory_context,
         user_label: USER_LABEL,
         platform: PLATFORM_LABEL,
+        device: "",
     };
     let mut pending_note = String::new();
     let mut settled: Option<String> = None;
@@ -3736,13 +3850,29 @@ mod tests {
         };
         let m = tool_meta(&mark, &r);
         assert_eq!(
-            (m.kind.as_deref(), m.tool.as_deref(), m.ok, m.via.as_deref(), m.caller.as_deref(), m.conversation.as_deref()),
-            (Some("tool"), Some("media"), Some(true), Some("mcp"), Some("some-new-provider"), Some("lastphoto"))
+            (
+                m.kind.as_deref(),
+                m.tool.as_deref(),
+                m.ok,
+                m.via.as_deref(),
+                m.caller.as_deref(),
+                m.conversation.as_deref()
+            ),
+            (
+                Some("tool"),
+                Some("media"),
+                Some(true),
+                Some("mcp"),
+                Some("some-new-provider"),
+                Some("lastphoto")
+            )
         );
         // His own turn: no mark.
         let m = tool_meta(&Meta::default(), &r);
         assert!(m.via.is_none() && m.caller.is_none());
-        assert!(crate::secret_keep::agent_session("secretary_mcp-claude-lastphoto"));
+        assert!(crate::secret_keep::agent_session(
+            "secretary_mcp-claude-lastphoto"
+        ));
         assert!(crate::secret_keep::agent_session("mcp-some-new-provider"));
         assert!(!crate::secret_keep::agent_session("secretary_ios-1"));
     }

@@ -364,8 +364,11 @@ function JobCard(props: { job: JobState }) {
 function ChannelGlyph(props: { channel: Channel }) {
   return (
     <Switch fallback={<DotsIcon />}>
-      <Match when={props.channel === "web"}>
+      <Match when={props.channel === "web" || props.channel === "mac"}>
         <GlobeIcon />
+      </Match>
+      <Match when={props.channel === "dsi"}>
+        <GamepadIcon />
       </Match>
       <Match when={props.channel === "ios"}>
         <PhoneIcon />
