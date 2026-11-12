@@ -15,7 +15,8 @@ pub mod store;
 
 pub use policy::{Pick, Policy, Step, Verdict};
 pub use store::{
-    Detail, Event, Flaw, FlawPatch, Flaws, ListQuery, NewFlaw, Outcome, Reported, Target, TargetUpdate,
+    Detail, Event, Flaw, FlawPatch, Flaws, ListQuery, NewFlaw, Outcome, Reported, Target,
+    TargetUpdate,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -26,7 +27,10 @@ pub enum FlawError {
     #[error("{0}")]
     EvidenceRequired(String),
     #[error("a target cannot go from {from} to {to}")]
-    BadTransition { from: &'static str, to: &'static str },
+    BadTransition {
+        from: &'static str,
+        to: &'static str,
+    },
     #[error("{0}")]
     Invalid(String),
     /// Someone else holds the target, or it is not ready to start.
@@ -179,7 +183,10 @@ text_enum!(
 
 impl EvidenceKind {
     pub fn closes(self) -> bool {
-        matches!(self, EvidenceKind::HarnessRun | EvidenceKind::DebugEvent | EvidenceKind::Screenshot)
+        matches!(
+            self,
+            EvidenceKind::HarnessRun | EvidenceKind::DebugEvent | EvidenceKind::Screenshot
+        )
     }
 }
 
@@ -206,7 +213,11 @@ pub struct Evidence {
 
 /// Whether `ev` may close a target. The only place that decides it.
 pub fn check_closing_evidence(to: TargetStatus, ev: Option<&Evidence>) -> Result<()> {
-    let refuse = |why: String| Err(FlawError::EvidenceRequired(format!("{to} needs evidence: {why}")));
+    let refuse = |why: String| {
+        Err(FlawError::EvidenceRequired(format!(
+            "{to} needs evidence: {why}"
+        )))
+    };
     let Some(ev) = ev else {
         return refuse("a harness run on an installed build, a debug event or a screenshot".into());
     };
@@ -217,9 +228,14 @@ pub fn check_closing_evidence(to: TargetStatus, ev: Option<&Evidence>) -> Result
         ));
     }
     if ev.reference.trim().is_empty() {
-        return refuse(format!("a {} with nothing to look at (reference is empty)", ev.kind));
+        return refuse(format!(
+            "a {} with nothing to look at (reference is empty)",
+            ev.kind
+        ));
     }
-    if ev.kind == EvidenceKind::HarnessRun && ev.build.as_deref().is_none_or(|b| b.trim().is_empty()) {
+    if ev.kind == EvidenceKind::HarnessRun
+        && ev.build.as_deref().is_none_or(|b| b.trim().is_empty())
+    {
         return refuse("a harness run must name the installed build it ran on (build)".into());
     }
     Ok(())
@@ -241,13 +257,18 @@ pub fn check_transition(
         Verified | NotAffected | Blocked => matches!(to, Affected),
     };
     if !allowed {
-        return Err(FlawError::BadTransition { from: from.as_str(), to: to.as_str() });
+        return Err(FlawError::BadTransition {
+            from: from.as_str(),
+            to: to.as_str(),
+        });
     }
     if to.closed() {
         check_closing_evidence(to, ev)?;
     }
     if to == Fixed && !has_commit {
-        return Err(FlawError::Invalid("fixed needs the commit that fixes it".into()));
+        return Err(FlawError::Invalid(
+            "fixed needs the commit that fixes it".into(),
+        ));
     }
     Ok(())
 }
@@ -258,12 +279,21 @@ mod tests {
     use TargetStatus::*;
 
     fn ev(kind: EvidenceKind, reference: &str, build: Option<&str>) -> Evidence {
-        Evidence { kind, reference: reference.into(), build: build.map(str::to_owned), note: None }
+        Evidence {
+            kind,
+            reference: reference.into(),
+            build: build.map(str::to_owned),
+            note: None,
+        }
     }
 
     #[test]
     fn closing_without_evidence_is_refused() {
-        for (from, to) in [(Untriaged, NotAffected), (Affected, NotAffected), (Fixed, Verified)] {
+        for (from, to) in [
+            (Untriaged, NotAffected),
+            (Affected, NotAffected),
+            (Fixed, Verified),
+        ] {
             let e = check_transition(from, to, None, true).unwrap_err();
             assert_eq!(e.code(), "evidence_required", "{from} -> {to}");
         }
@@ -274,17 +304,31 @@ mod tests {
         let code = ev(EvidenceKind::CodeReading, "rich.rs:12 strips nothing", None);
         check_transition(Untriaged, Affected, Some(&code), false).unwrap();
         for (from, to) in [(Untriaged, NotAffected), (Fixed, Verified)] {
-            assert_eq!(check_transition(from, to, Some(&code), true).unwrap_err().code(), "evidence_required");
+            assert_eq!(
+                check_transition(from, to, Some(&code), true)
+                    .unwrap_err()
+                    .code(),
+                "evidence_required"
+            );
         }
         // Nor does the owner's word close it: he reported it, nobody showed the fix.
         let said = ev(EvidenceKind::OwnerReport, "chat", None);
-        assert_eq!(check_transition(Fixed, Verified, Some(&said), true).unwrap_err().code(), "evidence_required");
+        assert_eq!(
+            check_transition(Fixed, Verified, Some(&said), true)
+                .unwrap_err()
+                .code(),
+            "evidence_required"
+        );
     }
 
     #[test]
     fn what_closes_a_target() {
         for good in [
-            ev(EvidenceKind::HarnessRun, "logs/run-7.txt", Some("web deploy/web/20261102T0100Z-abcd1234")),
+            ev(
+                EvidenceKind::HarnessRun,
+                "logs/run-7.txt",
+                Some("web deploy/web/20261102T0100Z-abcd1234"),
+            ),
             ev(EvidenceKind::DebugEvent, "evt_123", None),
             ev(EvidenceKind::Screenshot, "shots/after.png", None),
         ] {
@@ -298,19 +342,40 @@ mod tests {
         // A harness run must name the installed build.
         for build in [None, Some("  ")] {
             let e = ev(EvidenceKind::HarnessRun, "logs/run-7.txt", build);
-            assert_eq!(check_transition(Fixed, Verified, Some(&e), true).unwrap_err().code(), "evidence_required");
+            assert_eq!(
+                check_transition(Fixed, Verified, Some(&e), true)
+                    .unwrap_err()
+                    .code(),
+                "evidence_required"
+            );
         }
         let e = ev(EvidenceKind::Screenshot, "  ", None);
-        assert_eq!(check_transition(Fixed, Verified, Some(&e), true).unwrap_err().code(), "evidence_required");
+        assert_eq!(
+            check_transition(Fixed, Verified, Some(&e), true)
+                .unwrap_err()
+                .code(),
+            "evidence_required"
+        );
     }
 
     #[test]
     fn verified_only_after_a_fix_and_a_fix_needs_its_commit() {
         let shot = ev(EvidenceKind::Screenshot, "a.png", None);
         for from in [Untriaged, Affected, Fixing, Blocked, NotAffected] {
-            assert_eq!(check_transition(from, Verified, Some(&shot), true).unwrap_err().code(), "bad_transition", "{from}");
+            assert_eq!(
+                check_transition(from, Verified, Some(&shot), true)
+                    .unwrap_err()
+                    .code(),
+                "bad_transition",
+                "{from}"
+            );
         }
-        assert_eq!(check_transition(Fixing, Fixed, None, false).unwrap_err().code(), "bad_request");
+        assert_eq!(
+            check_transition(Fixing, Fixed, None, false)
+                .unwrap_err()
+                .code(),
+            "bad_request"
+        );
         check_transition(Fixing, Fixed, None, true).unwrap();
     }
 
