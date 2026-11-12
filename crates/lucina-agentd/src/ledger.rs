@@ -16,7 +16,9 @@
 //! [`attest`] refuses (and writes nothing for any commit of the call) when a commit has no
 //! `Co-Authored-By` trailer, its trailer names another model than the declared one, or the model is
 //! not in the table. The table is `[attribution.models]` of `.lucina/pipeline.toml` **on the trunk**
-//! (never the branch), else [`default_models`].
+//! (never the branch), else [`default_models`]. A trailer name is matched to the table by family
+//! rather than by exact string: [`trailer_name_key`] drops one trailing parenthesised qualifier
+//! (`Qoder (auto-free)` is the `Qoder` family) and ignores whitespace runs and ASCII case.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -421,6 +423,46 @@ fn trailer_names(dir: &Path, sha: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// The `Co-Authored-By` name as a comparison key: one trailing parenthesised qualifier is dropped
+/// (`Qoder (auto-free)` -> `Qoder`), whitespace runs collapse to one space and ASCII case is
+/// ignored. Nothing more: `Claude Sonnet 5.5 (fast)` is the `claude sonnet 5.5` family and never
+/// `claude opus 5.5` or `claude sonnet 5`, `Qoderx` is not `Qoder`, and a qualifier that is not
+/// trailing (`Qoder (x) y`) is kept.
+fn trailer_name_key(name: &str) -> String {
+    let name = name.trim();
+    let name = drop_trailing_qualifier(name).unwrap_or(name);
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+/// The name without its trailing `(qualifier)`, when the whole name ends in a parenthesised group
+/// that is separated from the name by whitespace. Only the outermost group goes, so a middle
+/// qualifier stays and two families are never merged.
+fn drop_trailing_qualifier(name: &str) -> Option<&str> {
+    if !name.ends_with(')') {
+        return None;
+    }
+    let bytes = name.as_bytes();
+    let mut open_depth = 0usize;
+    for i in (0..bytes.len()).rev() {
+        match bytes[i] {
+            b')' => open_depth += 1,
+            b'(' => {
+                open_depth -= 1;
+                if open_depth == 0 {
+                    // The '(' that the closing one belongs to; the name has to precede it,
+                    // with whitespace, or the group is part of the name itself.
+                    return name[..i].strip_suffix(char::is_whitespace);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Which commits an attest call covers.
 #[derive(Debug, Clone)]
 pub enum Selection {
@@ -470,6 +512,9 @@ pub fn attest(ledger: &Ledger, dir: &Path, a: &AttestArgs) -> Result<Vec<Line>, 
             known.join(", ")
         )]));
     };
+    let expected_key = trailer_name_key(expected);
+    // Every family the table knows, so that a trailer for another model is spotted as ambiguous.
+    let families: BTreeSet<String> = models.values().map(|v| trailer_name_key(v)).collect();
     // The commits, oldest first.
     let shas: Vec<String> = match &a.selection {
         Selection::Default => git(
@@ -517,23 +562,31 @@ pub fn attest(ledger: &Ledger, dir: &Path, a: &AttestArgs) -> Result<Vec<Line>, 
         let short = &sha[..12];
         let fix =
             "amend the commit so its trailer names the model that wrote it, then attest again";
+        // The trailers as written, split into the declared family and another known family.
+        let mut of_declared: Option<&str> = None;
+        let mut of_other_family: Option<&str> = None;
+        for n in &names {
+            let key = trailer_name_key(n);
+            if key == expected_key {
+                of_declared = of_declared.or(Some(n.as_str()));
+            } else if families.contains(&key) {
+                of_other_family = of_other_family.or(Some(n.as_str()));
+            }
+        }
         if names.is_empty() {
             refusals.push(format!(
                 "commit {short} ({subject}) has no Co-Authored-By trailer, but you declared {} (expected \"Co-Authored-By: {expected} <...>\"); {fix}",
                 a.model
             ));
-        } else if !names.iter().any(|n| n == expected) {
+        } else if of_declared.is_none() {
             refusals.push(format!(
                 "commit {short} ({subject}) names {} in its Co-Authored-By trailer, but you declared {} (\"{expected}\"); {fix}",
                 names.join(", "),
                 a.model
             ));
-        } else if let Some(wrong) = names
-            .iter()
-            .find(|n| *n != expected && models.values().any(|v| v == *n))
-        {
+        } else if let (Some(right), Some(wrong)) = (of_declared, of_other_family) {
             refusals.push(format!(
-                "commit {short} ({subject}) names both \"{expected}\" and \"{wrong}\" in its Co-Authored-By trailers, so it is not clear which model wrote it; {fix}"
+                "commit {short} ({subject}) names both \"{right}\" and \"{wrong}\" in its Co-Authored-By trailers, so it is not clear which model wrote it; {fix}"
             ));
         } else {
             drafts.push(Entry {
@@ -690,6 +743,113 @@ mod tests {
         // And an append is refused on a broken ledger.
         let err = ledger.append(vec![]).unwrap_err();
         assert!(matches!(err, LedgerError::Other(m) if m.contains("broken at line 1")));
+    }
+
+    /// Qoder signs `Qoder (auto-free)`, which is the `qoder` family: a trailer is matched by
+    /// family, so the qualifier, the case and the spaces do not have to be the table's.
+    #[test]
+    fn a_qualified_or_differently_cased_trailer_attests_as_its_family() {
+        let (_r, repo, ledger) = setup();
+        for (i, trailer) in [
+            "Qoder (auto-free)",
+            "Qoder (efficient)",
+            "qoder",
+            "Qoder  ",
+            "  Qoder (auto-free)  ",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let c = commit(&repo, "b", &format!("{i}\n"), "by qoder", Some(trailer));
+            let mut a = args("qoder");
+            a.selection = Selection::Commit(c.clone());
+            let out = attest(&ledger, &repo, &a).unwrap_or_else(|e| panic!("{trailer}: {e}"));
+            assert_eq!(out.len(), 1, "{trailer}");
+            assert!(matches!(out[0].appended, Appended::Written(_)), "{trailer}");
+            // The entry records the declared model id, not the trailer as written.
+            let e = ledger.read().unwrap().pop().unwrap();
+            assert_eq!(e.commit, c, "{trailer}");
+            assert_eq!(e.model, "qoder", "{trailer}");
+        }
+        // A qualifier is a qualifier on any family, and the table's own spacing is not literal.
+        let c = commit(
+            &repo,
+            "c",
+            "1",
+            "by sonnet",
+            Some("Claude  Sonnet   5.5 (fast)"),
+        );
+        let mut a = args("claude-sonnet-5-5");
+        a.selection = Selection::Commit(c);
+        attest(&ledger, &repo, &a).unwrap();
+    }
+
+    /// Matching by family is not matching by prefix or by word: only one trailing qualifier goes,
+    /// and another family stays another family.
+    #[test]
+    fn a_trailer_only_of_another_family_or_with_a_middle_qualifier_is_refused() {
+        let (_r, repo, ledger) = setup();
+        for trailer in [
+            "Qoderx",
+            "Qoder (x) y",
+            "Qoder (a",
+            "Claude Sonnet 5",
+            "Claude Opus 5.5",
+        ] {
+            commit(&repo, "b", "1", "not qoder", Some(trailer));
+            let err = attest(&ledger, &repo, &args("qoder")).unwrap_err();
+            let LedgerError::Refused(m) = err else {
+                panic!("{trailer} was accepted")
+            };
+            // The refusal quotes the trailer as written.
+            assert!(m[0].contains(trailer), "{trailer}: {m:?}");
+            assert!(m[0].contains("but you declared qoder"), "{trailer}: {m:?}");
+            assert!(lines(&ledger).is_empty(), "{trailer}");
+            g(&repo, &["reset", "-q", "--hard", "main"]);
+        }
+        // "(fast)" is a qualifier: Claude Sonnet 5.5 (fast) attests as sonnet, and the same
+        // trailer declared as another Claude is still refused.
+        commit(
+            &repo,
+            "b",
+            "1",
+            "sonnet in a hurry",
+            Some("Claude Sonnet 5.5 (fast)"),
+        );
+        attest(&ledger, &repo, &args("claude-sonnet-5-5")).unwrap();
+        let err = attest(&ledger, &repo, &args("claude-opus-5-5")).unwrap_err();
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
+        assert!(m[0].contains("Claude Sonnet 5.5 (fast)"), "{m:?}");
+    }
+
+    /// A commit that names two families stays ambiguous, qualifier or not.
+    #[test]
+    fn a_qualified_trailer_next_to_another_family_is_still_ambiguous() {
+        let (_r, repo, ledger) = setup();
+        std::fs::write(repo.join("b"), "1").unwrap();
+        g(&repo, &["add", "-A"]);
+        g(
+            &repo,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "both\n\nCo-Authored-By: Qoder (auto-free) <n@e>\nCo-Authored-By: Claude Sonnet 5.5 <n@e>",
+            ],
+        );
+        let err = attest(&ledger, &repo, &args("qoder")).unwrap_err();
+        let LedgerError::Refused(m) = err else {
+            panic!()
+        };
+        assert!(m[0].contains("not clear which model"), "{m:?}");
+        // Both trailers are quoted as written.
+        assert!(
+            m[0].contains("Qoder (auto-free)") && m[0].contains("Claude Sonnet 5.5"),
+            "{m:?}"
+        );
+        assert!(lines(&ledger).is_empty());
     }
 
     #[test]
