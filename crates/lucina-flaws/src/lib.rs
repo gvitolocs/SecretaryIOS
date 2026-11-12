@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub mod policy;
 pub mod store;
 
-pub use policy::{Pick, Policy, Verdict};
+pub use policy::{Pick, Policy, Step, Verdict};
 pub use store::{
     Detail, Event, Flaw, FlawPatch, Flaws, ListQuery, NewFlaw, Outcome, Reported, Target, TargetUpdate,
 };

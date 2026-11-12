@@ -5,6 +5,9 @@
 //! the severity, and tells him the outcome. `lucina_decide` only for what can't be undone or
 //! needs his credentials or a payment ([`crate::Gate`]). His eyes only for visual checks on
 //! the iPhone.
+//!
+//! The owner's rule (2026-11-12): the agents she starts are the free ones first and a Claude
+//! model last — a chain of steps ([`Step`]), one per attempt, escalating only after a failed try.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,6 +20,79 @@ pub const DEFAULT_MAX_RUNNING: usize = 2;
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 2;
 /// How long an agent may hold a target (matches the other lanes' 45 minutes).
 pub const DEFAULT_AGENT_MINUTES: i64 = 45;
+/// `LUCINA_FLAWS_PROVIDER`, when the old variables build the chain.
+pub const DEFAULT_PROVIDER: &str = "claude";
+/// `LUCINA_FLAWS_MODEL`, when the old variables build the chain.
+pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
+/// `LUCINA_FLAWS_PROBE_LANE`, when the old variables build the chain.
+pub const DEFAULT_PROBE_LANE: &str = "claude-cli";
+/// The chain the owner decided on 2026-11-12: free agents first, a Claude model last.
+pub const DEFAULT_CHAIN: &str = "opencode:opencode/deepseek-v4.1-flash-free@zen-deepseek-flash, \
+     claude:claude-sonnet-5-5@claude-sonnet, claude:claude-opus-5-5@claude-cli";
+
+/// One agent in the chain: what to run, and which lane to ask about its quota.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    /// agentd's provider (`opencode`, `claude`). Never Codex.
+    pub provider: String,
+    /// The model. `None`: agentd's own default for that provider. Never a paid DeepSeek model.
+    pub model: Option<String>,
+    /// The `lane probe` that says whether this step has quota. `None`: always ready.
+    pub probe_lane: Option<String>,
+}
+
+impl Step {
+    pub fn new(provider: &str, model: Option<&str>, probe_lane: Option<&str>) -> Self {
+        Self { provider: provider.to_owned(), model: model.map(str::to_owned), probe_lane: probe_lane.map(str::to_owned) }
+    }
+
+    /// `provider:model`, or the provider alone when agentd picks the model. For his timeline.
+    pub fn label(&self) -> String {
+        match &self.model {
+            Some(m) => format!("{}:{m}", self.provider),
+            None => self.provider.clone(),
+        }
+    }
+
+    /// `provider[:model][@probe-lane]`. A blank `:model` or `@probe-lane` reads as left out.
+    fn parse(s: &str) -> Result<Self, String> {
+        let word = |w: &str| Some(w.trim().to_owned()).filter(|w| !w.is_empty());
+        let (head, lane) = s.split_once('@').map_or((s, None), |(h, l)| (h, Some(l)));
+        let (provider, model) = head.split_once(':').map_or((head, None), |(p, m)| (p, Some(m)));
+        let Some(provider) = word(provider) else {
+            return Err(format!("`{s}` names no provider"));
+        };
+        let step = Self { provider, model: model.and_then(|m| word(m)), probe_lane: lane.and_then(|l| word(l)) };
+        match step.refusal() {
+            Some(why) => Err(format!("`{s}`: {why}")),
+            None => Ok(step),
+        }
+    }
+
+    /// Why this step may never run, as the words to say at startup. Same rule as
+    /// `lucina_tools::tools::reach::allowed_model`, which checks it again when an agent starts.
+    fn refusal(&self) -> Option<&'static str> {
+        if self.provider.to_lowercase().contains("codex") {
+            return Some("Codex is not used for Lucina");
+        }
+        let Some(model) = self.model.as_deref() else { return None };
+        let model = model.to_lowercase();
+        if !model.contains("deepseek") {
+            return None;
+        }
+        let free = model.split(|c: char| c.is_whitespace() || c == '/').filter(|w| w.contains("deepseek")).all(|w| w.ends_with("-free"));
+        (!free).then_some("a paid DeepSeek model is never used; pick a free one")
+    }
+}
+
+/// A chain as words: `provider[:model][@probe-lane]` steps, comma-separated, cheapest first.
+pub fn parse_chain(spec: &str) -> Result<Vec<Step>, String> {
+    let mut out = Vec::new();
+    for (i, part) in spec.split(',').enumerate() {
+        out.push(Step::parse(part.trim()).map_err(|e| format!("step {} of the chain: {e}", i + 1))?);
+    }
+    Ok(out)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
@@ -35,11 +111,11 @@ pub struct Policy {
     pub owner_gates: Vec<Gate>,
     /// Platforms whose visual check is the owner's own eyes.
     pub owner_eyes: Vec<Platform>,
-    /// `LUCINA_FLAWS_PROVIDER`: agentd's provider (never Codex, checked when an agent starts).
-    pub provider: String,
-    /// `LUCINA_FLAWS_PROBE_LANE`: the `lane probe` that says whether that provider has quota.
-    pub probe_lane: String,
-    pub model: String,
+    /// `LUCINA_FLAWS_CHAIN`: the agents to try, cheapest first, never Codex and never a paid
+    /// DeepSeek model. The first try runs on the first step, every failed one drops a step; a
+    /// step whose probe lane says it is out of quota is skipped for, never past. Always at least
+    /// one step ([`DEFAULT_CHAIN`]).
+    pub chain: Vec<Step>,
     pub effort: String,
     pub mode: String,
     /// `LUCINA_FLAWS_REPO`: server, core and every client but Juno.
@@ -49,10 +125,12 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub fn from_lookup(get: impl Fn(&str) -> Option<String>, home: &std::path::Path) -> Self {
+    /// `Err`: the chain is set but can't be used, which stops the server rather than quietly
+    /// running something else.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>, home: &std::path::Path) -> Result<Self, String> {
         let val = |k: &str| get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         let num = |k: &str, d: u64| val(k).and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0).unwrap_or(d);
-        Self {
+        Ok(Self {
             auto_dispatch: !matches!(val("LUCINA_FLAWS_AUTO_DISPATCH").as_deref(), Some("off" | "false" | "0")),
             auto_triage: !matches!(val("LUCINA_FLAWS_AUTO_TRIAGE").as_deref(), Some("off" | "false" | "0")),
             max_running_per_repo: num("LUCINA_FLAWS_MAX_RUNNING", DEFAULT_MAX_RUNNING as u64) as usize,
@@ -60,14 +138,46 @@ impl Policy {
             agent_minutes: num("LUCINA_FLAWS_AGENT_MINUTES", DEFAULT_AGENT_MINUTES as u64) as i64,
             owner_gates: Gate::ALL.to_vec(),
             owner_eyes: vec![Platform::Ios],
-            provider: val("LUCINA_FLAWS_PROVIDER").unwrap_or_else(|| "claude".into()),
-            probe_lane: val("LUCINA_FLAWS_PROBE_LANE").unwrap_or_else(|| "claude-cli".into()),
-            model: val("LUCINA_FLAWS_MODEL").unwrap_or_else(|| "claude-opus-5-5".into()),
+            chain: match val("LUCINA_FLAWS_CHAIN") {
+                Some(spec) => parse_chain(&spec)?,
+                // The old three variables, any of them set: one step, with their defaults.
+                None if ["LUCINA_FLAWS_PROVIDER", "LUCINA_FLAWS_MODEL", "LUCINA_FLAWS_PROBE_LANE"].iter().any(|k| val(k).is_some()) => {
+                    let step = Step {
+                        provider: val("LUCINA_FLAWS_PROVIDER").unwrap_or_else(|| DEFAULT_PROVIDER.into()),
+                        model: Some(val("LUCINA_FLAWS_MODEL").unwrap_or_else(|| DEFAULT_MODEL.into())),
+                        probe_lane: Some(val("LUCINA_FLAWS_PROBE_LANE").unwrap_or_else(|| DEFAULT_PROBE_LANE.into())),
+                    };
+                    match step.refusal() {
+                        Some(why) => return Err(format!("LUCINA_FLAWS_PROVIDER/MODEL: {why}")),
+                        None => vec![step],
+                    }
+                }
+                None => parse_chain(DEFAULT_CHAIN)?,
+            },
             effort: val("LUCINA_FLAWS_EFFORT").unwrap_or_else(|| "medium".into()),
             mode: "bypassPermissions".into(),
             secretary_repo: val("LUCINA_FLAWS_REPO").map_or_else(|| home.join("Projects/Lucina/SecretaryIOS"), PathBuf::from),
             lucinaos_repo: val("LUCINA_FLAWS_LUCINAOS_REPO").map_or_else(|| home.join("Projects/Lucina/LucinaOS"), PathBuf::from),
-        }
+        })
+    }
+
+    /// The step attempt `n` starts from: the first for the first try, one further down for every
+    /// failed one, never past the last. `n` counts the way `max_attempts` does (1 for the first).
+    pub fn start_step(&self, attempt: u32) -> usize {
+        attempt.saturating_sub(1).min(self.chain.len().saturating_sub(1) as u32) as usize
+    }
+
+    /// Which step attempt `n` runs: from its own step, the first one further down whose probe is
+    /// ready. Never a step above: an expensive agent is never reached by a first try.
+    /// `ready[i]`: step i's probe; a step that wasn't probed is not ready. `None`: nothing starts
+    /// for this target on this tick.
+    pub fn step_for(&self, attempt: u32, ready: &[bool]) -> Option<usize> {
+        (self.start_step(attempt)..self.chain.len()).find(|i| ready.get(*i).copied().unwrap_or(false))
+    }
+
+    /// Triage never escalates: the first step, or it waits.
+    pub fn triage_step(&self, ready: &[bool]) -> Option<usize> {
+        ready.first().copied().unwrap_or(false).then_some(0)
     }
 
     pub fn repo_for(&self, platform: Platform, layer: Layer) -> &std::path::Path {
@@ -224,6 +334,12 @@ fn client_runtime(platform: Platform, runtime: &str) -> bool {
     }
 }
 
+/// The line the dispatcher leaves when an attempt starts: which agent he should expect the work
+/// from. The provider and model, so a cheap answer and an expensive one are never mixed up.
+pub fn start_line(flaw: &Flaw, target: &Target, step: &Step) -> String {
+    format!("{} ({}, {}): try {}, on {}.", flaw.title, flaw.id, target.platform, target.attempts, step.label())
+}
+
 /// A closed status the owner can stop thinking about, as words.
 pub fn outcome_line(flaw: &Flaw, target: &Target, policy: &Policy) -> String {
     let short = |s: &str| s.chars().take(10).collect::<String>();
@@ -252,7 +368,15 @@ mod tests {
     use std::path::Path;
 
     fn policy() -> Policy {
-        Policy::from_lookup(|_| None, Path::new("/h"))
+        Policy::from_lookup(|_| None, Path::new("/h")).unwrap()
+    }
+
+    fn from(chain: &str) -> Policy {
+        Policy::from_lookup(|k| (k == "LUCINA_FLAWS_CHAIN").then(|| chain.to_owned()), Path::new("/h")).unwrap()
+    }
+
+    fn one(key: &str, value: &str) -> Policy {
+        Policy::from_lookup(|k| (k == key).then(|| value.to_owned()), Path::new("/h")).unwrap()
     }
 
     fn due(s: &Flaws, words: &str, severity: Severity, p: Platform, gate: Option<Gate>) -> Flaw {
@@ -267,11 +391,121 @@ mod tests {
         assert!(p.auto_dispatch);
         assert_eq!(p.max_running_per_repo, 2);
         assert_eq!(p.owner_eyes, vec![Platform::Ios]);
-        assert_eq!(p.model, "claude-opus-5-5");
+        assert_eq!(p.effort, "medium");
         assert_eq!(p.repo_for(Platform::Juno, Layer::Client), Path::new("/h/Projects/Lucina/LucinaOS"));
         assert_eq!(p.repo_for(Platform::Juno, Layer::Server), Path::new("/h/Projects/Lucina/SecretaryIOS"));
-        let off = Policy::from_lookup(|k| (k == "LUCINA_FLAWS_AUTO_DISPATCH").then(|| "off".to_owned()), Path::new("/h"));
+        let off = Policy::from_lookup(|k| (k == "LUCINA_FLAWS_AUTO_DISPATCH").then(|| "off".to_owned()), Path::new("/h")).unwrap();
         assert!(!off.auto_dispatch);
+    }
+
+    #[test]
+    fn the_default_chain_is_free_agents_first_and_a_claude_model_last() {
+        let p = policy();
+        assert_eq!(
+            p.chain,
+            vec![
+                Step::new("opencode", Some("opencode/deepseek-v4.1-flash-free"), Some("zen-deepseek-flash")),
+                Step::new("claude", Some("claude-sonnet-5-5"), Some("claude-sonnet")),
+                Step::new("claude", Some("claude-opus-5-5"), Some("claude-cli")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chain_step_may_leave_out_the_model_or_the_probe_lane() {
+        let p = from("  vibe:vibe-8 , qcode@qcode-lane , lucinacode ");
+        assert_eq!(p.chain, vec![Step::new("vibe", Some("vibe-8"), None), Step::new("qcode", None, Some("qcode-lane")), Step::new("lucinacode", None, None),]);
+    }
+
+    #[test]
+    fn codex_and_a_paid_deepseek_model_are_refused_before_starting() {
+        for spec in ["codex", "claude:claude-sonnet-5-5, codex:claude", "opencode:deepseek-v4-pro", "claude:deepseek chat"] {
+            let e = from_err(spec);
+            assert!(e.contains("Codex") || e.contains("DeepSeek"), "{spec}: {e}");
+        }
+        assert!(from_err("claude:claude-sonnet-5-5, codex:claude").contains("step 2"), "it says which step");
+        assert!(from_err("claude:claude-sonnet-5-5, ").contains("step 2"), "a blank step is an error, not a fallback");
+        // The old variables are refused the same way.
+        assert!(Policy::from_lookup(|k| (k == "LUCINA_FLAWS_PROVIDER").then(|| "codex".to_owned()), Path::new("/h")).is_err());
+        assert!(Policy::from_lookup(|k| (k == "LUCINA_FLAWS_MODEL").then(|| "deepseek-v4-pro".to_owned()), Path::new("/h")).is_err());
+        // The free DeepSeek model of the same family is the default's first step, so it is taken.
+        assert_eq!(from("opencode:opencode/deepseek-v4.1-flash-free").chain.len(), 1);
+    }
+
+    fn from_err(chain: &str) -> String {
+        Policy::from_lookup(|k| (k == "LUCINA_FLAWS_CHAIN").then(|| chain.to_owned()), Path::new("/h")).unwrap_err()
+    }
+
+    #[test]
+    fn the_old_variables_build_exactly_one_step_with_their_own_defaults() {
+        let wanted = Step::new(DEFAULT_PROVIDER, Some(DEFAULT_MODEL), Some(DEFAULT_PROBE_LANE));
+        for (key, value) in [
+            ("LUCINA_FLAWS_PROVIDER", "opencode"),
+            ("LUCINA_FLAWS_MODEL", "opencode/deepseek-v4.1-flash-free"),
+            ("LUCINA_FLAWS_PROBE_LANE", "zen-deepseek-flash"),
+        ] {
+            let p = one(key, value);
+            let set = Step {
+                provider: if key == "LUCINA_FLAWS_PROVIDER" { value.into() } else { wanted.provider.clone() },
+                model: if key == "LUCINA_FLAWS_MODEL" { Some(value.into()) } else { wanted.model.clone() },
+                probe_lane: if key == "LUCINA_FLAWS_PROBE_LANE" { Some(value.into()) } else { wanted.probe_lane.clone() },
+            };
+            assert_eq!(p.chain, vec![set], "{key}");
+        }
+        // The chain wins when both are set.
+        let p = Policy::from_lookup(
+            |k| match k {
+                "LUCINA_FLAWS_CHAIN" => Some("claude:claude-sonnet-5-5".into()),
+                "LUCINA_FLAWS_PROVIDER" => Some("codex".into()),
+                _ => None,
+            },
+            Path::new("/h"),
+        )
+        .unwrap();
+        assert_eq!(p.chain, vec![Step::new("claude", Some("claude-sonnet-5-5"), None)]);
+    }
+
+    #[test]
+    fn an_attempt_starts_on_its_own_step_never_above_it() {
+        let p = policy();
+        assert_eq!((p.start_step(1), p.start_step(2), p.start_step(3)), (0, 1, 2));
+        assert_eq!(p.start_step(4), 2, "past the chain it stays on the last step");
+        assert_eq!(p.start_step(0), 0, "a first try counted as zero is still the first");
+        let all = [true, true, true];
+        assert_eq!(p.step_for(1, &all), Some(0));
+        assert_eq!(p.step_for(2, &all), Some(1));
+        assert_eq!(p.step_for(3, &all), Some(2));
+        assert_eq!(p.step_for(9, &all), Some(2));
+    }
+
+    #[test]
+    fn the_walk_down_passes_a_step_that_is_out_and_never_comes_back_up() {
+        let p = policy();
+        assert_eq!(p.step_for(1, &[false, true, true]), Some(1), "the free lane is out: the next step runs");
+        assert_eq!(p.step_for(1, &[false, false, true]), Some(2), "both out: the last step runs");
+        assert_eq!(p.step_for(2, &[true, false, true]), Some(2), "the ready free lane above is not its own step");
+        assert_eq!(p.step_for(3, &[true, true, false]), None, "its own step is the last, and it is out");
+        assert_eq!(p.step_for(1, &[false, false, false]), None, "nothing ready: nothing starts on this tick");
+        // A step with no probe lane is always ready, so a one-step chain without a lane runs.
+        assert_eq!(from("claude").step_for(1, &[true]), Some(0));
+    }
+
+    #[test]
+    fn triage_never_escalates() {
+        let p = policy();
+        assert_eq!(p.triage_step(&[true, true, true]), Some(0));
+        assert_eq!(p.triage_step(&[false, true, true]), None, "it waits for the first step to come back");
+        assert_eq!(p.triage_step(&[]), None);
+    }
+
+    #[test]
+    fn the_start_line_names_the_agent_running_the_try() {
+        let s = Flaws::in_memory().unwrap();
+        let f = due(&s, "emoji are boxes", Severity::High, Platform::Web, None);
+        let t = s.get(&f.id).unwrap().targets.into_iter().find(|t| t.platform == Platform::Web).unwrap();
+        let line = start_line(&f, &t, &Step::new("opencode", Some("opencode/deepseek-v4.1-flash-free"), Some("zen-deepseek-flash")));
+        assert!(line.contains("emoji are boxes (") && line.contains("try 0, on opencode:opencode/deepseek-v4.1-flash-free"), "{line}");
+        assert!(!line.contains("zen-deepseek-flash"), "the lane is not his business: {line}");
     }
 
     #[test]
