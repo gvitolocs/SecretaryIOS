@@ -112,9 +112,9 @@ pub struct Policy {
     /// Platforms whose visual check is the owner's own eyes.
     pub owner_eyes: Vec<Platform>,
     /// `LUCINA_FLAWS_CHAIN`: the agents to try, cheapest first, never Codex and never a paid
-    /// DeepSeek model. The first try runs on the first step, every failed one drops a step; a
-    /// step whose probe lane says it is out of quota is skipped for, never past. Always at least
-    /// one step ([`DEFAULT_CHAIN`]).
+    /// DeepSeek model. The first try runs on the first step, every failed one drops a step; a step
+    /// whose probe lane says it is out of quota is passed over for the one below it, never come
+    /// back up to. Always at least one step ([`DEFAULT_CHAIN`]).
     pub chain: Vec<Step>,
     pub effort: String,
     pub mode: String,

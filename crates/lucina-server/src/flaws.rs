@@ -966,6 +966,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_try_escalates_to_the_next_step_of_the_chain() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        // Room for the whole chain: two tries is the default, and the third step is the point here.
+        let p = Policy { max_attempts: 4, ..policy() };
+        let f = due(&s, "emoji", Platform::Web, None);
+        tick(&s, &p, &h).await;
+        assert_eq!(h.ran(), vec![p.chain[0].label()], "a free agent takes the first try");
+        for i in 0..3 {
+            h.status.lock().unwrap().insert(format!("ag{i}"), "error".into());
+            h.errors.lock().unwrap().insert(format!("ag{i}"), "the provider crashed".into());
+            tick(&s, &p, &h).await;
+            let down = (i + 1).min(p.chain.len() - 1);
+            assert_eq!(h.ran()[i + 1], p.chain[down].label(), "try {} is a step further down, and the last one stays there", i + 2);
+        }
+        assert_eq!(target(&s, &f.id, Platform::Web).attempts, 4);
+    }
+
+    #[tokio::test]
     async fn a_duplicate_stops_its_running_agent() {
         let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
         let a = s.report(NewFlaw { words: "older one".into(), ..NewFlaw::default() }, "o").unwrap().flaw.flaw;
