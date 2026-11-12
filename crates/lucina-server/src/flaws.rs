@@ -54,8 +54,8 @@ fn home() -> PathBuf {
 }
 
 impl FlawSettings {
-    /// `Err`: the chain the environment asks for can't be run, which stops the server rather
-    /// than quietly dispatching on another agent.
+    /// `Err`: the chain the environment asks for can't be run, or the number of triage steps isn't
+    /// one, which stops the server rather than quietly dispatching on another agent.
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>, data_dir: &Path) -> Result<Self, String> {
         let val = |k: &str| get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         Ok(Self {
@@ -280,6 +280,27 @@ fn started_step(flaws: &Flaws, id: &str, p: Platform) -> Option<Step> {
     Some(Step::new(e.detail.get("provider").and_then(Value::as_str)?, str_field("model").as_deref(), str_field("probe_lane").as_deref()))
 }
 
+/// The step this flaw's triage agent ran on: what to mark out when it ends on a limit. A flaw
+/// triaged before the chain has no step recorded, which is the first one.
+fn triage_ran<'a>(policy: &'a Policy, flaw: &Flaw) -> Option<&'a Step> {
+    let last = policy.chain.len().checked_sub(1)?;
+    Some(&policy.chain[flaw.triage_step.unwrap_or(0).min(last)])
+}
+
+/// Triage's step: the first of the cheap ones whose lane is ready, probed no further than it takes.
+/// `None`: every step triage may use is out, so the reports wait.
+async fn choose_triage_step(hands: &dyn Hands, policy: &Policy) -> Option<usize> {
+    let mut ready = Vec::with_capacity(policy.triage_steps);
+    for step in policy.chain.iter().take(policy.triage_steps) {
+        let r = hands.step_ready(step).await;
+        ready.push(r);
+        if r {
+            break;
+        }
+    }
+    policy.triage_step(&ready)
+}
+
 /// `POST /flaws/{id}/dispatch`: the explicit start, under the same gates and cap as the loop.
 pub async fn dispatch_one(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, id: &str, p: Platform, actor: &str) -> Result<Target, ApiError> {
     let d = flaws.get(id).map_err(api_error)?;
@@ -436,9 +457,10 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             Ok(_) => {
                 match hands.agent_error(&agent).await.filter(|e| is_limit(e)) {
                     Some(e) => {
-                        // Triage runs on the first step of the chain and never on another.
-                        if let Some(first) = policy.chain.first() {
-                            hands.step_out(first, &e);
+                        // Triage keeps to the cheap end of the chain; the step that ran is the one
+                        // out of quota, not always the first.
+                        if let Some(step) = triage_ran(policy, &flaw) {
+                            hands.step_out(step, &e);
                         }
                         let _ = flaws.reset_triage(&flaw.id, &e, ACTOR);
                     }
@@ -457,11 +479,10 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
     if due.is_empty() {
         return;
     }
-    // Triage never escalates: the first step of the chain, and it waits when that one is out.
-    let Some(step) = policy.chain.first() else { return };
-    if policy.triage_step(&[hands.step_ready(step).await]).is_none() {
-        return;
-    }
+    // Triage never reaches an expensive step: the first of its `triage_steps` cheap ones that has
+    // quota, and the reports wait when none of them has.
+    let Some(ran) = choose_triage_step(hands, policy).await else { return };
+    let step = &policy.chain[ran];
     for flaw in due {
         if busy >= policy.max_running_per_repo {
             break;
@@ -478,7 +499,7 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
         .await;
         match started {
             Ok(agent) => {
-                let _ = flaws.start_triage(&flaw.id, &agent, false, ACTOR);
+                let _ = flaws.start_triage(&flaw.id, &agent, false, Some(ran), ACTOR);
                 busy += 1;
             }
             Err(why) => tracing::warn!(flaw = %flaw.id, error = %why, "flaws: triage not started"),
@@ -893,7 +914,7 @@ mod tests {
         h.errors.lock().unwrap().insert("ag1".into(), "the provider crashed".into());
         *h.lanes_out.lock().unwrap() = vec![];
         tick(&s, &p, &h).await;
-        assert_eq!(h.ran()[2], p.chain[1].label(), "try 3 starts on step 2, the step it reached");
+        assert_eq!(h.ran()[2], p.chain[1].label(), "the second counted try starts on its own step, index 1");
     }
 
     #[tokio::test]
@@ -1066,6 +1087,61 @@ mod tests {
         h.status.lock().unwrap().insert("ag0".into(), "idle".into());
         tick(&s, &p, &h).await;
         assert_eq!(h.agents.lock().unwrap().len(), 3);
+    }
+
+    /// The lane a step asks about.
+    fn lane(step: &Step) -> String {
+        step.probe_lane.clone().unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn triage_takes_a_second_cheap_step_when_the_first_is_out() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let p = Policy { auto_triage: true, triage_steps: 2, ..policy() };
+        s.report(NewFlaw { words: "report number one".into(), ..NewFlaw::default() }, "o").unwrap();
+        // The free lane answered a limit; its probe still says out.
+        h.step_out(&p.chain[0], "the free lane is out");
+        tick(&s, &p, &h).await;
+        assert_eq!(h.ran(), vec![p.chain[1].label()], "the report is looked at, on the next cheap step");
+        assert_eq!(s.triaging().unwrap()[0].triage_step, Some(1), "which step the triage runs on is stored with it");
+    }
+
+    #[tokio::test]
+    async fn triage_waits_while_its_own_steps_are_all_out() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        // The default: one cheap step, and nothing else.
+        let p = Policy { auto_triage: true, ..policy() };
+        s.report(NewFlaw { words: "report number one".into(), ..NewFlaw::default() }, "o").unwrap();
+        h.step_out(&p.chain[0], "the free lane is out");
+        for _ in 0..4 {
+            tick(&s, &p, &h).await;
+        }
+        assert!(h.agents.lock().unwrap().is_empty(), "the steps below it are more than triage may use");
+        // The lane is back: it starts by itself.
+        *h.lanes_out.lock().unwrap() = vec![];
+        tick(&s, &p, &h).await;
+        assert_eq!(h.ran(), vec![p.chain[0].label()]);
+    }
+
+    #[tokio::test]
+    async fn a_triage_limit_marks_out_the_step_that_ran() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let p = Policy { auto_triage: true, triage_steps: 2, ..policy() };
+        s.report(NewFlaw { words: "report number one".into(), ..NewFlaw::default() }, "o").unwrap();
+        h.step_out(&p.chain[0], "the free lane is out");
+        tick(&s, &p, &h).await;
+        assert_eq!(h.ran(), vec![p.chain[1].label()]);
+        // It ends on a limit: the lane that ran is the one out, and the first is left as it was.
+        h.status.lock().unwrap().insert("ag0".into(), "error".into());
+        h.errors.lock().unwrap().insert("ag0".into(), "You've hit your weekly limit · resets Nov 4, 12pm (UTC)".into());
+        tick(&s, &p, &h).await;
+        assert_eq!(*h.lanes_out.lock().unwrap(), vec![lane(&p.chain[0]), lane(&p.chain[1])], "the step that ran, not always the first");
+        assert_eq!(s.triage_due().unwrap().len(), 1, "the report is triable again");
+        // Both cheap steps are out now: it waits, and the expensive one below is never used.
+        for _ in 0..2 {
+            tick(&s, &p, &h).await;
+        }
+        assert_eq!(h.ran(), vec![p.chain[1].label()], "no second triage agent, and never the last step");
     }
 
     #[tokio::test]

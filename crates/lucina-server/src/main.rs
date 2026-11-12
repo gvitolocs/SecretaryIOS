@@ -861,7 +861,8 @@ fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
             };
             let r = flaws.report(new, &actor)?;
             if triaged {
-                flaws.start_triage(&r.flaw.flaw.id, "manual", true, &actor)?;
+                // No agent ran on it: the owner or a session already looked, so no chain step either.
+                flaws.start_triage(&r.flaw.flaw.id, "manual", true, None, &actor)?;
             }
             serde_json::to_value(r)?
         }

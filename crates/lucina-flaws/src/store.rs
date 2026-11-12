@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS flaws (
     gate TEXT,
     decision_id TEXT,
     triage_agent TEXT,
+    triage_step INTEGER,
     triaged_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -133,6 +134,10 @@ pub struct Flaw {
     /// The agent looking at which clients have it, or `manual`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub triage_agent: Option<String>,
+    /// Which step of the chain that agent runs on, counted from 0. `None`: it was set before the
+    /// chain, which is the first step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triage_step: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub triaged_at: Option<String>,
     pub created_at: String,
@@ -301,6 +306,7 @@ fn flaw_row(r: &Row<'_>) -> rusqlite::Result<Flaw> {
         gate: parse_opt(r.get("gate")?, Gate::parse),
         decision_id: r.get("decision_id")?,
         triage_agent: r.get("triage_agent")?,
+        triage_step: r.get("triage_step")?,
         triaged_at: r.get("triaged_at")?,
         created_at: r.get("created_at")?,
         updated_at: r.get("updated_at")?,
@@ -392,6 +398,16 @@ fn words_of(s: &str) -> HashSet<String> {
         .collect()
 }
 
+/// A database from before the chain: `CREATE TABLE IF NOT EXISTS` never changes a table that is
+/// already there, so the step a triage agent ran on is added here. Nothing in it is a step yet.
+fn migrate(c: &Connection) -> Result<()> {
+    let has = c.prepare("SELECT 1 FROM pragma_table_info('flaws') WHERE name = 'triage_step'")?.exists([])?;
+    if !has {
+        c.execute("ALTER TABLE flaws ADD COLUMN triage_step INTEGER", [])?;
+    }
+    Ok(())
+}
+
 impl Flaws {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
@@ -408,6 +424,7 @@ impl Flaws {
     fn with(c: Connection) -> Result<Self> {
         c.busy_timeout(std::time::Duration::from_secs(5))?;
         c.execute_batch(SCHEMA)?;
+        migrate(&c)?;
         Ok(Self { conn: Mutex::new(c) })
     }
 
@@ -803,13 +820,14 @@ impl Flaws {
         Ok(out)
     }
 
-    /// An agent is looking at it; or, `done`, someone already did (`manual`).
-    pub fn start_triage(&self, id: &str, agent: &str, done: bool, actor: &str) -> Result<()> {
+    /// An agent is looking at it; or, `done`, someone already did (`manual`). `step`: which step of
+    /// the chain that agent runs on, so a limit of its lane is remembered for the next round.
+    pub fn start_triage(&self, id: &str, agent: &str, done: bool, step: Option<usize>, actor: &str) -> Result<()> {
         self.tx(|c| {
             let at = now();
             c.execute(
-                "UPDATE flaws SET triage_agent=?1, triaged_at=?2, updated_at=?3 WHERE id=?4",
-                params![agent, done.then_some(at.clone()), at, id],
+                "UPDATE flaws SET triage_agent=?1, triage_step=?2, triaged_at=?3, updated_at=?4 WHERE id=?5",
+                params![agent, step.map(|s| s as i64), done.then_some(at.clone()), at, id],
             )?;
             event(c, id, None, "triage", actor, json!({"agent": agent, "done": done}))
         })
@@ -818,7 +836,7 @@ impl Flaws {
     /// The triage agent never got to work: another one may start.
     pub fn reset_triage(&self, id: &str, why: &str, actor: &str) -> Result<()> {
         self.tx(|c| {
-            c.execute("UPDATE flaws SET triage_agent=NULL, triaged_at=NULL WHERE id=?1", params![id])?;
+            c.execute("UPDATE flaws SET triage_agent=NULL, triage_step=NULL, triaged_at=NULL WHERE id=?1", params![id])?;
             event(c, id, None, "triage_reset", actor, json!({"why": why}))
         })
     }
@@ -1111,13 +1129,77 @@ mod tests {
         let s = Flaws::in_memory().unwrap();
         let f = report(&s, "x", &[]);
         assert_eq!(s.triage_due().unwrap().len(), 1);
-        s.start_triage(&f.id, "a1", false, "d").unwrap();
+        s.start_triage(&f.id, "a1", false, Some(1), "d").unwrap();
         assert!(s.triage_due().unwrap().is_empty());
-        assert_eq!(s.triaging().unwrap().len(), 1);
+        assert_eq!(s.triaging().unwrap()[0].triage_step, Some(1), "which step of the chain it runs on");
+        s.reset_triage(&f.id, "the lane is out", "d").unwrap();
+        assert_eq!(s.triage_due().unwrap()[0].triage_step, None, "no agent holds it, so no step either");
+        s.start_triage(&f.id, "a1", false, Some(1), "d").unwrap();
         s.finish_triage(&f.id, "ended", "d").unwrap();
         assert!(s.triaging().unwrap().is_empty());
         assert!(s.triage_due().unwrap().is_empty(), "the rows it left open stay open: no second agent");
     }
+
+    #[test]
+    fn a_database_from_before_the_chain_gains_the_step() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(OLD_SCHEMA).unwrap();
+        let s = Flaws::with(c).unwrap();
+        let f = report(&s, "x", &[]);
+        assert_eq!(s.triaging().unwrap().len(), 0, "nothing in it is a step yet");
+        s.start_triage(&f.id, "manual", true, None, "d").unwrap();
+        let reread = s.get(&f.id).unwrap().flaw;
+        assert_eq!((reread.triage_agent.as_deref(), reread.triage_step), (Some("manual"), None));
+    }
+
+    /// The table as it was before the chain: the same columns, no `triage_step`.
+    const OLD_SCHEMA: &str = r#"
+CREATE TABLE flaws (
+    id TEXT PRIMARY KEY,
+    words TEXT NOT NULL,
+    title TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    state TEXT NOT NULL,
+    duplicate_of TEXT REFERENCES flaws(id),
+    discovered_from TEXT REFERENCES flaws(id),
+    thread TEXT,
+    reporter TEXT NOT NULL,
+    gate TEXT,
+    decision_id TEXT,
+    triage_agent TEXT,
+    triaged_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE flaw_targets (
+    flaw_id TEXT NOT NULL REFERENCES flaws(id),
+    platform TEXT NOT NULL,
+    layer TEXT,
+    status TEXT NOT NULL,
+    evidence TEXT,
+    workspace TEXT,
+    agent TEXT,
+    session TEXT,
+    repo TEXT,
+    commit_sha TEXT,
+    deploy_tag TEXT,
+    build TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT,
+    told_status TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (flaw_id, platform)
+);
+CREATE TABLE flaw_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    flaw_id TEXT NOT NULL REFERENCES flaws(id),
+    platform TEXT,
+    kind TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    at TEXT NOT NULL
+);
+"#;
 
     #[test]
     fn ids() {
