@@ -80,6 +80,44 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
   answer it (`lucina_reply` when it names a thread).
 - Design and internals: [`docs/design/agents-pipeline.md`](design/agents-pipeline.md).
 
+## Who wrote a commit
+
+The proof-roles gate (`lucina-ci roles` in LucinaOS) needs to know which model wrote a commit, because the model that
+writes code must never be the one that proves it. A hand-typed trailer is not enough: a lead committing a worker's diff
+used to put its own line on it. So the pipeline keeps a **commit ledger**.
+
+- The `Co-Authored-By:` trailer names **the model that wrote the diff**. A worker's commit carries the worker's line
+  (`Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`); a lead committing a worker's diff uses the worker's line,
+  not its own.
+- After committing, run `lagent attest --model <id>` (for example `claude-sonnet-5-5`). It attests the non-merge commits
+  of your branch that are not on the trunk; `--commit <rev>` or `--range A..B` pick others, `--repo <path>` another repo.
+  `--kind lane|subagent|lead` (default `lead`) and `--lane <name>` are recorded; `LAGENT_ACTOR_MODEL`,
+  `LAGENT_ACTOR_KIND` and `LAGENT_ACTOR_LANE` stand in for the flags. A lane is meant to attest by itself once the lane
+  tool exports those three variables; **that part is not built yet**, so today the committing session runs it.
+- **A refusal** means the commit is still wrong while it is amendable: it has no `Co-Authored-By` trailer, its trailer
+  names another model than the one you declared (or names two models), or the model id is not in the table. Nothing is
+  written for any commit of the call. Amend the commit so its trailer names the model that wrote it, then attest again.
+  A commit already attested with the same model is a no-op; with another model it is refused.
+- `lagent ledger show [--commit <rev>] [--repo <path>] [--json]` prints entries; `lagent ledger verify` walks the hash chain
+  and exits non-zero naming the first bad line.
+- The ledger is `commit-ledger.jsonl` in the daemon's state directory (`~/.local/share/lucina-agentd`), mode 0600, append
+  only, one JSON object per commit with `prev` = the SHA-256 of the previous line (64 zeros for the first). `lagent attest`
+  and `lagent ledger` work on that file directly (flock-ed), not through the daemon; `--state-dir` or
+  `LUCINA_AGENTD_STATE_DIR` point them at another directory. The chain catches an edited or removed middle line, not
+  lines cut from the end or an edit of the last line; the threat model is forgetfulness, not a malicious agent.
+- The merge gates get `LAGENT_COMMIT_LEDGER=<absolute path>` in their environment, and the merge job's log says how many
+  of the branch's non-merge commits have an entry. The queue itself refuses nothing: the gate tool reads the file.
+- **The table** of model id to trailer name is built in: `claude-sonnet-5-5` = `Claude Sonnet 5.5`, `claude-opus-5-5` =
+  `Claude Opus 5.5`, `claude-fable-5-2` = `Claude Fable 5.2`, `qwen3.8-27b` = `Qwen 3.8 27B`, `qoder` = `Qoder`. A repo
+  replaces it with `[attribution.models]` in `.lucina/pipeline.toml`, read from the trunk (never the branch, so a branch
+  cannot add itself a model); the table replaces the default, it is not merged with it:
+
+  ```toml
+  [attribution.models]
+  "claude-sonnet-5-5" = "Claude Sonnet 5.5"
+  "my-new-model" = "My New Model"
+  ```
+
 ## Why
 
 Until 2026-10-30 the repo had five deploy-line branches: `lucina-rs` (nezopt), `server-live` (p1 server and MCP),
