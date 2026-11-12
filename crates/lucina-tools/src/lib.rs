@@ -759,7 +759,10 @@ mod tests {
         let mcp = all.without(NO_MCP_TOOLS);
         assert_eq!(mcp.names().len(), 20);
         for n in tools::reach::REACH_TOOLS {
-            assert!(OWNER_ONLY_TOOLS.contains(n) && NO_MCP_TOOLS.contains(n), "{n}");
+            assert!(
+                OWNER_ONLY_TOOLS.contains(n) && NO_MCP_TOOLS.contains(n),
+                "{n}"
+            );
             assert!(all.get(n).is_some() && mcp.get(n).is_none(), "{n}");
         }
         assert!(mcp.get("au_people_search").is_some());
