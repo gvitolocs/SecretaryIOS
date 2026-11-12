@@ -33,11 +33,11 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// Header naming the client surface (`web` | `ios`) for chat.
+/// Header naming the client surface (`web` | `ios` | `dsi` | `mac`) for chat.
 pub const CLIENT_HEADER: &str = "x-secretary-client";
 
 /// The chat `channel`: the `X-Secretary-Client` header, else the body's
-/// `channel`, else `web`. Explicit values must be `web` or `ios`. `voice` is
+/// `channel`, else `web`. Explicit values must be `web`, `ios`, `dsi` or `mac`. `voice` is
 /// valid for Lucina (the shared "Lucina Voice" thread) but only secretary-server's
 /// own voice pipeline may send it: a client claiming it here is refused like any
 /// unknown value, so nothing can write into the speaker's thread or pass for it.
@@ -47,7 +47,7 @@ pub(crate) fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<St
             ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "bad_request",
-                "X-Secretary-Client: must be one of web, ios",
+                "X-Secretary-Client: must be one of web, ios, dsi, mac",
             )
         })?,
         None => body.unwrap_or("web"),
@@ -63,10 +63,25 @@ pub(crate) fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<St
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "bad_request",
-            format!("{field}: must be one of web, ios"),
+            format!("{field}: must be one of web, ios, dsi, mac"),
         ));
     }
     Ok(channel.to_owned())
+}
+
+/// The channel the request names, corrected from what the request says about itself: the Fortuna
+/// firmware installed before `dsi` existed claims `web`, so its `source`, session id or User-Agent
+/// make it `dsi` ([`secretary_core::channel::client_channel`]).
+pub(crate) fn app_channel(
+    headers: &HeaderMap,
+    claimed: &str,
+    source: Option<&str>,
+    session: Option<&str>,
+) -> String {
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    secretary_core::channel::client_channel(claimed, source, session, user_agent)
 }
 
 /// Lucina's reply (with `userItemId`/`lucinaItemId`) passes through as is.
@@ -76,7 +91,13 @@ async fn chat(
     Extension(ident): Extension<crate::auth::Identity>,
     JsonBody(mut req): JsonBody<ChatRequest>,
 ) -> ApiResult {
-    req.channel = Some(chat_channel(&headers, req.channel.as_deref())?);
+    let claimed = chat_channel(&headers, req.channel.as_deref())?;
+    req.channel = Some(app_channel(
+        &headers,
+        &claimed,
+        req.source.as_deref(),
+        req.session_id.as_deref(),
+    ));
     // The client's own label (`fortuna-chat`, `juno-chat`, …) is kept only when well formed: a bad
     // one is dropped, not refused, so an old client never loses a message over it.
     req.source = req

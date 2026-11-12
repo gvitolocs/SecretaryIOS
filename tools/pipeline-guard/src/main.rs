@@ -29,12 +29,19 @@ const SCOPE: &str = r"(?i)(Projects/Lucina\b|SecretaryIOS|\.worktrees/(Secretary
 /// The command without its here-documents' bodies: text a command writes to a file or feeds to
 /// a program (a doc, a Python edit) is data, not something the shell runs.
 pub fn without_heredocs(command: &str) -> String {
-    let Ok(start) = Regex::new(r#"<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)['"]?"#) else { return command.to_string() };
+    let Ok(start) = Regex::new(r#"<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)['"]?"#) else {
+        return command.to_string();
+    };
+    let shell = Regex::new(r"(^|[\s;&|(])(bash|sh|zsh|ssh|sudo)\b").ok();
     let mut out = String::new();
     let mut until: Option<(String, bool)> = None;
     for line in command.split('\n') {
         if let Some((tag, dash)) = &until {
-            let l = if *dash { line.trim_start_matches('\t') } else { line };
+            let l = if *dash {
+                line.trim_start_matches('\t')
+            } else {
+                line
+            };
             if l.trim_end() == tag {
                 until = None;
                 out.push_str(line);
@@ -47,7 +54,7 @@ pub fn without_heredocs(command: &str) -> String {
         if let Some(c) = start.captures(line) {
             // A body a shell runs (`bash <<EOF`, `ssh host <<EOF`) is commands: keep it.
             let before = &line[..c.get(0).map(|m| m.start()).unwrap_or(0)];
-            let runs = Regex::new(r"(^|[\s;&|(])(bash|sh|zsh|ssh|sudo)\b").is_ok_and(|r| r.is_match(before));
+            let runs = shell.as_ref().is_some_and(|r| r.is_match(before));
             if !runs {
                 until = Some((c[2].to_string(), c[0].starts_with("<<-")));
             }
@@ -109,10 +116,16 @@ const PHONE: &str = r#"00008140-001225CE1A03801C|FA374B43-B705-5A50-8628-A175A5C
 /// What replaces or removes the app on the owner's iPhone, if `text` does.
 pub fn device_install(text: &str) -> Option<&'static str> {
     let rules: [(&str, &'static str); 4] = [
-        (r"\bdevicectl\b[^;&|\n]*\bdevice\s+(install|uninstall)\b", "devicectl device install"),
+        (
+            r"\bdevicectl\b[^;&|\n]*\bdevice\s+(install|uninstall)\b",
+            "devicectl device install",
+        ),
         (r"(^|[^\w-])ios-deploy([^\w-]|$)", "ios-deploy"),
         (r"\bideviceinstaller\b", "ideviceinstaller"),
-        (r"\bpymobiledevice3\b[^;&|\n]*\bapps\s+(install|uninstall)\b", "pymobiledevice3 apps install"),
+        (
+            r"\bpymobiledevice3\b[^;&|\n]*\bapps\s+(install|uninstall)\b",
+            "pymobiledevice3 apps install",
+        ),
     ];
     for (re, what) in rules {
         if Regex::new(re).ok()?.is_match(text) {
@@ -122,16 +135,22 @@ pub fn device_install(text: &str) -> Option<&'static str> {
     let action = Regex::new(r"(^|\s)(test|test-without-building|install)(\s|$)").ok()?;
     let phone = Regex::new(PHONE).ok()?;
     let segments = Regex::new(r"[;\n]|&&|\|\|?").ok()?;
-    let on_phone = segments
-        .split(text)
-        .any(|seg| seg.contains("xcodebuild") && action.is_match(seg) && phone.is_match(seg) && !seg.contains("Simulator"));
+    let on_phone = segments.split(text).any(|seg| {
+        seg.contains("xcodebuild")
+            && action.is_match(seg)
+            && phone.is_match(seg)
+            && !seg.contains("Simulator")
+    });
     on_phone.then_some("xcodebuild test/install on the iPhone")
 }
 
 /// A command that is one `ios-install` call: it checks its grant with agentd itself.
 fn single_ios_install(command: &str) -> bool {
     let first = command.split_whitespace().next().unwrap_or_default();
-    (first == "ios-install" || first.ends_with("/ios-install")) && !["\n", ";", "&", "|", "$(", "`"].iter().any(|c| command.contains(c))
+    (first == "ios-install" || first.ends_with("/ios-install"))
+        && !["\n", ";", "&", "|", "$(", "`"]
+            .iter()
+            .any(|c| command.contains(c))
 }
 
 fn device_reason(what: &str, file: Option<&str>) -> String {
@@ -177,11 +196,21 @@ fn scripts(command: &str, cwd: &str) -> Vec<(String, String)> {
 
 /// Lucina scope, or the text names Secretary (its builds live in scratch dirs too).
 fn in_scope(text: &str) -> bool {
-    Regex::new(SCOPE).is_ok_and(|s| s.is_match(text)) || text.contains("Secretary") || text.contains("tech.getsecretary")
+    Regex::new(SCOPE).is_ok_and(|s| s.is_match(text))
+        || text.contains("Secretary")
+        || text.contains("tech.getsecretary")
 }
 
 /// The whole decision: the command's own verdict, else an install inside a script it runs.
 pub fn decide(command: &str, cwd: &str) -> Option<String> {
+    decide_on(command, cwd, cfg!(target_os = "macos"))
+}
+
+/// The same as `decide`, with the platform given: on the Mac, local pattern kills are denied in every session.
+fn decide_on(command: &str, cwd: &str, is_mac: bool) -> Option<String> {
+    if let Some(r) = mac_kill_verdict(command, is_mac) {
+        return Some(r);
+    }
     if let Some(r) = verdict(command, cwd) {
         return Some(r);
     }
@@ -193,22 +222,31 @@ pub fn decide(command: &str, cwd: &str) -> Option<String> {
             return Some(r);
         }
     }
-    scripts(command, cwd)
-        .into_iter()
-        .find_map(|(f, text)| device_install(&text).filter(|_| in_scope(&text) || in_scope(cwd)).map(|w| device_reason(w, Some(&f))))
+    scripts(command, cwd).into_iter().find_map(|(f, text)| {
+        device_install(&text)
+            .filter(|_| in_scope(&text) || in_scope(cwd))
+            .map(|w| device_reason(w, Some(&f)))
+    })
 }
 
 /// A Lucina repo's main checkout (`…/Projects/Lucina/<Repo>`, not a worktree under `.worktrees`).
 fn main_checkout(dir: &str) -> bool {
-    Regex::new(r#"(^|/|~)Projects/Lucina/[A-Za-z0-9_.-]+/?$"#).is_ok_and(|r| r.is_match(dir.trim_matches(|c| c == '"' || c == '\'')))
+    Regex::new(r#"(^|/|~)Projects/Lucina/[A-Za-z0-9_.-]+/?$"#)
+        .is_ok_and(|r| r.is_match(dir.trim_matches(|c| c == '"' || c == '\'')))
 }
 
 /// `git merge` (not `merge-base`, not `--abort`) run in a main checkout: the session's cwd, a
 /// `cd` earlier in the command, or `git -C <dir>`.
 fn hand_merge_into_main_checkout(command: &str, cwd: &str) -> bool {
-    let Ok(split) = Regex::new(r"&&|\|\||;|\n|'|\x22") else { return false };
-    let Ok(cd) = Regex::new(r"^\s*cd\s+(\S+)") else { return false };
-    let Ok(merge) = Regex::new(r"\bgit\s+((-C\s+(\S+)|-c\s+\S+)\s+)*merge(\s|$)") else { return false };
+    let Ok(split) = Regex::new(r"&&|\|\||;|\n|'|\x22") else {
+        return false;
+    };
+    let Ok(cd) = Regex::new(r"^\s*cd\s+(\S+)") else {
+        return false;
+    };
+    let Ok(merge) = Regex::new(r"\bgit\s+((-C\s+(\S+)|-c\s+\S+)\s+)*merge(\s|$)") else {
+        return false;
+    };
     let mut dir = cwd.to_string();
     for seg in split.split(command) {
         if let Some(c) = cd.captures(seg) {
@@ -216,13 +254,411 @@ fn hand_merge_into_main_checkout(command: &str, cwd: &str) -> bool {
             continue;
         }
         if let Some(m) = merge.captures(seg) {
-            let at = m.get(3).map(|d| d.as_str().to_string()).unwrap_or_else(|| dir.clone());
+            let at = m
+                .get(3)
+                .map(|d| d.as_str().to_string())
+                .unwrap_or_else(|| dir.clone());
             if main_checkout(&at) && !seg.contains("--abort") {
                 return true;
             }
         }
     }
     false
+}
+
+/// One shell word: its unquoted text, and whether a command substitution (`$(…)`, backticks)
+/// outside single quotes is part of it.
+struct Word {
+    val: String,
+    subst: bool,
+}
+
+/// A command text split into simple commands, plus the bodies of the substitutions in it.
+#[derive(Default)]
+struct Scan {
+    cmds: Vec<Vec<Word>>,
+    nested: Vec<String>,
+    cmd: Vec<Word>,
+    cur: String,
+    in_word: bool,
+    subst: bool,
+}
+
+impl Scan {
+    fn end_word(&mut self) {
+        if self.in_word {
+            let val = std::mem::take(&mut self.cur);
+            self.cmd.push(Word {
+                val,
+                subst: self.subst,
+            });
+        }
+        self.in_word = false;
+        self.subst = false;
+    }
+
+    fn end_cmd(&mut self) {
+        self.end_word();
+        if !self.cmd.is_empty() {
+            let cmd = std::mem::take(&mut self.cmd);
+            self.cmds.push(cmd);
+        }
+    }
+}
+
+/// The index of the `)` matching the `(` at `open` (or `ch.len()` when it never closes), quotes respected.
+fn match_paren(ch: &[char], open: usize) -> usize {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < ch.len() {
+        match ch[i] {
+            '\\' => i += 1,
+            '\'' => {
+                i += 1;
+                while i < ch.len() && ch[i] != '\'' {
+                    i += 1;
+                }
+            }
+            '"' => {
+                i += 1;
+                while i < ch.len() && ch[i] != '"' {
+                    if ch[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    ch.len()
+}
+
+/// The body of a substitution opened at `open` (`(` of `$(`, or a backtick) and the index after it.
+fn substitution(ch: &[char], open: usize) -> (String, usize) {
+    if ch[open] == '`' {
+        let mut i = open + 1;
+        let mut body = String::new();
+        while i < ch.len() && ch[i] != '`' {
+            if ch[i] == '\\' && i + 1 < ch.len() && ch[i + 1] == '`' {
+                i += 1;
+            }
+            body.push(ch[i]);
+            i += 1;
+        }
+        return (body, i + 1);
+    }
+    let end = match_paren(ch, open);
+    (ch[open + 1..end.min(ch.len())].iter().collect(), end + 1)
+}
+
+/// Splits `s` at top level on `;`, `&`, `|`, `(`, `)` and newlines (quotes and escapes respected).
+/// `$( … )` and backtick bodies come back in `nested`: they run in the same shell.
+fn scan(s: &str) -> Scan {
+    let ch: Vec<char> = s.chars().collect();
+    let n = ch.len();
+    let mut sc = Scan::default();
+    let mut i = 0;
+    while i < n {
+        let c = ch[i];
+        match c {
+            '\'' => {
+                sc.in_word = true;
+                i += 1;
+                while i < n && ch[i] != '\'' {
+                    sc.cur.push(ch[i]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            '"' => {
+                sc.in_word = true;
+                i += 1;
+                while i < n && ch[i] != '"' {
+                    if ch[i] == '\\' && i + 1 < n {
+                        if !matches!(ch[i + 1], '"' | '\\' | '$' | '`') {
+                            sc.cur.push('\\');
+                        }
+                        sc.cur.push(ch[i + 1]);
+                        i += 2;
+                    } else if (ch[i] == '$' && i + 1 < n && ch[i + 1] == '(') || ch[i] == '`' {
+                        let open = if ch[i] == '`' { i } else { i + 1 };
+                        let (body, next) = substitution(&ch, open);
+                        sc.cur.push_str("$(…)");
+                        sc.nested.push(body);
+                        sc.subst = true;
+                        i = next;
+                    } else {
+                        sc.cur.push(ch[i]);
+                        i += 1;
+                    }
+                }
+                i += 1;
+            }
+            '\\' => {
+                if i + 1 < n && ch[i + 1] != '\n' {
+                    sc.in_word = true;
+                    sc.cur.push(ch[i + 1]);
+                }
+                i += 2;
+            }
+            '`' => {
+                let (body, next) = substitution(&ch, i);
+                sc.in_word = true;
+                sc.cur.push_str("$(…)");
+                sc.nested.push(body);
+                sc.subst = true;
+                i = next;
+            }
+            '$' if i + 1 < n && ch[i + 1] == '(' => {
+                let (body, next) = substitution(&ch, i + 1);
+                sc.in_word = true;
+                sc.cur.push_str("$(…)");
+                sc.nested.push(body);
+                sc.subst = true;
+                i = next;
+            }
+            '#' if !sc.in_word => {
+                while i < n && ch[i] != '\n' {
+                    i += 1;
+                }
+            }
+            ';' | '&' | '|' | '\n' | '(' | ')' => {
+                sc.end_cmd();
+                i += 1;
+            }
+            c if c.is_whitespace() => {
+                sc.end_word();
+                i += 1;
+            }
+            c => {
+                sc.in_word = true;
+                sc.cur.push(c);
+                i += 1;
+            }
+        }
+    }
+    sc.end_cmd();
+    sc
+}
+
+fn basename(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+fn is_assignment(word: &str) -> bool {
+    match word.split_once('=') {
+        Some((name, _)) => {
+            let mut chars = name.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// The index of the program word of a simple command: after `VAR=value`, shell keywords and the
+/// wrappers (`sudo`, `nohup`, `setsid`, `exec`, `command`, `env`, `time`, `timeout`, `nice`).
+fn program(words: &[Word]) -> Option<usize> {
+    let mut i = 0;
+    loop {
+        let v = words.get(i)?.val.as_str();
+        if is_assignment(v)
+            || matches!(
+                v,
+                "{" | "}" | "!" | "then" | "do" | "else" | "elif" | "if" | "while" | "until"
+            )
+        {
+            i += 1;
+            continue;
+        }
+        let base = basename(v);
+        i += 1;
+        match base {
+            "sudo" => {
+                while let Some(w) = words.get(i) {
+                    if w.val.starts_with('-') {
+                        i += if matches!(
+                            w.val.as_str(),
+                            "-u" | "-g" | "-h" | "-p" | "-C" | "-D" | "-R" | "-T" | "-U"
+                        ) {
+                            2
+                        } else {
+                            1
+                        };
+                    } else if is_assignment(&w.val) {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            "nohup" | "setsid" | "exec" | "time" | "command" => {
+                while let Some(w) = words.get(i).filter(|w| w.val.starts_with('-')) {
+                    // `command -v pkill` only looks the name up.
+                    if base == "command" && (w.val.contains('v') || w.val.contains('V')) {
+                        return None;
+                    }
+                    i += 1;
+                }
+            }
+            "env" => {
+                while let Some(w) = words.get(i) {
+                    if w.val.starts_with('-') {
+                        i += if matches!(w.val.as_str(), "-u" | "-C" | "-S") {
+                            2
+                        } else {
+                            1
+                        };
+                    } else if is_assignment(&w.val) {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            "timeout" => {
+                while let Some(w) = words.get(i).filter(|w| w.val.starts_with('-')) {
+                    i += if matches!(w.val.as_str(), "-k" | "-s") {
+                        2
+                    } else {
+                        1
+                    };
+                }
+                i += 1; // the duration
+            }
+            "nice" => {
+                if let Some(w) = words.get(i).filter(|w| w.val.starts_with('-')) {
+                    i += if w.val == "-n" { 2 } else { 1 };
+                }
+            }
+            _ => return Some(i - 1),
+        }
+    }
+}
+
+fn kill_reason(what: &str) -> String {
+    format!(
+        "this would kill processes by pattern on the owner's Mac (`{what}`). On the Mac kill only a process id you started \
+         (`kill <pid>`); if you meant nezopt, put the command inside `ssh nezopt '…'`."
+    )
+}
+
+fn local_kill_in(text: &str, depth: usize) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    let sc = scan(text);
+    for words in &sc.cmds {
+        let Some(p) = program(words) else { continue };
+        let name = basename(&words[p].val);
+        let args = &words[p + 1..];
+        let found = match name {
+            "pkill" | "killall" => Some(kill_reason(name)),
+            "xargs" => {
+                let mut j = 0;
+                while let Some(w) = args.get(j).filter(|w| w.val.starts_with('-')) {
+                    j += if matches!(
+                        w.val.as_str(),
+                        "-n" | "-I" | "-P" | "-L" | "-s" | "-d" | "-E" | "-a" | "-J"
+                    ) {
+                        2
+                    } else {
+                        1
+                    };
+                }
+                let rest = args.get(j..).unwrap_or_default();
+                program(rest).and_then(|q| {
+                    let target = basename(&rest[q].val);
+                    matches!(target, "kill" | "pkill" | "killall")
+                        .then(|| kill_reason(&format!("xargs {target}")))
+                })
+            }
+            "kill" => args
+                .iter()
+                .any(|a| a.subst)
+                .then(|| kill_reason("kill $(…)")),
+            "bash" | "sh" | "zsh" => {
+                let mut script = None;
+                let mut j = 0;
+                while let Some(w) = args.get(j) {
+                    if w.val.starts_with('-') && !w.val.starts_with("--") {
+                        if w.val.contains('c') {
+                            script = args.get(j + 1).map(|s| s.val.as_str());
+                            break;
+                        }
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                script.and_then(|s| local_kill_in(s, depth + 1))
+            }
+            // Remote text is not local: ssh, scp and rsync arguments are not read.
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    sc.nested
+        .iter()
+        .find_map(|inner| local_kill_in(inner, depth + 1))
+}
+
+/// A here-document fed to `ssh` is remote text: drop its body (the others `without_heredocs` handled).
+fn without_remote_heredocs(command: &str) -> String {
+    let (Ok(start), Ok(remote)) = (
+        Regex::new(r#"<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)"#),
+        Regex::new(r"(^|[\s;&|(])(ssh|scp|rsync)\s"),
+    ) else {
+        return command.to_string();
+    };
+    let mut out = String::new();
+    let mut until: Option<String> = None;
+    for line in command.split('\n') {
+        if let Some(tag) = &until {
+            if line.trim().trim_start_matches('\t') == tag {
+                until = None;
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if let Some(c) = start.captures(line) {
+            let before = &line[..c.get(0).map(|m| m.start()).unwrap_or(0)];
+            if remote.is_match(before) {
+                until = Some(c[1].to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Why the LOCAL shell running `command` would kill processes by pattern, if it would: `pkill`,
+/// `killall`, `xargs kill`, `kill $(pgrep …)`, also in `$( )`, backticks, groups and `bash -c`.
+/// Text for another host (`ssh host '…'`) is not read. Incident 2026-11-11: `pkill -f` in the
+/// Mac shell instead of on nezopt stopped about 200 of the owner's processes.
+pub fn local_kill(command: &str) -> Option<String> {
+    local_kill_in(&without_remote_heredocs(&without_heredocs(command)), 0)
+}
+
+/// The pattern-kill check as wired in: on the Mac only, every session, bypassable like the rest.
+fn mac_kill_verdict(command: &str, is_mac: bool) -> Option<String> {
+    if !is_mac || Regex::new(r"\bLAGENT_BYPASS=\S").is_ok_and(|r| r.is_match(command)) {
+        return None;
+    }
+    local_kill(command)
 }
 
 fn main() {
@@ -233,15 +669,27 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("session-hook") {
         std::process::exit(session::run(&input));
     }
-    let Ok(v) = serde_json::from_str::<Value>(&input) else { return };
+    let Ok(v) = serde_json::from_str::<Value>(&input) else {
+        return;
+    };
     let command = v["tool_input"]["command"].as_str().unwrap_or_default();
     let cwd = v["cwd"].as_str().unwrap_or_default();
     if command.contains("LAGENT_BYPASS=") {
         let home = std::env::var("HOME").unwrap_or_default();
         let dir = format!("{home}/.local/state/pipeline-guard");
         if std::fs::create_dir_all(&dir).is_ok() {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/bypass.log")) {
-                let _ = writeln!(f, "{}\t{}\t{}", v["session_id"].as_str().unwrap_or("?"), cwd, command.replace('\n', " "));
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(format!("{dir}/bypass.log"))
+            {
+                let _ = writeln!(
+                    f,
+                    "{}\t{}\t{}",
+                    v["session_id"].as_str().unwrap_or("?"),
+                    cwd,
+                    command.replace('\n', " ")
+                );
             }
         }
     }
@@ -259,7 +707,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{decide, verdict, without_heredocs};
+    use super::{decide, decide_on, local_kill, verdict, without_heredocs};
 
     const LUCINA: &str = "/home/nez/Projects/Lucina/SecretaryIOS";
     const PHONE: &str = "-destination 'id=00008140-001225CE1A03801C'";
@@ -278,7 +726,11 @@ mod tests {
             assert!(decide(&c, LUCINA).is_some(), "{c}");
         }
         // A Secretary build installed from elsewhere is still in scope.
-        assert!(decide("xcrun devicectl device install app --device X /tmp/s/Secretary.app", "/Users/g").is_some());
+        assert!(decide(
+            "xcrun devicectl device install app --device X /tmp/s/Secretary.app",
+            "/Users/g"
+        )
+        .is_some());
         for c in [
             format!("xcodebuild -scheme Secretary -configuration Release {PHONE} build"),
             "xcodebuild test -scheme Secretary -destination 'platform=iOS Simulator,name=iPhone 16'".into(),
@@ -291,7 +743,11 @@ mod tests {
             assert!(decide(&c, LUCINA).is_none(), "{c}");
         }
         // Another project's app is not Lucina's business.
-        assert!(decide("xcrun devicectl device install app --device X build/CardRails.app", "/Users/g/Projects/CardRails-iOS").is_none());
+        assert!(decide(
+            "xcrun devicectl device install app --device X build/CardRails.app",
+            "/Users/g/Projects/CardRails-iOS"
+        )
+        .is_none());
     }
 
     #[test]
@@ -299,11 +755,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pipeline-guard-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let bad = dir.join("deploy.sh");
-        std::fs::write(&bad, "#!/bin/bash\nxcrun devicectl device install app --device X ios/build/Secretary.app\n").unwrap();
+        std::fs::write(
+            &bad,
+            "#!/bin/bash\nxcrun devicectl device install app --device X ios/build/Secretary.app\n",
+        )
+        .unwrap();
         let fine = dir.join("test.sh");
         std::fs::write(&fine, "#!/bin/bash\ncargo test -p secretary-core\n").unwrap();
-        assert!(decide(&format!("bash {}", bad.display()), LUCINA).unwrap().contains("deploy.sh"));
-        assert!(decide(&format!("bash {}", bad.display()), "/tmp").is_some(), "the script names Secretary");
+        assert!(decide(&format!("bash {}", bad.display()), LUCINA)
+            .unwrap()
+            .contains("deploy.sh"));
+        assert!(
+            decide(&format!("bash {}", bad.display()), "/tmp").is_some(),
+            "the script names Secretary"
+        );
         assert!(decide(&format!("bash {}", fine.display()), LUCINA).is_none());
         std::fs::remove_file(bad).unwrap();
         std::fs::remove_file(fine).unwrap();
@@ -313,12 +778,28 @@ mod tests {
     #[test]
     fn worktrees_go_through_task_start() {
         assert!(verdict("git worktree add ../x -b x", LUCINA).is_some());
-        assert!(verdict("ssh nezopt 'cd ~/Projects/Lucina/SecretaryIOS && wt add ig-fix origin/main'", "/Users/g").is_some());
-        assert!(verdict("ssh nezopt 'cd ~/Projects/Lucina/lucinaos && git -C . worktree add /tmp/x'", "/Users/g").is_some());
+        assert!(verdict(
+            "ssh nezopt 'cd ~/Projects/Lucina/SecretaryIOS && wt add ig-fix origin/main'",
+            "/Users/g"
+        )
+        .is_some());
+        assert!(verdict(
+            "ssh nezopt 'cd ~/Projects/Lucina/lucinaos && git -C . worktree add /tmp/x'",
+            "/Users/g"
+        )
+        .is_some());
         assert!(verdict("git worktree list", LUCINA).is_none());
         // A detached tree for a deploy or a test run is not a task.
-        assert!(verdict("git worktree add --detach /tmp/deploy-x origin/main", LUCINA).is_none());
-        assert!(verdict("git -C ~/Projects/Lucina/SecretaryIOS worktree add -q /tmp/x -d abc", "/Users/g").is_none());
+        assert!(verdict(
+            "git worktree add --detach /tmp/deploy-x origin/main",
+            LUCINA
+        )
+        .is_none());
+        assert!(verdict(
+            "git -C ~/Projects/Lucina/SecretaryIOS worktree add -q /tmp/x -d abc",
+            "/Users/g"
+        )
+        .is_none());
         assert!(verdict("git worktree add -b topic ../x origin/main", LUCINA).is_some());
         assert!(verdict("wt ls", LUCINA).is_none());
         // Outside Lucina: not our business.
@@ -330,7 +811,11 @@ mod tests {
         assert!(verdict("git push origin HEAD:main", LUCINA).is_some());
         assert!(verdict("git push -q origin abc123:refs/heads/main", LUCINA).is_some());
         assert!(verdict("cd x && git push origin main && echo ok", LUCINA).is_some());
-        assert!(verdict("ssh nezopt 'cd ~/Projects/.worktrees/SecretaryIOS/x && git push origin HEAD:main'", "/Users/g").is_some());
+        assert!(verdict(
+            "ssh nezopt 'cd ~/Projects/.worktrees/SecretaryIOS/x && git push origin HEAD:main'",
+            "/Users/g"
+        )
+        .is_some());
         assert!(verdict("git push origin my-branch", LUCINA).is_none());
         assert!(verdict("git push origin main-fix", LUCINA).is_none());
         assert!(verdict("git push origin deploy/web/20261101T1200Z-abc", LUCINA).is_none());
@@ -341,11 +826,27 @@ mod tests {
     #[test]
     fn main_checkouts_move_only_through_the_queue() {
         let android = "/home/nez/Projects/Lucina/LucinaAndroidOS";
-        assert!(verdict("timeout 1500 flock /tmp/lucina-merge.lock git merge --ff-only gbgo-m2", android).is_some());
-        assert!(verdict("ssh nezopt 'cd ~/Projects/Lucina/lucinaos && git merge --ff-only gbgo-ota'", "/Users/g").is_some());
-        assert!(verdict("git -C /home/nez/Projects/Lucina/LucinaAndroidOS merge topic", "/tmp").is_some());
+        assert!(verdict(
+            "timeout 1500 flock /tmp/lucina-merge.lock git merge --ff-only gbgo-m2",
+            android
+        )
+        .is_some());
+        assert!(verdict(
+            "ssh nezopt 'cd ~/Projects/Lucina/lucinaos && git merge --ff-only gbgo-ota'",
+            "/Users/g"
+        )
+        .is_some());
+        assert!(verdict(
+            "git -C /home/nez/Projects/Lucina/LucinaAndroidOS merge topic",
+            "/tmp"
+        )
+        .is_some());
         // In a worktree (resolving a CONFLICT the queue reported) or read-only: fine.
-        assert!(verdict("cd ~/Projects/.worktrees/LucinaAndroidOS/gbgo-m2 && git merge main", "/Users/g").is_none());
+        assert!(verdict(
+            "cd ~/Projects/.worktrees/LucinaAndroidOS/gbgo-m2 && git merge main",
+            "/Users/g"
+        )
+        .is_none());
         assert!(verdict("git merge-base --is-ancestor a b", android).is_none());
         assert!(verdict("git merge --abort", android).is_none());
         assert!(verdict("git log main", android).is_none());
@@ -353,7 +854,11 @@ mod tests {
 
     #[test]
     fn a_bypass_with_a_reason_passes() {
-        assert!(verdict("LAGENT_BYPASS=owner-said-so git push origin HEAD:main", LUCINA).is_none());
+        assert!(verdict(
+            "LAGENT_BYPASS=owner-said-so git push origin HEAD:main",
+            LUCINA
+        )
+        .is_none());
         assert!(verdict("LAGENT_BYPASS= git push origin HEAD:main", LUCINA).is_some());
     }
 
@@ -367,8 +872,84 @@ mod tests {
         let after = "cat > a <<'EOF'\nnotes\nEOF\ngit push origin HEAD:main";
         assert!(verdict(after, LUCINA).is_some());
         // A heredoc a shell runs is commands.
-        assert!(verdict("bash <<'EOF'\ncd ~/Projects/Lucina/SecretaryIOS && wt add x\nEOF", "/Users/g").is_some());
-        assert!(verdict("ssh nezopt bash -s <<EOF\ngit push origin HEAD:main\nEOF", LUCINA).is_some());
-        assert_eq!(without_heredocs("a <<-END\n\tbody\n\tEND\nb"), "a <<-END\n\tEND\nb\n");
+        assert!(verdict(
+            "bash <<'EOF'\ncd ~/Projects/Lucina/SecretaryIOS && wt add x\nEOF",
+            "/Users/g"
+        )
+        .is_some());
+        assert!(verdict(
+            "ssh nezopt bash -s <<EOF\ngit push origin HEAD:main\nEOF",
+            LUCINA
+        )
+        .is_some());
+        assert_eq!(
+            without_heredocs("a <<-END\n\tbody\n\tEND\nb"),
+            "a <<-END\n\tEND\nb\n"
+        );
+    }
+
+    #[test]
+    fn local_pattern_kills_are_denied() {
+        for c in [
+            "pkill -f x",
+            "killall node",
+            "/usr/bin/pkill -9 -f foo",
+            "sudo pkill foo",
+            "timeout 5 pkill -f foo",
+            "FOO=1 pkill x",
+            "ssh nezopt 'true'; pkill -f x",
+            "ssh nezopt \"echo hi\" && killall node",
+            "pgrep -f foo | xargs kill -9",
+            "kill $(pgrep -f foo)",
+            "kill -9 `pgrep foo`",
+            "bash -c 'pkill -f foo'",
+            "zsh -lc \"killall Finder\"",
+            "echo start; (cd /tmp && pkill -f foo)",
+            "x=$(pkill -f foo)",
+            "{ echo a; pkill x; }",
+            "timeout -k 5 10 nice -n 5 env A=1 pkill x",
+            "nohup setsid sudo -u root killall node &",
+        ] {
+            assert!(local_kill(c).is_some(), "{c}");
+        }
+    }
+
+    #[test]
+    fn plain_kills_and_mentions_pass() {
+        for c in [
+            "kill 1234",
+            "kill -TERM 1234",
+            "kill \"$PID\"",
+            "kill $!",
+            "kill %1",
+            "kill -0 1234",
+            "ssh nezopt 'pkill -f \"[b]uild.sh kernel\"'",
+            "ssh nezopt pkill -f foo",
+            "ssh -o ConnectTimeout=8 nezopt 'cd ~/x && pkill -f \"[r]un.sh\"; echo done'",
+            "echo pkill",
+            "grep -n \"pkill\" notes.md",
+            "git commit -m \"no pkill; killall is banned\"",
+            "rg 'killall|pkill' src",
+            "command -v pkill",
+            "ssh nezopt bash -s <<EOF\npkill -f x\nEOF",
+        ] {
+            assert!(local_kill(c).is_none(), "{c}");
+        }
+        let doc = "cat > notes.md <<'EOF'\npkill -f x\nkillall node\nEOF\ngit status";
+        assert!(local_kill(&without_heredocs(doc)).is_none());
+        assert!(local_kill(doc).is_none());
+        // What runs after the heredoc still counts.
+        assert!(local_kill("cat > a <<'EOF'\nnotes\nEOF\npkill -f x").is_some());
+    }
+
+    #[test]
+    fn the_kill_check_is_mac_only_and_bypassable() {
+        assert!(decide_on("pkill -f x", "/tmp", true).is_some());
+        assert!(decide_on("pkill -f x", "/tmp", false).is_none());
+        assert!(decide_on("LAGENT_BYPASS=owner-said-so pkill -f x", "/tmp", true).is_none());
+        assert!(decide_on("LAGENT_BYPASS= pkill -f x", "/tmp", true).is_some());
+        assert!(decide_on("ssh nezopt 'pkill -f x'", LUCINA, true).is_none());
+        // The same wiring in every session: also inside Lucina scope.
+        assert!(decide_on("pkill -f x", LUCINA, true).is_some());
     }
 }

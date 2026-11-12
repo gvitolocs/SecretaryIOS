@@ -7,6 +7,8 @@ import { locale, t, type MessageKey } from "../i18n";
 const CHANNEL_KEYS: Record<Channel, MessageKey> = {
   web: "chat.channelWeb",
   ios: "chat.channelIos",
+  dsi: "chat.channelDsi",
+  mac: "chat.channelMac",
   telegram: "chat.channelTelegram",
   discord: "chat.channelDiscord",
   alexa: "chat.channelAlexa",
@@ -66,7 +68,7 @@ export function matchesFilter(item: Pick<TimelineItem, "channel" | "role" | "tex
   if (filter === "mcp") return isMcp;
   if (filter === "mistral") return isMcp && item.meta?.caller?.trim().toLowerCase().startsWith("mistral") === true;
   if (filter === "app") {
-    return !isMcp && (item.channel === "web" || item.channel === "ios" || item.meta?.kind === "proactive");
+    return !isMcp && (["web", "ios", "dsi", "mac"].includes(item.channel) || item.meta?.kind === "proactive");
   }
   return item.channel === filter;
 }

@@ -121,6 +121,15 @@ pub struct DeployRule {
     pub timeout_min: Option<u64>,
 }
 
+/// `[attribution]`: which model ids the commit ledger knows ([`crate::ledger`]).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct Attribution {
+    /// `[attribution.models]`: model id to the name its `Co-Authored-By` trailer carries. When the
+    /// trunk's file has no such table the ledger uses its built-in default.
+    #[serde(default)]
+    pub models: Option<BTreeMap<String, String>>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct Rules {
     #[serde(default)]
@@ -131,6 +140,8 @@ pub struct Rules {
     pub gates: Vec<GateRule>,
     #[serde(default)]
     pub deploy: BTreeMap<String, DeployRule>,
+    #[serde(default)]
+    pub attribution: Attribution,
 }
 
 impl Rules {
@@ -388,6 +399,9 @@ pub fn allow_env(allow: &[String]) -> Vec<(String, String)> {
     }
     env
 }
+
+/// The commit ledger's path for every gate command but diffgate (`LAGENT_COMMIT_LEDGER`).
+pub const LEDGER_ENV: &str = "LAGENT_COMMIT_LEDGER";
 
 /// Whose rules judge a merge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

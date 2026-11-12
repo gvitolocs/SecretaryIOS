@@ -24,6 +24,8 @@ fn conversation_rules() {
     for (channel, expected) in [
         ("web", "legacy:web"),
         ("ios", "legacy:ios"),
+        ("dsi", "legacy:dsi"),
+        ("mac", "legacy:mac"),
         ("telegram", "telegram"),
         ("discord", "discord"),
         ("alexa", "alexa"),
@@ -36,7 +38,7 @@ fn conversation_rules() {
         device: Some("Phone_1-A".into()),
         ..Meta::default()
     };
-    for channel in ["web", "ios"] {
+    for channel in ["web", "ios", "dsi", "mac"] {
         assert_eq!(conversation_key(channel, Some(&meta)), "device:Phone_1-A");
     }
     meta.via = Some("mcp".into());
@@ -352,4 +354,59 @@ fn voice_meta_keeps_numbers_and_short_words_only() {
     let mut i = input("voice", None, "x");
     i.meta.as_mut().unwrap().voice = Some(serde_json::json!({"transcript": "no"}));
     assert!(normalize(i, 0).unwrap().meta.is_none());
+}
+
+#[test]
+fn timeline_mine_keeps_old_web_rows_with_new_dsi_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = TimelineStore::new(dir.path().join("timeline.jsonl"), 100000, true);
+    // The DSi wrote `web` before the `dsi` channel existed; the same device writes `dsi` now.
+    let old = s
+        .append(input("web", Some("Dsi-1"), "old web row"))
+        .unwrap();
+    let new = s
+        .append(input("dsi", Some("Dsi-1"), "new dsi row"))
+        .unwrap();
+    let reply = s.append(input("dsi", Some("Dsi-1"), "reply")).unwrap();
+    let old_legacy = s.append(input("web", None, "web before devices")).unwrap();
+    let other = s
+        .append(input("dsi", Some("Other-9"), "another device"))
+        .unwrap();
+    let mac = s
+        .append(input("mac", Some("Mac-1"), "from the mac"))
+        .unwrap();
+    let ids = |device: &str, channel: &str| -> Vec<String> {
+        let mine = ConversationFilter::Mine {
+            device: device.into(),
+            channel: channel.into(),
+        };
+        let mut ids: Vec<String> = s
+            .page(None, None, 50, &mine)
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    };
+    let mut want = vec![old.id.clone(), new.id.clone(), reply.id.clone()];
+    want.sort();
+    // Requested as `dsi` or as `web`, the device sees its own rows of both channels and no one else's.
+    let mut with_legacy = want.clone();
+    with_legacy.push(old_legacy.id.clone());
+    with_legacy.sort();
+    assert_eq!(ids("Dsi-1", "dsi"), with_legacy, "mine as dsi");
+    assert_eq!(ids("Dsi-1", "web"), with_legacy, "mine as web");
+    assert!(!ids("Dsi-1", "dsi").contains(&other.id));
+    assert!(!ids("Dsi-1", "dsi").contains(&mac.id));
+    assert_eq!(ids("Mac-1", "mac"), {
+        let mut v = vec![mac.id.clone(), old_legacy.id.clone()];
+        v.sort();
+        v
+    });
+    // One conversation for the device.
+    let convs = s.conversations().unwrap();
+    let c = convs.iter().find(|c| c.key == "device:Dsi-1").unwrap();
+    assert_eq!(c.count, 3);
 }

@@ -43,8 +43,12 @@ pub fn chat_surface(
 ) -> TurnSurface {
     // A LucinaVoice speaker is an owner device behind the same bearer as the app: its turns classify like
     // an iOS turn (the memory surface kernel has no `voice` channel, and the timeline channel stays `voice`).
+    // The Nintendo DSi and the Mac app are the owner's app clients like the web page: they classify
+    // as `web`, and the timeline channel stays `dsi` / `mac`.
     let channel = if channel == crate::chat::VOICE_CHANNEL {
         "ios"
+    } else if matches!(channel, "dsi" | "mac") {
+        "web"
     } else {
         channel
     };

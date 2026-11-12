@@ -28,8 +28,8 @@ use crate::timeutil::{clip_utf16, iso_ms, js_trim, now_ms, parse_js_date};
 use crate::ulid::{is_timeline_id, new_id};
 use crate::{Result, StoreError};
 
-pub const CHANNELS: [&str; 7] = [
-    "telegram", "discord", "web", "ios", "alexa", "voice", "other",
+pub const CHANNELS: [&str; 9] = [
+    "telegram", "discord", "web", "ios", "dsi", "mac", "alexa", "voice", "other",
 ];
 pub const ROLES: [&str; 2] = ["user", "lucina"];
 pub const MAX_TEXT_CHARS: usize = 8000;
@@ -295,7 +295,9 @@ pub fn conversation_key(channel: &str, meta: Option<&Meta>) -> String {
         return format!("agent:{}", if caller.is_empty() { "mcp" } else { &caller });
     }
     match channel {
-        "web" | "ios" => match meta
+        // `dsi` (Nintendo DSi) and `mac` are app channels like `web`: a device's rows are one
+        // conversation whichever of its channels they carry (an old DSi row says `web`).
+        "web" | "ios" | "dsi" | "mac" => match meta
             .and_then(|m| m.device.as_deref())
             .filter(|d| valid_device(d))
         {
@@ -347,7 +349,12 @@ impl ConversationFilter {
             Self::Mine { device, channel } => {
                 key == "lucina"
                     || key.strip_prefix("device:") == Some(device.as_str())
-                    || key.strip_prefix("legacy:") == Some(channel.as_str())
+                    || key.strip_prefix("legacy:").is_some_and(|legacy| {
+                        legacy == channel.as_str()
+                            // Rows from before devices were told apart: a DSi or Mac client also owns the
+                            // `web` ones it used to write.
+                            || (legacy == "web" && matches!(channel.as_str(), "dsi" | "mac"))
+                    })
             }
         }
     }
@@ -402,7 +409,8 @@ pub fn clean_source(v: Option<String>) -> Option<String> {
     let v = v.trim();
     (!v.is_empty()
         && v.len() <= 64
-        && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
     .then(|| v.to_owned())
 }
 
@@ -485,7 +493,10 @@ fn normalize_jev(v: serde_json::Value) -> Option<serde_json::Value> {
     let word = |k: &str| {
         v[k].as_str()
             .filter(|s| !s.is_empty() && s.len() <= 32)
-            .filter(|s| s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b)))
+            .filter(|s| {
+                s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+            })
     };
     let feature = word("feature")?;
     let mut out = serde_json::json!({ "feature": feature });
@@ -509,13 +520,18 @@ fn normalize_jev(v: serde_json::Value) -> Option<serde_json::Value> {
 fn voice_word(v: &serde_json::Value, max: usize) -> Option<String> {
     v.as_str()
         .filter(|s| !s.is_empty() && s.len() <= max)
-        .filter(|s| s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-:".contains(&b)))
+        .filter(|s| {
+            s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.-:".contains(&b))
+        })
         .map(str::to_owned)
 }
 
 /// A non-negative number below ten minutes' worth of milliseconds, or a probability.
 fn voice_num(v: &serde_json::Value, max: f64) -> Option<serde_json::Value> {
-    let n = v.as_f64().filter(|n| n.is_finite() && (0.0..=max).contains(n))?;
+    let n = v
+        .as_f64()
+        .filter(|n| n.is_finite() && (0.0..=max).contains(n))?;
     Some(if n.fract() == 0.0 {
         serde_json::json!(n as u64)
     } else {
@@ -814,6 +830,8 @@ impl Inner {
         let title = match kind {
             "device" => meta.device_name.clone().unwrap_or_else(|| key[7..].into()),
             "legacy" if item.channel == "ios" => "iPhone (before devices)".into(),
+            "legacy" if item.channel == "dsi" => "Nintendo DSi (before devices)".into(),
+            "legacy" if item.channel == "mac" => "Mac (before devices)".into(),
             "legacy" => "Web (before devices)".into(),
             "agent" => match &key[6..] {
                 "chatgpt" => "ChatGPT",
@@ -1441,7 +1459,12 @@ impl TimelineStore {
     /// `replacement`, in string values only. `only`: just these items (a short value, which could
     /// be part of anything). Live clients get the changed items again under the same ids, so an
     /// open chat redraws them. Returns how many items changed.
-    pub fn scrub(&self, needles: &[String], replacement: &str, only: Option<&[String]>) -> Result<usize> {
+    pub fn scrub(
+        &self,
+        needles: &[String],
+        replacement: &str,
+        only: Option<&[String]>,
+    ) -> Result<usize> {
         let mut inner = self.lock();
         let _flock = lock_sidecar(&inner.file_path)?;
         let found = inner.refresh()?;
@@ -1455,8 +1478,9 @@ impl TimelineStore {
                 Err(e) => return Err(e.into()),
             };
             // Never a lossy copy of the timeline: a bad byte fails the clear, which is reported.
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|_| StoreError::Invalid(format!("timeline: {} is not UTF-8", path.display())))?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                StoreError::Invalid(format!("timeline: {} is not UTF-8", path.display()))
+            })?;
             let mut out = String::with_capacity(text.len());
             let mut any = false;
             for line in text.split_inclusive('\n') {
@@ -1490,7 +1514,10 @@ impl TimelineStore {
         }
         // Offsets moved and the cache holds old lines: read everything again.
         inner.load_all()?;
-        let entries: Vec<Entry> = changed.iter().filter_map(|id| inner.entry(id).cloned()).collect();
+        let entries: Vec<Entry> = changed
+            .iter()
+            .filter_map(|id| inner.entry(id).cloned())
+            .collect();
         let items = inner.read_entries(&entries)?;
         let n = items.len();
         self.publish(items);
@@ -1501,7 +1528,11 @@ impl TimelineStore {
     /// backfills (a shared file's media id once the library has it). The id, role and ts must stay as they were.
     /// Like [`Self::scrub`], the line is written back with serde_json's key order, and live clients get the item
     /// again under the same id. Returns whether the item changed.
-    pub fn edit(&self, id: &str, mut edit: impl FnMut(&mut serde_json::Value) -> bool) -> Result<bool> {
+    pub fn edit(
+        &self,
+        id: &str,
+        mut edit: impl FnMut(&mut serde_json::Value) -> bool,
+    ) -> Result<bool> {
         let mut inner = self.lock();
         let _flock = lock_sidecar(&inner.file_path)?;
         let found = inner.refresh()?;
@@ -1514,8 +1545,9 @@ impl TimelineStore {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|_| StoreError::Invalid(format!("timeline: {} is not UTF-8", path.display())))?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                StoreError::Invalid(format!("timeline: {} is not UTF-8", path.display()))
+            })?;
             let mut out = String::with_capacity(text.len());
             let mut seen = false;
             for line in text.split_inclusive('\n') {
@@ -1534,9 +1566,14 @@ impl TimelineStore {
                     continue;
                 }
                 if (v["id"].clone(), v["role"].clone(), v["ts"].clone()) != before {
-                    return Err(StoreError::Invalid("timeline: an edit may not change id, role or ts".into()));
+                    return Err(StoreError::Invalid(
+                        "timeline: an edit may not change id, role or ts".into(),
+                    ));
                 }
-                out.push_str(&serde_json::to_string(&v).map_err(|e| StoreError::Invalid(format!("timeline: {e}")))?);
+                out.push_str(
+                    &serde_json::to_string(&v)
+                        .map_err(|e| StoreError::Invalid(format!("timeline: {e}")))?,
+                );
                 out.push_str(end);
                 changed = true;
             }
@@ -1765,11 +1802,17 @@ mod tests {
         assert_eq!(meta.source.as_deref(), Some("fortuna-chat"));
         assert_eq!(meta.from_device.as_deref(), Some("dev_1PIYOXSE72o"));
         let line = fs::read_to_string(dir.path().join("timeline.jsonl")).unwrap();
-        assert!(line.contains("\"source\":\"fortuna-chat\",\"fromDevice\":\"dev_1PIYOXSE72o\""), "{line}");
+        assert!(
+            line.contains("\"source\":\"fortuna-chat\",\"fromDevice\":\"dev_1PIYOXSE72o\""),
+            "{line}"
+        );
         let bad = mark("bad source!", "x y");
         assert!(bad.meta.is_none());
         assert_eq!(clean_source(Some("a".repeat(65))), None);
-        assert_eq!(clean_source(Some("ios-share".into())).as_deref(), Some("ios-share"));
+        assert_eq!(
+            clean_source(Some("ios-share".into())).as_deref(),
+            Some("ios-share")
+        );
     }
 
     #[test]
@@ -1817,8 +1860,10 @@ mod tests {
     #[test]
     fn jev_badges_keep_only_their_known_fields() {
         let m = normalize_meta(Some(Meta {
-            jev: Some(serde_json::json!({"feature": "yesno", "answer": "yes", "p": 0.93456, "ms": 412,
-                "totalMs": 1300, "model": "jev-1.14.0", "reply": "x", "evil": {"a": 1}})),
+            jev: Some(
+                serde_json::json!({"feature": "yesno", "answer": "yes", "p": 0.93456, "ms": 412,
+                "totalMs": 1300, "model": "jev-1.14.0", "reply": "x", "evil": {"a": 1}}),
+            ),
             ..Meta::default()
         }))
         .unwrap();
@@ -1831,7 +1876,10 @@ mod tests {
             ..Meta::default()
         }));
         assert!(bad.is_none_or(|m| m.jev.is_none()));
-        let merged = Meta::kind("x").merge(Meta { jev: Some(serde_json::json!({"feature": "yesno"})), ..Meta::default() });
+        let merged = Meta::kind("x").merge(Meta {
+            jev: Some(serde_json::json!({"feature": "yesno"})),
+            ..Meta::default()
+        });
         assert_eq!(merged.jev.unwrap()["feature"], "yesno");
     }
 
@@ -2104,7 +2152,9 @@ mod tests {
             })
             .unwrap();
         let last = s.append(item("last")).unwrap();
-        let untouched: Vec<Arc<str>> = [&first, &last].map(|i| s.get(&i.id).unwrap().unwrap().raw).to_vec();
+        let untouched: Vec<Arc<str>> = [&first, &last]
+            .map(|i| s.get(&i.id).unwrap().unwrap().raw)
+            .to_vec();
         let mut rx = s.subscribe();
         let edited = s
             .edit(&middle.id, |v| {
@@ -2114,7 +2164,8 @@ mod tests {
             .unwrap();
         assert!(edited);
         let media = |s: &TimelineStore, id: &str| -> Option<String> {
-            let v: serde_json::Value = serde_json::from_str(&s.get(id).unwrap().unwrap().raw).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(&s.get(id).unwrap().unwrap().raw).unwrap();
             v["attachments"][0]["mediaId"].as_str().map(str::to_owned)
         };
         assert_eq!(media(&s, &middle.id).as_deref(), Some("itm_x"));
@@ -2137,11 +2188,12 @@ mod tests {
         let file = dir.path().join("timeline.jsonl");
         let bytes = fs::read(&file).unwrap();
         assert!(!s.edit("01NOPE", |_| true).unwrap());
-        assert!(!s.edit(&a.id, |v| {
-            v["text"] = serde_json::json!("changed but not reported");
-            false
-        })
-        .unwrap());
+        assert!(!s
+            .edit(&a.id, |v| {
+                v["text"] = serde_json::json!("changed but not reported");
+                false
+            })
+            .unwrap());
         assert_eq!(fs::read(&file).unwrap(), bytes);
     }
 

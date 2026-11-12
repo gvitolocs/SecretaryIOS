@@ -91,25 +91,34 @@ impl ShareConfig {
         });
         whisper.timeout = Duration::from_secs(14 * 60);
         whisper.gpu_wait = Duration::from_secs(
-            get("LUCINA_WHISPER_GPU_WAIT_SEC").and_then(|v| v.trim().parse().ok()).unwrap_or(90),
+            get("LUCINA_WHISPER_GPU_WAIT_SEC")
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(90),
         );
-        let whisper_short = get("LUCINA_WHISPER_SHORT_MODEL").filter(|m| !m.trim().is_empty()).map(|model| {
-            let mut w = lucina_memo::transcribe::WhisperConfig::from_lookup(|k| match k {
-                "HOME" => Some(home.clone()),
-                "LUCINA_MEMO_WHISPER_CLI" => get("LUCINA_WHISPER_BIN"),
-                "LUCINA_MEMO_WHISPER_MODEL" => Some(model.clone()),
-                "LUCINA_MEMO_WHISPER_CPU_MODEL" => Some(model.clone()),
-                "LUCINA_MEMO_GPU_MB" => get("LUCINA_WHISPER_SHORT_GPU_MB").or_else(|| Some("1500".into())),
-                _ => None,
+        let whisper_short = get("LUCINA_WHISPER_SHORT_MODEL")
+            .filter(|m| !m.trim().is_empty())
+            .map(|model| {
+                let mut w = lucina_memo::transcribe::WhisperConfig::from_lookup(|k| match k {
+                    "HOME" => Some(home.clone()),
+                    "LUCINA_MEMO_WHISPER_CLI" => get("LUCINA_WHISPER_BIN"),
+                    "LUCINA_MEMO_WHISPER_MODEL" => Some(model.clone()),
+                    "LUCINA_MEMO_WHISPER_CPU_MODEL" => Some(model.clone()),
+                    "LUCINA_MEMO_GPU_MB" => {
+                        get("LUCINA_WHISPER_SHORT_GPU_MB").or_else(|| Some("1500".into()))
+                    }
+                    _ => None,
+                });
+                w.timeout = Duration::from_secs(3 * 60);
+                w.gpu_wait = Duration::from_secs(
+                    get("LUCINA_WHISPER_SHORT_GPU_WAIT_SEC")
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(3),
+                );
+                w
             });
-            w.timeout = Duration::from_secs(3 * 60);
-            w.gpu_wait = Duration::from_secs(
-                get("LUCINA_WHISPER_SHORT_GPU_WAIT_SEC").and_then(|v| v.trim().parse().ok()).unwrap_or(3),
-            );
-            w
-        });
-        let whisper_short_secs =
-            get("LUCINA_WHISPER_SHORT_SECS").and_then(|v| v.trim().parse().ok()).unwrap_or(60.0);
+        let whisper_short_secs = get("LUCINA_WHISPER_SHORT_SECS")
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(60.0);
         Self {
             key_file: get("LUCINA_SHARE_GATEWAY_KEY_FILE").map(PathBuf::from),
             dir: path("LUCINA_SHARE_DIR", format!("{data_dir}/share")),
@@ -649,13 +658,20 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         return Err(bad("invalid intent"));
     }
     let channel = field("channel", "web");
-    if channel != "ios" && channel != "web" {
-        return Err(bad("channel must be ios or web"));
+    if !secretary_core::channel::APP_CHANNELS.contains(&channel.as_str()) {
+        return Err(bad("channel must be web, ios, dsi or mac"));
     }
     let session = field("sessionId", "");
     if !valid_session(&session) {
         return Err(bad("invalid sessionId"));
     }
+    // The firmware that predates the `dsi` channel says `web`; its source and session id say DSi.
+    let channel = secretary_core::channel::client_channel(
+        &channel,
+        Some(field("source", "").trim()),
+        Some(session.as_str()),
+        None,
+    );
     // Test traffic (a test device, `conversation=selftest`, a `probe…`/`test…` source) runs in the
     // self-test conversation: never the owner's chat, never a push (docs/share.md).
     let selftest = test_device
@@ -995,7 +1011,9 @@ pub(crate) fn store_again(st: AppState) {
 
 /// One pass over recent shares; how many files it stored.
 async fn store_unstored(st: &AppState) -> usize {
-    let oldest = (Utc::now() - chrono::Duration::days(STORE_AGAIN_DAYS)).format("%Y-%m").to_string();
+    let oldest = (Utc::now() - chrono::Duration::days(STORE_AGAIN_DAYS))
+        .format("%Y-%m")
+        .to_string();
     let Ok(mut months) = tokio::fs::read_dir(&st.cfg.share.dir).await else {
         return 0;
     };
@@ -1015,7 +1033,10 @@ async fn store_unstored(st: &AppState) -> usize {
                 continue;
             };
             // A share still being read stores its own files; this only picks up finished ones.
-            if job.status == "processing" || is_live(st, &job.share_id) || !job.parts.iter().any(unstored) {
+            if job.status == "processing"
+                || is_live(st, &job.share_id)
+                || !job.parts.iter().any(unstored)
+            {
                 continue;
             }
             stored += store_job_again(st, &entry.path(), &mut job).await;
@@ -1066,7 +1087,12 @@ async fn store_job_again(st: &AppState, dir: &Path, job: &mut Job) -> usize {
         return 0;
     }
     for (k, _, media) in &stored {
-        if let Some(a) = job.user_item.attachments.as_mut().and_then(|v| v.get_mut(*k)) {
+        if let Some(a) = job
+            .user_item
+            .attachments
+            .as_mut()
+            .and_then(|v| v.get_mut(*k))
+        {
             a.media_id = Some(media.clone());
         }
     }
@@ -1076,11 +1102,16 @@ async fn store_job_again(st: &AppState, dir: &Path, job: &mut Job) -> usize {
     let edited = st.timeline_for(&job.session).edit(&job.user_item.id, |v| {
         let mut changed = false;
         for (k, name, media) in &stored {
-            let Some(a) = v.get_mut("attachments").and_then(|a| a.get_mut(*k)).and_then(Value::as_object_mut) else {
+            let Some(a) = v
+                .get_mut("attachments")
+                .and_then(|a| a.get_mut(*k))
+                .and_then(Value::as_object_mut)
+            else {
                 continue;
             };
             // The same file, not whatever moved into its place.
-            if a.get("name").and_then(Value::as_str) != name.as_deref() || a.contains_key("mediaId") {
+            if a.get("name").and_then(Value::as_str) != name.as_deref() || a.contains_key("mediaId")
+            {
                 continue;
             }
             a.insert("mediaId".into(), json!(media));
@@ -1091,7 +1122,9 @@ async fn store_job_again(st: &AppState, dir: &Path, job: &mut Job) -> usize {
     match edited {
         Ok(changed) => tracing::info!(share_id = %id, files = stored.len(), item_updated = changed,
             "shared files stored in lucina-media after it came back"),
-        Err(e) => tracing::warn!(share_id = %id, error = %e, "shared files stored; timeline item not updated"),
+        Err(e) => {
+            tracing::warn!(share_id = %id, error = %e, "shared files stored; timeline item not updated")
+        }
     }
     stored.len()
 }
@@ -1520,7 +1553,10 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .any(|p| p.attachment.kind == "voice" && p.attachment.transcript.is_none())
     {
         let silent = silent_voice && voice_transcripts.is_empty();
-        let reply = match (owner_language(st, &job.session, &job.note).reply().code(), silent) {
+        let reply = match (
+            owner_language(st, &job.session, &job.note).reply().code(),
+            silent,
+        ) {
             ("da", true) => SILENT_REPLY_DA,
             (_, true) => SILENT_REPLY,
             ("da", false) => "Jeg kunne ikke høre dig. Kan du gentage det?",
@@ -1589,7 +1625,13 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         } else {
             job.note.clone()
         };
-        crate::about::observe(st, &job.session, "document", &job.share_id, &format!("{}\n{content}", job.note.trim()));
+        crate::about::observe(
+            st,
+            &job.session,
+            "document",
+            &job.share_id,
+            &format!("{}\n{content}", job.note.trim()),
+        );
         let out = crate::chat::share_turn(
             st.clone(),
             message,
@@ -1641,14 +1683,22 @@ mod tests {
         let c = ShareConfig::from_lookup(&env);
         let s = c.whisper_short.as_ref().expect("short whisper");
         assert_eq!(s.model, small);
-        assert_eq!(s.cpu_model.as_deref(), Some(small.as_path()), "the CPU fallback is a file that exists");
+        assert_eq!(
+            s.cpu_model.as_deref(),
+            Some(small.as_path()),
+            "the CPU fallback is a file that exists"
+        );
         assert_eq!(s.gpu_wait, std::time::Duration::from_secs(3));
         assert_eq!(s.gpu_mb, 1500);
         assert_eq!(c.whisper_short_secs, 60.0);
         assert_eq!(c.whisper.gpu_wait, std::time::Duration::from_secs(90));
         assert_eq!(c.whisper.cpu_model.as_deref(), Some(small.as_path()));
-        let none = ShareConfig::from_lookup(&|k: &str| (k == "HOME").then(|| "/home/test".to_string()));
-        assert!(none.whisper_short.is_none(), "without LUCINA_WHISPER_SHORT_MODEL nothing changes");
+        let none =
+            ShareConfig::from_lookup(&|k: &str| (k == "HOME").then(|| "/home/test".to_string()));
+        assert!(
+            none.whisper_short.is_none(),
+            "without LUCINA_WHISPER_SHORT_MODEL nothing changes"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]

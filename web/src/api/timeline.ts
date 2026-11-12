@@ -8,7 +8,7 @@ import type { PlaceInfo } from "../lib/mapKit";
 import { parsePlace, parseRich, type RichMessage } from "../lib/rich";
 import { type Model3dBlock, parseModel3dBlocks } from "../lib/model3d";
 
-export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "voice", "other"] as const;
+export const CHANNELS = ["telegram", "discord", "web", "ios", "dsi", "mac", "alexa", "voice", "other"] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 export interface Attachment {

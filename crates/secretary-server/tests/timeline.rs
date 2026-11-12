@@ -87,23 +87,21 @@ async fn mock_handler(
     };
     m.seen.lock().unwrap().push(seen.clone());
     match (method.as_str(), uri.path()) {
-        ("GET", "/api/secretary/timeline/conversations") => {
-            Json(json!({"ok": true, "data": {
-                "items": [{"key": "device:dev_1", "kind": "device", "title": "iPhone",
-                    "channel": "ios", "device": "dev_1", "deviceName": "iPhone",
-                    "count": 2, "lastId": "tl_3", "lastTs": 1761048003000_i64,
-                    "lastRole": "lucina", "lastText": "Ciao!", "future": true},
-                    {"key": "agent:claude", "kind": "agent", "title": "Claude",
-                    "channel": "other", "caller": "claude", "count": 1,
-                    "lastId": "tl_1", "lastTs": 1, "lastRole": "user", "lastText": "hi"},
-                    {"key": "voice", "kind": "voice", "title": "Lucina Voice",
-                    "channel": "voice", "count": 4,
-                    "lastId": "tl_20", "lastTs": 1761048009000_i64, "lastRole": "lucina",
-                    "lastText": "Sono le dieci."}],
-                "futurePage": 42
-            }}))
-            .into_response()
-        }
+        ("GET", "/api/secretary/timeline/conversations") => Json(json!({"ok": true, "data": {
+            "items": [{"key": "device:dev_1", "kind": "device", "title": "iPhone",
+                "channel": "ios", "device": "dev_1", "deviceName": "iPhone",
+                "count": 2, "lastId": "tl_3", "lastTs": 1761048003000_i64,
+                "lastRole": "lucina", "lastText": "Ciao!", "future": true},
+                {"key": "agent:claude", "kind": "agent", "title": "Claude",
+                "channel": "other", "caller": "claude", "count": 1,
+                "lastId": "tl_1", "lastTs": 1, "lastRole": "user", "lastText": "hi"},
+                {"key": "voice", "kind": "voice", "title": "Lucina Voice",
+                "channel": "voice", "count": 4,
+                "lastId": "tl_20", "lastTs": 1761048009000_i64, "lastRole": "lucina",
+                "lastText": "Sono le dieci."}],
+            "futurePage": 42
+        }}))
+        .into_response(),
         ("GET", "/api/secretary/timeline") => {
             if seen.query.as_deref() == Some("after=expired") {
                 return (
@@ -381,7 +379,6 @@ async fn timeline_query_is_validated_before_lucina() {
         "conversation=device:a:b",
         "conversation=",
         "conversation=device:%2F",
-
     ] {
         let (s, b) = h.json(h.get(&format!("/v1/timeline?{q}"))).await;
         assert_eq!(s, 400, "{q}: {b}");
@@ -684,6 +681,79 @@ async fn chat_channel_from_header_or_body_defaults_to_web() {
     assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
 }
 
+#[tokio::test]
+async fn chat_channel_dsi_and_mac_are_forwarded() {
+    let h = harness(|_| {}).await;
+    let last_channel =
+        || h.mock.seen("/api/secretary/chat").last().unwrap().body["channel"].clone();
+    let chat = |header: Option<&str>, agent: Option<&str>, body: Value| {
+        let mut rb = h
+            .http
+            .post(h.url("/v1/chat"))
+            .bearer_auth(&h.token)
+            .json(&body);
+        if let Some(v) = header {
+            rb = rb.header("X-Secretary-Client", v);
+        }
+        if let Some(v) = agent {
+            rb = rb.header("User-Agent", v);
+        }
+        rb
+    };
+
+    // The firmware installed today says web: the User-Agent, source and session id say DSi.
+    let (s, b) = h
+        .json(chat(
+            Some("web"),
+            Some("Fortuna/1.62 (Nintendo DSi)"),
+            json!({"message": "ciao"}),
+        ))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(last_channel(), "dsi", "Fortuna user agent");
+    let (s, _) = h
+        .json(chat(
+            Some("web"),
+            None,
+            json!({"message": "ciao", "source": "fortuna-chat"}),
+        ))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "dsi", "fortuna-chat source");
+    let (s, _) = h
+        .json(chat(
+            None,
+            None,
+            json!({"message": "ciao", "sessionId": "fortuna-abc"}),
+        ))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "dsi", "fortuna- session");
+
+    let (s, _) = h
+        .json(chat(Some("mac"), None, json!({"message": "ciao"})))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "mac");
+    let (s, _) = h
+        .json(chat(Some("dsi"), None, json!({"message": "ciao"})))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "dsi");
+    let (s, _) = h
+        .json(chat(Some("web"), None, json!({"message": "ciao"})))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(last_channel(), "web", "a plain web client stays web");
+
+    let before = h.mock.seen("/api/secretary/chat").len();
+    let (s, b) = h
+        .json(chat(Some("nope"), None, json!({"message": "ciao"})))
+        .await;
+    assert_eq!((s, code(&b)), (400, "bad_request"));
+    assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
+}
+
 // -- POST /v1/chat replyTo ---------------------------------------------------------
 
 #[tokio::test]
@@ -861,7 +931,10 @@ async fn conversations_are_typed_and_keep_unknown_fields() {
     // The shared LucinaVoice thread is a conversation like any other (protocol section 7).
     assert_eq!(data.items[2].key, "voice");
     assert_eq!(data.items[2].title, "Lucina Voice");
-    assert_eq!(data.items[2].channel, secretary_core::models::Channel::Voice);
+    assert_eq!(
+        data.items[2].channel,
+        secretary_core::models::Channel::Voice
+    );
     assert_eq!(b["items"][2]["channel"], "voice");
     assert_eq!(serde_json::to_value(data).unwrap(), b);
     assert_eq!(b["futurePage"], 42);

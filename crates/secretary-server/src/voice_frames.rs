@@ -125,7 +125,7 @@ pub struct StartOpts {
     pub block: u32,
     /// `thread: "main"` (always for a note).
     pub main: bool,
-    /// `ios` or `web`, when given; the upgrade's header wins over it.
+    /// `ios`, `web`, `dsi` or `mac`, when given; the upgrade's header wins over it.
     pub channel: Option<String>,
     pub session_id: Option<String>,
     pub reply_to: Option<String>,
@@ -224,9 +224,8 @@ pub fn validate_start(r: &StartRaw) -> Result<StartOpts, &'static str> {
     }
     let channel = match r.channel {
         None => None,
-        Some("ios") => Some("ios".to_owned()),
-        Some("web") => Some("web".to_owned()),
-        Some(_) => return Err("channel: ios or web"),
+        Some(c @ ("ios" | "web" | "dsi" | "mac")) => Some(c.to_owned()),
+        Some(_) => return Err("channel: ios, web, dsi or mac"),
     };
     let session_id = match r.session_id {
         None | Some("") => None,
@@ -452,7 +451,11 @@ mod tests {
                 let x = vec![100i16; n];
                 let want = (n - 1) * 16_000 / rate as usize + 1;
                 for chunk in [1usize, 3, 1000] {
-                    assert_eq!(resample(rate, &x, chunk).len(), want, "rate {rate} n {n} chunk {chunk}");
+                    assert_eq!(
+                        resample(rate, &x, chunk).len(),
+                        want,
+                        "rate {rate} n {n} chunk {chunk}"
+                    );
                 }
             }
         }
@@ -707,6 +710,18 @@ mod tests {
             .as_deref(),
             Some("ios")
         );
+        for c in ["dsi", "mac", "web"] {
+            assert_eq!(
+                validate_start(&StartRaw {
+                    channel: Some(c),
+                    ..raw()
+                })
+                .unwrap()
+                .channel
+                .as_deref(),
+                Some(c)
+            );
+        }
         for c in ["voice", "", "IOS", "android"] {
             assert!(
                 validate_start(&StartRaw {

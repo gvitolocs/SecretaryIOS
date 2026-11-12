@@ -96,7 +96,9 @@ use crate::auth::{Identity, Via};
 use crate::error::ApiError;
 use crate::tts;
 use crate::voice::{self, Audio, Turn, MAX_BODY};
-use crate::voice_frames::{self as frames, Action, AdpcmDecoder, Event, Resampler, StartOpts, StartRaw};
+use crate::voice_frames::{
+    self as frames, Action, AdpcmDecoder, Event, Resampler, StartOpts, StartRaw,
+};
 use crate::voice_level;
 use crate::voice_note;
 use crate::voice_pipe::{self, Shared, Spec};
@@ -158,6 +160,10 @@ pub async fn upgrade(
     let mut client = HeaderMap::new();
     if let Some(v) = headers.get(crate::routes::CLIENT_HEADER) {
         client.insert(crate::routes::CLIENT_HEADER, v.clone());
+    }
+    // Fortuna's User-Agent tells a DSi from the web page (`routes::app_channel`).
+    if let Some(v) = headers.get(header::USER_AGENT) {
+        client.insert(header::USER_AGENT, v.clone());
     }
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
@@ -607,7 +613,12 @@ impl Conn {
         // The chat channel of the main thread: the `/v1/chat` rule (protocol section 10.1).
         let channel = if opts.main {
             match crate::routes::chat_channel(&self.client, opts.channel.as_deref()) {
-                Ok(c) => c,
+                Ok(c) => crate::routes::app_channel(
+                    &self.client,
+                    &c,
+                    Some(opts.source.as_str()),
+                    opts.session_id.as_deref(),
+                ),
                 Err(e) => {
                     self.send_error("bad_request", &e.message);
                     return;
@@ -654,7 +665,11 @@ impl Conn {
             dec: AdpcmDecoder::new(opts.block),
             res: Resampler::new(opts.rate),
         });
-        let cap = if opts.note { frames::NOTE_CAP } else { MAX_BODY };
+        let cap = if opts.note {
+            frames::NOTE_CAP
+        } else {
+            MAX_BODY
+        };
         self.phase = Phase::Collecting(Box::new(Collect {
             opts,
             lang: cmd.lang,
@@ -677,7 +692,9 @@ impl Conn {
         let Phase::Collecting(c) = &mut self.phase else {
             return;
         };
-        if c.feed(data) && frames::step(frames::Phase::Collecting, Event::Endpoint).act == Action::Process {
+        if c.feed(data)
+            && frames::step(frames::Phase::Collecting, Event::Endpoint).act == Action::Process
+        {
             self.send(&json!({"type": "endpoint"}));
             self.run_collected();
         }
@@ -700,7 +717,11 @@ impl Conn {
             ..
         } = c;
         let mut pcm = buf.pcm;
-        let up_bytes = if opts.adpcm { received } else { pcm.len() as u64 };
+        let up_bytes = if opts.adpcm {
+            received
+        } else {
+            pcm.len() as u64
+        };
         if !opts.note {
             pcm.truncate(vad.trim_len(pcm.len()) & !1);
         }
@@ -732,7 +753,10 @@ impl Conn {
             voice_telemetry::record_no_speech(&self.st, &self.ident, up_bytes);
             return;
         }
-        let stt_pcm = assessed.lifted.map_or_else(|| Bytes::from(pcm.clone()), |v| Bytes::from(voice_level::pcm_of(&v)));
+        let stt_pcm = assessed.lifted.map_or_else(
+            || Bytes::from(pcm.clone()),
+            |v| Bytes::from(voice_level::pcm_of(&v)),
+        );
         drop(samples);
         let task = if opts.note {
             tokio::spawn(run_note(NoteRun {
@@ -888,7 +912,14 @@ async fn turn_steps(run: Run, shared: &std::sync::Arc<Shared>, info: &mut TurnIn
     };
     let device = ident.device_id.clone();
 
-    let voice::Heard { text: heard, facts } = match voice::transcribe(st, creds, &Audio::Pcm(stt_pcm), lang.as_deref()).await {
+    let voice::Heard { text: heard, facts } = match voice::transcribe(
+        st,
+        creds,
+        &Audio::Pcm(stt_pcm),
+        lang.as_deref(),
+    )
+    .await
+    {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(device = %device, code = %e.code, "voice turn: speech-to-text failed");
@@ -1100,7 +1131,14 @@ async fn note_steps(
     let mut transcript: Option<String> = None;
     let mut stt_ms = None;
     if n.pcm.len() <= frames::NOTE_STT_MAX {
-        match voice::transcribe(&n.st, &n.creds, &Audio::Pcm(n.stt_pcm.clone()), n.lang.as_deref()).await {
+        match voice::transcribe(
+            &n.st,
+            &n.creds,
+            &Audio::Pcm(n.stt_pcm.clone()),
+            n.lang.as_deref(),
+        )
+        .await
+        {
             Ok(h) if !h.text.is_empty() => {
                 let ms = shared.elapsed_ms();
                 shared.set_stt(ms);
@@ -1116,7 +1154,9 @@ async fn note_steps(
             }
             // Empty or failed: lucina-rs transcribes the file itself.
             Ok(_) => tracing::debug!(device = %device, "voice note: empty local transcript"),
-            Err(e) => tracing::warn!(device = %device, code = %e.code, "voice note: speech-to-text failed"),
+            Err(e) => {
+                tracing::warn!(device = %device, code = %e.code, "voice note: speech-to-text failed")
+            }
         }
     }
 
@@ -1131,7 +1171,8 @@ async fn note_steps(
             session_id: n.opts.session_id.as_deref(),
             channel: &n.channel,
             source: &n.opts.source,
-            conversation: note_is_test(&n.st, &n.ident.device_id, &n.opts.source).then_some("selftest"),
+            conversation: note_is_test(&n.st, &n.ident.device_id, &n.opts.source)
+                .then_some("selftest"),
             reply_to: n.opts.reply_to.as_deref(),
             duration_ms: n.pcm.len() as u64 / 32,
             transcript: transcript.as_deref(),
