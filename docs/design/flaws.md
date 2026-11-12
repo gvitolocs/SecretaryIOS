@@ -33,6 +33,14 @@ credentials or a payment (a flaw's `gate`). His eyes only for visual checks on t
 
 All of it is `lucina_flaws::Policy`, from `LUCINA_FLAWS_*` with these defaults: one place, not a rule per caller.
 
+**The chain.** `LUCINA_FLAWS_CHAIN` is the list of agents a try can run on, cheapest first, as `provider:model@probe-lane`
+steps separated by commas. `:model` and `@probe-lane` may be left out; a step without a probe lane is always ready. The
+default is `opencode:opencode/deepseek-v4.1-flash-free@zen-deepseek-flash, claude:claude-sonnet-5-5@claude-sonnet,
+claude:claude-opus-5-5@claude-cli`: free agents first, a Claude model last. Codex is refused, and so is a DeepSeek model
+that isn't a `-free` one. A chain the environment asks for that can't be run stops the server with the reason; it never
+quietly dispatches on another agent. With no chain set, `LUCINA_FLAWS_PROVIDER`, `_MODEL` and `_PROBE_LANE` build exactly
+one step, each with its own default, the way they did before.
+
 `crate::flaws::tick`, every minute in lucina-rs:
 
 1. **Reconcile.** For each target an agent holds: a merged task records the commit and becomes `fixed`; an agent that ended
@@ -40,26 +48,30 @@ All of it is `lucina_flaws::Policy`, from `LUCINA_FLAWS_*` with these defaults: 
    stopped; a flaw that became a duplicate or was dismissed stops its agent.
 2. **Triage.** A report with clients nobody looked at gets one agent, once, that reads the code and sets status and layer
    (`LUCINA_FLAWS_AUTO_TRIAGE`). This is what turns a plain "emoji are boxes" into a target that can start. The rows it
-   leaves open stay open.
+   leaves open stay open. Triage always runs on the first step of the chain, or waits: it never escalates.
 3. **Start.** Every `affected` target with a layer, held by nobody: worst first, at most `LUCINA_FLAWS_MAX_RUNNING` (2) per
    repo, triage agents included, so nezopt doesn't overheat. A claim is atomic, so nothing starts twice, and a failed start
-   gives it back. A server or core fix is one task and one commit for every client waiting on it.
+   gives it back. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
+   probe says it has quota; it never comes back up to a cheaper step it started at. When no step from there down is ready,
+   nothing starts this round. A server or core fix is one task and one commit for every client waiting on it.
 4. **Tell him.** Fixed, closed or blocked targets, once per change, in his chat and on his phone.
 
 `POST /flaws/{id}/dispatch` starts one under the same gates and cap. A session already on a target sets `session` on it
 and the dispatcher leaves it alone.
 
-Agents run Opus 5.5 at medium through agentd (never Codex), in a `lagent task` worktree. Their brief carries his words as
-data, not instructions.
+Agents run through agentd on the step of the chain the try landed on, at medium effort (never Codex), in a `lagent task`
+worktree. Their brief carries his words as data, not instructions. Which provider and model ran a try is in that target's
+history entry and in the line she writes in his chat when it starts.
 
 **Agents can't deploy.** agentd refuses `/pipeline/deploy` from an agent, and refuses it from `service:lucina`. That guard
 stays: this slice only adds `service:lucina` to starting a task. So an agent stops at merged (`fixed`), a session deploys,
 and the target closes with evidence after that. Lucina says so when she tells him.
 
 **Quota.** An agent ending on a limit (Claude's weekly limit, 2026-11-02) isn't a failed fix: the claim goes back, the try
-doesn't count and he isn't told it failed. Nothing starts until `lane probe` (`LUCINA_FLAWS_PROBE_LANE`, hourly, tiny) says
-the lane is back, so an outage leaves no trail of worktrees. Then it starts by itself. `LUCINA_FLAWS_PROVIDER` and
-`LUCINA_FLAWS_MODEL` switch the agents to another provider; Codex is refused.
+doesn't count and he isn't told it failed — and that step's lane is marked out, so the next round's walk down takes the step
+below it. Each lane answers for itself: `lane probe` runs per step, its answer cached half an hour while the lane is ready
+and an hour while it is out. Only when the walk finds no ready step at all does the target wait, so an outage leaves no
+trail of worktrees. Then it starts by itself.
 
 ## Getting a report in
 

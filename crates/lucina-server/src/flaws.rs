@@ -22,7 +22,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::response::Response;
 use chrono::Utc;
 use lucina_flaws::{
-    Flaw, FlawError, FlawPatch, FlawState, Flaws, Gate, ListQuery, NewFlaw, Platform, Policy, Target,
+    Flaw, FlawError, FlawPatch, FlawState, Flaws, Gate, ListQuery, NewFlaw, Platform, Policy, Step, Target,
     TargetStatus, TargetUpdate, Verdict,
 };
 use lucina_store::timeline::{Meta, NewItem};
@@ -54,13 +54,15 @@ fn home() -> PathBuf {
 }
 
 impl FlawSettings {
-    pub fn from_lookup(get: impl Fn(&str) -> Option<String>, data_dir: &Path) -> Self {
+    /// `Err`: the chain the environment asks for can't be run, which stops the server rather
+    /// than quietly dispatching on another agent.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>, data_dir: &Path) -> Result<Self, String> {
         let val = |k: &str| get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
-        Self {
+        Ok(Self {
             enabled: !matches!(val("LUCINA_FLAWS").as_deref(), Some("off" | "false" | "0")),
             db: val("LUCINA_FLAWS_DB").map_or_else(|| data_dir.join("flaws").join("flaws.db"), PathBuf::from),
-            policy: Policy::from_lookup(&get, &home()),
-        }
+            policy: Policy::from_lookup(&get, &home())?,
+        })
     }
 }
 
@@ -192,8 +194,8 @@ pub async fn route(
 pub trait Hands: Send + Sync {
     /// A task worktree: `(workspace id, path)`.
     async fn start_task(&self, title: &str, repo: &str, branch: &str, flaw: &str, platform: Option<Platform>) -> Result<(String, String), String>;
-    /// An agent working in `cwd`: its id.
-    async fn start_agent(&self, policy: &Policy, cwd: &str, prompt: &str, title: &str, labels: Value) -> Result<String, String>;
+    /// An agent working in `cwd` on one step of the chain: its id.
+    async fn start_agent(&self, policy: &Policy, step: &Step, cwd: &str, prompt: &str, title: &str, labels: Value) -> Result<String, String>;
     /// The agent's status; `Ok(None)`: it no longer exists; `Err`: agentd can't say now.
     async fn agent_status(&self, id: &str) -> Result<Option<String>, String>;
     async fn stop_agent(&self, id: &str);
@@ -205,16 +207,20 @@ pub trait Hands: Send + Sync {
     async fn decision(&self, id: &str) -> Option<bool>;
     /// The agent's error, if it ended on one.
     async fn agent_error(&self, id: &str) -> Option<String>;
-    /// Does the agents' lane have quota? Nothing starts while it doesn't.
-    async fn lane_ready(&self, policy: &Policy) -> bool;
-    /// An agent just hit the lane's limit.
-    fn lane_out(&self, why: &str);
+    /// Does this step's lane have quota? A step with no probe lane is always ready. Nothing
+    /// starts on a step that doesn't; the chain goes down, never up.
+    async fn step_ready(&self, step: &Step) -> bool;
+    /// An agent just hit this step's limit.
+    fn step_out(&self, step: &Step, why: &str);
     /// Tell him, in his chat and on his phone. `false`: try again next tick.
     async fn tell(&self, text: &str) -> bool;
+    /// A line on his timeline that an attempt started, and on which agent. The timeline only: he
+    /// hears on the phone about what came of it, not about every start.
+    async fn tell_start(&self, text: &str);
 }
 
 /// Claim, make the worktree, start the agent, in that order; any failure gives the claim back.
-pub async fn start_fix(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, pick_flaw: &Flaw, target: &Target, repo: &str, actor: &str) -> Result<Target, ApiError> {
+pub async fn start_fix(flaws: &Flaws, policy: &Policy, step: &Step, hands: &dyn Hands, pick_flaw: &Flaw, target: &Target, repo: &str, actor: &str) -> Result<Target, ApiError> {
     let p = target.platform;
     let id = pick_flaw.id.as_str();
     let claimed = flaws.claim(id, p, repo, actor).map_err(api_error)?;
@@ -223,22 +229,53 @@ pub async fn start_fix(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, pick_f
     let branch = format!("flaw-{short}-{p}-{}-{}", claimed.attempts, Utc::now().format("%H%M%S"));
     let title = format!("Flaw {id} on {p}: {}", clip(&pick_flaw.title, 60));
     let started = async {
-        allowed_model(&policy.provider, Some(&policy.model))?;
+        allowed_model(&step.provider, step.model.as_deref())?;
         let (ws, cwd) = hands.start_task(&title, repo, &branch, id, Some(p)).await?;
         let prompt = policy.brief(pick_flaw, &claimed, &cwd);
         let labels = json!({"from": "lucina", "flaw": id, "platform": p});
-        let agent = hands.start_agent(policy, &cwd, &prompt, &title, labels).await?;
+        let agent = hands.start_agent(policy, step, &cwd, &prompt, &title, labels).await?;
         Ok::<_, String>((ws, agent))
     }
     .await;
     match started {
-        Ok((ws, agent)) => flaws.attach(id, p, &ws, &agent, actor).map_err(api_error),
+        Ok((ws, agent)) => {
+            let t = flaws.attach(id, p, &ws, &agent, step, actor).map_err(api_error)?;
+            hands.tell_start(&lucina_flaws::policy::start_line(pick_flaw, &t, step)).await;
+            Ok(t)
+        }
         Err(why) => {
             tracing::warn!(flaw = id, platform = %p, error = %why, "flaws: task not started");
             flaws.give_back(id, p, &why, actor).map_err(api_error)?;
             Err(ApiError::new(503, "dispatch_failed", why))
         }
     }
+}
+
+/// The step this attempt runs: its own, or the first one further down whose lane is ready.
+/// `None`: no step is ready, so nothing starts for this target on this tick.
+async fn choose_step<'a>(hands: &dyn Hands, policy: &'a Policy, attempt: u32) -> Option<&'a Step> {
+    // Probed as far as it takes: the steps above this attempt's own are never asked, and once one
+    // says ready the ones below it are not either. `step_for` walks the same rule over what was
+    // answered, and reads a step that wasn't probed as not ready.
+    let first = policy.start_step(attempt);
+    let mut ready = vec![false; first];
+    for step in &policy.chain[first..] {
+        let r = hands.step_ready(step).await;
+        ready.push(r);
+        if r {
+            break;
+        }
+    }
+    policy.step_for(attempt, &ready).map(|i| &policy.chain[i])
+}
+
+/// The step the last agent started for this target ran, read back from its history entry: what to
+/// mark out when it comes back saying it hit the limit.
+fn started_step(flaws: &Flaws, id: &str, p: Platform) -> Option<Step> {
+    let d = flaws.get(id).ok()?;
+    let e = d.events.iter().rev().find(|e| e.kind == "started" && e.platform == Some(p))?;
+    let str_field = |k: &str| e.detail.get(k).and_then(Value::as_str).map(str::to_owned);
+    Some(Step::new(e.detail.get("provider").and_then(Value::as_str)?, str_field("model").as_deref(), str_field("probe_lane").as_deref()))
 }
 
 /// `POST /flaws/{id}/dispatch`: the explicit start, under the same gates and cap as the loop.
@@ -255,14 +292,15 @@ pub async fn dispatch_one(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, id:
             return Err(ApiError::new(409, "needs_owner", format!("this fix needs the owner's go first ({g})")));
         }
     }
-    if !hands.lane_ready(policy).await {
-        return Err(ApiError::new(503, "lane_out", "the agents' lane is out of quota; it starts by itself when it is back"));
-    }
+    let step = match choose_step(hands, policy, target.attempts + 1).await {
+        Some(step) => step,
+        None => return Err(ApiError::new(503, "lane_out", "no agent of the chain has quota; it starts by itself when one is back")),
+    };
     let repo = policy.repo_for(p, layer).display().to_string();
     if running_counts(flaws).get(&repo).copied().unwrap_or(0) >= policy.max_running_per_repo {
         return Err(ApiError::new(409, "busy", format!("{} tasks already run in this repo", policy.max_running_per_repo)));
     }
-    start_fix(flaws, policy, hands, &d.flaw, target, &repo, actor).await
+    start_fix(flaws, policy, step, hands, &d.flaw, target, &repo, actor).await
 }
 
 /// Agents at work per repo, triage included. A session's own work isn't ours to count.
@@ -289,10 +327,15 @@ fn is_limit(error: &str) -> bool {
     ["limit", "quota", "credits", "429", "billing"].iter().any(|w| e.contains(w))
 }
 
-/// What is known about the lane, for this process: `(ready, until)`.
-static LANE: std::sync::Mutex<Option<(bool, std::time::Instant)>> = std::sync::Mutex::new(None);
+/// What is known about each lane of the chain, for this process: `lane -> (ready, until)`. Every
+/// step keeps its own answer: one lane being out never says anything about another.
+static LANES: std::sync::Mutex<std::collections::BTreeMap<String, (bool, std::time::Instant)>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 const LANE_READY_FOR: Duration = Duration::from_secs(30 * 60);
 const LANE_OUT_FOR: Duration = Duration::from_secs(60 * 60);
+
+fn lanes() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, (bool, std::time::Instant)>> {
+    LANES.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// `lane probe`, one tiny call. A probe that can't run or read counts as ready: an agent that hits
 /// the limit says so itself.
@@ -307,6 +350,17 @@ async fn probe_lane(lane: &str) -> bool {
 
 fn clip(s: &str, max: usize) -> String {
     lucina_delegate::types::clip(s, max)
+}
+
+/// A line the tracker leaves in his chat: a flaw note from her.
+fn flaw_line(text: &str) -> NewItem {
+    NewItem {
+        channel: "other".into(),
+        role: "lucina".into(),
+        text: text.to_owned(),
+        meta: Some(Meta { tool: Some("flaw".into()), ok: Some(true), ..Meta::kind("flaw") }),
+        ..Default::default()
+    }
 }
 
 /// Check what each running task became (Symphony: re-read state after every turn).
@@ -350,7 +404,10 @@ async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             // which case it isn't `fixing` any more and this list didn't include it.
             _ => {
                 if let Some(e) = hands.agent_error(&agent).await.filter(|e| is_limit(e)) {
-                    hands.lane_out(&e);
+                    // The step that ran is out, not the chain: the next tick looks below it.
+                    if let Some(step) = started_step(flaws, &flaw.id, p) {
+                        hands.step_out(&step, &e);
+                    }
                     let _ = flaws.give_back(&flaw.id, p, &e, ACTOR);
                     continue;
                 }
@@ -377,7 +434,10 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             Ok(_) => {
                 match hands.agent_error(&agent).await.filter(|e| is_limit(e)) {
                     Some(e) => {
-                        hands.lane_out(&e);
+                        // Triage runs on the first step of the chain and never on another.
+                        if let Some(first) = policy.chain.first() {
+                            hands.step_out(first, &e);
+                        }
                         let _ = flaws.reset_triage(&flaw.id, &e, ACTOR);
                     }
                     None => {
@@ -392,7 +452,12 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
         return;
     }
     let due = flaws.triage_due().unwrap_or_default();
-    if due.is_empty() || !hands.lane_ready(policy).await {
+    if due.is_empty() {
+        return;
+    }
+    // Triage never escalates: the first step of the chain, and it waits when that one is out.
+    let Some(step) = policy.chain.first() else { return };
+    if policy.triage_step(&[hands.step_ready(step).await]).is_none() {
         return;
     }
     for flaw in due {
@@ -402,10 +467,10 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
         let short = flaw.id.trim_start_matches("fl-");
         let title = format!("Triage flaw {}: {}", flaw.id, clip(&flaw.title, 60));
         let started = async {
-            allowed_model(&policy.provider, Some(&policy.model))?;
+            allowed_model(&step.provider, step.model.as_deref())?;
             let (_, cwd) = hands.start_task(&title, &repo, &format!("flaw-{short}-triage-{}", Utc::now().format("%H%M%S")), &flaw.id, None).await?;
             hands
-                .start_agent(policy, &cwd, &policy.triage_brief(&flaw, &cwd), &title, json!({"from": "lucina", "flaw": flaw.id, "triage": "1"}))
+                .start_agent(policy, step, &cwd, &policy.triage_brief(&flaw, &cwd), &title, json!({"from": "lucina", "flaw": flaw.id, "triage": "1"}))
                 .await
         }
         .await;
@@ -431,7 +496,6 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             *running.entry(policy.secretary_repo.display().to_string()).or_insert(0) += triaging;
         }
         let due = flaws.due().unwrap_or_default();
-        let ready = due.is_empty() || hands.lane_ready(policy).await;
         for pick in policy.pick(due, &running) {
             let verdict = match pick.verdict {
                 Verdict::Start => Verdict::Start,
@@ -458,10 +522,9 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
                 },
             };
             debug_assert_eq!(verdict, Verdict::Start);
-            if !ready {
-                continue;
-            }
-            let _ = start_fix(flaws, policy, hands, &pick.flaw, &pick.target, &pick.repo, ACTOR).await;
+            // The free steps first: this attempt's own step, or the first ready one below it.
+            let Some(step) = choose_step(hands, policy, pick.target.attempts + 1).await else { continue };
+            let _ = start_fix(flaws, policy, step, hands, &pick.flaw, &pick.target, &pick.repo, ACTOR).await;
         }
     }
     let untold = flaws.untold().unwrap_or_default();
@@ -517,9 +580,9 @@ impl Hands for StateHands {
         }
     }
 
-    async fn start_agent(&self, policy: &Policy, cwd: &str, prompt: &str, title: &str, labels: Value) -> Result<String, String> {
+    async fn start_agent(&self, policy: &Policy, step: &Step, cwd: &str, prompt: &str, title: &str, labels: Value) -> Result<String, String> {
         let body = json!({
-            "provider": policy.provider, "model": policy.model, "thinkingOptionId": policy.effort,
+            "provider": step.provider, "model": step.model, "thinkingOptionId": policy.effort,
             "modeId": policy.mode, "cwd": cwd, "prompt": prompt, "title": clip(title, 80), "labels": labels,
         });
         let v = self.agentd("POST", "/agents", Some(&body)).await?;
@@ -584,32 +647,32 @@ impl Hands for StateHands {
         v["lastError"].as_str().map(str::to_owned)
     }
 
-    async fn lane_ready(&self, policy: &Policy) -> bool {
-        if let Some((ready, until)) = *LANE.lock().unwrap_or_else(|e| e.into_inner()) {
-            if std::time::Instant::now() < until {
-                return ready;
+    async fn step_ready(&self, step: &Step) -> bool {
+        let Some(lane) = step.probe_lane.as_deref() else { return true };
+        if let Some((ready, until)) = lanes().get(lane) {
+            if std::time::Instant::now() < *until {
+                return *ready;
             }
         }
-        let ready = probe_lane(&policy.probe_lane).await;
+        let ready = probe_lane(lane).await;
         let keep = if ready { LANE_READY_FOR } else { LANE_OUT_FOR };
-        tracing::info!(lane = %policy.probe_lane, ready, "flaws: agents' lane probed");
-        *LANE.lock().unwrap_or_else(|e| e.into_inner()) = Some((ready, std::time::Instant::now() + keep));
+        tracing::info!(lane, ready, "flaws: a step's lane probed");
+        lanes().insert(lane.to_owned(), (ready, std::time::Instant::now() + keep));
         ready
     }
 
-    fn lane_out(&self, why: &str) {
-        tracing::warn!(why, "flaws: the agents' lane is out; nothing starts until a probe says it is back");
-        *LANE.lock().unwrap_or_else(|e| e.into_inner()) = Some((false, std::time::Instant::now() + LANE_OUT_FOR));
+    fn step_out(&self, step: &Step, why: &str) {
+        let Some(lane) = step.probe_lane.as_deref() else { return };
+        tracing::warn!(lane, why, "flaws: this step's lane is out; it waits for a probe that says it is back");
+        lanes().insert(lane.to_owned(), (false, std::time::Instant::now() + LANE_OUT_FOR));
+    }
+
+    async fn tell_start(&self, text: &str) {
+        self.st.timeline.record(flaw_line(text));
     }
 
     async fn tell(&self, text: &str) -> bool {
-        let item = self.st.timeline.record(NewItem {
-            channel: "other".into(),
-            role: "lucina".into(),
-            text: text.to_owned(),
-            meta: Some(Meta { tool: Some("flaw".into()), ok: Some(true), ..Meta::kind("flaw") }),
-            ..Default::default()
-        });
+        let item = self.st.timeline.record(flaw_line(text));
         let mut body = json!({
             "category": "lucina_message",
             "title": "Flaws",
@@ -650,16 +713,29 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         tasks: Mutex<Vec<String>>,
-        agents: Mutex<Vec<String>>,
+        /// What started: the worktree it works in and the chain step it runs on.
+        agents: Mutex<Vec<(String, String)>>,
         status: Mutex<HashMap<String, String>>,
         merged: Mutex<HashMap<String, String>>,
         stopped: Mutex<Vec<String>>,
         told: Mutex<Vec<String>>,
+        /// The lines the dispatcher wrote in his chat when a try started.
+        started: Mutex<Vec<String>>,
         asked: Mutex<Vec<String>>,
         answer: Mutex<Option<bool>>,
         fail_agent: Mutex<bool>,
         errors: Mutex<HashMap<String, String>>,
+        /// Every lane answers "out of quota" when probed.
         out: Mutex<bool>,
+        /// Lanes that answered "out of quota", each marked out by its own probe or limit.
+        lanes_out: Mutex<Vec<String>>,
+    }
+
+    impl Fake {
+        /// The chain step each started agent ran on, in the order they started.
+        fn ran(&self) -> Vec<String> {
+            self.agents.lock().unwrap().iter().map(|(_, step)| step.clone()).collect()
+        }
     }
 
     #[async_trait::async_trait]
@@ -668,13 +744,13 @@ mod tests {
             self.tasks.lock().unwrap().push(format!("{repo} {branch}"));
             Ok((format!("wks_{branch}"), format!("/w/{branch}")))
         }
-        async fn start_agent(&self, _p: &Policy, cwd: &str, prompt: &str, _t: &str, _l: Value) -> Result<String, String> {
+        async fn start_agent(&self, _p: &Policy, step: &Step, cwd: &str, prompt: &str, _t: &str, _l: Value) -> Result<String, String> {
             if *self.fail_agent.lock().unwrap() {
                 return Err("agentd is down".into());
             }
             assert!(prompt.contains("<owner_words>"));
             let id = format!("ag{}", self.agents.lock().unwrap().len());
-            self.agents.lock().unwrap().push(cwd.to_owned());
+            self.agents.lock().unwrap().push((cwd.to_owned(), step.label()));
             self.status.lock().unwrap().insert(id.clone(), "running".into());
             Ok(id)
         }
@@ -697,20 +773,29 @@ mod tests {
         async fn agent_error(&self, id: &str) -> Option<String> {
             self.errors.lock().unwrap().get(id).cloned()
         }
-        async fn lane_ready(&self, _p: &Policy) -> bool {
-            !*self.out.lock().unwrap()
+        async fn step_ready(&self, step: &Step) -> bool {
+            // A step without a probe lane is always ready; a probe answers for its own lane only.
+            let Some(lane) = step.probe_lane.as_deref() else { return true };
+            !*self.out.lock().unwrap() && !self.lanes_out.lock().unwrap().iter().any(|l| l == lane)
         }
-        fn lane_out(&self, _why: &str) {
-            *self.out.lock().unwrap() = true;
+        fn step_out(&self, step: &Step, _why: &str) {
+            let Some(lane) = step.probe_lane.as_deref() else { return };
+            let mut lanes = self.lanes_out.lock().unwrap();
+            if !lanes.iter().any(|l| l == lane) {
+                lanes.push(lane.to_owned());
+            }
         }
         async fn tell(&self, text: &str) -> bool {
             self.told.lock().unwrap().push(text.to_owned());
             true
         }
+        async fn tell_start(&self, text: &str) {
+            self.started.lock().unwrap().push(text.to_owned());
+        }
     }
 
     fn policy() -> Policy {
-        Policy { auto_triage: false, ..Policy::from_lookup(|_| None, Path::new("/h")) }
+        Policy { auto_triage: false, ..Policy::from_lookup(|_| None, Path::new("/h")).unwrap() }
     }
 
     fn due(s: &Flaws, words: &str, p: Platform, gate: Option<Gate>) -> Flaw {
@@ -789,25 +874,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_quota_stop_costs_no_try_and_waits_for_the_lane() {
+    async fn a_quota_stop_costs_no_try_and_the_step_below_takes_it() {
         let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
         let f = due(&s, "emoji", Platform::Web, None);
         tick(&s, &p, &h).await;
         // What the Claude CLI really answered on 2026-11-02.
         h.status.lock().unwrap().insert("ag0".into(), "error".into());
         h.errors.lock().unwrap().insert("ag0".into(), "You've hit your weekly limit · resets Nov 4, 12pm (UTC)".into());
+        tick(&s, &p, &h).await;
+        let t = target(&s, &f.id, Platform::Web);
+        assert_eq!((t.status, t.attempts, t.agent.as_deref()), (TargetStatus::Fixing, 1, Some("ag1")));
+        assert_eq!(h.ran()[1], p.chain[1].label(), "the lane that ran out is the reason, not the try");
+        assert!(h.told.lock().unwrap().is_empty(), "he isn't told it couldn't be fixed");
+        // The next try goes back to the cheap end: the step that ran out is only skipped while out.
+        h.status.lock().unwrap().insert("ag1".into(), "error".into());
+        h.errors.lock().unwrap().insert("ag1".into(), "the provider crashed".into());
+        *h.lanes_out.lock().unwrap() = vec![];
+        tick(&s, &p, &h).await;
+        assert_eq!(h.ran()[2], p.chain[1].label(), "try 3 starts on step 2, the step it reached");
+    }
+
+    #[tokio::test]
+    async fn nothing_starts_while_the_walk_down_finds_no_ready_step() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        let f = due(&s, "emoji", Platform::Web, None);
+        *h.out.lock().unwrap() = true;
         for _ in 0..4 {
             tick(&s, &p, &h).await;
         }
         let t = target(&s, &f.id, Platform::Web);
         assert_eq!((t.status, t.attempts, t.agent), (TargetStatus::Affected, 0, None));
-        assert_eq!(h.agents.lock().unwrap().len(), 1, "no worktree or agent per tick while it is out");
+        assert!(h.agents.lock().unwrap().is_empty(), "no worktree or agent per tick while every step is out");
         assert!(h.told.lock().unwrap().is_empty(), "he isn't told it couldn't be fixed");
         assert_eq!(dispatch_one(&s, &p, &h, &f.id, Platform::Web, "t").await.unwrap_err().code, "lane_out");
-        // The lane is back: it starts by itself.
+        // A step is back: it starts by itself.
         *h.out.lock().unwrap() = false;
         tick(&s, &p, &h).await;
-        assert_eq!(target(&s, &f.id, Platform::Web).status, TargetStatus::Fixing);
+        assert_eq!((target(&s, &f.id, Platform::Web).status, h.ran()), (TargetStatus::Fixing, vec![p.chain[0].label()]));
+    }
+
+    #[tokio::test]
+    async fn the_walk_down_starts_on_the_first_step_that_has_quota() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        due(&s, "emoji", Platform::Web, None);
+        // A limit answered on the free lane earlier; its probe still says out.
+        h.step_out(&p.chain[0], "the free lane answered its reset date");
+        tick(&s, &p, &h).await;
+        assert_eq!(h.ran(), vec![p.chain[1].label()], "it never comes back up to the step it started at");
+    }
+
+    #[tokio::test]
+    async fn the_start_names_the_agent_that_runs_the_try() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        let f = due(&s, "emoji are boxes", Platform::Web, None);
+        tick(&s, &p, &h).await;
+        // His history: what the work was done with.
+        let e = s.get(&f.id).unwrap().events.iter().rev().find(|e| e.kind == "started").unwrap().clone();
+        let d = e.detail;
+        assert_eq!((d["provider"].as_str(), d["model"].as_str()), (Some("opencode"), Some("opencode/deepseek-v4.1-flash-free")), "{d}");
+        // And the line in his chat.
+        let line = h.started.lock().unwrap()[0].clone();
+        assert!(line.contains("opencode:opencode/deepseek-v4.1-flash-free") && line.contains(&f.id) && line.contains("try 1"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn a_target_someone_else_holds_is_left_alone() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        let f = due(&s, "emoji", Platform::Web, None);
+        // A session took it on by hand: no dispatcher agent on it.
+        s.set_target(&f.id, Platform::Web, TargetUpdate { status: Some(TargetStatus::Fixing), workspace: Some("/w/hand".into()), session: Some("claude-session".into()), ..TargetUpdate::default() }, "someone").unwrap();
+        tick(&s, &p, &h).await;
+        assert!(h.agents.lock().unwrap().is_empty(), "the dispatcher never starts a second agent on it");
+        assert_eq!(dispatch_one(&s, &p, &h, &f.id, Platform::Web, "t").await.unwrap_err().code, "not_claimable");
+        // The same on a target that never moved off "affected": the session holds it, not the status.
+        let g = due(&s, "the same on another client", Platform::Ios, None);
+        s.set_target(&g.id, Platform::Ios, TargetUpdate { session: Some("claude-session".into()), ..TargetUpdate::default() }, "someone").unwrap();
+        tick(&s, &p, &h).await;
+        assert!(h.agents.lock().unwrap().is_empty(), "a target with a session isn't the dispatcher's to claim");
+        assert_eq!(dispatch_one(&s, &p, &h, &g.id, Platform::Ios, "t").await.unwrap_err().code, "not_claimable");
     }
 
     #[tokio::test]
