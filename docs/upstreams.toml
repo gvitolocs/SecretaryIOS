@@ -437,16 +437,27 @@ name = "tlaplusplus (scalable TLA+ runtime in Rust)"
 url = "https://github.com/zoratu/tlaplusplus"
 source = "github"
 repo = "zoratu/tlaplusplus"
-track = "tags"
-pin = "v1.2.34"
+track = "commits"
+pin = "865cf7a250284de00d8c7d5609ea1daf08aab07c"
 notify = "report"
-ours = [ { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" } ]
+ours = [
+  { repo = "/home/nez/Projects/Lucina/tlaplusplus", path = ".", base = "main" },
+  { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" },
+]
 licence_upstream = "GPL-3.0-only"
 licence_ours = "unknown"
-relation = "reference"
+relation = "fork"
 confidence = "confirmed"
 rely_on = []
-notes = "Rejected 2026-11-08 (LucinaOS docs/research/tla-checkers.md): on Minerva's BootGraph and OtaUpdate it explores 6-12 states, reports success and passes 11 witnesses that must fail (analyze-tla lists 13 unsupported features); on JunoIdleWake its counts are right but 35-60x slower than tla-mc. Revisit when analyze-tla reports no unsupported features for our specs. Built from source (not on crates.io)."
+notes = "Rejected 2026-11-08 (LucinaOS docs/research/tla-checkers.md): on Minerva's BootGraph and OtaUpdate it explores 6-12 states, reports success and passes 11 witnesses that must fail (analyze-tla lists 13 unsupported features); on JunoIdleWake its counts are right but 35-60x slower than tla-mc. Revisit when analyze-tla reports no unsupported features for our specs. Built from source (not on crates.io). Since 2026-11-12 a local fork exists at /home/nez/Projects/Lucina/tlaplusplus (main = upstream 865cf7a, push blocked, branch lucina-parity holds six fixes); the earlier rejection stands for LucinaOS use until the fixes are offered upstream."
+
+  [[upstream.contrib]]
+  id = "tlaplusplus-lucina-parity-fixes"
+  title = "Six TLC-parity fixes (init bound equality, assignment RHS junction, eval errors fatal, nested CASE, unverified temporal properties, liveness WIP)"
+  ours = "tlaplusplus branch lucina-parity"
+  upstream_target = "zoratu/tlaplusplus main, one draft PR per fix"
+  notes = "Each fix has a tlc_parity regression test. Draft only: nothing is sent upstream without the owner's OK."
+  status = "candidate"
 
 [[upstream]]
 id = "tlc"
