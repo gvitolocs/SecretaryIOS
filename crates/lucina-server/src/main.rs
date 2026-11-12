@@ -1024,8 +1024,14 @@ async fn parcels_cmd(cmd: ParcelsCmd) -> anyhow::Result<()> {
     };
     let out = match cmd {
         ParcelsCmd::List => serde_json::Value::Array(svc.store.list().iter().map(view).collect()),
-        ParcelsCmd::Add { number, carrier, label } => {
-            let a = svc.add(&number, carrier.as_deref(), label.as_deref(), now, true).await;
+        ParcelsCmd::Add {
+            number,
+            carrier,
+            label,
+        } => {
+            let a = svc
+                .add(&number, carrier.as_deref(), label.as_deref(), now, true)
+                .await;
             let mut v = view(&a.parcel);
             v["created"] = a.created.into();
             v["saved"] = a.saved.into();
@@ -1035,7 +1041,10 @@ async fn parcels_cmd(cmd: ParcelsCmd) -> anyhow::Result<()> {
             v
         }
         ParcelsCmd::Status { key } => {
-            let p = svc.store.get(&key).ok_or_else(|| anyhow::anyhow!("no parcel matches {key}"))?;
+            let p = svc
+                .store
+                .get(&key)
+                .ok_or_else(|| anyhow::anyhow!("no parcel matches {key}"))?;
             let looked = svc.refresh(&p, now).await;
             let mut v = view(&svc.store.get(&p.id).unwrap_or(p));
             if let Err(e) = &looked {
@@ -1044,12 +1053,16 @@ async fn parcels_cmd(cmd: ParcelsCmd) -> anyhow::Result<()> {
             v
         }
         ParcelsCmd::Remove { key } => {
-            let p = svc.store.remove(&key).ok_or_else(|| anyhow::anyhow!("no parcel matches {key}"))?;
+            let p = svc
+                .store
+                .remove(&key)
+                .ok_or_else(|| anyhow::anyhow!("no parcel matches {key}"))?;
             serde_json::json!({ "removed": text::name(&p) })
         }
         ParcelsCmd::Tick { send: false } => {
             // A copy of the list in a scratch file: the lookups are real, nothing of ours changes.
-            let dir = std::env::temp_dir().join(format!("lucina-parcels-dry-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("lucina-parcels-dry-{}", std::process::id()));
             std::fs::create_dir_all(&dir)?;
             let copy = dir.join("parcels.json");
             if svc.store.path().exists() {
@@ -1063,7 +1076,11 @@ async fn parcels_cmd(cmd: ParcelsCmd) -> anyhow::Result<()> {
         ParcelsCmd::Tick { send: true } => {
             let cfg = Config::from_env()?;
             let state = AppState::build(cfg, None)?;
-            let svc = state.tool_env.parcels.clone().ok_or_else(|| anyhow::anyhow!("parcel tracking is off"))?;
+            let svc = state
+                .tool_env
+                .parcels
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("parcel tracking is off"))?;
             let messages = lucina_parcels::tick(&svc.store, &svc.scraper, now, &svc.cfg).await;
             lucina_server::parcels::deliver(&state, &messages).await;
             serde_json::json!({ "sent": messages.len() })
