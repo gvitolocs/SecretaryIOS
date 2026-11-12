@@ -95,7 +95,19 @@ pub(super) async fn try_turn(
         return None;
     }
     let lang = crate::rich::guess_language(&t.message, &t.message);
+    let selftest = crate::selftest::is_session(&t.session);
     if let Some(kind) = stop_kind(&t.message) {
+        if selftest {
+            // Test traffic leaves no trace: a decision is a question pushed to his phone.
+            let reply = format!(
+                "{} [selftest: nothing asked, agent not started]",
+                asked(lang, "selftest")
+            );
+            return Some(Finish::reply(reply, ACTION).with(
+                format!("[selftest: agent task not started: {kind}]"),
+                Some(Meta::kind("act_turn")),
+            ));
+        }
         let (question, reason) = stop_question(kind);
         let body = json!({
             "question": question,
@@ -122,7 +134,7 @@ pub(super) async fn try_turn(
         };
     }
     let brief = crate::act::brief(&t.message, &t.channel);
-    if crate::selftest::is_session(&t.session) {
+    if selftest {
         // Routed and briefed exactly the same; no agent, no job, no push.
         let reply = format!("{} [selftest: agent not started]", ack(lang));
         return Some(Finish::reply(reply, ACTION).with(
@@ -295,6 +307,40 @@ mod tests {
             .get(&id, chrono::Utc::now())
             .expect("the decision exists");
         assert_eq!(d.status, "pending");
+    }
+
+    /// The same request in a self-test session: nothing is asked, so nothing reaches his phone.
+    #[tokio::test]
+    async fn act_turn_selftest_creates_no_decision() {
+        let (st, _d) = state();
+        let t = turn(
+            &st,
+            "Ordina una pizza su Wolt e pagala dal mio DSi",
+            "dsi",
+            crate::selftest::SESSION,
+        );
+        let f = try_turn(&t, "agent_task", 0.9, None).await.expect("taken");
+        assert!(f.job.is_none() && f.job_plan.is_none(), "no job");
+        assert_eq!(stop_kind(&t.message), Some("purchase"));
+        assert!(
+            f.reply
+                .starts_with("I did not start an agent: this looks like it costs money")
+                && f.reply.contains("(selftest)")
+                && f.reply
+                    .ends_with("[selftest: nothing asked, agent not started]"),
+            "{}",
+            f.reply
+        );
+        assert_eq!(
+            f.action_result,
+            "[selftest: agent task not started: purchase]"
+        );
+        assert!(
+            crate::decide::store(&st.cfg.data_dir)
+                .list(None, 50, chrono::Utc::now())
+                .is_empty(),
+            "test traffic leaves no decision behind"
+        );
     }
 
     #[test]
