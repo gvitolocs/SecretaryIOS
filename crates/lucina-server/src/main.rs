@@ -385,9 +385,18 @@ enum FlawsCmd {
     /// Mark it a duplicate of another flaw.
     Duplicate { id: String, of: String },
     /// agentd: a task's merge landed.
-    Merged { id: String, platform: String, commit: String },
+    Merged {
+        id: String,
+        platform: String,
+        commit: String,
+    },
     /// agentd: a deploy holds this target's fix; kept if the runtime carries it.
-    Deployed { id: String, platform: String, runtime: String, tag: String },
+    Deployed {
+        id: String,
+        platform: String,
+        runtime: String,
+        tag: String,
+    },
     /// Every live flaw against every client.
     Matrix,
 }
@@ -870,34 +879,70 @@ async fn upstream_cmd(cmd: UpstreamCmd) -> anyhow::Result<()> {
 /// decision goes through the same path as `lucina_decide`: evidence, Jev, the owner's push, the
 /// ops record. The API token comes from the unit's env files and is never printed.
 fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
-    use lucina_flaws::{Evidence, EvidenceKind, Gate, Layer, ListQuery, NewFlaw, Platform, Severity, TargetStatus, TargetUpdate};
+    use lucina_flaws::{
+        Evidence, EvidenceKind, Gate, Layer, ListQuery, NewFlaw, Platform, Severity, TargetStatus,
+        TargetUpdate,
+    };
     let flaws = lucina_server::flaws::open_cli(db)?;
     let actor = std::env::var("LAGENT_SESSION")
         .or_else(|_| std::env::var("LUCINA_FLAWS_ACTOR"))
         .unwrap_or_else(|_| "lucina-rs-cli".to_owned());
     let out = match cmd {
         FlawsCmd::Ls { q, state } => {
-            let state = state.as_deref().map(lucina_flaws::FlawState::parse).transpose()?;
-            serde_json::to_value(flaws.list(&ListQuery { q, state, ..ListQuery::default() })?)?
+            let state = state
+                .as_deref()
+                .map(lucina_flaws::FlawState::parse)
+                .transpose()?;
+            serde_json::to_value(flaws.list(&ListQuery {
+                q,
+                state,
+                ..ListQuery::default()
+            })?)?
         }
         FlawsCmd::Show { id } => serde_json::to_value(flaws.get(&id)?)?,
-        FlawsCmd::Report { words, title, severity, affected, thread, discovered_from, gate, triaged } => {
+        FlawsCmd::Report {
+            words,
+            title,
+            severity,
+            affected,
+            thread,
+            discovered_from,
+            gate,
+            triaged,
+        } => {
             let new = NewFlaw {
                 words,
                 title,
                 severity: severity.as_deref().map(Severity::parse).transpose()?,
-                affected: affected.iter().map(|p| Platform::parse(p)).collect::<Result<_, _>>()?,
+                affected: affected
+                    .iter()
+                    .map(|p| Platform::parse(p))
+                    .collect::<Result<_, _>>()?,
                 thread,
                 discovered_from,
                 gate: gate.as_deref().map(Gate::parse).transpose()?,
             };
             let r = flaws.report(new, &actor)?;
             if triaged {
-                flaws.start_triage(&r.flaw.flaw.id, "manual", true, &actor)?;
+                // No agent ran on it: the owner or a session already looked, so no chain step either.
+                flaws.start_triage(&r.flaw.flaw.id, "manual", true, None, &actor)?;
             }
             serde_json::to_value(r)?
         }
-        FlawsCmd::Target { id, platform, status, layer, evidence_kind, evidence_ref, build, workspace, session, commit, deploy_tag, note } => {
+        FlawsCmd::Target {
+            id,
+            platform,
+            status,
+            layer,
+            evidence_kind,
+            evidence_ref,
+            build,
+            workspace,
+            session,
+            commit,
+            deploy_tag,
+            note,
+        } => {
             let evidence = match evidence_kind {
                 None => None,
                 Some(k) => Some(Evidence {
@@ -921,14 +966,39 @@ fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
             serde_json::to_value(flaws.set_target(&id, Platform::parse(&platform)?, u, &actor)?)?
         }
         FlawsCmd::Duplicate { id, of } => {
-            let p = lucina_flaws::FlawPatch { duplicate_of: Some(of), ..Default::default() };
+            let p = lucina_flaws::FlawPatch {
+                duplicate_of: Some(of),
+                ..Default::default()
+            };
             serde_json::to_value(flaws.patch(&id, p, &actor)?)?
         }
-        FlawsCmd::Merged { id, platform, commit } => serde_json::to_value(flaws.record_merge(&id, Platform::parse(&platform)?, &commit, "lagent")?)?,
-        FlawsCmd::Deployed { id, platform, runtime, tag } => {
+        FlawsCmd::Merged {
+            id,
+            platform,
+            commit,
+        } => serde_json::to_value(flaws.record_merge(
+            &id,
+            Platform::parse(&platform)?,
+            &commit,
+            "lagent",
+        )?)?,
+        FlawsCmd::Deployed {
+            id,
+            platform,
+            runtime,
+            tag,
+        } => {
             let p = Platform::parse(&platform)?;
-            let t = flaws.get(&id)?.targets.into_iter().find(|t| t.platform == p).ok_or(lucina_flaws::FlawError::NotFound)?;
-            let first_for_runtime = !t.deploy_tag.as_deref().is_some_and(|d| d.starts_with(&format!("deploy/{runtime}/")));
+            let t = flaws
+                .get(&id)?
+                .targets
+                .into_iter()
+                .find(|t| t.platform == p)
+                .ok_or(lucina_flaws::FlawError::NotFound)?;
+            let first_for_runtime = !t
+                .deploy_tag
+                .as_deref()
+                .is_some_and(|d| d.starts_with(&format!("deploy/{runtime}/")));
             if lucina_flaws::policy::runtime_serves(p, t.layer, &runtime) && first_for_runtime {
                 serde_json::to_value(flaws.record_deploy(&id, p, &tag, "lagent")?)?
             } else {
@@ -1006,11 +1076,23 @@ async fn parcels_cmd(cmd: ParcelsCmd) -> anyhow::Result<()> {
 async fn reach_cmd(cmd: ReachCmd) -> anyhow::Result<()> {
     use lucina_server::reach::cli;
     let out = match cmd {
-        ReachCmd::Inbox { to, all, limit, json } => {
+        ReachCmd::Inbox {
+            to,
+            all,
+            limit,
+            json,
+        } => {
             let v = cli::inbox(&to, all, limit).await?;
             if !json {
                 let lines = cli::lines(&v);
-                println!("{}", if lines.is_empty() { "(nothing waiting)".into() } else { lines });
+                println!(
+                    "{}",
+                    if lines.is_empty() {
+                        "(nothing waiting)".into()
+                    } else {
+                        lines
+                    }
+                );
                 return Ok(());
             }
             v
@@ -1055,7 +1137,9 @@ async fn keep_cmd(cmd: KeepCmd) -> anyhow::Result<()> {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(wait_for);
     while out["state"] == "queued" && std::time::Instant::now() < until {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        out = c.post("secrets/keep", &serde_json::json!({"job": out["job"]})).await?;
+        out = c
+            .post("secrets/keep", &serde_json::json!({"job": out["job"]}))
+            .await?;
     }
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -1449,7 +1533,12 @@ fn main() -> anyhow::Result<()> {
     // `deals`, `decide`, `jev` and `upstream` print their results on stdout, so their logs go to stderr.
     if matches!(
         cmd,
-        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. } | Cmd::Upstream { .. } | Cmd::SecretKeep { .. } | Cmd::ModelTry { .. }
+        Cmd::Deals { .. }
+            | Cmd::Decide { .. }
+            | Cmd::Jev { .. }
+            | Cmd::Upstream { .. }
+            | Cmd::SecretKeep { .. }
+            | Cmd::ModelTry { .. }
     ) {
         tracing_subscriber::fmt()
             .with_env_filter(filter("warn"))
@@ -1496,16 +1585,26 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
-        Cmd::ModelTry { provider, model, stream, tools, prompt } => {
+        Cmd::ModelTry {
+            provider,
+            model,
+            stream,
+            tools,
+            prompt,
+        } => {
             let c = lucina_server::decide::cli::Client::from_env()?;
-            let mut body = serde_json::json!({"provider": provider, "prompt": prompt, "stream": stream});
+            let mut body =
+                serde_json::json!({"provider": provider, "prompt": prompt, "stream": stream});
             if let Some(m) = model {
                 body["model"] = m.into();
             }
             if tools {
                 body["tools"] = "registry".into();
             }
-            println!("{}", serde_json::to_string_pretty(&c.post("models/try", &body).await?)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&c.post("models/try", &body).await?)?
+            );
         }
         Cmd::SecretKeep { cmd } => keep_cmd(cmd).await?,
         Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db)?,

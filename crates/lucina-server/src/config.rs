@@ -806,7 +806,8 @@ impl Config {
             discord: crate::discord::DiscordConfig::from_lookup(&get, &data_dir),
             discord_token: crate::discord::token_from_lookup(&get),
             ops: crate::ops::OpsSettings::from_lookup(&get, &data_dir),
-            flaws: crate::flaws::FlawSettings::from_lookup(&get, &data_dir),
+            flaws: crate::flaws::FlawSettings::from_lookup(&get, &data_dir)
+                .map_err(|e| anyhow::anyhow!("the flaws tracker won't run: {e}"))?,
             parcels: crate::parcels::ParcelSettings::from_lookup(&get, &data_dir),
             act: ActConfig::from_lookup(&get),
             data_dir,
