@@ -47,6 +47,72 @@ pub struct PluginsConfig {
     pub public_url: Option<String>,
 }
 
+/// The agentd provider an act run uses unless `LUCINA_ACT_PROVIDER` says otherwise.
+pub const DEFAULT_ACT_PROVIDER: &str = "opencode";
+/// `LUCINA_ACT_MODEL`'s default: a free model (owner rule: free models first).
+pub const DEFAULT_ACT_MODEL: &str = "opencode/deepseek-v4.1-flash-free";
+/// `LUCINA_ACT_MODE`'s default for opencode: opencode's own primary agent, whose tools run on its
+/// configured permissions. `plan` (the other one) disallows edits, so an act run could never do
+/// anything. agentd hands `modeId` to the agent with `session/set_mode` (`providers/acp.rs:353`)
+/// and never answers a permission request itself, so a run of hers has to need none.
+pub const DEFAULT_ACT_MODE: &str = "build";
+/// `LUCINA_ACT_MINUTES`' default.
+const DEFAULT_ACT_MINUTES: u64 = 20;
+
+/// The agent Lucina Agents run for an `agent_task` (`LUCINA_ACT_*`, [`crate::act`]): something the
+/// owner asked her to do and she has no tool of her own for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActConfig {
+    /// `LUCINA_ACT_PROVIDER` (default [`DEFAULT_ACT_PROVIDER`]): agentd's provider. `codex` is
+    /// refused (owner rule: no Codex on Lucina) and falls back to the default.
+    pub provider: String,
+    /// `LUCINA_ACT_MODEL` (default [`DEFAULT_ACT_MODEL`]): agentd's model, a free one.
+    pub model: String,
+    /// `LUCINA_ACT_EFFORT` (unset): agentd's `thinkingOptionId`; unset = the key is not sent.
+    pub effort: Option<String>,
+    /// `LUCINA_ACT_MODE` (unset): agentd's `modeId`; unset = [`DEFAULT_ACT_MODE`] for opencode,
+    /// not sent for any other provider.
+    pub mode: Option<String>,
+    /// `LUCINA_ACT_MINUTES` (default 20): how long one run may take before it is stopped.
+    pub minutes: u64,
+}
+
+impl ActConfig {
+    pub fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Self {
+        let val = |k: &str| {
+            get(k)
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        };
+        let provider = match val("LUCINA_ACT_PROVIDER") {
+            Some(p) if p.eq_ignore_ascii_case("codex") => {
+                tracing::warn!(
+                    "LUCINA_ACT_PROVIDER is codex: Codex is never used on Lucina (owner rule), \
+                     the act agent falls back to {DEFAULT_ACT_PROVIDER}"
+                );
+                DEFAULT_ACT_PROVIDER.to_owned()
+            }
+            Some(p) => p,
+            None => DEFAULT_ACT_PROVIDER.to_owned(),
+        };
+        let model = val("LUCINA_ACT_MODEL").unwrap_or_else(|| DEFAULT_ACT_MODEL.to_owned());
+        let is_opencode = provider == DEFAULT_ACT_PROVIDER;
+        let mode =
+            val("LUCINA_ACT_MODE").or_else(|| is_opencode.then(|| DEFAULT_ACT_MODE.to_owned()));
+        let minutes = val("LUCINA_ACT_MINUTES")
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|m| *m > 0)
+            .unwrap_or(DEFAULT_ACT_MINUTES);
+        Self {
+            provider,
+            model,
+            effort: val("LUCINA_ACT_EFFORT"),
+            mode,
+            minutes,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub share: crate::share::ShareConfig,
@@ -128,6 +194,8 @@ pub struct Config {
     pub ops: crate::ops::OpsSettings,
     /// The flaw tracker (`LUCINA_FLAWS*`, crate::flaws).
     pub flaws: crate::flaws::FlawSettings,
+    /// The agent a request of his is carried out by (`LUCINA_ACT_*`, crate::act).
+    pub act: ActConfig,
     pub data_dir: PathBuf,
     pub persona: String,
     pub host_label: String,
@@ -498,7 +566,10 @@ impl Config {
             voice_jev_cap: Duration::from_millis(num("LUCINA_VOICE_JEV_CAP_MS", 400).max(1)),
             voice_jev: None,
             voice_layers: !get("LUCINA_VOICE_LAYERS").is_some_and(|v| {
-                matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no")
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "false" | "0" | "no"
+                )
             }),
             voice_confirm_min: get("LUCINA_VOICE_CONFIRM_MIN")
                 .and_then(|v| v.trim().parse::<f64>().ok())
@@ -649,12 +720,26 @@ impl Config {
                 )
             }),
             callers_it_url: match get("LUCINA_CALLERS_IT_URL") {
-                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
+                Some(v)
+                    if matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "off" | "false" | "0" | "no" | ""
+                    ) =>
+                {
+                    None
+                }
                 Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),
                 None => Some(lucina_tools::tools::callers::SPAMCALLS_BASE.to_owned()),
             },
             callers_public_url: match get("LUCINA_CALLERS_PUBLIC_URL") {
-                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
+                Some(v)
+                    if matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "off" | "false" | "0" | "no" | ""
+                    ) =>
+                {
+                    None
+                }
                 Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),
                 None => Some(lucina_tools::tools::callers::PUBLIC_BASE.to_owned()),
             },
@@ -668,7 +753,14 @@ impl Config {
                 _ => None,
             },
             callers_digest_hour: match get("LUCINA_CALLERS_DIGEST_HOUR") {
-                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "no" | "") => None,
+                Some(v)
+                    if matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "off" | "false" | "no" | ""
+                    ) =>
+                {
+                    None
+                }
                 Some(v) => v.trim().parse().ok().filter(|h: &u32| *h < 24).or(Some(21)),
                 None => Some(21),
             },
@@ -713,6 +805,7 @@ impl Config {
             discord_token: crate::discord::token_from_lookup(&get),
             ops: crate::ops::OpsSettings::from_lookup(&get, &data_dir),
             flaws: crate::flaws::FlawSettings::from_lookup(&get, &data_dir),
+            act: ActConfig::from_lookup(&get),
             data_dir,
         })
     }
@@ -817,5 +910,62 @@ mod tests {
         env.insert("LUCINA_REMINDER_TIMEZONE", "Europe/Rome");
         let c = Config::from_lookup(|k| env.get(k).map(|v| v.to_string())).unwrap();
         assert_eq!(c.time_zone.name(), "Europe/Rome");
+    }
+
+    /// The owner's rule: free models first, and his Claude quota is not for her errands.
+    #[test]
+    fn the_act_agent_defaults_to_a_free_opencode_run_that_never_asks() {
+        let c = Config::from_lookup(|k| match k {
+            "LUCINA_DATA_DIR" => Some("/tmp/x".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.act.provider, "opencode");
+        assert_eq!(c.act.model, "opencode/deepseek-v4.1-flash-free");
+        assert_eq!(
+            c.act.effort, None,
+            "no thinkingOptionId unless the owner sets one"
+        );
+        assert_eq!(c.act.mode.as_deref(), Some("build"));
+        assert_eq!(c.act.minutes, 20);
+    }
+
+    #[test]
+    fn the_act_agent_settings_are_the_owner_and_codex_is_refused() {
+        let act = |env: &[(&str, &str)]| {
+            let map: HashMap<&str, &str> = env.iter().copied().collect();
+            ActConfig::from_lookup(&|k| map.get(k).map(|v| v.to_string()))
+        };
+        let a = act(&[
+            ("LUCINA_ACT_PROVIDER", " claude "),
+            ("LUCINA_ACT_MODEL", "claude-opus-5-5"),
+            ("LUCINA_ACT_EFFORT", "high"),
+            ("LUCINA_ACT_MODE", "acceptEdits"),
+            ("LUCINA_ACT_MINUTES", "45"),
+        ]);
+        assert_eq!(
+            a,
+            ActConfig {
+                provider: "claude".into(),
+                model: "claude-opus-5-5".into(),
+                effort: Some("high".into()),
+                mode: Some("acceptEdits".into()),
+                minutes: 45,
+            }
+        );
+        // Another provider with no mode set: no `modeId`, agentd uses its own default.
+        let a = act(&[("LUCINA_ACT_PROVIDER", "claude")]);
+        assert_eq!((a.provider.as_str(), a.mode.as_deref()), ("claude", None));
+        assert_eq!(a.model, DEFAULT_ACT_MODEL, "the free model default stays");
+        // Codex is never used on Lucina (owner rule).
+        let a = act(&[("LUCINA_ACT_PROVIDER", "Codex"), ("LUCINA_ACT_MODE", "")]);
+        assert_eq!(a.provider, "opencode");
+        assert_eq!(
+            a.mode.as_deref(),
+            Some("build"),
+            "the fallback is an opencode run, so it gets the opencode mode"
+        );
+        let a = act(&[("LUCINA_ACT_MINUTES", "0")]);
+        assert_eq!(a.minutes, 20, "a cap of none is no cap at all");
     }
 }

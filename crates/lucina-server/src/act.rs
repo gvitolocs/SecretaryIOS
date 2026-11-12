@@ -5,14 +5,16 @@
 //! - [`brief`]: the agent's prompt, from his words and the device he asked from. Pure.
 //! - [`run`]: start the agent, poll it until it finishes or the time cap, read its final message
 //!   through agentd (`POST /agents/{id}/wait` has it as `lastMessage`), word it for the owner.
+//! - [`crate::config::ActConfig`]: what she runs it with (`LUCINA_ACT_*`): a free opencode model
+//!   and a mode that doesn't ask, never the flaw dispatcher's Claude policy.
 //! - [`Hands`]: what [`run`] does to the world, so a test can stand in for agentd.
 
 use std::time::{Duration, Instant};
 
-use lucina_flaws::Policy;
 use lucina_tools::tools::reach::{agentd_request, allowed_model};
 use serde_json::{json, Value};
 
+use crate::config::ActConfig;
 use crate::AppState;
 
 /// The planner action and job action.
@@ -22,13 +24,32 @@ const POLL: Duration = Duration::from_secs(5);
 /// Failed status reads in a row before the run is given up.
 const MAX_STATUS_ERRORS: u32 = 6;
 
+/// What [`AgentdHands::start_agent`] sends agentd: only the keys the settings carry.
+pub fn agentd_body(act: &ActConfig, cwd: &str, prompt: &str, title: &str, labels: Value) -> Value {
+    let mut body = json!({
+        "provider": act.provider,
+        "model": act.model,
+        "cwd": cwd,
+        "prompt": prompt,
+        "title": clip(title, 80),
+        "labels": labels,
+    });
+    if let Some(effort) = &act.effort {
+        body["thinkingOptionId"] = json!(effort);
+    }
+    if let Some(mode) = &act.mode {
+        body["modeId"] = json!(mode);
+    }
+    body
+}
+
 /// What the run does to the world: agentd on its socket, or a test's stand-in.
 #[async_trait::async_trait]
 pub trait Hands: Send + Sync {
     /// An agent working in `cwd`: its id.
     async fn start_agent(
         &self,
-        policy: &Policy,
+        act: &ActConfig,
         cwd: &str,
         prompt: &str,
         title: &str,
@@ -66,16 +87,13 @@ impl AgentdHands {
 impl Hands for AgentdHands {
     async fn start_agent(
         &self,
-        policy: &Policy,
+        act: &ActConfig,
         cwd: &str,
         prompt: &str,
         title: &str,
         labels: Value,
     ) -> Result<String, String> {
-        let body = json!({
-            "provider": policy.provider, "model": policy.model, "thinkingOptionId": policy.effort,
-            "modeId": policy.mode, "cwd": cwd, "prompt": prompt, "title": clip(title, 80), "labels": labels,
-        });
+        let body = agentd_body(act, cwd, prompt, title, labels);
         let v = self.agentd("POST", "/agents", Some(&body)).await?;
         v["id"]
             .as_str()
@@ -133,11 +151,11 @@ pub struct Timing {
 }
 
 impl Timing {
-    /// The policy's agent minutes, looked at every few seconds.
-    pub fn of(policy: &Policy) -> Self {
+    /// The act settings' run minutes, looked at every few seconds.
+    pub fn of(act: &ActConfig) -> Self {
         Self {
             poll: POLL,
-            cap: Duration::from_secs(policy.agent_minutes.max(1) as u64 * 60),
+            cap: Duration::from_secs(act.minutes.max(1) * 60),
         }
     }
 }
@@ -173,7 +191,7 @@ pub fn brief(message: &str, device_channel: &str) -> String {
 /// `Ok((reply, raw))`: the reply and the agent's own final message.
 pub async fn run<W, F>(
     hands: &dyn Hands,
-    policy: &Policy,
+    act: &ActConfig,
     prompt: &str,
     title: &str,
     cwd: &std::path::Path,
@@ -184,14 +202,14 @@ where
     W: FnOnce(String) -> F,
     F: std::future::Future<Output = Result<String, String>>,
 {
-    allowed_model(&policy.provider, Some(&policy.model))?;
+    allowed_model(&act.provider, Some(&act.model))?;
     tokio::fs::create_dir_all(cwd)
         .await
         .map_err(|e| format!("no working directory for the agent: {e}"))?;
     let cwd = cwd.display().to_string();
     let id = hands
         .start_agent(
-            policy,
+            act,
             &cwd,
             prompt,
             title,
@@ -253,10 +271,10 @@ pub async fn job(
         .map(str::to_owned)
         .filter(|b| !b.trim().is_empty())
         .unwrap_or_else(|| brief(message, channel));
-    let policy = &st.cfg.flaws.policy;
+    let act = &st.cfg.act;
     let cwd = st.cfg.data_dir.join("act").join(job_id);
     let title = format!("Lucina act: {}", clip(message, 60));
-    run(&AgentdHands, policy, &prompt, &title, &cwd, Timing::of(policy), |answer| async move {
+    run(&AgentdHands, act, &prompt, &title, &cwd, Timing::of(act), |answer| async move {
         st.planner
             .generate_skill_reply(
                 t,
@@ -285,11 +303,13 @@ pub fn blocker() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{DEFAULT_ACT_MODEL, DEFAULT_ACT_PROVIDER};
     use std::sync::Mutex;
 
     #[derive(Default)]
     struct Fake {
-        started: Mutex<Vec<(String, String, Value)>>,
+        /// What each started agent was asked for, in the shape agentd gets.
+        started: Mutex<Vec<Value>>,
         stopped: Mutex<Vec<String>>,
         /// Statuses to give, in order; the last one repeats.
         statuses: Mutex<Vec<Result<Option<String>, String>>>,
@@ -301,10 +321,10 @@ mod tests {
     impl Hands for Fake {
         async fn start_agent(
             &self,
-            _p: &Policy,
+            act: &ActConfig,
             cwd: &str,
             prompt: &str,
-            _t: &str,
+            title: &str,
             labels: Value,
         ) -> Result<String, String> {
             if self.down {
@@ -313,7 +333,7 @@ mod tests {
             self.started
                 .lock()
                 .unwrap()
-                .push((cwd.into(), prompt.into(), labels));
+                .push(agentd_body(act, cwd, prompt, title, labels));
             Ok("ag-1".into())
         }
         async fn agent_status(&self, _id: &str) -> Result<Option<String>, String> {
@@ -332,8 +352,9 @@ mod tests {
         }
     }
 
-    fn policy() -> Policy {
-        Policy::from_lookup(|_| None, std::path::Path::new("/h"))
+    /// The act settings with nothing set: what Lucina runs on her own.
+    fn act() -> ActConfig {
+        ActConfig::from_lookup(&|_| None)
     }
 
     fn quick() -> Timing {
@@ -371,15 +392,28 @@ mod tests {
             "Accendi nespc e passami Pokemon Diamante su questo DSi",
             "dsi",
         );
-        let (reply, raw) = run(&h, &policy(), &b, "t", &cwd, quick(), worded)
+        let (reply, raw) = run(&h, &act(), &b, "t", &cwd, quick(), worded)
             .await
             .unwrap();
         assert_eq!(raw, "Pokemon Diamond is on the DSi's SD card.");
         assert_eq!(reply, "worded: Pokemon Diamond is on the DSi's SD card.");
         let started = h.started.lock().unwrap();
         assert_eq!(started.len(), 1, "exactly one agent");
-        assert_eq!(started[0].1, b, "the brief is the prompt");
-        assert_eq!(started[0].0, cwd.display().to_string());
+        assert_eq!(started[0]["prompt"], b, "the brief is the prompt");
+        assert_eq!(started[0]["cwd"], cwd.display().to_string());
+        assert_eq!(
+            started[0]["provider"], DEFAULT_ACT_PROVIDER,
+            "her own settings, not the flaw dispatcher's Claude"
+        );
+        assert_eq!(started[0]["model"], DEFAULT_ACT_MODEL, "a free model");
+        assert_eq!(
+            started[0]["modeId"], "build",
+            "a mode that runs its tools without asking: nobody answers a prompt here"
+        );
+        assert!(
+            started[0].get("thinkingOptionId").is_none(),
+            "no effort set, so the key isn't sent"
+        );
         assert!(cwd.is_dir(), "the per-job directory was made");
         assert!(h.stopped.lock().unwrap().is_empty());
     }
@@ -391,7 +425,7 @@ mod tests {
             statuses: Mutex::new(vec![running()]),
             ..Fake::default()
         };
-        let e = run(&h, &policy(), "b", "t", dir.path(), quick(), worded)
+        let e = run(&h, &act(), "b", "t", dir.path(), quick(), worded)
             .await
             .unwrap_err();
         assert!(
@@ -409,7 +443,7 @@ mod tests {
             statuses: Mutex::new(vec![idle()]),
             ..Fake::default()
         };
-        let e = run(&h, &policy(), "b", "t", dir.path(), quick(), worded)
+        let e = run(&h, &act(), "b", "t", dir.path(), quick(), worded)
             .await
             .unwrap_err();
         assert!(e.contains("not reachable"), "{e}");
@@ -427,7 +461,7 @@ mod tests {
             }),
             ..Fake::default()
         };
-        let e = run(&h, &policy(), "b", "t", dir.path(), quick(), worded)
+        let e = run(&h, &act(), "b", "t", dir.path(), quick(), worded)
             .await
             .unwrap_err();
         assert!(
@@ -438,7 +472,7 @@ mod tests {
             statuses: Mutex::new(vec![idle()]),
             ..Fake::default()
         };
-        let e = run(&h, &policy(), "b", "t", dir.path(), quick(), worded)
+        let e = run(&h, &act(), "b", "t", dir.path(), quick(), worded)
             .await
             .unwrap_err();
         assert!(e.contains("without saying"), "{e}");
@@ -446,7 +480,7 @@ mod tests {
             statuses: Mutex::new(vec![Ok(None)]),
             ..Fake::default()
         };
-        let e = run(&h, &policy(), "b", "t", dir.path(), quick(), worded)
+        let e = run(&h, &act(), "b", "t", dir.path(), quick(), worded)
             .await
             .unwrap_err();
         assert!(e.contains("gone"), "{e}");
