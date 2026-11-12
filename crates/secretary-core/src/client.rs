@@ -149,13 +149,21 @@ impl Call {
 
     /// `POST /secrets/requests/<id>/dismiss`: "Not now" on a request's card.
     pub fn secret_request_dismiss(id: &str) -> Result<Self> {
-        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        if id.is_empty()
+            || id.len() > 64
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
             return Err(Error::Invalid {
                 field: "id",
                 message: "malformed".into(),
             });
         }
-        Ok(Self::new(Method::POST, &["secrets", "requests", id, "dismiss"]).with_body(serde_json::json!({})))
+        Ok(
+            Self::new(Method::POST, &["secrets", "requests", id, "dismiss"])
+                .with_body(serde_json::json!({})),
+        )
     }
 
     fn new(method: Method, segments: &[&str]) -> Self {
@@ -321,19 +329,36 @@ impl Call {
     }
 
     /// `GET /flaws?q=&state=&platform=&status=&limit=`: Lucina's flaw tracker, worst first.
-    pub fn flaws_list(q: Option<&str>, state: Option<&str>, platform: Option<&str>, status: Option<&str>, limit: Option<u32>) -> Result<Self> {
+    pub fn flaws_list(
+        q: Option<&str>,
+        state: Option<&str>,
+        platform: Option<&str>,
+        status: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Self> {
         let mut c = Self::new(Method::GET, &["flaws"]);
-        for (field, v, max) in [("q", q, 500), ("state", state, 32), ("platform", platform, 32), ("status", status, 32)] {
+        for (field, v, max) in [
+            ("q", q, 500),
+            ("state", state, 32),
+            ("platform", platform, 32),
+            ("status", status, 32),
+        ] {
             if let Some(v) = present(v) {
                 if v.chars().count() > max || v.chars().any(char::is_control) {
-                    return Err(Error::Invalid { field, message: format!("must be at most {max} characters") });
+                    return Err(Error::Invalid {
+                        field,
+                        message: format!("must be at most {max} characters"),
+                    });
                 }
                 c.query.push((field, v.to_owned()));
             }
         }
         if let Some(n) = limit {
             if !(1..=200).contains(&n) {
-                return Err(Error::Invalid { field: "limit", message: "must be 1..=200".into() });
+                return Err(Error::Invalid {
+                    field: "limit",
+                    message: "must be 1..=200".into(),
+                });
             }
             c.query.push(("limit", n.to_string()));
         }
@@ -351,11 +376,18 @@ impl Call {
     }
 
     fn flaw_id(id: &str) -> Result<()> {
-        let ok = id.strip_prefix("fl-").is_some_and(|h| h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        let ok = id.strip_prefix("fl-").is_some_and(|h| {
+            h.len() == 8
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
         if ok {
             Ok(())
         } else {
-            Err(Error::Invalid { field: "id", message: "must be fl- and 8 lowercase hex digits".into() })
+            Err(Error::Invalid {
+                field: "id",
+                message: "must be fl- and 8 lowercase hex digits".into(),
+            })
         }
     }
 
@@ -374,8 +406,14 @@ impl Call {
     /// `PUT /flaws/{id}/targets/{platform}`: closing without evidence is refused by Lucina.
     pub fn flaw_target(id: &str, platform: &str, body: Value) -> Result<Self> {
         Self::flaw_id(id)?;
-        if platform.is_empty() || platform.len() > 32 || !platform.bytes().all(|b| b.is_ascii_lowercase()) {
-            return Err(Error::Invalid { field: "platform", message: "must be a platform name".into() });
+        if platform.is_empty()
+            || platform.len() > 32
+            || !platform.bytes().all(|b| b.is_ascii_lowercase())
+        {
+            return Err(Error::Invalid {
+                field: "platform",
+                message: "must be a platform name".into(),
+            });
         }
         Ok(Self::new(Method::PUT, &["flaws", id, "targets", platform]).with_body(body))
     }
@@ -472,8 +510,10 @@ impl Call {
             .and_then(Value::as_array)
             .filter(|a| (1..=20).contains(&a.len()))
             .filter(|a| {
-                a.iter()
-                    .all(|n| n.as_str().is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= 40))
+                a.iter().all(|n| {
+                    n.as_str()
+                        .is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= 40)
+                })
             });
         if !body.is_object() || numbers.is_none() {
             return Err(Error::Invalid {
@@ -607,20 +647,31 @@ impl Call {
 
     fn parcel_id(id: &str) -> Result<()> {
         let ok = id.strip_prefix("pc-").is_some_and(|h| {
-            h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            h.len() == 8
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         });
         if ok {
             Ok(())
         } else {
-            Err(Error::Invalid { field: "id", message: "must be pc- and 8 lowercase hex digits".into() })
+            Err(Error::Invalid {
+                field: "id",
+                message: "must be pc- and 8 lowercase hex digits".into(),
+            })
         }
     }
 
     fn parcel_body(body: &Value, allowed: &[&str]) -> Result<()> {
         match body.as_object() {
             Some(o) if o.keys().all(|k| allowed.contains(&k.as_str())) => Ok(()),
-            Some(_) => Err(Error::Invalid { field: "body", message: format!("only {} are allowed", allowed.join(", ")) }),
-            None => Err(Error::Invalid { field: "body", message: "must be a JSON object".into() }),
+            Some(_) => Err(Error::Invalid {
+                field: "body",
+                message: format!("only {} are allowed", allowed.join(", ")),
+            }),
+            None => Err(Error::Invalid {
+                field: "body",
+                message: "must be a JSON object".into(),
+            }),
         }
     }
 
@@ -629,7 +680,10 @@ impl Call {
         match body.get(key) {
             None | Some(Value::Null) => Ok(()),
             Some(Value::String(s)) if s.trim().chars().count() <= max => Ok(()),
-            _ => Err(Error::Invalid { field: key, message: format!("must be text of at most {max} characters, or null") }),
+            _ => Err(Error::Invalid {
+                field: key,
+                message: format!("must be text of at most {max} characters, or null"),
+            }),
         }
     }
 
@@ -1357,9 +1411,7 @@ impl Call {
 /// An AU Find search: trimmed, 1..=200 characters, no control characters.
 fn au_query(q: Option<&str>) -> Result<String> {
     match present(q) {
-        Some(q) if q.chars().count() <= 200 && !q.chars().any(char::is_control) => {
-            Ok(q.to_owned())
-        }
+        Some(q) if q.chars().count() <= 200 && !q.chars().any(char::is_control) => Ok(q.to_owned()),
         _ => Err(Error::Invalid {
             field: "q",
             message: "must be 1..200 characters".into(),
@@ -1370,7 +1422,8 @@ fn au_query(q: Option<&str>) -> Result<String> {
 /// A decimal coordinate within `min..=max` (Denmark), passed on as given.
 fn au_coord(field: &'static str, s: &str, min: f64, max: f64) -> Result<String> {
     let ok = s.len() <= 24
-        && s.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
         && s.parse::<f64>().is_ok_and(|v| (min..=max).contains(&v));
     if !ok {
         return Err(Error::Invalid {
@@ -2054,22 +2107,40 @@ mod tests {
     fn about_calls() {
         let c = client("http://h:1");
         let id = "af-0123456789abcdef";
-        assert_eq!(c.url(&Call::about()).as_str(), "http://h:1/api/secretary/about");
+        assert_eq!(
+            c.url(&Call::about()).as_str(),
+            "http://h:1/api/secretary/about"
+        );
         let add = Call::about_add(json!({"text": "Lives in Aarhus", "category": "home"})).unwrap();
         assert_eq!(add.method(), &Method::POST);
         assert_eq!(c.url(&add).as_str(), "http://h:1/api/secretary/about");
         assert_eq!(add.body().unwrap()["category"], "home");
         let upd = Call::about_update(id, json!({"validUntil": ""})).unwrap();
         assert_eq!(upd.method(), &Method::PATCH);
-        assert_eq!(c.url(&upd).as_str(), format!("http://h:1/api/secretary/about/{id}"));
+        assert_eq!(
+            c.url(&upd).as_str(),
+            format!("http://h:1/api/secretary/about/{id}")
+        );
         for (call, tail) in [
-            (Call::about_end(id, json!({"reason": "moved"})).unwrap(), "end"),
+            (
+                Call::about_end(id, json!({"reason": "moved"})).unwrap(),
+                "end",
+            ),
             (Call::about_retract(id, json!({})).unwrap(), "retract"),
         ] {
             assert_eq!(call.method(), &Method::POST);
-            assert_eq!(c.url(&call).as_str(), format!("http://h:1/api/secretary/about/{id}/{tail}"));
+            assert_eq!(
+                c.url(&call).as_str(),
+                format!("http://h:1/api/secretary/about/{id}/{tail}")
+            );
         }
-        for bad in ["af-0123456789ABCDEF", "af-0123456789abcde", "dc-012345abcdef", "../../x", ""] {
+        for bad in [
+            "af-0123456789ABCDEF",
+            "af-0123456789abcde",
+            "dc-012345abcdef",
+            "../../x",
+            "",
+        ] {
             assert!(Call::about_update(bad, json!({})).is_err(), "{bad}");
             assert!(Call::about_end(bad, json!({})).is_err(), "{bad}");
             assert!(Call::about_retract(bad, json!({})).is_err(), "{bad}");
@@ -2146,21 +2217,34 @@ mod tests {
     fn callers_block_reject_allow_calls() {
         let c = client("http://h:1");
         assert_eq!(
-            c.url(&Call::callers_directory_block(Some("0.6"), Some("0.25")).unwrap()).as_str(),
+            c.url(&Call::callers_directory_block(Some("0.6"), Some("0.25")).unwrap())
+                .as_str(),
             "http://h:1/api/secretary/callers/directory?block=1&spam=0.6&pickup=0.25"
         );
         assert_eq!(
-            c.url(&Call::callers_directory_block(None, None).unwrap()).as_str(),
+            c.url(&Call::callers_directory_block(None, None).unwrap())
+                .as_str(),
             "http://h:1/api/secretary/callers/directory?block=1"
         );
         for bad in ["1.5", "-0.1", "NaN", "x", "0.600000001"] {
-            assert!(Call::callers_directory_block(Some(bad), None).is_err(), "{bad}");
+            assert!(
+                Call::callers_directory_block(Some(bad), None).is_err(),
+                "{bad}"
+            );
         }
-        assert!(Call::callers_rejected(json!({"number": "+4570405220", "line": "l", "source": "android"})).is_ok());
+        assert!(Call::callers_rejected(
+            json!({"number": "+4570405220", "line": "l", "source": "android"})
+        )
+        .is_ok());
         assert!(Call::callers_rejected(json!([1])).is_err());
         assert!(Call::callers_rejected(json!({"line": "x".repeat(5000)})).is_err());
         assert!(Call::callers_allow(json!({"number": "+4570405205"})).is_ok());
-        for bad in [json!({}), json!({"number": ""}), json!({"number": "1", "x": 1}), json!({"number": 5})] {
+        for bad in [
+            json!({}),
+            json!({"number": ""}),
+            json!({"number": "1", "x": 1}),
+            json!({"number": 5}),
+        ] {
             assert!(Call::callers_allow(bad.clone()).is_err(), "{bad}");
         }
     }
@@ -2168,8 +2252,12 @@ mod tests {
     #[test]
     fn callers_calls() {
         let c = client("http://h:1");
-        let s = Call::callers_screen(json!({"numbers": ["+45 70 40 52 05"], "lang": "da"})).unwrap();
-        assert_eq!(c.url(&s).as_str(), "http://h:1/api/secretary/callers/screen");
+        let s =
+            Call::callers_screen(json!({"numbers": ["+45 70 40 52 05"], "lang": "da"})).unwrap();
+        assert_eq!(
+            c.url(&s).as_str(),
+            "http://h:1/api/secretary/callers/screen"
+        );
         assert_eq!(
             c.url(&Call::callers_directory()).as_str(),
             "http://h:1/api/secretary/callers/directory"
@@ -2192,9 +2280,18 @@ mod tests {
     #[test]
     fn parcels_calls() {
         let c = client("http://h:1");
-        assert_eq!(c.url(&Call::parcels_list()).as_str(), "http://h:1/api/secretary/parcels");
-        let a = Call::parcels_add(json!({"number": "3UW1S8IAAKA23", "carrier": "poste-italiane", "label": "Shoes"})).unwrap();
-        assert_eq!((a.method.as_str(), c.url(&a).as_str()), ("POST", "http://h:1/api/secretary/parcels"));
+        assert_eq!(
+            c.url(&Call::parcels_list()).as_str(),
+            "http://h:1/api/secretary/parcels"
+        );
+        let a = Call::parcels_add(
+            json!({"number": "3UW1S8IAAKA23", "carrier": "poste-italiane", "label": "Shoes"}),
+        )
+        .unwrap();
+        assert_eq!(
+            (a.method.as_str(), c.url(&a).as_str()),
+            ("POST", "http://h:1/api/secretary/parcels")
+        );
         assert!(Call::parcels_add(json!({"number": "ABCD"})).is_ok());
         for bad in [
             json!([]),
@@ -2211,22 +2308,51 @@ mod tests {
             assert!(Call::parcels_add(bad.clone()).is_err(), "{bad}");
         }
         let id = "pc-1a2b3c4d";
-        assert_eq!(c.url(&Call::parcels_get(id).unwrap()).as_str(), "http://h:1/api/secretary/parcels/pc-1a2b3c4d");
+        assert_eq!(
+            c.url(&Call::parcels_get(id).unwrap()).as_str(),
+            "http://h:1/api/secretary/parcels/pc-1a2b3c4d"
+        );
         let r = Call::parcels_refresh(id).unwrap();
-        assert_eq!((r.method.as_str(), c.url(&r).as_str()), ("POST", "http://h:1/api/secretary/parcels/pc-1a2b3c4d/refresh"));
+        assert_eq!(
+            (r.method.as_str(), c.url(&r).as_str()),
+            (
+                "POST",
+                "http://h:1/api/secretary/parcels/pc-1a2b3c4d/refresh"
+            )
+        );
         let d = Call::parcels_remove(id).unwrap();
-        assert_eq!((d.method.as_str(), c.url(&d).as_str()), ("DELETE", "http://h:1/api/secretary/parcels/pc-1a2b3c4d"));
+        assert_eq!(
+            (d.method.as_str(), c.url(&d).as_str()),
+            ("DELETE", "http://h:1/api/secretary/parcels/pc-1a2b3c4d")
+        );
         let p = Call::parcels_rename(id, json!({"label": null})).unwrap();
         assert_eq!(p.method.as_str(), "PATCH");
         assert!(Call::parcels_rename(id, json!({"label": "Headphones"})).is_ok());
-        for bad in [json!({}), json!({"label": 1}), json!({"label": "x".repeat(81)}), json!({"label": "a", "number": "b"}), json!("x")] {
+        for bad in [
+            json!({}),
+            json!({"label": 1}),
+            json!({"label": "x".repeat(81)}),
+            json!({"label": "a", "number": "b"}),
+            json!("x"),
+        ] {
             assert!(Call::parcels_rename(id, bad.clone()).is_err(), "{bad}");
         }
-        for bad in ["", "pc-1", "pc-1A2B3C4D", "pc-1a2b3c4dd", "fl-1a2b3c4d", "../x", "pc-1a2b3c4g"] {
+        for bad in [
+            "",
+            "pc-1",
+            "pc-1A2B3C4D",
+            "pc-1a2b3c4dd",
+            "fl-1a2b3c4d",
+            "../x",
+            "pc-1a2b3c4g",
+        ] {
             assert!(Call::parcels_get(bad).is_err(), "{bad}");
             assert!(Call::parcels_refresh(bad).is_err(), "{bad}");
             assert!(Call::parcels_remove(bad).is_err(), "{bad}");
-            assert!(Call::parcels_rename(bad, json!({"label": null})).is_err(), "{bad}");
+            assert!(
+                Call::parcels_rename(bad, json!({"label": null})).is_err(),
+                "{bad}"
+            );
         }
     }
 
@@ -2284,7 +2410,10 @@ mod tests {
             (None, Some("NaN"), Some("10"), None),
             (None, Some("5e1"), Some("10"), None),
         ] {
-            assert!(Call::au_map(b, lat, lng, z).is_err(), "{b:?} {lat:?} {lng:?} {z:?}");
+            assert!(
+                Call::au_map(b, lat, lng, z).is_err(),
+                "{b:?} {lat:?} {lng:?} {z:?}"
+            );
         }
     }
 
@@ -2480,7 +2609,9 @@ mod tests {
             assert!(Call::voice_learn_update(bad, json!({})).is_err(), "{bad:?}");
         }
         assert!(Call::voice_learn_create(json!(["x"])).is_err());
-        assert!(Call::voice_learn_create(json!({"word": "x".repeat(MAX_VOICE_LEARN_BYTES)})).is_err());
+        assert!(
+            Call::voice_learn_create(json!({"word": "x".repeat(MAX_VOICE_LEARN_BYTES)})).is_err()
+        );
         assert!(Call::voice_learn_suggest(" ", "x").is_err());
         assert!(Call::voice_learn_suggest("x", "").is_err());
 
@@ -2496,7 +2627,12 @@ mod tests {
         let ok = chat(Some(json!({"turnId": "voice-1-ab", "sttMs": 80}))).unwrap();
         assert_eq!(ok.body().unwrap()["channel"], "voice");
         assert_eq!(ok.body().unwrap()["voiceMeta"]["sttMs"], 80);
-        assert!(chat(None).unwrap().body().unwrap().get("voiceMeta").is_none());
+        assert!(chat(None)
+            .unwrap()
+            .body()
+            .unwrap()
+            .get("voiceMeta")
+            .is_none());
         assert!(chat(Some(json!("x"))).is_err());
         assert!(chat(Some(json!({"x": "y".repeat(MAX_VOICE_META_BYTES)}))).is_err());
     }
@@ -2689,10 +2825,20 @@ mod tests {
             );
         }
         // A refusal carrying a whole screen tree is cut, not refused: the waiting call must get it.
-        let long = Call::juno_result(&device, "call-1", false, None, Some("é".repeat(9000))).unwrap();
-        assert_eq!(long.body().unwrap()["error"].as_str().unwrap().chars().count(), 2000);
+        let long =
+            Call::juno_result(&device, "call-1", false, None, Some("é".repeat(9000))).unwrap();
+        assert_eq!(
+            long.body().unwrap()["error"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            2000
+        );
         assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2000))).is_ok());
-        assert!(Call::juno_result(&device, "call-1", false, None, Some("bad\u{0}".into())).is_err());
+        assert!(
+            Call::juno_result(&device, "call-1", false, None, Some("bad\u{0}".into())).is_err()
+        );
         let ev = Call::juno_events(&device, vec![json!({"seq": 1})], 2).unwrap();
         assert_eq!(ev.method(), &Method::POST);
         assert_eq!(ev.path(), "/api/secretary/device/juno/events");
@@ -2779,10 +2925,7 @@ mod tests {
     #[test]
     fn reach_calls_are_validated_and_routed() {
         let c = Call::reach_threads(Some("claude"), Some("open"), Some("20")).unwrap();
-        assert_eq!(
-            c.segments,
-            vec!["reach".to_owned(), "threads".to_owned()],
-        );
+        assert_eq!(c.segments, vec!["reach".to_owned(), "threads".to_owned()],);
         assert_eq!(
             c.query,
             vec![
@@ -2791,10 +2934,19 @@ mod tests {
                 ("limit", "20".to_owned())
             ]
         );
-        assert!(Call::reach_threads(None, None, None).unwrap().query.is_empty());
-        assert!(Call::reach_threads(Some(" "), Some(""), None).unwrap().query.is_empty());
+        assert!(Call::reach_threads(None, None, None)
+            .unwrap()
+            .query
+            .is_empty());
+        assert!(Call::reach_threads(Some(" "), Some(""), None)
+            .unwrap()
+            .query
+            .is_empty());
         for status in ["open", "all", "answered", "failed", "queued", "sent"] {
-            assert!(Call::reach_threads(None, Some(status), None).is_ok(), "{status}");
+            assert!(
+                Call::reach_threads(None, Some(status), None).is_ok(),
+                "{status}"
+            );
         }
         assert!(Call::reach_threads(Some("owner"), None, None).is_err());
         assert!(Call::reach_threads(None, Some("pending"), None).is_err());
@@ -2840,7 +2992,10 @@ mod tests {
         // The web's Decisions page asks for all four; one refused status failed the whole page.
         for status in ["pending", "decided", "expired", "withdrawn"] {
             let call = Call::decisions(Some(status), Some("20")).unwrap();
-            assert!(call.query.contains(&("status", status.to_owned())), "{status}");
+            assert!(
+                call.query.contains(&("status", status.to_owned())),
+                "{status}"
+            );
         }
         assert!(Call::decisions(Some("all"), None).is_err());
         assert!(Call::decisions(None, Some("101")).is_err());
