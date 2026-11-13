@@ -38,6 +38,16 @@ const LOOP_EVERY: Duration = Duration::from_secs(60);
 const STALE_CLAIM_MINUTES: i64 = 5;
 const TRIAGE_MINUTES: i64 = 15;
 const ACTOR: &str = "lucina-dispatch";
+/// A triage that stopped on a limit this many times is left for the owner: a flaw must not come
+/// back for a new agent forever.
+const GIVE_UP_AFTER: usize = 3;
+/// How far agentd's hand-off chain is followed. A guard against a label that points back.
+const HANDOFF_CHAIN_MAX: usize = 8;
+/// On an agent the dispatcher starts: agentd's quota hand-off leaves it alone
+/// (`lucina_agentd::manager::handoff::HANDOFF_OFF_LABEL`; the crates only meet over the socket).
+const HANDOFF_OFF_LABEL: &str = "lucina.handoff-off";
+/// On an agent agentd handed its run on to: the continuation's id.
+const CONTINUED_ON_LABEL: &str = "lucina.continued-on";
 
 /// `LUCINA_FLAWS*`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,6 +260,15 @@ pub trait Hands: Send + Sync {
     /// The agent's status; `Ok(None)`: it no longer exists; `Err`: agentd can't say now.
     async fn agent_status(&self, id: &str) -> Result<Option<String>, String>;
     async fn stop_agent(&self, id: &str);
+    /// The agents agentd has for this flaw's triage that are not archived, whatever their status:
+    /// the one the flaw store tracks, and the one a quota hand-off started in its place (it carries
+    /// the same labels). `Err`: agentd can't say now.
+    async fn triage_agents(&self, flaw: &str) -> Result<Vec<String>, String>;
+    /// The agent agentd handed `id`'s run on to, when it did.
+    async fn continued_on(&self, id: &str) -> Option<String>;
+    /// Put an agent away for good, so it holds neither a process nor a lane while it does nothing.
+    /// `Err`: agentd wouldn't.
+    async fn archive_agent(&self, id: &str) -> Result<(), String>;
     /// What the task's merge landed, if it did.
     async fn merged_sha(&self, workspace: &str) -> Result<Option<String>, String>;
     /// Ask through `lucina_decide`: the decision's id.
@@ -303,7 +322,8 @@ pub async fn start_fix(
             .start_task(&title, &repo, &branch, id, Some(p))
             .await?;
         let prompt = policy.brief(pick_flaw, &claimed, &cwd);
-        let labels = json!({"from": "lucina", "flaw": id, "platform": p});
+        let labels =
+            json!({"from": "lucina", "flaw": id, "platform": p, "lucina.handoff-off": "1"});
         let agent = hands
             .start_agent(policy, step, &cwd, &prompt, &title, labels)
             .await?;
@@ -598,6 +618,66 @@ async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
     }
 }
 
+/// The agents agentd handed `agent`'s run on to, in order, following the chain its labels leave
+/// behind. Empty when it finished on the step it started on.
+async fn continuations(hands: &dyn Hands, agent: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = agent.to_owned();
+    while out.len() < HANDOFF_CHAIN_MAX {
+        let Some(next) = hands.continued_on(&cur).await else {
+            break;
+        };
+        if next == cur || out.contains(&next) {
+            break;
+        }
+        out.push(next.clone());
+        cur = next;
+    }
+    out
+}
+
+/// The triage agent and every agent a hand-off carried it on to, put away. An idle agent is a
+/// process plus the MCP servers it started, and it works for nobody.
+async fn archive_triage(hands: &dyn Hands, agent: &str) {
+    let mut ids = vec![agent.to_owned()];
+    ids.extend(continuations(hands, agent).await);
+    for id in ids.iter().rev() {
+        if let Err(e) = hands.archive_agent(id).await {
+            tracing::warn!(agent = %id, error = %e, "flaws: the triage agent was not archived");
+        }
+    }
+}
+
+/// An agent agentd handed a run to is on a step triage never uses: take it off what it is doing.
+async fn stop_if_running(hands: &dyn Hands, id: &str) {
+    let running = matches!(
+        hands.agent_status(id).await.ok().flatten().as_deref(),
+        Some("running") | Some("initializing")
+    );
+    if running {
+        hands.stop_agent(id).await;
+    }
+}
+
+/// The triage stopped without doing the work, so another agent may take it — until it has stopped
+/// `GIVE_UP_AFTER` times, after which the flaw is the owner's to triage by hand and stops coming
+/// back on its own. `true`: the flaw store recorded the outcome, which is what the archiving waits
+/// for; `false` leaves the agent tracked, and the next tick tries again.
+fn record_stopped_triage(flaws: &Flaws, flaw: &Flaw, why: &str) -> bool {
+    let resets = flaws.triage_resets(&flaw.id).unwrap_or_default();
+    if resets >= GIVE_UP_AFTER {
+        flaws
+            .finish_triage(
+                &flaw.id,
+                &format!("gave up after {resets} limit stops; triage it by hand"),
+                ACTOR,
+            )
+            .is_ok()
+    } else {
+        flaws.reset_triage(&flaw.id, why, ACTOR).is_ok()
+    }
+}
+
 async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
     let repo = policy.secretary_repo.display().to_string();
     let mut busy = running_counts(flaws).get(&repo).copied().unwrap_or(0);
@@ -605,11 +685,33 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
         let Some(agent) = flaw.triage_agent.clone() else {
             continue;
         };
+        // agentd found a quota on the cheap step and carried the run on to an agent of its own
+        // choice, in the same directory. Triage never follows it up the chain: the round ends on
+        // the cheap agent's own record and the expensive one goes back in the box.
+        let handed_on = continuations(hands, &agent).await;
+        if let Some(next) = handed_on.first() {
+            for a in &handed_on {
+                stop_if_running(hands, a).await;
+            }
+            let why = format!("the run was handed on to agent {next}");
+            if let Some(step) = triage_ran(policy, &flaw) {
+                hands.step_out(step, &why);
+            }
+            if record_stopped_triage(flaws, &flaw, &why) {
+                archive_triage(hands, &agent).await;
+            }
+            continue;
+        }
         match hands.agent_status(&agent).await {
             Ok(Some(s)) if s == "running" || s == "initializing" => {
                 if older_than(Some(&flaw.updated_at), TRIAGE_MINUTES) {
                     hands.stop_agent(&agent).await;
-                    let _ = flaws.finish_triage(&flaw.id, "stopped after 15 minutes", ACTOR);
+                    if flaws
+                        .finish_triage(&flaw.id, "stopped after 15 minutes", ACTOR)
+                        .is_ok()
+                    {
+                        archive_triage(hands, &agent).await;
+                    }
                 } else {
                     busy += 1;
                 }
@@ -622,10 +724,17 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
                         if let Some(step) = triage_ran(policy, &flaw) {
                             hands.step_out(step, &e);
                         }
-                        let _ = flaws.reset_triage(&flaw.id, &e, ACTOR);
+                        if record_stopped_triage(flaws, &flaw, &e) {
+                            archive_triage(hands, &agent).await;
+                        }
                     }
                     None => {
-                        let _ = flaws.finish_triage(&flaw.id, "the agent ended", ACTOR);
+                        if flaws
+                            .finish_triage(&flaw.id, "the agent ended", ACTOR)
+                            .is_ok()
+                        {
+                            archive_triage(hands, &agent).await;
+                        }
                     }
                 }
             }
@@ -649,6 +758,20 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
         if busy >= policy.max_running_per_repo {
             break;
         }
+        // One triage per flaw, whatever the flaw store last wrote: agentd may still be holding an
+        // agent for it, and the one a hand-off started in its place carries the same labels.
+        match hands.triage_agents(&flaw.id).await {
+            Ok(agents) if !agents.is_empty() => {
+                let a = &agents[0];
+                tracing::info!(flaw = %flaw.id, agent = %a, "flaws: already in triage: {a}");
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(flaw = %flaw.id, error = %e, "flaws: agentd can't say whether the flaw is in triage already");
+                continue;
+            }
+        }
         let short = flaw.id.trim_start_matches("fl-");
         let title = format!("Triage flaw {}: {}", flaw.id, clip(&flaw.title, 60));
         let started = async {
@@ -669,7 +792,7 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
                     &cwd,
                     &policy.triage_brief(&flaw, &cwd),
                     &title,
-                    json!({"from": "lucina", "flaw": flaw.id, "triage": "1"}),
+                    json!({"from": "lucina", "flaw": flaw.id, "triage": "1", "lucina.handoff-off": "1"}),
                 )
                 .await
         }
@@ -856,6 +979,42 @@ impl Hands for StateHands {
         }
     }
 
+    /// agentd's own list, filtered the way `lagent ls --label` filters it. The list leaves archived
+    /// agents out already; the check stays so the answer doesn't depend on the endpoint's default.
+    async fn triage_agents(&self, flaw: &str) -> Result<Vec<String>, String> {
+        let v = self.agentd("GET", "/agents", None).await?;
+        Ok(v["agents"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|x| {
+                        x["archivedAt"].is_null()
+                            && x["labels"]["flaw"] == flaw
+                            && x["labels"]["triage"] == "1"
+                    })
+                    .filter_map(|x| x["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    async fn continued_on(&self, id: &str) -> Option<String> {
+        let v = self
+            .agentd("GET", &format!("/agents/{id}"), None)
+            .await
+            .ok()?;
+        v["labels"][CONTINUED_ON_LABEL]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    }
+
+    async fn archive_agent(&self, id: &str) -> Result<(), String> {
+        self.agentd("POST", &format!("/agents/{id}/archive"), Some(&json!({})))
+            .await
+            .map(|_| ())
+    }
+
     async fn merged_sha(&self, workspace: &str) -> Result<Option<String>, String> {
         let v = self.agentd("GET", "/pipeline/tasks", None).await?;
         Ok(v["tasks"]
@@ -987,6 +1146,12 @@ mod tests {
         tasks: Mutex<Vec<String>>,
         /// What started: the worktree it works in and the chain step it runs on.
         agents: Mutex<Vec<(String, String)>>,
+        /// The labels each agent started with, in `agents` order: `ag{n}` is index n.
+        labels: Mutex<Vec<Value>>,
+        /// agentd's quota hand-off: the agent it continued a run on to, `from -> to`.
+        continued: Mutex<HashMap<String, String>>,
+        /// The agents put away through `archive_agent`.
+        archived: Mutex<Vec<String>>,
         status: Mutex<HashMap<String, String>>,
         merged: Mutex<HashMap<String, String>>,
         stopped: Mutex<Vec<String>>,
@@ -1035,7 +1200,7 @@ mod tests {
             cwd: &str,
             prompt: &str,
             _t: &str,
-            _l: Value,
+            l: Value,
         ) -> Result<String, String> {
             if *self.fail_agent.lock().unwrap() {
                 return Err("agentd is down".into());
@@ -1046,6 +1211,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((cwd.to_owned(), step.label()));
+            self.labels.lock().unwrap().push(l);
             self.status
                 .lock()
                 .unwrap()
@@ -1057,6 +1223,40 @@ mod tests {
         }
         async fn stop_agent(&self, id: &str) {
             self.stopped.lock().unwrap().push(id.to_owned());
+        }
+        async fn triage_agents(&self, flaw: &str) -> Result<Vec<String>, String> {
+            let agents = self.agents.lock().unwrap();
+            let labels = self.labels.lock().unwrap();
+            let continued = self.continued.lock().unwrap();
+            let archived = self.archived.lock().unwrap();
+            let mut out: Vec<String> = Vec::new();
+            for i in 0..labels.len().min(agents.len()) {
+                let l = &labels[i];
+                if l["flaw"] != flaw || l["triage"] != "1" {
+                    continue;
+                }
+                // The hand-off continuation inherits the flaw and triage labels, so agentd answers
+                // it in the list as this flaw's triage agent, even once the one it continues is
+                // archived.
+                let mut id = format!("ag{i}");
+                for _ in 0..HANDOFF_CHAIN_MAX {
+                    if !archived.contains(&id) && !out.contains(&id) {
+                        out.push(id.clone());
+                    }
+                    match continued.get(&id) {
+                        Some(next) => id = next.clone(),
+                        None => break,
+                    }
+                }
+            }
+            Ok(out)
+        }
+        async fn continued_on(&self, id: &str) -> Option<String> {
+            self.continued.lock().unwrap().get(id).cloned()
+        }
+        async fn archive_agent(&self, id: &str) -> Result<(), String> {
+            self.archived.lock().unwrap().push(id.to_owned());
+            Ok(())
         }
         async fn merged_sha(&self, w: &str) -> Result<Option<String>, String> {
             Ok(self.merged.lock().unwrap().get(w).cloned())
@@ -1745,5 +1945,240 @@ mod tests {
         .unwrap();
         tick(&s, &p, &h).await;
         assert!(h.told.lock().unwrap()[0].contains("fixed and shown working"));
+    }
+
+    /// A report nobody has looked at, which is what triage is for.
+    fn report(s: &Flaws, words: &str) -> Flaw {
+        s.report(
+            NewFlaw {
+                words: words.into(),
+                ..NewFlaw::default()
+            },
+            "o",
+        )
+        .unwrap()
+        .flaw
+        .flaw
+    }
+
+    fn triaging() -> Policy {
+        Policy {
+            auto_triage: true,
+            ..policy()
+        }
+    }
+
+    /// What the free step really answered on 2026-11-13.
+    const LIMIT: &str = "You've hit your weekly limit · resets Nov 4, 12pm (UTC)";
+
+    #[tokio::test]
+    async fn one_triage_agent_at_a_time_for_a_flaw() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let p = triaging();
+        let f = report(&s, "report one");
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 1);
+        // The round gave the triage back while agentd still had the agent at work in the directory
+        // it started it in, which is how fl-15bb8251 got a new one every hour for a day.
+        s.reset_triage(&f.id, LIMIT, "t").unwrap();
+        for _ in 0..3 {
+            tick(&s, &p, &h).await;
+        }
+        assert_eq!(
+            h.agents.lock().unwrap().len(),
+            1,
+            "agentd still holds this flaw's one triage"
+        );
+        // The hand-off continuation inherits the flaw and triage labels, so it stands in the way
+        // of a second agent just as much.
+        h.continued
+            .lock()
+            .unwrap()
+            .insert("ag0".into(), "deep1".into());
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 1);
+        // Both put away: nothing of this flaw's triage lives any more, so a fresh one may start.
+        h.archive_agent("ag0").await.unwrap();
+        h.archive_agent("deep1").await.unwrap();
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_triage_that_ended_is_archived_once_the_flaw_knows() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let p = triaging();
+        let f = report(&s, "report one");
+        tick(&s, &p, &h).await;
+        h.status.lock().unwrap().insert("ag0".into(), "idle".into());
+        tick(&s, &p, &h).await;
+        assert_eq!(
+            *h.archived.lock().unwrap(),
+            vec!["ag0".to_string()],
+            "it is not left standing idle"
+        );
+        assert!(
+            s.get(&f.id).unwrap().flaw.triaged_at.is_some(),
+            "the triage is finished"
+        );
+        assert!(s.triage_due().unwrap().is_empty());
+        assert_eq!(h.agents.lock().unwrap().len(), 1, "and never tried again");
+    }
+
+    #[tokio::test]
+    async fn a_triage_stopped_at_the_minutes_limit_is_stopped_and_archived() {
+        // A file rather than `in_memory`, so the round can be aged past its fifteen minutes.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("flaws.db");
+        let (s, h) = (Flaws::open(&db).unwrap(), Fake::default());
+        let p = triaging();
+        let f = report(&s, "report one");
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 1);
+        // Whenever the clock says, the agent has had its triage's whole fifteen minutes.
+        let old = rusqlite::Connection::open(&db).unwrap();
+        old.execute(
+            "UPDATE flaws SET updated_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+            [f.id.as_str()],
+        )
+        .unwrap();
+        drop(old);
+        tick(&s, &p, &h).await;
+        assert_eq!(*h.stopped.lock().unwrap(), vec!["ag0".to_string()]);
+        assert_eq!(
+            *h.archived.lock().unwrap(),
+            vec!["ag0".to_string()],
+            "stopped, then put away"
+        );
+        assert!(s.get(&f.id).unwrap().flaw.triaged_at.is_some());
+        assert_eq!(h.agents.lock().unwrap().len(), 1, "no second agent on it");
+    }
+
+    #[tokio::test]
+    async fn a_triage_that_was_handed_on_ends_with_the_expensive_agent() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let p = Policy {
+            triage_steps: 2,
+            ..triaging()
+        };
+        let f = report(&s, "report one");
+        // The free lane is out: the triage runs on the second cheap step.
+        h.step_out(&p.chain[0], "the free lane is out");
+        tick(&s, &p, &h).await;
+        assert_eq!(h.ran(), vec![p.chain[1].label()]);
+        // agentd carried the stopped run on to a deep agent of its own choice. Triage never goes
+        // up the chain: that agent's work was nobody's ask, and the cheap one is what we track.
+        h.continued
+            .lock()
+            .unwrap()
+            .insert("ag0".into(), "deep1".into());
+        h.status
+            .lock()
+            .unwrap()
+            .insert("deep1".into(), "running".into());
+        tick(&s, &p, &h).await;
+        assert_eq!(
+            *h.stopped.lock().unwrap(),
+            vec!["deep1".to_string()],
+            "stopped first, since it is at work"
+        );
+        assert_eq!(
+            *h.archived.lock().unwrap(),
+            vec!["deep1".to_string(), "ag0".to_string()],
+            "the continuation and the agent it continues, both away"
+        );
+        assert_eq!(
+            *h.lanes_out.lock().unwrap(),
+            vec![lane(&p.chain[0]), lane(&p.chain[1])],
+            "the step that ran is the lane out"
+        );
+        assert_eq!(
+            s.triage_resets(&f.id).unwrap(),
+            1,
+            "the triage is given back, as on a limit"
+        );
+        assert_eq!(
+            h.agents.lock().unwrap().len(),
+            1,
+            "and no third agent this round"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_fourth_limit_stop_leaves_the_triage_to_the_owner() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let p = triaging();
+        let f = report(&s, "report one");
+        for i in 0..GIVE_UP_AFTER {
+            *h.lanes_out.lock().unwrap() = vec![];
+            tick(&s, &p, &h).await;
+            assert_eq!(h.agents.lock().unwrap().len(), i + 1);
+            let ag = format!("ag{i}");
+            h.status.lock().unwrap().insert(ag.clone(), "error".into());
+            h.errors.lock().unwrap().insert(ag, LIMIT.into());
+            tick(&s, &p, &h).await;
+            assert_eq!(s.triage_resets(&f.id).unwrap(), i + 1, "stop {}", i + 1);
+            assert_eq!(
+                *h.archived.lock().unwrap(),
+                (0..=i).map(|n| format!("ag{n}")).collect::<Vec<_>>(),
+                "each one away before the next starts"
+            );
+        }
+        // The fourth stop on the third reset: not a fifth agent.
+        *h.lanes_out.lock().unwrap() = vec![];
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 4);
+        h.status
+            .lock()
+            .unwrap()
+            .insert("ag3".into(), "error".into());
+        h.errors.lock().unwrap().insert(
+            "ag3".into(),
+            "Free usage limit reached (code: quota)".into(),
+        );
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 4, "no fifth triage agent");
+        let d = s.get(&f.id).unwrap();
+        assert_eq!(
+            d.events.iter().filter(|e| e.kind == "triage_reset").count(),
+            3,
+            "and no fourth reset either"
+        );
+        assert!(
+            d.flaw.triaged_at.is_some(),
+            "the triage is finished, not given back"
+        );
+        assert!(
+            d.events.iter().any(|e| e.kind == "triaged"
+                && e.detail["why"].as_str()
+                    == Some("gave up after 3 limit stops; triage it by hand")),
+            "{:?}",
+            d.events
+        );
+        assert!(
+            s.triage_due().unwrap().is_empty(),
+            "the flaw stops coming back by itself"
+        );
+        assert!(h.archived.lock().unwrap().contains(&"ag3".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_dispatchers_agent_opts_out_of_the_hand_off() {
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        // A fix: the owner's yes covers the step it starts on, not wherever a quota leads agentd.
+        let f = due(&s, "emoji are boxes", Platform::Web, None);
+        tick(&s, &policy(), &h).await;
+        assert_eq!(h.labels.lock().unwrap().len(), 1);
+        // A report, triaged on the cheap step.
+        let g = report(&s, "report one");
+        tick(&s, &triaging(), &h).await;
+        let labels = h.labels.lock().unwrap();
+        assert_eq!(labels.len(), 2, "the fix, and one triage");
+        for l in labels.iter() {
+            assert_eq!(l[HANDOFF_OFF_LABEL].as_str(), Some("1"), "{l}");
+        }
+        assert_eq!(labels[0]["flaw"].as_str(), Some(f.id.as_str()));
+        assert_eq!(labels[1]["flaw"].as_str(), Some(g.id.as_str()));
+        assert_eq!(labels[1]["triage"].as_str(), Some("1"));
     }
 }
