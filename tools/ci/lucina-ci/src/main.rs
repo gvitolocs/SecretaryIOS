@@ -800,6 +800,47 @@ fn tool_exists(t: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// The most a step may run at the merge gate, in seconds. The default is 180; `LUCINA_CHECK_FAST_MERGE_CAP_S` lets a test inject a
+/// small one (never a real 180 s sleep in the suite).
+fn merge_step_cap() -> u64 {
+    std::env::var("LUCINA_CHECK_FAST_MERGE_CAP_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(180)
+}
+
+/// One step of `check-fast`, with the merge-gate limit applied. `Some(entry)` is a failure. At the merge gate a step past its limit
+/// is a failure that says so (`past its N s limit at merge`), never a skip. This tree has no list of required steps, so the cap
+/// applies to every step, as it did before.
+#[allow(clippy::too_many_arguments)]
+fn gated_step(
+    name: &str,
+    cmd: &str,
+    kind: &str,
+    t: u64,
+    merge_gate: bool,
+    cap: u64,
+    b: &runner::Budget,
+    tc: &runner::Toolchain,
+    out: &str,
+) -> Result<Option<String>, String> {
+    let t = if merge_gate { t.min(cap) } else { t };
+    if fast_step(name, cmd, kind, t, b, tc, out)?.0 {
+        return Ok(None);
+    }
+    let json =
+        fs::read_to_string(Path::new(out).join(format!("fast__{}.json", name.replace('/', "__"))))
+            .unwrap_or_default();
+    if merge_gate && runner::report_field(&json, "outcome").as_deref() == Some("timeout") {
+        let m = format!(
+            "{name}: past its {t} s limit at merge: the machine is loaded; retry when it is quieter, or run scripts/check-fast in the worktree"
+        );
+        println!("    {m}");
+        return Ok(Some(m));
+    }
+    Ok(Some(name.to_string()))
+}
+
 /// `check-fast [--base REF] [--proofs] [--all-proofs] [--mutants] [--no-build]`
 fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     let root = repo_root()?;
@@ -852,8 +893,10 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     };
     let mut failed: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    // In `lagent merge` the queue is shared: a step that runs long is skipped and says so, it does not hold up every other merge.
+    // At `lagent merge` a step that runs past its limit FAILS the merge: a gate that reports "0 failed" for tests it did not run is
+    // not a gate (2026-11-12: unit-tests skipped at the merge gate under load, job_b6094541ca4c). docs/ci/SHIFT-LEFT.md.
     let merge_gate = a.has("--merge-gate");
+    let cap = merge_step_cap();
     let step = |name: &str,
                 cmd: &str,
                 kind: &str,
@@ -861,21 +904,8 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 tc: &runner::Toolchain,
                 failed: &mut Vec<String>|
      -> Result<(), String> {
-        let t = if merge_gate { t.min(180) } else { t };
-        if !fast_step(name, cmd, kind, t, &b, tc, &out)?.0 {
-            let json = fs::read_to_string(
-                Path::new(&out).join(format!("fast__{}.json", name.replace('/', "__"))),
-            )
-            .unwrap_or_default();
-            let late =
-                merge_gate && runner::report_field(&json, "outcome").as_deref() == Some("timeout");
-            failed.push(if late {
-                format!(
-                    "~{name}: past its {t} s limit at merge; run scripts/check-fast in the worktree"
-                )
-            } else {
-                name.to_string()
-            });
+        if let Some(f) = gated_step(name, cmd, kind, t, merge_gate, cap, &b, tc, &out)? {
+            failed.push(f);
         }
         Ok(())
     };
@@ -1050,12 +1080,6 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             }
         }
     }
-    let (late, failed): (Vec<String>, Vec<String>) =
-        failed.into_iter().partition(|f| f.starts_with('~'));
-    skipped.extend(
-        late.into_iter()
-            .map(|l| l.trim_start_matches('~').to_string()),
-    );
     let _ = fs::remove_dir_all(&out);
     for s in &skipped {
         println!("skipped  {s}");
