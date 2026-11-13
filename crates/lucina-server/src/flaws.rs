@@ -43,10 +43,10 @@ const ACTOR: &str = "lucina-dispatch";
 const GIVE_UP_AFTER: usize = 3;
 /// How far agentd's hand-off chain is followed. A guard against a label that points back.
 const HANDOFF_CHAIN_MAX: usize = 8;
-/// On an agent the dispatcher starts: agentd's quota hand-off leaves it alone
-/// (`lucina_agentd::manager::handoff::HANDOFF_OFF_LABEL`; the crates only meet over the socket).
-const HANDOFF_OFF_LABEL: &str = "lucina.handoff-off";
-/// On an agent agentd handed its run on to: the continuation's id.
+/// On an agent agentd handed its run on to: the continuation's id
+/// (`lucina_agentd::manager::handoff::CONTINUED_ON_LABEL`; the crates only meet over the socket).
+/// The dispatcher's own agents carry the matching opt-out, `lucina.handoff-off`, which keeps agentd
+/// from continuing a triage or a fix onto an agent of its own choosing.
 const CONTINUED_ON_LABEL: &str = "lucina.continued-on";
 
 /// `LUCINA_FLAWS*`.
@@ -2035,7 +2035,7 @@ mod tests {
         let f = report(&s, "report one");
         tick(&s, &p, &h).await;
         assert_eq!(h.agents.lock().unwrap().len(), 1);
-        // Whenever the clock says, the agent has had its triage's whole fifteen minutes.
+        // Whatever the clock says, the agent has had its triage's whole fifteen minutes.
         let old = rusqlite::Connection::open(&db).unwrap();
         old.execute(
             "UPDATE flaws SET updated_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
@@ -2175,7 +2175,7 @@ mod tests {
         let labels = h.labels.lock().unwrap();
         assert_eq!(labels.len(), 2, "the fix, and one triage");
         for l in labels.iter() {
-            assert_eq!(l[HANDOFF_OFF_LABEL].as_str(), Some("1"), "{l}");
+            assert_eq!(l["lucina.handoff-off"].as_str(), Some("1"), "{l}");
         }
         assert_eq!(labels[0]["flaw"].as_str(), Some(f.id.as_str()));
         assert_eq!(labels[1]["flaw"].as_str(), Some(g.id.as_str()));
