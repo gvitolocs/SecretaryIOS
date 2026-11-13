@@ -22,7 +22,7 @@ run = "bash scripts/gate-github-checks.sh"
 timeout_min = 5
 
 # The fast local check on the merged result: only what the change touched, capped (docs/ci/SHIFT-LEFT.md). The queue is shared,
-# so a step past its limit is skipped and printed rather than hold up every other merge.
+# so a step is capped at 180 s at the merge, and a step past its limit FAILS the merge (it is never skipped).
 [[gate]]
 name = "fast local check"
 paths = []

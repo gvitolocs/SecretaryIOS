@@ -28,7 +28,7 @@ Measured on nezopt, 2026-11-10, on this CI change (25 files, the launcher crate,
 Besides diffgate and `cargo check --workspace`:
 
 - **proofs green on GitHub** (`scripts/gate-github-checks.sh`): a branch that reaches a proof unit needs `verus-gate` = `success` on its exact commit. Push the branch first (`git push origin <branch>`). See [VERUS.md](VERUS.md).
-- **fast local check** (`scripts/check-fast --base HEAD^1 --merge-gate`): the queue is shared, so a step past 180 s is skipped and printed rather than holding up every other merge.
+- **fast local check** (`scripts/check-fast --base HEAD^1 --merge-gate`): a step is capped at 180 s (`LUCINA_CHECK_FAST_MERGE_CAP_S` injects another limit for tests); a step past its limit FAILS the merge (`<step>: past its N s limit at merge: the machine is loaded; retry when it is quieter, or run scripts/check-fast in the worktree`) and is never reported as skipped (2026-11-12: unit-tests were skipped at the merge gate under load and the merge went through with `0 failed`, job_b6094541ca4c).
 
 ## Delegated lanes
 
