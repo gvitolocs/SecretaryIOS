@@ -6,6 +6,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The memory cap the spawned `check-fast` asks for. The binary refuses to start on a runner that cannot hold its cap plus a reserve
+/// (the default 8 GiB cap needs 10 GiB; a private repository's 8 GB runner has 7.7), and these tests judge the time limit, not the
+/// machine's RAM, so they ask for a cap every runner holds (`runner::budget`).
+const MEM_CAP_GIB: &str = "1";
+
 fn git(d: &Path, args: &[&str]) {
     let o = Command::new("git")
         .args([
@@ -57,7 +62,15 @@ fn run(repo: &Path, bin: &Path, cap: &str) -> (i32, String) {
         std::env::var("PATH").unwrap_or_default()
     );
     let o = Command::new(env!("CARGO_BIN_EXE_lucina-ci"))
-        .args(["check-fast", "--base", "main", "--merge-gate", "--no-build"])
+        .args([
+            "check-fast",
+            "--base",
+            "main",
+            "--merge-gate",
+            "--no-build",
+            "--mem-cap-gib",
+            MEM_CAP_GIB,
+        ])
         .current_dir(repo)
         .env("PATH", path)
         .env("LUCINA_CHECK_FAST_MERGE_CAP_S", cap)
@@ -109,7 +122,14 @@ fn a_step_past_its_limit_outside_the_merge_gate_is_the_plain_failure_it_was() {
         std::env::var("PATH").unwrap_or_default()
     );
     let o = Command::new(env!("CARGO_BIN_EXE_lucina-ci"))
-        .args(["check-fast", "--base", "main", "--no-build"])
+        .args([
+            "check-fast",
+            "--base",
+            "main",
+            "--no-build",
+            "--mem-cap-gib",
+            MEM_CAP_GIB,
+        ])
         .current_dir(&repo)
         .env("PATH", path)
         .env("LUCINA_CHECK_FAST_MERGE_CAP_S", "1")
