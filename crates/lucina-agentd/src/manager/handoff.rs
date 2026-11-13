@@ -8,10 +8,10 @@
 //!   provider reply carrying `code: quota` counts as a quota too (as in `run_chain`).
 //! - **Decision**: [`lucina_agents::handoff::decide`] (Verus-proven,
 //!   `verification/verus/agent_handoff.rs`): real failures, helpers, external agents,
-//!   explicit `--chain` runs and archived agents stay; otherwise the first lane of the
-//!   `deep-lucina` chain (lane's order; `deep` without Codex when it is missing) whose
-//!   provider is registered, isn't Codex, isn't forbidden and wasn't tried by this run or
-//!   the runs it continues.
+//!   explicit `--chain` runs, archived agents and runs carrying [`HANDOFF_OFF_LABEL`] stay;
+//!   otherwise the first lane of the `deep-lucina` chain (lane's order; `deep` without Codex when
+//!   it is missing) whose provider is registered, isn't Codex, isn't forbidden and wasn't tried by
+//!   this run or the runs it continues.
 //! - **Continuation**: a new agent on that lane's provider and model, in the same cwd and
 //!   workspace (uncommitted changes stay as they are), seeded with the chat history
 //!   ([`lucina_agents::fork_context`]) and sent the original task with a note on what
@@ -44,6 +44,10 @@ pub const CONTINUED_FROM_LABEL: &str = "lucina.continued-from";
 pub const TRIED_LABEL: &str = "lucina.handoff.tried";
 /// On the continuation: how many hand-offs led to it.
 pub const COUNT_LABEL: &str = "lucina.handoff.count";
+/// On a run that opts out of the hand-off: it stays where its provider stopped. Lucina's flaw
+/// dispatcher labels its agents with this (owner, 2026-11-13: a triage handed on to an expensive
+/// agent is a triage that escaped the cheap end of the chain).
+pub const HANDOFF_OFF_LABEL: &str = "lucina.handoff-off";
 
 const PENDING: &str = "pending";
 const TASK_OPEN: &str = "<original-task>";
@@ -61,6 +65,12 @@ fn inherited(key: &str) -> bool {
         || key == "lucina.lane"
         || key == "lucina.chain"
         || key == FORKED_LABEL)
+}
+
+/// Was this run started with the hand-off turned off (`lucina.handoff-off=1`)? Anything else, and
+/// an absent label, keeps the hand-off on.
+fn handoff_off(labels: &std::collections::BTreeMap<String, String>) -> bool {
+    labels.get(HANDOFF_OFF_LABEL).map(String::as_str) == Some("1")
 }
 
 /// The text a failure is classified on: the error and the last system error item.
@@ -128,7 +138,7 @@ impl Manager {
     /// hand-off task needs (spawn [`Manager::hand_off`] with it).
     pub(super) fn handoff_check(&self, agent: &mut Agent) -> Option<(FailureClass, String)> {
         let r = &agent.record;
-        if r.internal || r.external || ext::is_session(&r.provider) || r.provider == ext::PROVIDER || agent.chain_active || r.archived_at.is_some() || r.labels.contains_key(CONTINUED_ON_LABEL) {
+        if r.internal || r.external || ext::is_session(&r.provider) || r.provider == ext::PROVIDER || agent.chain_active || r.archived_at.is_some() || r.labels.contains_key(CONTINUED_ON_LABEL) || handoff_off(&r.labels) {
             return None;
         }
         let text = failure_text(agent);
@@ -312,6 +322,23 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labels(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    /// A run the dispatcher labelled `lucina.handoff-off=1` is not handed on: [`Manager::handoff_check`]
+    /// returns `None` on this predicate before it looks at the failure at all, which is what keeps a
+    /// triage that stopped on the free lane from carrying on with an expensive agent.
+    #[test]
+    fn a_run_opted_out_of_the_hand_off_stays() {
+        assert!(handoff_off(&labels(&[(HANDOFF_OFF_LABEL, "1")])));
+        // No label, another value, or a hand-off label of its own: the hand-off stays on.
+        assert!(!handoff_off(&labels(&[])));
+        assert!(!handoff_off(&labels(&[(HANDOFF_OFF_LABEL, "0")])));
+        assert!(!handoff_off(&labels(&[(HANDOFF_OFF_LABEL, "yes")])));
+        assert!(!handoff_off(&labels(&[(HANDOFF_LABEL, "pending"), (CONTINUED_FROM_LABEL, "ag-1")])));
+    }
 
     #[test]
     fn task_survives_a_second_hand_off() {
