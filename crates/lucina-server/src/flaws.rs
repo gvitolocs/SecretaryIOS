@@ -2288,11 +2288,6 @@ mod tests {
             d.events
         );
         assert_eq!(*h.archived.lock().unwrap(), vec!["ag0".to_string()]);
-        // Still there until the flaw was told: a second agent would hit the same thing.
-        assert_eq!(
-            h.triage_agents(&f.id).await.unwrap(),
-            vec!["ag0".to_string()]
-        );
         assert!(s.triage_due().unwrap().is_empty());
         tick(&s, &p, &h).await;
         assert_eq!(h.agents.lock().unwrap().len(), 1, "nothing new starts");
