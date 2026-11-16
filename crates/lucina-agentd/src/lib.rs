@@ -28,6 +28,8 @@
 //!   message them, set heartbeats and search.
 //! - [`pipeline`]: tasks, the merge and deploy queue, and device leases (every coding
 //!   session's way to main, production and the owner's devices).
+//! - [`trunks`]: which branch is a repo's trunk, and the table that overrides it where the
+//!   remote does not carry it.
 
 #![forbid(unsafe_code)]
 
@@ -55,6 +57,7 @@ pub mod providers;
 pub mod schedules;
 pub mod store;
 pub mod terminals;
+pub mod trunks;
 pub mod workspaces;
 
 /// RFC 3339 with milliseconds and `Z`, as JavaScript's `Date.toISOString()`.
