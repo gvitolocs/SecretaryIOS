@@ -948,19 +948,37 @@ impl Flaws {
         self.pairs("t.status = 'fixing'")
     }
 
-    /// Live flaws nobody has triaged, with a client still unlooked at or without a layer.
+    /// Live flaws nobody has triaged, with a client still unlooked at or without a layer. A flaw
+    /// anyone is working on or has already landed waits: its remaining rows are looked at when the
+    /// fix closes, not by a triage agent of their own.
     pub fn triage_due(&self) -> Result<Vec<Flaw>> {
         let c = self.lock();
         let mut s = c.prepare(
             "SELECT DISTINCT f.* FROM flaws f JOIN flaw_targets t ON t.flaw_id = f.id
              WHERE f.state IN ('open','fixing') AND f.triage_agent IS NULL
                AND (t.status = 'untriaged' OR (t.status = 'affected' AND t.layer IS NULL))
+               AND NOT EXISTS (SELECT 1 FROM flaw_targets w WHERE w.flaw_id = f.id
+                                 AND (w.status IN ('fixing','fixed','verified') OR w.session IS NOT NULL))
              ORDER BY f.created_at",
         )?;
         let out = s
             .query_map([], flaw_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(out)
+    }
+
+    /// How many times triage was given back since it last finished, or since the report when it
+    /// never did. The dispatcher stops after three of these instead of starting an agent forever.
+    pub fn triage_resets(&self, id: &str) -> Result<usize> {
+        let c = self.lock();
+        let n: i64 = c.query_row(
+            "SELECT count(*) FROM flaw_events
+             WHERE flaw_id = ?1 AND kind = 'triage_reset'
+               AND seq > COALESCE((SELECT max(seq) FROM flaw_events WHERE flaw_id = ?1 AND kind = 'triaged'), 0)",
+            [id],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as usize)
     }
 
     /// Triage agents not finished yet.
@@ -1617,6 +1635,90 @@ mod tests {
             s.triage_due().unwrap().is_empty(),
             "the rows it left open stay open: no second agent"
         );
+    }
+
+    #[test]
+    fn a_flaw_anyone_is_working_on_is_not_triage_due() {
+        let s = Flaws::in_memory().unwrap();
+        // fl-e31b072b, 2026-11-12: Juno's fix landed, the other clients stayed untriaged, and a
+        // fresh triage agent started for the same flaw every hour.
+        let landed = report(&s, "one", &[Platform::Juno]);
+        layer(&s, &landed.id, Platform::Juno);
+        assert_eq!(s.triage_due().unwrap().len(), 1, "unlooked at: it is due");
+        s.record_merge(&landed.id, Platform::Juno, "abcdef1", "l")
+            .unwrap();
+        assert!(
+            s.triage_due().unwrap().is_empty(),
+            "fixed: the rest is looked at with the fix"
+        );
+
+        let fixing = report(&s, "two", &[Platform::Web]);
+        layer(&s, &fixing.id, Platform::Web);
+        s.claim(&fixing.id, Platform::Web, "/r", "d").unwrap();
+        assert!(
+            s.triage_due().unwrap().is_empty(),
+            "a fix is being written on it"
+        );
+
+        let shown = report(&s, "three", &[Platform::Android]);
+        layer(&s, &shown.id, Platform::Android);
+        s.record_merge(&shown.id, Platform::Android, "abcdef2", "l")
+            .unwrap();
+        s.set_target(
+            &shown.id,
+            Platform::Android,
+            TargetUpdate {
+                status: Some(TargetStatus::Verified),
+                evidence: Some(shot()),
+                ..TargetUpdate::default()
+            },
+            "t",
+        )
+        .unwrap();
+        assert!(
+            s.triage_due().unwrap().is_empty(),
+            "verified: nothing is left to look at"
+        );
+
+        let by_hand = report(&s, "four", &[Platform::Ios]);
+        s.set_target(
+            &by_hand.id,
+            Platform::Ios,
+            TargetUpdate {
+                session: Some("claude-session".into()),
+                ..TargetUpdate::default()
+            },
+            "someone",
+        )
+        .unwrap();
+        assert!(
+            s.triage_due().unwrap().is_empty(),
+            "a session took the row on itself"
+        );
+    }
+
+    #[test]
+    fn the_resets_since_the_last_triage_are_counted() {
+        let s = Flaws::in_memory().unwrap();
+        let f = report(&s, "x", &[]);
+        assert_eq!(s.triage_resets(&f.id).unwrap(), 0);
+        s.start_triage(&f.id, "a1", false, Some(0), "d").unwrap();
+        s.reset_triage(&f.id, "the lane is out", "d").unwrap();
+        s.start_triage(&f.id, "a2", false, Some(0), "d").unwrap();
+        s.reset_triage(&f.id, "the lane is out", "d").unwrap();
+        assert_eq!(
+            s.triage_resets(&f.id).unwrap(),
+            2,
+            "since the report: it never was triaged"
+        );
+        s.finish_triage(&f.id, "ended", "d").unwrap();
+        assert_eq!(
+            s.triage_resets(&f.id).unwrap(),
+            0,
+            "the count starts over at the triage"
+        );
+        s.reset_triage(&f.id, "the lane is out", "d").unwrap();
+        assert_eq!(s.triage_resets(&f.id).unwrap(), 1);
     }
 
     #[test]
