@@ -239,7 +239,9 @@ impl Exec {
         }
     }
 
-    /// Fetch, then the trunk's commit.
+    /// Fetch, then the trunk's commit. A remote repo's trunk is the remote's: once the fetch is
+    /// done and its ref is still missing, there is nothing to land on and nothing is fetched
+    /// from a local branch of the same name.
     fn trunk_tip(&mut self) -> Git {
         let repo = self.repo();
         let trunk = self.spec.trunk.clone();
@@ -254,6 +256,12 @@ impl Exec {
                         &format!("refs/remotes/{remote}/{trunk}^{{commit}}"),
                     ],
                 )
+                .map_err(|_| {
+                    format!(
+                        "{remote}/{trunk} does not exist in {}: the remote does not carry the trunk (git fetch {remote}, or check the branch name)",
+                        repo.display()
+                    )
+                })
             }
             None => self.git(
                 &repo,
