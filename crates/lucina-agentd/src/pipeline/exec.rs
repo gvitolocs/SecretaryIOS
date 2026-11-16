@@ -185,6 +185,12 @@ impl Exec {
             ])
             .current_dir(cwd)
             .env("PATH", &self.path)
+            // The gate runs with exactly the PATH above. A shell init hook left in the
+            // environment (BASH_ENV, or ENV for a POSIX sh) is read before the command and can
+            // rewrite PATH, which would put a machine-wide wrapper ahead of what the job asked
+            // for; the machine's own PATH is already folded into `path`, so its tools stay found.
+            .env_remove("BASH_ENV")
+            .env_remove("ENV")
             .env("CARGO_TARGET_DIR", &self.spec.target_dir)
             .env("LAGENT_JOB", &self.spec.job_id)
             .env("LAGENT_FORCE", if self.spec.force { "1" } else { "" })
@@ -1040,23 +1046,28 @@ mod tests {
         let root = root.path();
         let (origin, repo) = setup(root);
         std::fs::create_dir_all(repo.join(".lucina")).unwrap();
-        // `cargo test` is shadowed by a script that fails the first time.
+        // `cargo test` is shadowed by a script in `bin/` that fails the first time and passes
+        // after. It needs no tool of its own: the state file is written by the shell itself, so
+        // the shadow does its work whatever PATH the gate command ends up with.
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let marker = root.join("ran-once");
+        let ran = root.join("cargo-ran");
         std::fs::write(
             bin.join("cargo"),
             format!(
-                "#!/bin/sh\nif [ -f {m} ]; then exit 0; fi\ntouch {m}; exit 1\n",
-                m = marker.display()
+                "#!/bin/sh\nif [ -s {r} ]; then exit 0; fi\necho once >>{r}\nexit 1\n",
+                r = ran.display()
             ),
         )
         .unwrap();
-        Command::new("chmod")
-            .arg("+x")
-            .arg(bin.join("cargo"))
-            .status()
-            .unwrap();
+        // The execute bit is set here rather than with `chmod +x`, whose `+` form is filtered by
+        // the umask: a shadow without it is skipped by the shell's PATH search, and the machine's
+        // cargo then answers the gate instead.
+        std::fs::set_permissions(
+            bin.join("cargo"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
         std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n").unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "rules"]);
@@ -1070,6 +1081,13 @@ mod tests {
         let out = x.merge();
         assert!(out.ok, "{out:?}");
         assert!(out.gates[0].flaky);
+        // Both gate runs went through the shadow, not through a cargo of the machine: it failed
+        // once (one line in its state file) and passed on the retry.
+        assert_eq!(
+            std::fs::read_to_string(&ran).ok().as_deref(),
+            Some("once\n"),
+            "{out:?}"
+        );
         assert!(
             out.message.contains("flaky, passed on retry: t"),
             "{}",
