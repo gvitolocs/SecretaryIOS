@@ -173,6 +173,10 @@ impl Exec {
     fn sh(&mut self, cwd: &Path, cmd: &str, timeout_min: u64) -> bool {
         self.say(&format!("$ {cmd}"));
         let (Ok(out), Ok(err)) = (self.log.try_clone(), self.log.try_clone()) else {
+            // No duplicated fd means the command never starts. Without a word here the job ends
+            // as GATE_FAILED with a log that says nothing about it: a gate that could not be run
+            // reads exactly like a gate that ran and was refused.
+            self.say("cannot run: the job log could not be duplicated for the command's output");
             return false;
         };
         let status = Command::new("timeout")
