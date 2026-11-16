@@ -7,7 +7,7 @@
 //! with outcome `quota` or `unavailable`; an unmatched failure stops it (lane's rules).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use serde::Deserialize;
@@ -29,7 +29,9 @@ pub struct Lane {
 
 /// Owner rule (2026-10-27): the paid DeepSeek key is never used, through any lane.
 pub fn is_forbidden(name: &str, lane: &Lane) -> bool {
-    name == "deepseek-paid" || lane.worker.as_deref() == Some("deepseek-flash") || lane.model.as_deref().is_some_and(|m| m.contains("paid"))
+    name == "deepseek-paid"
+        || lane.worker.as_deref() == Some("deepseek-flash")
+        || lane.model.as_deref().is_some_and(|m| m.contains("paid"))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -100,7 +102,12 @@ pub fn agentd_provider(name: &str, lane: &Lane) -> Option<(&'static str, Option<
     }
     match lane.kind.as_str() {
         "command" if name.starts_with("mistral-") => Some(("vibe", lane.model.clone())),
-        "orchestra" if lane.worker.as_deref().is_some_and(|w| w.starts_with("zen-")) => {
+        "orchestra"
+            if lane
+                .worker
+                .as_deref()
+                .is_some_and(|w| w.starts_with("zen-")) =>
+        {
             let model = lane.model.as_deref().filter(|m| !m.is_empty())?;
             Some(("opencode", Some(format!("opencode/{model}"))))
         }
@@ -121,17 +128,21 @@ impl LaneConfig {
         toml::from_str(text)
     }
 
-    /// The config at [`default_path`], or an empty one when it's missing or broken
-    /// (logged; agentd still runs, without defaults).
-    pub fn load() -> Self {
-        let path = default_path();
-        match std::fs::read_to_string(&path) {
+    /// The config in `path`, or an empty one when it's missing or broken (logged;
+    /// agentd still runs, without defaults).
+    pub fn load_at(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(&text).unwrap_or_else(|e| {
                 tracing::warn!(path = %path.display(), error = %e, "unreadable lane config");
                 Self::default()
             }),
             Err(_) => Self::default(),
         }
+    }
+
+    /// The config at [`default_path`].
+    pub fn load() -> Self {
+        Self::load_at(&default_path())
     }
 
     /// The first lane of a kind (its model and effort are the provider's defaults).
@@ -190,7 +201,14 @@ impl LaneConfig {
             .filter_map(|name| {
                 let lane = self.lanes.get(name)?;
                 let (p, model) = agentd_provider(name, lane)?;
-                Some((name.clone(), p, Lane { model, ..lane.clone() }))
+                Some((
+                    name.clone(),
+                    p,
+                    Lane {
+                        model,
+                        ..lane.clone()
+                    },
+                ))
             })
             .collect()
     }
@@ -213,13 +231,17 @@ impl LaneConfig {
             .collect();
         order.into_iter().find_map(|name| {
             let lane = self.lanes.get(&name)?;
-            agentd_provider(&name, lane).filter(|(p, _)| *p == provider).map(|_| (name.clone(), lane.clone()))
+            agentd_provider(&name, lane)
+                .filter(|(p, _)| *p == provider)
+                .map(|_| (name.clone(), lane.clone()))
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     const SAMPLE: &str = r#"
@@ -254,60 +276,180 @@ pattern = '(?i)not logged in'
     #[test]
     fn parses_and_classifies() {
         let c = LaneConfig::parse(SAMPLE).unwrap();
-        assert_eq!(c.first_of_kind("codex").unwrap().1.model.as_deref(), Some("gpt-6.1-sol"));
-        assert_eq!(c.classify("claude-cli", "claude", "You've hit your session limit · resets 8pm", None), Outcome::Quota("claude-usage-limit".into()));
-        assert_eq!(c.classify("codex", "codex", "Not logged in", None), Outcome::Unavailable("codex-auth".into()));
-        assert_eq!(c.classify("codex", "codex", "syntax error", None), Outcome::Failed);
+        assert_eq!(
+            c.first_of_kind("codex").unwrap().1.model.as_deref(),
+            Some("gpt-6.1-sol")
+        );
+        assert_eq!(
+            c.classify(
+                "claude-cli",
+                "claude",
+                "You've hit your session limit · resets 8pm",
+                None
+            ),
+            Outcome::Quota("claude-usage-limit".into())
+        );
+        assert_eq!(
+            c.classify("codex", "codex", "Not logged in", None),
+            Outcome::Unavailable("codex-auth".into())
+        );
+        assert_eq!(
+            c.classify("codex", "codex", "syntax error", None),
+            Outcome::Failed
+        );
         let chain: Vec<&str> = c.chain("deep").iter().map(|(_, p, _)| *p).collect();
-        assert_eq!(chain, ["claude", "codex"], "orchestra lanes are not agentd providers, and deepseek-paid never runs");
+        assert_eq!(
+            chain,
+            ["claude", "codex"],
+            "orchestra lanes are not agentd providers, and deepseek-paid never runs"
+        );
+    }
+
+    /// The owner's chains.toml in the shape he keeps it in (free lanes first, 2026-11-11):
+    /// Codex out of `deep-lucina`, the paid DeepSeek lane listed there but never runnable, an
+    /// opencode lane on a free Zen worker, and detectors for the failure texts quoted below.
+    const OWNER: &str = r#"
+[lanes.zcode]
+kind = "zcode"
+[lanes.mistral-small]
+kind = "command"
+model = "mistral-small"
+[lanes.zen-deepseek-flash]
+kind = "orchestra"
+worker = "zen-deepseek-flash"
+model = "deepseek-v4.1-flash-free"
+[lanes.claude-cli]
+kind = "claude"
+model = "claude-opus-5-5"
+effort = "medium"
+[lanes.codex]
+kind = "codex"
+model = "gpt-6.1-sol"
+effort = "medium"
+[lanes.deepseek-paid]
+kind = "codex"
+worker = "deepseek-flash"
+model = "deepseek-flash (paid API)"
+[categories]
+deep-lucina = ["zcode", "mistral-small", "zen-deepseek-flash", "claude-cli", "deepseek-paid"]
+deep = ["claude-cli", "codex", "deepseek-paid"]
+[[detectors]]
+name = "claude-usage-limit"
+kinds = ["claude"]
+outcome = "quota"
+pattern = '(?i)you.ve hit your (session |weekly )?limit'
+[[detectors]]
+name = "vibe-budget-exhausted"
+kinds = ["command"]
+outcome = "quota"
+pattern = '"type":"billing_vibe_budget_exhausted"'
+[[detectors]]
+name = "zcode-login-failed"
+kinds = ["zcode"]
+outcome = "unavailable"
+pattern = 'project_token_login_failed'
+[[detectors]]
+name = "opencode-free-limit"
+kinds = ["orchestra"]
+outcome = "quota"
+pattern = '(?i)Free usage limit reached'
+"#;
+
+    /// `text` as a `chains.toml` in a tempdir, read back through the loader the daemon uses.
+    /// The TempDir comes back with the config: dropped, it would delete the fixture.
+    fn fixture(text: &str) -> (tempfile::TempDir, LaneConfig) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chains.toml");
+        std::fs::write(&path, text).unwrap();
+        let c = LaneConfig::load_at(&path);
+        assert!(
+            !c.lanes.is_empty(),
+            "the fixture did not parse: {}",
+            path.display()
+        );
+        (dir, c)
     }
 
     /// The failure texts of real stopped runs, as agentd's `failure_text` builds them,
     /// against the owner's detectors (the quota hand-off reads the same).
     #[test]
     fn real_limit_stops_classify_through_the_owner_detectors() {
-        let Ok(text) = std::fs::read_to_string(default_path()) else {
-            eprintln!("no lane config");
-            return;
-        };
-        let c = LaneConfig::parse(&text).unwrap();
+        let (_fixture, c) = fixture(OWNER);
         let class = |provider: &str, failure: &str| {
-            let (name, lane) = c.lane_of_provider(provider, None).unwrap_or_else(|| panic!("no lane for {provider}"));
+            let (name, lane) = c
+                .lane_of_provider(provider, None)
+                .unwrap_or_else(|| panic!("no lane for {provider}"));
             c.classify(&name, &lane.kind, failure, None)
         };
         // Agents 16d5ad63 and cdecfba5 (2026-11-01/02), word for word.
         let claude = "You've hit your weekly limit · resets Nov 4, 12pm (UTC)\n[System Error] You've hit your weekly limit · resets Nov 4, 12pm (UTC)\n\ncode: usage_limit_reached\n\nHTTP 429";
-        assert!(matches!(class("claude", claude), Outcome::Quota(_)), "{:?}", class("claude", claude));
+        assert!(
+            matches!(class("claude", claude), Outcome::Quota(_)),
+            "{:?}",
+            class("claude", claude)
+        );
         // Vibe (2026-11-08 probe) and ZCode's expired sign-in.
         let vibe = "session/prompt: API error occurred: Status 402. Body: {\"object\":\"error\",\"message\":\"Vibe budget exhausted.\",\"type\":\"billing_vibe_budget_exhausted\",\"code\":\"2304\",\"raw_status_code\":402}";
-        assert!(matches!(class("vibe", vibe), Outcome::Quota(_)), "{:?}", class("vibe", vibe));
+        assert!(
+            matches!(class("vibe", vibe), Outcome::Quota(_)),
+            "{:?}",
+            class("vibe", vibe)
+        );
         let zcode = "[project-access-token] { family: 'zai', stage: 'resolve', code: 'project_token_login_failed' }";
         assert!(matches!(class("zcode", zcode), Outcome::Unavailable(_)));
         // OpenCode's Zen free tier, as the ACP turn watch reports it (agent cc504145).
         let zen = "AI_APICallError: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go\n[System Error] AI_APICallError: Free usage limit reached.\n\ncode: quota";
-        assert!(matches!(class("opencode", zen), Outcome::Quota(_)), "{:?}", class("opencode", zen));
+        assert!(
+            matches!(class("opencode", zen), Outcome::Quota(_)),
+            "{:?}",
+            class("opencode", zen)
+        );
         // A task's own failure is not a limit.
-        assert_eq!(class("claude", "error[E0308]: mismatched types\n[System Error] build failed"), Outcome::Failed);
+        assert_eq!(
+            class(
+                "claude",
+                "error[E0308]: mismatched types\n[System Error] build failed"
+            ),
+            Outcome::Failed
+        );
     }
 
     /// The Lucina chain agentd hands on along: lane's `deep-lucina`, never Codex or paid DeepSeek.
     #[test]
     fn owner_deep_lucina_chain_maps_to_agentd_providers() {
-        let Ok(text) = std::fs::read_to_string(default_path()) else {
-            eprintln!("no lane config");
-            return;
-        };
-        let c = LaneConfig::parse(&text).unwrap();
+        let (_fixture, c) = fixture(OWNER);
         let chain = c.chain("deep-lucina");
         let providers: Vec<&str> = chain.iter().map(|(_, p, _)| *p).collect();
         assert!(!providers.contains(&"codex"), "{providers:?}");
-        assert_eq!(providers.first(), Some(&"claude"), "{providers:?}");
+        // Which lane is first is the owner's choice and he moves it (free lanes first since
+        // 2026-11-11), so the chain is compared as a set: what it must never contain is the policy.
+        let want: BTreeSet<&str> = ["claude", "opencode", "vibe", "zcode"]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            providers.iter().copied().collect::<BTreeSet<_>>(),
+            want,
+            "{providers:?}"
+        );
+        let names: Vec<&str> = chain.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(
+            !names.contains(&"deepseek-paid"),
+            "{names:?}: a listed paid lane still never runs"
+        );
         for (name, p, lane) in &chain {
             assert!(!is_forbidden(name, lane), "{name}");
             if *p == "opencode" {
-                assert!(lane.model.as_deref().is_some_and(|m| m.starts_with("opencode/") && m.ends_with("-free")), "{name}: {:?}", lane.model);
+                assert!(
+                    lane.model
+                        .as_deref()
+                        .is_some_and(|m| m.starts_with("opencode/") && m.ends_with("-free")),
+                    "{name}: {:?}",
+                    lane.model
+                );
             }
         }
+        // The same lanes with Codex in a category: the assertion above is about deep-lucina.
+        assert!(c.chain("deep").iter().any(|(_, p, _)| *p == "codex"));
     }
 
     #[test]
@@ -332,13 +474,27 @@ kind = "command"
 "#;
         let c = LaneConfig::parse(t).unwrap();
         let p = |n: &str| agentd_provider(n, &c.lanes[n]);
-        assert_eq!(p("mistral-large"), Some(("vibe", Some("mistral-large".into()))));
-        assert_eq!(p("zen-deepseek-flash"), Some(("opencode", Some("opencode/deepseek-v4.1-flash-free".into()))));
+        assert_eq!(
+            p("mistral-large"),
+            Some(("vibe", Some("mistral-large".into())))
+        );
+        assert_eq!(
+            p("zen-deepseek-flash"),
+            Some(("opencode", Some("opencode/deepseek-v4.1-flash-free".into())))
+        );
         assert_eq!(p("deepseek-paid"), None);
         assert_eq!(p("qwen"), Some(("lucinacode", None)));
         assert_eq!(p("other"), None);
-        assert_eq!(c.lane_of_provider("vibe", None).map(|(n, _)| n).as_deref(), Some("mistral-large"));
-        assert_eq!(c.lane_of_provider("opencode", None).map(|(n, _)| n).as_deref(), Some("zen-deepseek-flash"));
+        assert_eq!(
+            c.lane_of_provider("vibe", None).map(|(n, _)| n).as_deref(),
+            Some("mistral-large")
+        );
+        assert_eq!(
+            c.lane_of_provider("opencode", None)
+                .map(|(n, _)| n)
+                .as_deref(),
+            Some("zen-deepseek-flash")
+        );
     }
 
     /// The owner's real config must keep parsing: a schema change in lane breaks this
@@ -354,7 +510,8 @@ kind = "command"
         assert!(!c.lanes.is_empty());
         for d in &c.detectors {
             if let Some(p) = &d.pattern {
-                Regex::new(p).unwrap_or_else(|e| panic!("detector {} has a bad regex: {e}", d.name));
+                Regex::new(p)
+                    .unwrap_or_else(|e| panic!("detector {} has a bad regex: {e}", d.name));
             }
         }
     }
