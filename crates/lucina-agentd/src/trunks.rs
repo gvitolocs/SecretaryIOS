@@ -6,31 +6,55 @@
 //! then origin's HEAD, then `main`, then `master`. Nothing else sets a trunk: no environment
 //! variable, no config file, no API call, no git config (`lucina.trunk` is not read).
 //!
-//! When the resolved trunk has no branch on the remote, the repo has no remote for pipeline
-//! purposes ([`Trunk::remote`] is `None`): nothing is fetched or pushed, and a landing moves
-//! `refs/heads/<trunk>` in this checkout. The check is on the local refs only, in the state the
-//! usual fetch left: it never runs `git ls-remote` and never fetches to decide. A repo's push URL
-//! is never read or changed.
+//! A repo lands with no remote ([`Trunk::remote`] is `None`) in two cases only: the table marks
+//! its trunk `local`, or the repo has no `origin` at all. Then nothing is fetched or pushed, and
+//! a landing moves `refs/heads/<trunk>` in this checkout. Every other repo lands through its
+//! remote: a trunk the remote does not carry is a refused merge, never a landing on a local
+//! branch of the same name. The order is decided on the local refs, in the state the usual fetch
+//! left: it never runs `git ls-remote` and never fetches to decide. A repo's push URL is never
+//! read or changed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::pipeline::repo::{Rules, FILE as PIPELINE_FILE};
 
+/// One repo's row of [`TRUNKS`].
+pub struct TrunkEntry {
+    /// The main checkout's directory name.
+    pub repo: &'static str,
+    /// Its trunk.
+    pub branch: &'static str,
+    /// Whether the trunk lives only on this machine.
+    ///
+    /// `local: true` lands merges on the local branch: no remote, nothing fetched, nothing
+    /// pushed, whatever the remote has. `local: false` only names the branch: the repo is
+    /// otherwise an ordinary remote repo, its merges go through its remote, and a trunk the
+    /// remote does not carry is a refused merge. A repo whose trunk its remote can be pushed to
+    /// is `local: false`: `true` is the marker for a fork whose trunk never reaches its origin.
+    pub local: bool,
+}
+
 /// The repos whose trunk this table decides, whatever their remote or their pipeline file says.
 ///
 /// **This table decides where merges land.** An entry moves a repo's merges to another branch,
 /// and it changes only through a SecretaryIOS merge and an agentd deploy: that is the only way
-/// it differs from one machine to another.
+/// it differs from one machine to another. Read [`TrunkEntry::local`] before adding a row: it is
+/// what says whether the branch is a local one or a remote repo's, and a repo with a pushable
+/// trunk set to `local: true` would stop pushing its merges without any error.
 ///
 /// `LucinaNet-servo` is the LucinaNet fork of servo. Its `origin` is upstream servo (a real
 /// fetch URL, a push URL of `no-push://…`) and origin's HEAD is upstream's `main`, while the
 /// fork's work is on the local branch `lucinanet`, which has no branch on origin.
-const TRUNKS: &[(&str, &str)] = &[("LucinaNet-servo", "lucinanet")];
+const TRUNKS: &[TrunkEntry] = &[TrunkEntry {
+    repo: "LucinaNet-servo",
+    branch: "lucinanet",
+    local: true,
+}];
 
-/// The trunk the table gives a repo whose checkout is named `name`.
-fn table_trunk(name: &str) -> Option<&'static str> {
-    TRUNKS.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
+/// The table's row for a repo whose checkout is named `name`.
+fn table_entry(name: &str) -> Option<&'static TrunkEntry> {
+    TRUNKS.iter().find(|e| e.repo == name)
 }
 
 /// A repo's trunk, and the remote it lives on when a remote has it.
@@ -42,8 +66,8 @@ pub struct Trunk {
     pub name: String,
     /// The branch workspaces start from and merges land on.
     pub branch: String,
-    /// The remote that has [`Trunk::branch`], else `None`: a trunk only on this machine makes the
-    /// repo a repo with no remote for the pipeline.
+    /// The remote merges land through: `None` when the repo has no `origin`, or when the table
+    /// marks its trunk local and the branch lives only in this checkout.
     pub remote: Option<String>,
 }
 
@@ -81,8 +105,9 @@ pub fn resolve(dir: &Path) -> Option<Trunk> {
         .trim_end_matches(".git")
         .to_string();
     let remote = git(&root, &["remote", "get-url", "origin"]).map(|_| "origin".to_string());
-    let branch = match table_trunk(&name) {
-        Some(t) => t.to_string(),
+    let entry = table_entry(&name);
+    let branch = match entry {
+        Some(e) => e.branch.to_string(),
         None => {
             let from_origin = remote.as_ref().and_then(|r| {
                 git(
@@ -113,7 +138,13 @@ pub fn resolve(dir: &Path) -> Option<Trunk> {
             .unwrap_or(default)
         }
     };
-    let remote = remote.filter(|r| remote_branch(&root, r, &branch));
+    // Only a `local: true` entry takes a repo off its remote. Whether the remote has the trunk
+    // is not asked here: the merge that follows reads the remote's own refs and refuses if the
+    // trunk is not among them.
+    let remote = match entry {
+        Some(e) if e.local => None,
+        _ => remote,
+    };
     Some(Trunk {
         root,
         name,
@@ -146,10 +177,6 @@ fn ref_exists(dir: &Path, r: &str) -> bool {
 
 fn local_branch(dir: &Path, name: &str) -> Option<String> {
     ref_exists(dir, &format!("refs/heads/{name}")).then(|| name.to_string())
-}
-
-fn remote_branch(dir: &Path, remote: &str, name: &str) -> bool {
-    ref_exists(dir, &format!("refs/remotes/{remote}/{name}"))
 }
 
 #[cfg(test)]
@@ -276,16 +303,16 @@ mod tests {
             ("release", Some("origin"))
         );
         assert_eq!(t.base_ref(), "origin/release");
-        // A trunk the remote does not have: no remote.
+        // A trunk the remote does not carry keeps its remote: the merge refuses, it does not
+        // fall back to a local branch of the same name.
         git_ok(&repo, &["update-ref", "-d", "refs/remotes/origin/release"]);
         let t = resolve(&repo).unwrap();
-        assert_eq!((t.branch.as_str(), t.remote.as_deref()), ("release", None));
-        assert_eq!(t.base_ref(), "release");
-        // A trunk the file no longer names: the repo is back to what it was.
-        git_ok(
-            &repo,
-            &["update-ref", "refs/remotes/origin/release", "main"],
+        assert_eq!(
+            (t.branch.as_str(), t.remote.as_deref()),
+            ("release", Some("origin"))
         );
+        assert_eq!(t.base_ref(), "origin/release");
+        // A trunk the file no longer names: the repo is back to what it was.
         git_ok(&repo, &["branch", "-D", "release"]);
         write(&repo, PIPELINE_FILE, "[merge]\ncargo = \"off\"\n");
         commit(&repo, "no trunk");
@@ -375,8 +402,9 @@ mod tests {
         );
     }
 
+    /// A `local: true` entry is the only thing that makes a repo with an origin land locally.
     #[test]
-    fn a_table_trunk_with_no_branch_on_the_remote_leaves_the_repo_without_one() {
+    fn a_local_table_trunk_has_no_remote_even_when_origin_carries_it() {
         let tmp = tempfile::tempdir().unwrap();
         let root = &std::fs::canonicalize(tmp.path()).unwrap();
         let (origin, repo) = servo(root, None);
@@ -391,7 +419,7 @@ mod tests {
             "no-push://x",
             "the push URL is left as it is"
         );
-        // Once origin carries the trunk, the remote is back. Pushed by URL: the remote's own
+        // And still local once origin does carry the trunk. Pushed by URL: the remote's own
         // push URL is the one that refuses.
         git_ok(
             &repo,
@@ -403,12 +431,45 @@ mod tests {
             ],
         );
         git_ok(&repo, &["fetch", "-q", "origin"]);
+        assert!(
+            ref_exists(&repo, "refs/remotes/origin/lucinanet"),
+            "origin carries the trunk now"
+        );
         let t = resolve(&repo).unwrap();
         assert_eq!(
             (t.branch.as_str(), t.remote.as_deref()),
-            ("lucinanet", Some("origin"))
+            ("lucinanet", None)
         );
-        assert_eq!(t.base_ref(), "origin/lucinanet");
+        assert_eq!(t.base_ref(), "lucinanet");
+    }
+
+    /// A repo the table does not mark local keeps its remote even when nothing on it has been
+    /// seen for the trunk: the missing ref is the merge's problem, not the resolver's.
+    #[test]
+    fn a_trunk_the_remote_has_no_ref_for_keeps_the_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = &std::fs::canonicalize(tmp.path()).unwrap();
+        let (_, repo) = repo_with_main(root, "Plain");
+        // origin's HEAD names a branch the usual fetch left no remote-tracking ref for.
+        git_ok(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/heads/trunk2",
+            ],
+        );
+        git_ok(&repo, &["branch", "trunk2", "main"]);
+        let t = resolve(&repo).unwrap();
+        assert_eq!(
+            (t.branch.as_str(), t.remote.as_deref()),
+            ("trunk2", Some("origin"))
+        );
+        assert_eq!(t.base_ref(), "origin/trunk2");
+        assert!(
+            !ref_exists(&repo, "refs/remotes/origin/trunk2"),
+            "no remote-tracking ref for the trunk"
+        );
     }
 
     #[test]

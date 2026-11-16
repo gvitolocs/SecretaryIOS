@@ -119,7 +119,7 @@ fn invalid(m: impl Into<String>) -> ManagerError {
 }
 
 /// What the pipeline knows about the repo around `path`: where it is, and its trunk with the
-/// remote that has it ([`Trunk`], decided by [`crate::trunks`]).
+/// remote its merges land through ([`Trunk`], decided by [`crate::trunks`]).
 fn repo_info(path: &Path) -> Result<Trunk, ManagerError> {
     trunks::resolve(path)
         .ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))
