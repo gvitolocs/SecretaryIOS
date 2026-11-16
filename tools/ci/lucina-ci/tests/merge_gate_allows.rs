@@ -7,8 +7,9 @@
 //! The real binary runs over a throwaway repository with a stand-in `diffgate` first on PATH.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// The memory cap the spawned `check-fast` asks for: the tests judge what diffgate is handed, not the
 /// machine's RAM, so they ask for a cap every runner holds (`runner::budget`).
@@ -32,6 +33,29 @@ fn git(d: &Path, args: &[&str]) {
         o.status.success(),
         "git {args:?}: {}",
         String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+/// An executable script, written by a child that is reaped before anything execs it. Writing the file
+/// from the test thread itself keeps its fd open while another thread forks (git, chmod), and that
+/// fork keeps a writable copy of the fd until its own exec, so exec answers "Text file busy"
+/// (ETXTBSY): measured today in lucina-agentd, 110 failures in 1500 writes for `fs::write` and chmod,
+/// 65 for a temp file renamed into place, 0 when a child writes it. There the helper is
+/// `testutil::write_exec`; the launcher is another crate, so these tests carry their own copy.
+fn write_exec(path: &Path, script: &str) {
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 0755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut w = child.stdin.take().unwrap();
+    w.write_all(script.as_bytes()).unwrap();
+    drop(w);
+    assert!(
+        child.wait().unwrap().success(),
+        "sh cannot write {}: the stand-in is never exec'd",
+        path.display()
     );
 }
 
@@ -68,18 +92,15 @@ impl Fixture {
         let bin = d.join("bin");
         fs::create_dir_all(&bin).unwrap();
         fs::write(d.join("refuse"), format!("{}\n", refuse.join("\n"))).unwrap();
-        // The script is written and closed here, and only ever exec'd afterwards: a writer still open on
-        // the file would make the exec fail with "Text file busy".
+        // The stand-in goes in through `write_exec`, never from this thread: it is exec'd by the step.
         let stub = bin.join("diffgate");
-        fs::write(
+        write_exec(
             &stub,
-            format!(
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{d}/argv'\nfor r in $(cat '{d}/refuse'); do\n  ok=0\n  prev=\n  for a in \"$@\"; do\n    if [ \"$prev\" = '--allow' ]; then\n      case $a in \"$r\"=*) ok=1 ;; esac\n    fi\n    prev=$a\n  done\n  if [ \"$ok\" != 1 ]; then\n    echo \"stub-diffgate: $r is refused\" >&2\n    exit 1\n  fi\ndone\nexit 0\n",
                 d = d.display()
             ),
-        )
-        .unwrap();
-        Command::new("chmod").arg("+x").arg(&stub).status().unwrap();
+        );
         Fixture { d, repo, bin }
     }
 
