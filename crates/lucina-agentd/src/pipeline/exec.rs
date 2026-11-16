@@ -1057,10 +1057,13 @@ mod tests {
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let ran = root.join("cargo-ran");
-        // Mode 0o755 is part of this: a shadow without the execute bit is skipped by the shell's
-        // PATH search, and the machine's cargo then answers the gate instead. The helper sets it
-        // absolutely (not `chmod +x`, whose `+` form the umask filters) and returns only when the
-        // script can actually be exec'd, whatever the other test threads are forking.
+        // Mode 0o755 is part of this: a shadow the shell cannot exec is not a shadow that fails,
+        // it is a shadow that is *skipped* — the PATH search moves on and the machine's own cargo
+        // answers both gate runs in no time, which is the outcome that looked unexplainable.
+        // Un-executable covers a missing execute bit (`chmod +x` lets the umask eat it) and an
+        // inode another process still holds open for writing (ETXTBSY); the helper sets the mode
+        // absolutely and returns only when the script can actually be exec'd, whatever the other
+        // test threads are forking.
         write_exec(
             &bin.join("cargo"),
             &format!(
