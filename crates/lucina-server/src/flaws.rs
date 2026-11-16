@@ -737,7 +737,7 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
                 // An agent in error, idle or closed: what it answered says whether the work can be
                 // handed to another agent, or the triage ends here.
                 let error = hands.agent_error(&agent).await;
-                if error.as_deref().is_some_and(|e| is_limit(e)) {
+                if error.as_deref().is_some_and(is_limit) {
                     let e = error.unwrap_or_default();
                     // Triage keeps to the cheap end of the chain; the step that ran is the one
                     // out of quota, not always the first.
