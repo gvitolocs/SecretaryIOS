@@ -48,7 +48,9 @@ pub fn is_juno_tool(name: &str) -> bool {
 /// behaviour: a card on every call, never preapproved) is on when
 /// `$HOME/.config/lucina-agentd/juno-decide.ask` exists or `JUNO_DECIDE_ASK=1`.
 pub fn juno_ask_mode() -> bool {
-    let file = home().join(".config/lucina-agentd/juno-decide.ask").exists();
+    let file = home()
+        .join(".config/lucina-agentd/juno-decide.ask")
+        .exists();
     ask_mode_from(
         std::env::var_os("JUNO_DECIDE_ASK")
             .as_deref()
@@ -512,12 +514,13 @@ pub async fn handle(msg: Value) -> Option<Value> {
 
 /// Serve stdio until EOF (the shared loop in `mcp.rs`).
 pub async fn serve() -> std::io::Result<()> {
-    crate::mcp::serve_stdio(|msg| handle(msg)).await
+    crate::mcp::serve_stdio(handle).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::write_exec;
 
     #[test]
     fn ask_mode_switch() {
@@ -525,8 +528,14 @@ mod tests {
         assert!(ask_mode_from(Some("1"), false));
         assert!(!ask_mode_from(Some("0"), false));
         assert!(!ask_mode_from(Some("true"), false), "only exactly `1`");
-        assert!(ask_mode_from(None, true), "the switch file alone turns ask mode on");
-        assert!(ask_mode_from(Some("0"), true), "the switch file wins over `JUNO_DECIDE_ASK=0`");
+        assert!(
+            ask_mode_from(None, true),
+            "the switch file alone turns ask mode on"
+        );
+        assert!(
+            ask_mode_from(Some("0"), true),
+            "the switch file wins over `JUNO_DECIDE_ASK=0`"
+        );
     }
 
     #[test]
@@ -692,7 +701,7 @@ mod tests {
 
     #[test]
     fn redaction() {
-        let out = "token sec_AbCdEfGhIjKlMnOp1234 here\nsk-abcdefghijklmnopqrstuvwxyz1234\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----\nok";
+        let out = "token sec_AbCdEfGhIjKlMnOp1234 here\nsk-abcdefghijklmnopqrstuvwxyz1234\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----\nok"; // gitleaks:allow
         let r = redact(out);
         assert_eq!(r, "token [redacted] here\n[redacted]\n[redacted]\nok");
         assert_eq!(redact("sec_short"), "sec_short", "too short to be a secret");
@@ -755,53 +764,38 @@ mod tests {
         ));
         // A hook that approves.
         let hook = decide_path_at(home);
-        std::fs::write(&hook, "#!/bin/sh\ncat >/dev/null\necho approve\n").unwrap();
-        make_executable(&hook);
+        write_exec(&hook, "#!/bin/sh\ncat >/dev/null\necho approve\n");
         assert!(matches!(
             decide(home, "ls", Some("agent-1"), 60).await,
             Decide::Approved
         ));
         // A hook that refuses with a message.
-        std::fs::write(
+        write_exec(
             &hook,
             "#!/bin/sh\ncat >/dev/null\necho 'no, not that one'\nexit 1\n",
-        )
-        .unwrap();
-        make_executable(&hook);
+        );
         match decide(home, "ls", None, 60).await {
             Decide::Refused(m) => assert_eq!(m, "no, not that one"),
             other => panic!("expected refusal, got {other:?}"),
         }
         // A non-executable hook is not configured.
         std::fs::write(&hook, "#!/bin/sh\necho approve\n").unwrap();
-        match std::fs::metadata(&hook) {
-            Ok(m) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(
-                        &hook,
-                        std::fs::Permissions::from_mode(m.permissions().mode() & !0o111),
-                    )
-                    .unwrap();
-                }
+        if let Ok(m) = std::fs::metadata(&hook) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &hook,
+                    std::fs::Permissions::from_mode(m.permissions().mode() & !0o111),
+                )
+                .unwrap();
             }
-            Err(_) => {}
         }
         assert!(matches!(
             decide(home, "ls", None, 60).await,
             Decide::NotConfigured
         ));
     }
-
-    #[cfg(unix)]
-    fn make_executable(p: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[cfg(not(unix))]
-    fn make_executable(_p: &Path) {}
 
     #[tokio::test]
     async fn run_call_refuses_before_ssh() {

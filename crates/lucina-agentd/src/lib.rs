@@ -60,6 +60,12 @@ pub mod terminals;
 pub mod trunks;
 pub mod workspaces;
 
+/// Tests that write a file they go on to execute; see the module for why that needs care.
+/// Compiled into the unit tests here and, through `tests/common/mod.rs`, into the integration
+/// tests; never part of the library.
+#[cfg(test)]
+mod testutil;
+
 /// RFC 3339 with milliseconds and `Z`, as JavaScript's `Date.toISOString()`.
 pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
