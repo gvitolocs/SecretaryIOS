@@ -179,14 +179,9 @@ impl Exec {
             self.say("cannot run: the job log could not be duplicated for the command's output");
             return false;
         };
-        let status = Command::new("timeout")
-            .args([
-                "--kill-after=30s",
-                &format!("{}m", timeout_min.max(1)),
-                "bash",
-                "-c",
-                cmd,
-            ])
+        let limit = format!("{}m", timeout_min.max(1));
+        let mut run = Command::new("timeout");
+        run.args(["--kill-after=30s", &limit, "bash", "-c", cmd])
             .current_dir(cwd)
             .env("PATH", &self.path)
             // The gate runs with exactly the PATH above. A shell init hook left in the
@@ -206,8 +201,16 @@ impl Exec {
             .envs(self.gate_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
-            .stderr(Stdio::from(err))
-            .status();
+            .stderr(Stdio::from(err));
+        // An exported shell function travels in the environment as BASH_FUNC_<name>%%, and bash
+        // resolves it before PATH: a gate command `cargo test` would then run whoever exported
+        // a cargo wrapper, not what the PATH the job built says. Drop them like BASH_ENV above.
+        for k in std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()) {
+            if k.starts_with("BASH_FUNC_") {
+                run.env_remove(k);
+            }
+        }
+        let status = run.status();
         match status {
             Ok(s) if s.success() => true,
             Ok(s) => {
