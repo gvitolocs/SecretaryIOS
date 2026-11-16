@@ -19,6 +19,8 @@ Run it before you commit. It checks only what the change touched, against `--bas
 
 A missing tool or a skipped step is printed as skipped, never counted as passed. Older rustfmt and Clippy findings in files you did not touch do not fail the loop; findings in a file you touched do, even if they are old.
 
+With `--merge-gate` the `diffgate` step honours the lead's waivers: it reads `LAGENT_ALLOW`, the entries of `lagent merge --allow RULE=reason`, and passes each one that is not one of lagent's own rules (`gate-change`, `spec-change`) to diffgate as `--allow RULE=reason`, printing every waiver it takes as `waived: <rule> = <reason>` and counting them on the step's line. Without `--merge-gate` the variable is ignored and the step says so, so neither a worker nor a lane verify step can waive diffgate for itself; an entry that is not `RULE=reason` fails the step and is named.
+
 Every step runs in a capped scope: 8 GiB, 4 CPUs, at most 256 tasks, its own time limit. All worktrees share one Cargo target, `~/.cache/lucina-check-target` (the one LucinaOS uses), so the loop adds no large target directory, and it refuses to build with under 20 GiB free. The launcher `tools/ci/lucina-ci` builds apart, in the small `~/.cache/secretary-ci-tool`, because LucinaOS's launcher has the same package name.
 
 Measured on nezopt, 2026-11-10, on this CI change (25 files, the launcher crate, scripts and workflow): 24 s, 8 steps passed, the 55 reachable proofs left to GitHub.
