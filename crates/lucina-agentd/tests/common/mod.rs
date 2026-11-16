@@ -33,7 +33,9 @@ impl Guard {
     /// SIGTERM the group, then wait up to `limit`; returns the exit code.
     pub fn terminate(&mut self, limit: Duration) -> Option<i32> {
         let child = self.child.as_mut()?;
-        let _ = Command::new("kill").args(["-s", "TERM", "--", &format!("-{}", child.id())]).status();
+        let _ = Command::new("kill")
+            .args(["-s", "TERM", "--", &format!("-{}", child.id())])
+            .status();
         let deadline = Instant::now() + limit;
         while Instant::now() < deadline {
             if let Ok(Some(status)) = child.try_wait() {
@@ -49,7 +51,9 @@ impl Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = Command::new("kill").args(["-s", "KILL", "--", &format!("-{}", child.id())]).status();
+            let _ = Command::new("kill")
+                .args(["-s", "KILL", "--", &format!("-{}", child.id())])
+                .status();
             let _ = child.wait();
         }
     }
@@ -81,12 +85,18 @@ impl Daemon {
 
     /// Stop and start again on the same state.
     pub fn restart(&mut self) {
-        assert_eq!(self.guard.terminate(Duration::from_secs(5)), Some(0), "clean exit on SIGTERM");
+        assert_eq!(
+            self.guard.terminate(Duration::from_secs(5)),
+            Some(0),
+            "clean exit on SIGTERM"
+        );
         self.guard = spawn_daemon(self.dir.path());
     }
 
     pub fn lagent(&self, args: &[&str]) -> Run {
-        run(Command::new(LAGENT).args(args).env("LUCINA_AGENTD_SOCKET", self.socket()))
+        run(Command::new(LAGENT)
+            .args(args)
+            .env("LUCINA_AGENTD_SOCKET", self.socket()))
     }
 
     /// `lagent <args> --json`, parsed.
@@ -95,7 +105,8 @@ impl Daemon {
         a.push("--json");
         let r = self.lagent(&a);
         assert_eq!(r.code, 0, "lagent {args:?} failed: {}", r.stderr);
-        serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("lagent {args:?}: {e}: {}", r.stdout))
+        serde_json::from_str(&r.stdout)
+            .unwrap_or_else(|e| panic!("lagent {args:?}: {e}: {}", r.stdout))
     }
 }
 
@@ -107,21 +118,33 @@ pub fn spawn_daemon_env(dir: &Path, env: &[(&str, String)]) -> Guard {
     let socket = dir.join("agentd.sock");
     let child = Command::new(AGENTD)
         .envs(env.iter().map(|(k, v)| (k.to_string(), v.clone())))
-        .args(["--state-dir", &dir.join("state").display().to_string(), "--socket", &socket.display().to_string()])
+        .args([
+            "--state-dir",
+            &dir.join("state").display().to_string(),
+            "--socket",
+            &socket.display().to_string(),
+        ])
         .arg("--no-real-providers")
         .env("LUCINA_AGENTD_DEV", "1")
         .env("LUCINA_AGENTD_SWEEP_IDLE_SECS", "0")
         .env("RUST_LOG", "warn")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(std::fs::File::create(dir.join("agentd.log")).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
+        .stderr(
+            std::fs::File::create(dir.join("agentd.log"))
+                .map(Stdio::from)
+                .unwrap_or_else(|_| Stdio::null()),
+        )
         .process_group(0)
         .spawn()
         .expect("spawn lucina-agentd");
     let guard = Guard { child: Some(child) };
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() {
-        assert!(Instant::now() < deadline, "lucina-agentd did not create its socket");
+        assert!(
+            Instant::now() < deadline,
+            "lucina-agentd did not create its socket"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     guard

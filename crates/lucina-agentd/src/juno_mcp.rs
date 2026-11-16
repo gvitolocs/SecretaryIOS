@@ -48,7 +48,9 @@ pub fn is_juno_tool(name: &str) -> bool {
 /// behaviour: a card on every call, never preapproved) is on when
 /// `$HOME/.config/lucina-agentd/juno-decide.ask` exists or `JUNO_DECIDE_ASK=1`.
 pub fn juno_ask_mode() -> bool {
-    let file = home().join(".config/lucina-agentd/juno-decide.ask").exists();
+    let file = home()
+        .join(".config/lucina-agentd/juno-decide.ask")
+        .exists();
     ask_mode_from(
         std::env::var_os("JUNO_DECIDE_ASK")
             .as_deref()
@@ -526,8 +528,14 @@ mod tests {
         assert!(ask_mode_from(Some("1"), false));
         assert!(!ask_mode_from(Some("0"), false));
         assert!(!ask_mode_from(Some("true"), false), "only exactly `1`");
-        assert!(ask_mode_from(None, true), "the switch file alone turns ask mode on");
-        assert!(ask_mode_from(Some("0"), true), "the switch file wins over `JUNO_DECIDE_ASK=0`");
+        assert!(
+            ask_mode_from(None, true),
+            "the switch file alone turns ask mode on"
+        );
+        assert!(
+            ask_mode_from(Some("0"), true),
+            "the switch file wins over `JUNO_DECIDE_ASK=0`"
+        );
     }
 
     #[test]
