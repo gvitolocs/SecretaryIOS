@@ -745,3 +745,81 @@ async fn the_board_measures_a_worktree_with_no_base_against_the_local_trunk() {
     );
     assert_eq!(row["state"], "merged");
 }
+
+/// A repo the table does not mark local lands through its remote: a trunk the remote does not
+/// carry is a refused merge, and nothing moves anywhere.
+#[tokio::test]
+async fn a_merge_to_a_trunk_the_remote_does_not_carry_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Plain", "true");
+    let origin = root.join("Plain.git");
+    let m = manager(&root);
+    let (task, w) = m
+        .start_task(StartTask {
+            title: "Add b".into(),
+            repo: Some(repo.display().to_string()),
+            ..StartTask::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(task.trunk, "main", "the branch origin does have");
+    let wt = PathBuf::from(&w.cwd);
+    git(&wt, &["config", "user.email", "t@t"]);
+    git(&wt, &["config", "user.name", "t"]);
+    let head = commit(&wt, "b.txt", "b\n", "b");
+    let rules = "trunk = \"release\"\n[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"g\"\nrun = \"true\"\n";
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    // The trunk's file now names `release`, which the remote never gets: only a local branch of
+    // that name exists, and a local branch is not where this merge may land.
+    commit(
+        &repo,
+        ".lucina/pipeline.toml",
+        rules,
+        "the trunk moves to release",
+    );
+    let main = git(&repo, &["rev-parse", "main"]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["branch", "release", &main_before]);
+    let job = m
+        .queue_merge(MergeRequest {
+            workspace: w.workspace_id.clone(),
+            ..MergeRequest::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(job.spec.trunk, "release");
+    assert_eq!(job.spec.remote.as_deref(), Some("origin"));
+    let done = run_until_done(&m, &job.job_id).await;
+    let out = done.outcome.clone().unwrap();
+    assert_eq!(done.state, JobState::Failed, "{done:?}");
+    assert_eq!(out.code, "FETCH_FAILED", "{out:?}");
+    assert!(
+        out.message.contains("origin/release does not exist"),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message.contains("the remote does not carry the trunk"),
+        "{}",
+        out.message
+    );
+    assert!(out.landed.is_none(), "nothing landed: {out:?}");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), main, "main unmoved");
+    assert_eq!(
+        git(&origin, &["rev-parse", "main"]),
+        main,
+        "nothing was pushed"
+    );
+    assert!(
+        git(&origin, &["branch", "--list", "release"]).is_empty(),
+        "origin still has no release"
+    );
+    assert_eq!(
+        git(&repo, &["rev-parse", "release"]),
+        main_before,
+        "the local branch of the trunk's name was not landed on either"
+    );
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), head, "the work is kept");
+}
