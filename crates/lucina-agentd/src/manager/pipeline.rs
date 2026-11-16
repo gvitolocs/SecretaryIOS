@@ -14,9 +14,8 @@ use serde_json::{json, Value};
 
 use super::{Manager, ManagerError};
 use crate::now_iso;
-use crate::pipeline::{
-    self, repo::Rules, Job, JobKind, JobState, Lease, Outcome, Pipeline, Spec, Task,
-};
+use crate::pipeline::{self, Job, JobKind, JobState, Lease, Outcome, Pipeline, Spec, Task};
+use crate::trunks::{self, Trunk};
 use crate::workspaces::{git, procs, CreateWorkspace, WsError};
 
 /// How long a lease lasts unless asked otherwise, and at most.
@@ -110,25 +109,6 @@ pub struct ReleaseRequest {
     pub reason: Option<String>,
 }
 
-/// What the pipeline knows about a repo.
-#[derive(Debug, Clone)]
-struct RepoInfo {
-    root: PathBuf,
-    name: String,
-    remote: Option<String>,
-    trunk: String,
-}
-
-impl RepoInfo {
-    /// The ref worktrees branch off and merges land on.
-    fn base_ref(&self) -> String {
-        match &self.remote {
-            Some(r) => format!("{r}/{}", self.trunk),
-            None => self.trunk.clone(),
-        }
-    }
-}
-
 fn default_repo() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     format!("{home}/Projects/Lucina/SecretaryIOS")
@@ -138,56 +118,11 @@ fn invalid(m: impl Into<String>) -> ManagerError {
     ManagerError::Invalid(m.into())
 }
 
-async fn repo_info(path: &Path) -> Result<RepoInfo, ManagerError> {
-    let info = git::info(path).await;
-    let root = info
-        .main_root
-        .clone()
-        .or_else(|| info.repo_root().map(Path::to_path_buf))
-        .ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))?;
-    let name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let remote = git::read(&root, &["remote", "get-url", "origin"])
-        .await
-        .map(|_| "origin".to_string());
-    let default = match &remote {
-        Some(r) => git::read(
-            &root,
-            &[
-                "symbolic-ref",
-                "--quiet",
-                "--short",
-                &format!("refs/remotes/{r}/HEAD"),
-            ],
-        )
-        .await
-        .map(|s| s.trim_start_matches(&format!("{r}/")).to_string()),
-        None => None,
-    };
-    let default = match default {
-        Some(d) => d,
-        None if git::branch_exists(&root, "main").await => "main".into(),
-        None if git::branch_exists(&root, "master").await => "master".into(),
-        None => "main".into(),
-    };
-    // `.lucina/pipeline.toml` on the default branch may name another trunk.
-    let at = match &remote {
-        Some(r) => format!("{r}/{default}"),
-        None => default.clone(),
-    };
-    let trunk = git::read(&root, &["show", &format!("{at}:{}", pipeline::repo::FILE)])
-        .await
-        .and_then(|t| Rules::parse(&t).ok())
-        .and_then(|r| r.trunk)
-        .unwrap_or(default);
-    Ok(RepoInfo {
-        root,
-        name,
-        remote,
-        trunk,
-    })
+/// What the pipeline knows about the repo around `path`: where it is, and its trunk with the
+/// remote that has it ([`Trunk`], decided by [`crate::trunks`]).
+fn repo_info(path: &Path) -> Result<Trunk, ManagerError> {
+    trunks::resolve(path)
+        .ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))
 }
 
 fn slug(title: &str) -> String {
@@ -250,7 +185,7 @@ impl Manager {
         if req.title.trim().is_empty() {
             return Err(invalid("A task needs a title"));
         }
-        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo))).await?;
+        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo)))?;
         if let Some(r) = &repo.remote {
             git::must(&repo.root, &["fetch", "-q", r])
                 .await
@@ -280,7 +215,7 @@ impl Manager {
             title: req.title.trim().to_string(),
             repo: repo.root.display().to_string(),
             branch: w.branch.clone().unwrap_or_default(),
-            trunk: repo.trunk,
+            trunk: repo.branch,
             owner: req.owner,
             session: req.session,
             flaw: req.flaw,
@@ -305,7 +240,7 @@ impl Manager {
         req: AdoptTask,
     ) -> Result<(Task, WorkspaceRecord), ManagerError> {
         let dir = git::canon(Path::new(&req.path));
-        let repo = repo_info(&dir).await?;
+        let repo = repo_info(&dir)?;
         let w = match self.workspaces().find_by_cwd(&dir.display().to_string()) {
             Some(w) => w,
             None => {
@@ -338,7 +273,7 @@ impl Manager {
                 .unwrap_or_else(|| w.display_name.clone()),
             repo: repo.root.display().to_string(),
             branch: w.branch.clone().unwrap_or_default(),
-            trunk: repo.trunk,
+            trunk: repo.branch,
             owner: req.owner,
             session: req.session,
             flaw: None,
@@ -414,11 +349,11 @@ impl Manager {
             .branch
             .or(w.branch.clone())
             .ok_or_else(|| invalid("The workspace is on a detached HEAD; check out its branch"))?;
-        let repo = repo_info(&dir).await?;
-        if branch == repo.trunk {
+        let repo = repo_info(&dir)?;
+        if branch == repo.branch {
             return Err(invalid(format!(
                 "The workspace is on {} itself",
-                repo.trunk
+                repo.branch
             )));
         }
         if git::is_dirty(&dir).await {
@@ -455,7 +390,7 @@ impl Manager {
             job_id: id.clone(),
             kind: JobKind::Merge,
             repo: repo.root.display().to_string(),
-            trunk: repo.trunk.clone(),
+            trunk: repo.branch.clone(),
             remote: repo.remote.clone(),
             work_root: self
                 .pipeline()
@@ -521,7 +456,7 @@ impl Manager {
         {
             return Err(invalid(format!("Invalid runtime: {runtime}")));
         }
-        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo))).await?;
+        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo)))?;
         if let Some(j) = self.pipeline().active_jobs().into_iter().find(|j| {
             j.kind == JobKind::Deploy
                 && j.runtime.as_deref() == Some(runtime.as_str())
@@ -534,7 +469,7 @@ impl Manager {
             job_id: id.clone(),
             kind: JobKind::Deploy,
             repo: repo.root.display().to_string(),
-            trunk: repo.trunk.clone(),
+            trunk: repo.branch.clone(),
             remote: repo.remote.clone(),
             work_root: self
                 .pipeline()
@@ -915,7 +850,7 @@ impl Manager {
             .archive_workspace(
                 ws,
                 Trigger::Merged,
-                Some(format!("merged into main by {}", job.job_id)),
+                Some(format!("merged into {} by {}", job.spec.trunk, job.job_id)),
             )
             .await
         {
@@ -1045,7 +980,13 @@ impl Manager {
                 .iter()
                 .find(|j| j.workspace_id.as_deref() == Some(w.workspace_id.as_str()));
             let dirty = git::is_dirty(&dir).await;
-            let base = w.base_ref.clone().unwrap_or_else(|| "origin/main".into());
+            // With no stored base (a worktree made by hand), the repo's own trunk; a directory
+            // that is not a repo has none, and `ahead` stays unknown as before.
+            let base = w.base_ref.clone().unwrap_or_else(|| {
+                repo_info(&dir)
+                    .map(|r| r.base_ref())
+                    .unwrap_or_else(|_| "origin/main".into())
+            });
             let ahead = git::ahead_behind(&dir, &base).await;
             let idle = idle_secs(&dir).await;
             let underway = git::in_progress(&dir).await;
