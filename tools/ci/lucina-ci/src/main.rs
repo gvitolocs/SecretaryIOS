@@ -754,7 +754,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// One step of `check-fast` under its own scope. Returns (passed, seconds).
+/// One step of `check-fast` under its own scope. Returns (passed, seconds). `waived` are the lead's
+/// waivers taken for this step: counted on its line, each one printed under it.
+#[allow(clippy::too_many_arguments)]
 fn fast_step(
     name: &str,
     command: &str,
@@ -763,6 +765,7 @@ fn fast_step(
     b: &runner::Budget,
     tc: &runner::Toolchain,
     out: &str,
+    waived: &[String],
 ) -> Result<(bool, f64), String> {
     let unit = Unit {
         name: format!("fast/{name}"),
@@ -778,9 +781,17 @@ fn fast_step(
     let secs = t.elapsed().as_secs_f64();
     let ok = code == 0;
     println!(
-        "{} {name:<28} {secs:>6.1}s",
-        if ok { "ok  " } else { "FAIL" }
+        "{} {name:<28} {secs:>6.1}s{}",
+        if ok { "ok  " } else { "FAIL" },
+        if waived.is_empty() {
+            String::new()
+        } else {
+            format!("  ({} waived)", waived.len())
+        }
     );
+    for w in waived {
+        println!("    waived: {w}");
+    }
     if !ok {
         let t = fs::read_to_string(
             Path::new(out).join(format!("fast__{}.log", name.replace('/', "__"))),
@@ -823,9 +834,10 @@ fn gated_step(
     b: &runner::Budget,
     tc: &runner::Toolchain,
     out: &str,
+    waived: &[String],
 ) -> Result<Option<String>, String> {
     let t = if merge_gate { t.min(cap) } else { t };
-    if fast_step(name, cmd, kind, t, b, tc, out)?.0 {
+    if fast_step(name, cmd, kind, t, b, tc, out, waived)?.0 {
         return Ok(None);
     }
     let json =
@@ -839,6 +851,63 @@ fn gated_step(
         return Ok(Some(m));
     }
     Ok(Some(name.to_string()))
+}
+
+/// lagent's own `--allow` rules: they waive something of lagent's (a pipeline file, a spec
+/// rewording), never a diffgate rule. This mirrors `is_gate_change` in
+/// crates/lucina-agentd/src/pipeline/repo.rs, which is exactly the set lagent keeps out of the
+/// `--allow` it hands its own diffgate run, so the two diffgate runs of a merge honour the same set.
+const LAGENT_OWN_RULES: &[&str] = &["gate-change", "spec-change"];
+
+fn lagent_own_rule(entry: &str) -> bool {
+    LAGENT_OWN_RULES
+        .iter()
+        .any(|r| entry == *r || entry.strip_prefix(*r).is_some_and(|t| t.starts_with('=')))
+}
+
+/// One diffgate waiver out of `LAGENT_ALLOW`.
+struct Waiver {
+    /// The entry as the lead typed it: what diffgate gets as `--allow`, quoted.
+    entry: String,
+    rule: String,
+    reason: String,
+}
+
+/// The lead's waivers, as `lagent merge` puts them in the environment of every gate command but its
+/// own diffgate: `LAGENT_ALLOW`, one `RULE=reason` entry per line, each as given
+/// (crates/lucina-agentd/src/pipeline/repo.rs `allow_env`). An empty variable or an empty line is no
+/// waiver, one of lagent's own rules is no diffgate waiver, and `Err` names every remaining entry
+/// that is not `RULE=reason`: a typo in a waiver fails the step, it never waives nothing quietly.
+fn lead_waivers(raw: &str) -> Result<Vec<Waiver>, Vec<String>> {
+    let mut taken = Vec::new();
+    let mut malformed = Vec::new();
+    for line in raw.lines() {
+        let entry = line.trim();
+        if entry.is_empty() || lagent_own_rule(entry) {
+            continue;
+        }
+        match entry.split_once('=') {
+            Some((rule, reason))
+                if !rule.is_empty()
+                    && !reason.trim().is_empty()
+                    && rule
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') =>
+            {
+                taken.push(Waiver {
+                    entry: entry.to_string(),
+                    rule: rule.to_string(),
+                    reason: reason.trim().to_string(),
+                })
+            }
+            _ => malformed.push(entry.to_string()),
+        }
+    }
+    if malformed.is_empty() {
+        Ok(taken)
+    } else {
+        Err(malformed)
+    }
 }
 
 /// `check-fast [--base REF] [--proofs] [--all-proofs] [--mutants] [--no-build]`
@@ -902,23 +971,50 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 kind: &str,
                 t: u64,
                 tc: &runner::Toolchain,
+                waived: &[String],
                 failed: &mut Vec<String>|
      -> Result<(), String> {
-        if let Some(f) = gated_step(name, cmd, kind, t, merge_gate, cap, &b, tc, &out)? {
+        if let Some(f) = gated_step(name, cmd, kind, t, merge_gate, cap, &b, tc, &out, waived)? {
             failed.push(f);
         }
         Ok(())
     };
 
     if tool_exists("diffgate") {
-        step(
-            "diffgate",
-            &format!("diffgate --repo . --base {base}"),
-            "script",
-            60,
-            &none,
-            &mut failed,
-        )?;
+        // `lagent merge --allow RULE=reason` hands the waiver to its own diffgate as `--allow` and to every
+        // other gate command in `LAGENT_ALLOW`, and this gate command runs diffgate a second time over the
+        // same diff. Without the same entries here a waiver could never get through a SecretaryIOS merge:
+        // it passes lagent's diffgate and fails this one. Only the merge gate reads the variable — an
+        // exported `LAGENT_ALLOW` must not let a worker or a lane verify step waive diffgate for itself.
+        let raw = std::env::var("LAGENT_ALLOW").unwrap_or_default();
+        let mut dg = format!("diffgate --repo . --base {base}");
+        let mut waived: Vec<String> = Vec::new();
+        let mut refused: Vec<String> = Vec::new();
+        if merge_gate {
+            match lead_waivers(&raw) {
+                Ok(list) => {
+                    for w in list {
+                        dg.push_str(&format!(" --allow {}", shell_quote(&w.entry)));
+                        waived.push(format!("{} = {}", w.rule, w.reason));
+                    }
+                }
+                Err(bad) => refused = bad,
+            }
+        } else if !raw.is_empty() {
+            println!(
+                "diffgate: LAGENT_ALLOW is set but ignored: only the merge gate takes a lead's allows"
+            );
+        }
+        if refused.is_empty() {
+            step("diffgate", &dg, "script", 60, &none, &waived, &mut failed)?;
+        } else {
+            for entry in &refused {
+                println!(
+                    "diffgate: LAGENT_ALLOW entry {entry:?} is not RULE=reason: nothing is waived and diffgate does not run"
+                );
+            }
+            failed.push("diffgate".into());
+        }
     } else {
         skipped.push("diffgate: not installed here".into());
     }
@@ -937,7 +1033,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     }
     if !a.has("--no-build") {
         for (name, cmd, t) in fast::cargo_steps(&owners, &existing) {
-            step(&name, &cmd, "script", t, &none, &mut failed)?;
+            step(&name, &cmd, "script", t, &none, &[], &mut failed)?;
         }
     } else {
         skipped.push("build, clippy and unit tests: --no-build".into());
@@ -955,6 +1051,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 "script",
                 30,
                 &none,
+                &[],
                 &mut failed,
             )?;
         } else {
@@ -968,6 +1065,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             "script",
             30,
             &none,
+            &[],
             &mut failed,
         )?;
     }
@@ -987,7 +1085,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             let cmd = format!(
                 "for f in {list}; do gitleaks dir --no-banner --redact {config} \"$f\" || exit 1; done"
             );
-            step("secrets", &cmd, "script", 60, &none, &mut failed)?;
+            step("secrets", &cmd, "script", 60, &none, &[], &mut failed)?;
         }
     } else {
         skipped.push("secret scan: gitleaks not installed here".into());
@@ -1005,6 +1103,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             "script",
             30,
             &none,
+            &[],
             &mut failed,
         )?;
     } else {
@@ -1062,7 +1161,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                     } else {
                         "script"
                     };
-                    if !fast_step(&unit_name, &cmd, kind, 120, &b, &tc, &out)?.0 {
+                    if !fast_step(&unit_name, &cmd, kind, 120, &b, &tc, &out, &[])?.0 {
                         let json = fs::read_to_string(
                             Path::new(&out).join(format!("fast__{unit_name}.json")),
                         )
