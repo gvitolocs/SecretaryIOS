@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn redaction() {
-        let out = "token sec_AbCdEfGhIjKlMnOp1234 here\nsk-abcdefghijklmnopqrstuvwxyz1234\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----\nok";
+        let out = "token sec_AbCdEfGhIjKlMnOp1234 here\nsk-abcdefghijklmnopqrstuvwxyz1234\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----\nok"; // gitleaks:allow
         let r = redact(out);
         assert_eq!(r, "token [redacted] here\n[redacted]\n[redacted]\nok");
         assert_eq!(redact("sec_short"), "sec_short", "too short to be a secret");
