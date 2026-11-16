@@ -514,7 +514,7 @@ pub async fn handle(msg: Value) -> Option<Value> {
 
 /// Serve stdio until EOF (the shared loop in `mcp.rs`).
 pub async fn serve() -> std::io::Result<()> {
-    crate::mcp::serve_stdio(|msg| handle(msg)).await
+    crate::mcp::serve_stdio(handle).await
 }
 
 #[cfg(test)]
@@ -780,19 +780,16 @@ mod tests {
         }
         // A non-executable hook is not configured.
         std::fs::write(&hook, "#!/bin/sh\necho approve\n").unwrap();
-        match std::fs::metadata(&hook) {
-            Ok(m) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(
-                        &hook,
-                        std::fs::Permissions::from_mode(m.permissions().mode() & !0o111),
-                    )
-                    .unwrap();
-                }
+        if let Ok(m) = std::fs::metadata(&hook) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &hook,
+                    std::fs::Permissions::from_mode(m.permissions().mode() & !0o111),
+                )
+                .unwrap();
             }
-            Err(_) => {}
         }
         assert!(matches!(
             decide(home, "ls", None, 60).await,
