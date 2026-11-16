@@ -17,7 +17,7 @@ use std::process::Command;
 
 use crate::pipeline::repo::{Rules, FILE as PIPELINE_FILE};
 
-/// The repos whose trunk [`TRUNKS`] decides, whatever their remote or their pipeline file says.
+/// The repos whose trunk this table decides, whatever their remote or their pipeline file says.
 ///
 /// **This table decides where merges land.** An entry moves a repo's merges to another branch,
 /// and it changes only through a SecretaryIOS merge and an agentd deploy: that is the only way
@@ -28,8 +28,8 @@ use crate::pipeline::repo::{Rules, FILE as PIPELINE_FILE};
 /// fork's work is on the local branch `lucinanet`, which has no branch on origin.
 const TRUNKS: &[(&str, &str)] = &[("LucinaNet-servo", "lucinanet")];
 
-/// The trunk [`TRUNKS`] gives a repo whose checkout is named `name`.
-pub fn table_trunk(name: &str) -> Option<&'static str> {
+/// The trunk the table gives a repo whose checkout is named `name`.
+fn table_trunk(name: &str) -> Option<&'static str> {
     TRUNKS.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
 }
 
