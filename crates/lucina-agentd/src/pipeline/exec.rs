@@ -908,6 +908,7 @@ fn blocking_files(err: &str) -> Vec<String> {
 mod tests {
     use super::super::{JobKind, Spec};
     use super::*;
+    use crate::testutil::write_exec;
 
     fn git(dir: &Path, args: &[&str]) -> String {
         let o = Command::new("git")
@@ -1056,22 +1057,17 @@ mod tests {
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let ran = root.join("cargo-ran");
-        std::fs::write(
-            bin.join("cargo"),
-            format!(
+        // Mode 0o755 is part of this: a shadow without the execute bit is skipped by the shell's
+        // PATH search, and the machine's cargo then answers the gate instead. The helper sets it
+        // absolutely (not `chmod +x`, whose `+` form the umask filters) and returns only when the
+        // script can actually be exec'd, whatever the other test threads are forking.
+        write_exec(
+            &bin.join("cargo"),
+            &format!(
                 "#!/bin/sh\nif [ -s {r} ]; then exit 0; fi\necho once >>{r}\nexit 1\n",
                 r = ran.display()
             ),
-        )
-        .unwrap();
-        // The execute bit is set here rather than with `chmod +x`, whose `+` form is filtered by
-        // the umask: a shadow without it is skipped by the shell's PATH search, and the machine's
-        // cargo then answers the gate instead.
-        std::fs::set_permissions(
-            bin.join("cargo"),
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
+        );
         std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n").unwrap();
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "rules"]);
@@ -1083,21 +1079,67 @@ mod tests {
         let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
         x.path = format!("{}:{}", bin.display(), x.path);
         let out = x.merge();
-        assert!(out.ok, "{out:?}");
-        assert!(out.gates[0].flaky);
+        // The job log travels with the messages below: when this fails on a machine nobody is
+        // looking, the gate's own line ("cannot run", "failed: exit 126", "timed out") is what
+        // says which of the two runs broke and how.
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert!(out.gates[0].flaky, "{out:?}\nLOG:\n{log}");
         // Both gate runs went through the shadow, not through a cargo of the machine: it failed
         // once (one line in its state file) and passed on the retry.
         assert_eq!(
             std::fs::read_to_string(&ran).ok().as_deref(),
             Some("once\n"),
-            "{out:?}"
+            "{out:?}\nLOG:\n{log}"
         );
         assert!(
             out.message.contains("flaky, passed on retry: t"),
-            "{}",
+            "{}\nLOG:\n{log}",
             out.message
         );
         assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
+    }
+
+    /// The shape of every stand-in in this crate — write an executable, then exec it — in a loop
+    /// and under load, with three threads in this same process forking children non-stop.
+    /// `write_exec`'s immunity is what the counts in its module docs measure; this is the guard,
+    /// so that a stand-in or the helper going back to a bare `fs::write` shows up here.
+    #[test]
+    fn a_script_written_by_the_helper_runs_under_concurrent_forks() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let hammers: Vec<_> = (0..3)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = Command::new("/bin/true").status();
+                    }
+                })
+            })
+            .collect();
+        let script = dir.path().join("stand-in");
+        for round in 0..120 {
+            write_exec(&script, "#!/bin/sh\necho ran\n");
+            let out = Command::new(&script)
+                .output()
+                .unwrap_or_else(|e| panic!("round {round}: the script would not start: {e}"));
+            assert!(
+                out.status.success(),
+                "round {round}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "ran\n",
+                "round {round}"
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        for h in hammers {
+            let _ = h.join();
+        }
     }
 
     #[test]

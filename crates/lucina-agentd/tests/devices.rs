@@ -3,7 +3,6 @@
 //! were asked. Main installs take only origin/main's tip and are recorded; test builds need
 //! the caller's lease and the owner's own approval; grants follow the lease.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -26,9 +25,12 @@ fn commit(dir: &Path, file: &str, msg: &str) -> String {
     git(dir, &["rev-parse", "HEAD"])
 }
 
+/// The same helper the unit tests use, compiled from one file rather than copied.
+#[path = "../src/testutil.rs"]
+mod testutil;
+
 fn script(path: &Path, body: &str) {
-    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    testutil::write_exec(path, &format!("#!/bin/sh\n{body}\n"));
 }
 
 fn lease(m: &Manager, holder: &str) {

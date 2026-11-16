@@ -11,6 +11,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+/// The same helper the unit tests use, compiled from one file rather than copied.
+#[path = "../../src/testutil.rs"]
+mod testutil;
+#[allow(unused_imports)] // Only the binaries with a stand-in to write reach for it.
+pub use testutil::write_exec;
+
 pub const AGENTD: &str = env!("CARGO_BIN_EXE_lucina-agentd");
 pub const LAGENT: &str = env!("CARGO_BIN_EXE_lagent");
 

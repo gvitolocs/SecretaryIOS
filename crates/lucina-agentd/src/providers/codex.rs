@@ -594,6 +594,7 @@ impl Session for CodexSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::write_exec;
 
     #[test]
     fn maps_command_and_file_items() {
@@ -641,7 +642,6 @@ mod tests {
     /// A stub `codex app-server` that records every request line and answers `initialize` and
     /// `thread/start`/`thread/resume`.
     fn stub(dir: &std::path::Path) -> (PathBuf, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let log = dir.join("requests.jsonl");
         let bin = dir.join("codex");
         let script = format!(
@@ -657,8 +657,7 @@ done
 "#,
             log = log.display()
         );
-        std::fs::write(&bin, script).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_exec(&bin, &script);
         (bin, log)
     }
 

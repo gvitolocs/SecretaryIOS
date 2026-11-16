@@ -518,6 +518,7 @@ pub async fn serve() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::write_exec;
 
     #[test]
     fn ask_mode_switch() {
@@ -755,19 +756,16 @@ mod tests {
         ));
         // A hook that approves.
         let hook = decide_path_at(home);
-        std::fs::write(&hook, "#!/bin/sh\ncat >/dev/null\necho approve\n").unwrap();
-        make_executable(&hook);
+        write_exec(&hook, "#!/bin/sh\ncat >/dev/null\necho approve\n");
         assert!(matches!(
             decide(home, "ls", Some("agent-1"), 60).await,
             Decide::Approved
         ));
         // A hook that refuses with a message.
-        std::fs::write(
+        write_exec(
             &hook,
             "#!/bin/sh\ncat >/dev/null\necho 'no, not that one'\nexit 1\n",
-        )
-        .unwrap();
-        make_executable(&hook);
+        );
         match decide(home, "ls", None, 60).await {
             Decide::Refused(m) => assert_eq!(m, "no, not that one"),
             other => panic!("expected refusal, got {other:?}"),
@@ -793,15 +791,6 @@ mod tests {
             Decide::NotConfigured
         ));
     }
-
-    #[cfg(unix)]
-    fn make_executable(p: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[cfg(not(unix))]
-    fn make_executable(_p: &Path) {}
 
     #[tokio::test]
     async fn run_call_refuses_before_ssh() {

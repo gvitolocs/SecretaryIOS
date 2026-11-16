@@ -40,12 +40,10 @@ impl Repo {
 
 fn tools(dir: &Path) -> Vec<(&'static str, String)> {
     let diffgate = dir.join("fake-diffgate");
-    std::fs::write(
+    common::write_exec(
         &diffgate,
         "#!/bin/sh\n# --repo DIR --base SHA --json\nif grep -rq STUB \"$2\" --exclude-dir=.git; then\n  echo '{\"ok\":false,\"refusals\":[{\"file\":\"a.rs\",\"line\":1,\"rule\":\"code-stub\",\"snippet\":\"STUB\"}]}'; exit 1\nfi\necho '{\"ok\":true,\"refusals\":[]}'\n",
-    )
-    .unwrap();
-    Command::new("chmod").arg("+x").arg(&diffgate).status().unwrap();
+    );
     vec![
         ("LUCINA_AGENTD_DIFFGATE", diffgate.display().to_string()),
         ("LUCINA_AGENTD_JUDGE", r#"if grep -q SUSPICIOUS; then echo '{"suspicious": true, "reasons": ["looks hard-coded"]}'; else echo 'ok {"suspicious": false}'; fi"#.to_string()),

@@ -11,6 +11,10 @@ use lucina_agentd::manager::{AdoptTask, LeaseRequest, Manager, ManagerError, Mer
 use lucina_agentd::pipeline::{Config, JobState};
 use lucina_agentd::store::Store;
 
+/// The same helper the unit tests use, compiled from one file rather than copied.
+#[path = "../src/testutil.rs"]
+mod testutil;
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
     assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
@@ -226,9 +230,7 @@ async fn a_flaw_task_records_its_merge_on_the_flaw() {
     // Stands in for `lucina-rs flaws`: what it was called with goes in a file.
     let calls = root.join("calls.txt");
     let bin = root.join("fake-lucina-rs");
-    std::fs::write(&bin, format!("#!/bin/sh\necho \"$@\" >> {}\n", calls.display())).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    testutil::write_exec(&bin, &format!("#!/bin/sh\necho \"$@\" >> {}\n", calls.display()));
     std::env::set_var("LUCINA_AGENTD_LUCINA_RS", &bin);
     let m = manager(&root);
     let repo = repo_with_gate(&root, "Flawed", "true");

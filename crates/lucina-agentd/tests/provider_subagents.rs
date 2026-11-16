@@ -9,7 +9,6 @@
 mod common;
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -30,8 +29,7 @@ fn fake_claude(dir: &Path, lines: usize) {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("stream.jsonl"), FIXTURE).unwrap();
     let script = format!("#!/bin/sh\nread -r first\nsleep 0.3\nhead -n {lines} \"$(dirname \"$0\")/stream.jsonl\"\nwhile read -r line; do :; done\n");
-    std::fs::write(bin.join("claude"), script).unwrap();
-    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::write_exec(&bin.join("claude"), &script);
 }
 
 /// A daemon with the real providers it finds: only the fake `claude` (`HOME` is empty and
