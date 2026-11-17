@@ -77,6 +77,7 @@ pub mod timeline;
 pub mod title;
 pub mod turn_watch;
 pub mod types;
+pub mod work;
 pub mod workspace;
 pub mod worktree_guard;
 

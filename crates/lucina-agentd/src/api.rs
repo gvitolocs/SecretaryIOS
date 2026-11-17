@@ -43,6 +43,7 @@
 //! The Homelab service catalog (project tree, health, impact, drift): [`catalog`].
 //! Tasks, the merge and deploy queue, device leases and the board: [`pipeline`].
 //! Installs on leased devices (the iPhone) and test-run grants: [`devices`].
+//! Work jobs that run through `lane`: [`work`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
 //! makes a subagent (depth-limited, supervised), its `send` is a queued agent message,
@@ -60,10 +61,10 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
-use serde_json::{json, Value};
 use lucina_agents::external::EventsBody;
 use lucina_agents::stream::Resume;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -71,18 +72,22 @@ use tokio_stream::wrappers::ReceiverStream;
 use lucina_agents::permission_gate::{Origin, Verdict};
 use lucina_agents::PermissionResponse;
 
-use crate::manager::{ActiveTurnBehavior, Caller, CreateRequest, ExternalRequest, Manager, ManagerError, SubagentDirection};
 use crate::journal::{Sequenced, Subscription};
+use crate::manager::{
+    ActiveTurnBehavior, Caller, CreateRequest, ExternalRequest, Manager, ManagerError,
+    SubagentDirection,
+};
 use crate::peer::{self, origin, Peer};
 use crate::workspaces::WsError;
 
-pub mod terminals;
 mod catalog;
 mod devices;
 mod orch;
 mod pipeline;
 mod rewind;
 mod sessions;
+pub mod terminals;
+mod work;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -91,7 +96,9 @@ impl From<ManagerError> for ApiError {
     fn from(e: ManagerError) -> Self {
         let status = match e {
             ManagerError::NotFound(_) => StatusCode::NOT_FOUND,
-            ManagerError::Ambiguous(_) | ManagerError::Invalid(_) | ManagerError::UnknownProvider(_) => StatusCode::BAD_REQUEST,
+            ManagerError::Ambiguous(_)
+            | ManagerError::Invalid(_)
+            | ManagerError::UnknownProvider(_) => StatusCode::BAD_REQUEST,
             ManagerError::Lifecycle(_) => StatusCode::CONFLICT,
             ManagerError::Provider(_) => StatusCode::BAD_GATEWAY,
             ManagerError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -108,8 +115,12 @@ impl From<ManagerError> for ApiError {
             ManagerError::NotOwner(_) => StatusCode::FORBIDDEN,
             ManagerError::CommandNotFound(_) => StatusCode::NOT_FOUND,
             ManagerError::CommandExpired(_) => StatusCode::GONE,
-            ManagerError::DelegationDepth(_) | ManagerError::NotYourAgent(_) | ManagerError::ScheduleForbidden(_) => StatusCode::FORBIDDEN,
-            ManagerError::ScheduleNotFound(_) | ManagerError::SubagentNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::DelegationDepth(_)
+            | ManagerError::NotYourAgent(_)
+            | ManagerError::ScheduleForbidden(_) => StatusCode::FORBIDDEN,
+            ManagerError::ScheduleNotFound(_) | ManagerError::SubagentNotFound(_) => {
+                StatusCode::NOT_FOUND
+            }
             ManagerError::ScheduleConflict(_) => StatusCode::CONFLICT,
             ManagerError::RewindUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ManagerError::RewindTargetNotFound(_) => StatusCode::NOT_FOUND,
@@ -117,6 +128,7 @@ impl From<ManagerError> for ApiError {
             ManagerError::ForkBoundary(_) | ManagerError::Busy(_) => StatusCode::CONFLICT,
             ManagerError::CodexNotAllowed(_) => StatusCode::FORBIDDEN,
             ManagerError::JunoToolRefused(_) => StatusCode::FORBIDDEN,
+            ManagerError::WorkNotFound(_) => StatusCode::NOT_FOUND,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -124,16 +136,24 @@ impl From<ManagerError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({"error": {"code": self.1, "message": self.2}}))).into_response()
+        (
+            self.0,
+            Json(json!({"error": {"code": self.1, "message": self.2}})),
+        )
+            .into_response()
     }
 }
 
 type ApiResult = Result<Json<Value>, ApiError>;
 
 fn to_json<T: serde::Serialize>(v: T) -> ApiResult {
-    serde_json::to_value(v)
-        .map(Json)
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "SERIALIZE".into(), e.to_string()))
+    serde_json::to_value(v).map(Json).map_err(|e| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SERIALIZE".into(),
+            e.to_string(),
+        )
+    })
 }
 
 pub fn router(manager: Manager) -> Router {
@@ -153,9 +173,18 @@ pub fn router(manager: Manager) -> Router {
         .route("/agents/{id}/wait", post(wait))
         .route("/agents/{id}/timeline", get(timeline))
         .route("/agents/{id}/provider-subagents", get(provider_subagents))
-        .route("/agents/{id}/provider-subagents/{sub}", get(provider_subagent))
-        .route("/agents/{id}/provider-subagents/{sub}/timeline", get(provider_subagent_timeline))
-        .route("/agents/{id}/permissions/{request_id}", post(respond_permission))
+        .route(
+            "/agents/{id}/provider-subagents/{sub}",
+            get(provider_subagent),
+        )
+        .route(
+            "/agents/{id}/provider-subagents/{sub}/timeline",
+            get(provider_subagent_timeline),
+        )
+        .route(
+            "/agents/{id}/permissions/{request_id}",
+            post(respond_permission),
+        )
         .route("/permissions", get(permissions).post(request_permission))
         .route("/permissions/{id}", get(permission).post(answer_permission))
         .route("/stream", get(stream))
@@ -167,8 +196,12 @@ pub fn router(manager: Manager) -> Router {
         .merge(catalog::routes())
         .merge(pipeline::routes())
         .merge(devices::routes())
+        .merge(work::routes())
         // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
-        .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
+        .layer(axum::middleware::from_fn_with_state(
+            manager.clone(),
+            terminals::host_proxy,
+        ))
         .with_state(manager)
 }
 
@@ -210,8 +243,16 @@ pub(super) fn quote(text: String) -> String {
     lucina_agents::envelope::quote_reserved(&text, &uuid::Uuid::new_v4().to_string())
 }
 
-async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(body): Json<CreateBody>) -> ApiResult {
-    let CreateBody { mut req, notify_on_finish } = body;
+async fn create(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Json(body): Json<CreateBody>,
+) -> ApiResult {
+    let CreateBody {
+        mut req,
+        notify_on_finish,
+    } = body;
     // Only the owner may run an agent in a main checkout (worktree guard).
     let origin = caller(&m, &peer, &headers);
     if req.allow_main_checkout && !matches!(origin, Origin::Local | Origin::OwnerDevice) {
@@ -222,7 +263,10 @@ async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, 
     // Set here from the origin, never from a body field: only such a run alerts him when it finishes.
     req.labels.remove(crate::manager::STARTED_ON_DEVICE_LABEL);
     if origin == Origin::OwnerDevice {
-        req.labels.insert(crate::manager::STARTED_ON_DEVICE_LABEL.into(), "true".into());
+        req.labels.insert(
+            crate::manager::STARTED_ON_DEVICE_LABEL.into(),
+            "true".into(),
+        );
     }
     req.prompt = req.prompt.map(quote);
     let caller = who(&m, &peer, &headers);
@@ -238,8 +282,14 @@ async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, 
 /// Who is calling, with the agent behind an agent's process.
 pub(super) fn who(m: &Manager, peer: &Peer, headers: &HeaderMap) -> Caller {
     let origin = caller(m, peer, headers);
-    let header = headers.get(peer::ORIGIN_HEADER).and_then(|v| v.to_str().ok());
-    let agent = if origin == Origin::Agent { m.calling_agent(peer.pid) } else { None };
+    let header = headers
+        .get(peer::ORIGIN_HEADER)
+        .and_then(|v| v.to_str().ok());
+    let agent = if origin == Origin::Agent {
+        m.calling_agent(peer.pid)
+    } else {
+        None
+    };
     Caller::from_origin(origin, header, agent)
 }
 
@@ -253,7 +303,13 @@ struct RenameBody {
     title: String,
 }
 
-async fn rename(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<RenameBody>) -> ApiResult {
+async fn rename(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<RenameBody>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     m.may_touch(&who(&m, &peer, &headers), &id)?;
     to_json(m.rename(&id, &body.title)?)
@@ -271,7 +327,9 @@ async fn post_events(
     Json(body): Json<EventsBody>,
 ) -> ApiResult {
     let id = m.resolve(&id)?;
-    let applied = m.post_events(&id, device_of(&m, &peer, &headers).as_deref(), body.events).await?;
+    let applied = m
+        .post_events(&id, device_of(&m, &peer, &headers).as_deref(), body.events)
+        .await?;
     to_json(json!({"agentId": id, "applied": applied}))
 }
 
@@ -286,7 +344,11 @@ async fn ack_command(
     to_json(json!({"agentId": id, "commandId": command_id, "acked": true}))
 }
 
-async fn commands(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap) -> ApiResult {
+async fn commands(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+) -> ApiResult {
     to_json(json!({"commands": m.pending_commands(device_of(&m, &peer, &headers).as_deref())?}))
 }
 
@@ -301,7 +363,13 @@ struct SendBody {
     notify_on_finish: Option<bool>,
 }
 
-async fn send(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<SendBody>) -> ApiResult {
+async fn send(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<SendBody>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     match who(&m, &peer, &headers) {
         Caller::Agent(from) => {
@@ -311,36 +379,60 @@ async fn send(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, he
             m.may_message(&from, &id)?;
             let notify = body.notify_on_finish.unwrap_or(true) && m.is_child_of(&id, &from);
             let message_id = m.send_from_agent(&from, &id, &body.prompt, notify)?;
-            to_json(json!({"agentId": id, "disposition": crate::manager::Disposition::Queued, "deliveryStatus": "queued", "messageId": message_id}))
+            to_json(
+                json!({"agentId": id, "disposition": crate::manager::Disposition::Queued, "deliveryStatus": "queued", "messageId": message_id}),
+            )
         }
         _ => {
-            let disposition = m.send(&id, &quote(body.prompt), body.active_turn_behavior).await?;
+            let disposition = m
+                .send(&id, &quote(body.prompt), body.active_turn_behavior)
+                .await?;
             to_json(json!({"agentId": id, "disposition": disposition}))
         }
     }
 }
 
-async fn stop(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn stop(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     m.may_touch(&who(&m, &peer, &headers), &id)?;
     let stopped = m.stop(&id).await?;
     to_json(json!({"agentId": id, "stopped": stopped}))
 }
 
-async fn archive(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn archive(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     m.may_touch(&who(&m, &peer, &headers), &id)?;
     let archived_at = m.archive(&id).await?;
     to_json(json!({"agentId": id, "archivedAt": archived_at}))
 }
 
-async fn unarchive(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn unarchive(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     m.may_touch(&who(&m, &peer, &headers), &id)?;
     to_json(m.unarchive(&id)?)
 }
 
-async fn delete(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn delete(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     m.may_touch(&who(&m, &peer, &headers), &id)?;
     m.delete(&id).await?;
@@ -357,7 +449,11 @@ struct WaitQuery {
     gate: bool,
 }
 
-async fn wait(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<WaitQuery>) -> ApiResult {
+async fn wait(
+    State(m): State<Manager>,
+    Path(id): Path<String>,
+    Query(q): Query<WaitQuery>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     let timeout = (q.timeout_ms > 0).then(|| Duration::from_millis(q.timeout_ms));
     to_json(m.wait(&id, timeout, q.gate).await?)
@@ -382,14 +478,26 @@ fn direction(q: &TimelineQuery) -> Result<SubagentDirection, ManagerError> {
     match q.direction.as_deref() {
         None | Some("after") => Ok(SubagentDirection::After),
         Some("tail") => Ok(SubagentDirection::Tail),
-        Some(other) => Err(ManagerError::Invalid(format!("Unknown timeline direction: {other} (after or tail)"))),
+        Some(other) => Err(ManagerError::Invalid(format!(
+            "Unknown timeline direction: {other} (after or tail)"
+        ))),
     }
 }
 
-async fn timeline(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<TimelineQuery>) -> ApiResult {
+async fn timeline(
+    State(m): State<Manager>,
+    Path(id): Path<String>,
+    Query(q): Query<TimelineQuery>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     if let Some(sub) = &q.subagent {
-        return to_json(m.provider_subagent_timeline(&id, sub, direction(&q)?, q.after_seq, q.limit)?);
+        return to_json(m.provider_subagent_timeline(
+            &id,
+            sub,
+            direction(&q)?,
+            q.after_seq,
+            q.limit,
+        )?);
     }
     let (epoch, rows) = m.timeline(&id, q.after_seq, q.limit)?;
     let next_seq = rows.last().map(|r| r.seq).unwrap_or(q.after_seq);
@@ -401,12 +509,19 @@ async fn provider_subagents(State(m): State<Manager>, Path(id): Path<String>) ->
     to_json(json!({"agentId": id, "subagents": m.provider_subagents(&id)?}))
 }
 
-async fn provider_subagent(State(m): State<Manager>, Path((id, sub)): Path<(String, String)>) -> ApiResult {
+async fn provider_subagent(
+    State(m): State<Manager>,
+    Path((id, sub)): Path<(String, String)>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     to_json(m.provider_subagent(&id, &sub)?)
 }
 
-async fn provider_subagent_timeline(State(m): State<Manager>, Path((id, sub)): Path<(String, String)>, Query(q): Query<TimelineQuery>) -> ApiResult {
+async fn provider_subagent_timeline(
+    State(m): State<Manager>,
+    Path((id, sub)): Path<(String, String)>,
+    Query(q): Query<TimelineQuery>,
+) -> ApiResult {
     let id = m.resolve(&id)?;
     to_json(m.provider_subagent_timeline(&id, &sub, direction(&q)?, q.after_seq, q.limit)?)
 }
@@ -428,7 +543,8 @@ async fn respond_permission(
         PermissionResponse::Allow { .. } => "allow",
         PermissionResponse::Deny { .. } => "deny",
     };
-    m.respond_permission(&id, &request_id, response, who).await?;
+    m.respond_permission(&id, &request_id, response, who)
+        .await?;
     to_json(json!({"agentId": id, "requestId": request_id, "behavior": behavior}))
 }
 
@@ -460,7 +576,11 @@ struct PermissionQuery {
     wait_ms: u64,
 }
 
-async fn permission(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<PermissionQuery>) -> ApiResult {
+async fn permission(
+    State(m): State<Manager>,
+    Path(id): Path<String>,
+    Query(q): Query<PermissionQuery>,
+) -> ApiResult {
     if q.wait_ms == 0 {
         return to_json(m.permission(&id)?);
     }
@@ -501,7 +621,10 @@ fn numbered(e: &Sequenced) -> SseEvent {
 }
 
 fn reset(id: u64) -> SseEvent {
-    SseEvent::default().event("stream.reset").id(id.to_string()).data(RESET_DATA)
+    SseEvent::default()
+        .event("stream.reset")
+        .id(id.to_string())
+        .data(RESET_DATA)
 }
 
 type Frames = mpsc::Sender<Result<SseEvent, Infallible>>;
@@ -521,13 +644,20 @@ async fn stream(
     let sub = m.journal().subscribe(last.as_deref());
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(pump(m, sub, device, tx));
-    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(ReceiverStream::new(rx))
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// Feed one stream: the reset or replay, then live events in id order. A subscriber
 /// that lags behind the bus catches up from the journal (or gets a reset).
 async fn pump(m: Manager, sub: Subscription, device: Option<String>, tx: Frames) {
-    let Subscription { resume, replay, last, mut live } = sub;
+    let Subscription {
+        resume,
+        replay,
+        last,
+        mut live,
+    } = sub;
     let visible = |e: &Sequenced| e.event.visible_to(device.as_deref());
     match resume {
         Resume::Reset => {
@@ -539,7 +669,11 @@ async fn pump(m: Manager, sub: Subscription, device: Option<String>, tx: Frames)
             for c in m.pending_commands(device.as_deref()).unwrap_or_default() {
                 let mut v = serde_json::to_value(&c).unwrap_or_default();
                 v["type"] = json!("agent_command");
-                if tx.send(Ok(SseEvent::default().data(v.to_string()))).await.is_err() {
+                if tx
+                    .send(Ok(SseEvent::default().data(v.to_string())))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
