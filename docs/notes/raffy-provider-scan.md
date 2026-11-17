@@ -529,3 +529,29 @@ The §5 diff, applied with the real tailnet address and provider string `raffy`.
    unless the prefix is added to that denylist.
 5. The runtime caveat from §5 stands: confirm the llama-server accepts
    `stream_options: {"include_usage": true}` with `lucina-rs model-try --provider raffy --stream "ping"`.
+
+**Known red, and it is not LM-R021.** `cargo test -p lucina-server --test owner_secrets` fails
+`the_relay_passes_grants_and_writes_a_receipt` (`left: "x [secret:FIRST_KEY] y"`, `right:
+"x [secret:POKO_API_KEY] y"`, `owner_secrets.rs:297`) and did so at `d90c0f64` too: an export of that
+commit, built into a cold target directory, fails the same way in the same run. The mechanism:
+
+- `--list` shows libtest runs the tests in this binary **alphabetically**, so
+  `requests_come_one_card_at_a_time_and_the_value_goes_nowhere` (#9) runs before
+  `the_relay_passes_grants_and_writes_a_receipt` (#11) — not in source order.
+- Both grant the **same** `VALUE`, and the relay registers a saved value with the process-wide
+  redactor under the name the broker answered (`FIRST_KEY`, then `POKO_API_KEY`).
+- `Redactor::insert_patterns` keeps the first name for a digest (`any(|k| k.digest == d) → continue`,
+  `redact.rs:577`) and `try_register` never re-names one, so `FIRST_KEY` owns the label for the rest
+  of the process. Deterministic: it fails with `--test-threads=1` as well.
+
+It passes alone (`-- --exact the_relay…`) and passes with `-- --skip requests_come_one` (11 passed),
+which is what makes it look like a provider change broke it. Nothing of LM-R021 is on that path: the
+test, `src/owner_secrets.rs`, `lucina-secrets/src/redact.rs` and `tests/common/mod.rs` are all
+byte-identical between `d90c0f64` and this branch. The collision arrived with `0b9b84d3` (the
+one-card-at-a-time test granting the shared `VALUE`).
+
+The fix belongs in the test and is one constant, exactly as `7bef8c26` did for the pasted-token
+collision: give the relay test its own value — `const POKO_VALUE: &str = "sk-proj-SyntheticPoko0123456789AbC";`
+— used at its three `VALUE` sites (the 200 grant, `sent[0]["value"]`, the redact assertion) and added
+to `assert_clean`'s list; the later 403/409/400 grants can keep `VALUE`. Editing `owner_secrets.rs`
+was refused for this run, so it is left for the lead.
