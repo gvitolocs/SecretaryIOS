@@ -262,6 +262,9 @@ impl Exec {
             // environment (BASH_ENV, or ENV for a POSIX sh) is read before the command and can
             // rewrite PATH, which would put a machine-wide wrapper ahead of what the job asked
             // for; the machine's own PATH is already folded into `path`, so its tools stay found.
+            // An exported shell function — BASH_FUNC_<name>%% — beats PATH the same way, and the
+            // allowlist above is what keeps it back: it admits exact names and the LC_ and BQ_
+            // prefixes only. `an_exported_cargo_function_does_not_beat_the_gate_s_path` is the proof.
             .env_remove("BASH_ENV")
             .env_remove("ENV")
             .env("CARGO_TARGET_DIR", &self.spec.target_dir)
@@ -313,7 +316,9 @@ impl Exec {
         }
     }
 
-    /// Fetch, then the trunk's commit.
+    /// Fetch, then the trunk's commit. A remote repo's trunk is the remote's: once the fetch is
+    /// done and its ref is still missing, there is nothing to land on and nothing is fetched
+    /// from a local branch of the same name.
     fn trunk_tip(&mut self) -> Git {
         let repo = self.repo();
         let trunk = self.spec.trunk.clone();
@@ -328,6 +333,12 @@ impl Exec {
                         &format!("refs/remotes/{remote}/{trunk}^{{commit}}"),
                     ],
                 )
+                .map_err(|_| {
+                    format!(
+                        "{remote}/{trunk} does not exist in {}: the remote does not carry the trunk (git fetch {remote}, or check the branch name)",
+                        repo.display()
+                    )
+                })
             }
             None => self.git(
                 &repo,
@@ -1176,6 +1187,61 @@ mod tests {
         assert!(out.gates[0].flaky, "{out:?}\nLOG:\n{log}");
         // Both gate runs went through the shadow, not through a cargo of the machine: it failed
         // once (one line in its state file) and passed on the retry.
+        assert_eq!(
+            std::fs::read_to_string(&ran).ok().as_deref(),
+            Some("once\n"),
+            "{out:?}\nLOG:\n{log}"
+        );
+        assert!(
+            out.message.contains("flaky, passed on retry: t"),
+            "{}\nLOG:\n{log}",
+            out.message
+        );
+        assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
+    }
+
+    #[test]
+    fn an_exported_cargo_function_does_not_beat_the_gate_s_path() {
+        // The 2026-11-17 failure: the caller had exported a `cargo` shell function, and the
+        // gate's bash resolved it before PATH, so the machine's cargo answered both gate runs
+        // ("could not find Cargo.toml") and the flaky test failed everywhere. What closes it is
+        // `crate::env`'s allowlist: a BASH_FUNC_* name is neither an exact entry nor an LC_ or
+        // BQ_ prefix, so it never reaches the built child environment. This is the test that
+        // would have caught the failure and is the proof that it still cannot come back —
+        // against a gate command that would say so: a gate that sees the function runs
+        // `echo HIJACKED` instead of the shadow, which shows up as a non-flaky pass and an
+        // empty state file. The function is injected as the source environment's stand-in
+        // (`source_env`, never as a process-wide variable).
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let ran = root.join("cargo-ran-fn");
+        write_exec(
+            &bin.join("cargo"),
+            &format!(
+                "#!/bin/sh\nif [ -s {r} ]; then exit 0; fi\necho once >>{r}\nexit 1\n",
+                r = ran.display()
+            ),
+        );
+        std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let dir = root.join("job-fn");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        x.source_env =
+            crate::testutil::env_source(&[("BASH_FUNC_cargo%%", "() { echo HIJACKED; }")]);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert!(out.gates[0].flaky, "{out:?}\nLOG:\n{log}");
         assert_eq!(
             std::fs::read_to_string(&ran).ok().as_deref(),
             Some("once\n"),
