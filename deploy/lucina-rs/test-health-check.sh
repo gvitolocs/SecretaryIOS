@@ -51,7 +51,10 @@ for a in "$@"; do
     esac
 done
 state_of() {
-    if [ -f "$fake_units/$1" ]; then cat "$fake_units/$1"; else printf 'not-found\n'; fi
+    # A unit this host does not have is `inactive` to `show -p ActiveState` and only LoadState says
+    # `not-found` - which is the whole reason the watchdog checks LoadState first, so the stub answers
+    # this way rather than inventing a fourth state (JD-R016 finding 4a).
+    if [ -f "$fake_units/$1" ]; then cat "$fake_units/$1"; else printf 'inactive\n'; fi
 }
 case $action in
     show)
@@ -233,8 +236,15 @@ sh "$maint" stop "$agentd" --reason 'walking its drop-ins' >/dev/null
 run_watch
 check 'a marked lucina-agentd is left alone' not_started "$agentd"
 
-# 8. a unit this host does not have is not something to start.
+# 8. a unit this host does not have is not something to start. The two checks on the stub come first:
+# they pin the premise the LoadState guard is built on, so a stub that stopped answering like real
+# systemctl fails here instead of quietly making the guard untested again.
 reset active -
+check 'the stub answers LoadState=not-found for a unit that is not here' \
+    test "$(systemctl --user show -p LoadState --value "$agentd")" = not-found
+check '... and ActiveState=inactive, the answer that makes LoadState the only usable guard' \
+    test "$(systemctl --user show -p ActiveState --value "$agentd")" = inactive
+: >"$fake_calls"
 run_watch
 check 'an uninstalled unit is not started' not_started "$agentd"
 check '... and nothing is reported' not_reported
@@ -254,9 +264,13 @@ check '... and stays quiet' exited 0
 run_watch
 check 'two /health failures restart lucina-rs' restarted "$rs"
 check '... and clear the counter' no_counter
+# A healthy run clears a strike that is still on the books. The counter has to be put there first:
+# `reset` deletes it, so the version of this case that only called reset passed whether or not the
+# success path removes the file (JD-R016 finding 4b).
 reset active active
+printf '1\n' >"$counter"
 run_watch
-check 'a healthy run clears the counter' no_counter
+check 'a healthy run clears a strike the last tick left' no_counter
 check 'a healthy unit starts nothing' not_started "$rs"
 check '... and reports nothing' not_reported
 
