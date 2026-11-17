@@ -45,7 +45,8 @@
 //!   notices; `agent-messages/envelope.js`, `finish-subscriptions/internal/notification.js`)
 //!   and [`text_match`] (typo-tolerant search ranking; `protocol/search/text-match.js`).
 //! - Lucina only: [`sandbox`] (the worker sandbox policy and its bubblewrap arguments;
-//!   `docs/design/agents-sandbox.md`).
+//!   `docs/design/agents-sandbox.md`). Its `sandbox::host` is the one module here that reads the
+//!   file system (it resolves bind sources); everything else stays pure.
 //!
 //! String lengths and cuts follow JavaScript (UTF-16 code units, JS whitespace;
 //! see [`jsstr`]), so truncated texts match Paseo's byte for byte.

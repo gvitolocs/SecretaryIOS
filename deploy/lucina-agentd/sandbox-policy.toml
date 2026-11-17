@@ -21,7 +21,11 @@
 version = 1
 
 [system]
-# Read-only, at the same path. /usr holds the toolchain's system half (git, sh, the C linker, libraries).
+# Read-only, at the same path; only /usr and /etc are accepted (the code's SYSTEM_RO_ROOTS). /usr holds
+# the toolchain's system half (git, sh, the C linker, libraries); /etc what they read at start (nss,
+# ld.so.cache, ssl/certs, hosts). Assumption: secrets in /etc and /usr are at modes the owner's user
+# cannot read (/etc/shadow, host keys, netplan). A world-readable file with a secret there IS readable
+# inside the fence.
 ro = ["/usr", "/etc"]
 # Ubuntu's merged /usr: these are symlinks on the host too.
 symlinks = [
@@ -30,20 +34,23 @@ symlinks = [
     { target = "usr/lib", link = "/lib" },
     { target = "usr/lib64", link = "/lib64" },
 ]
-# Bound only for a lane whose network is `host`: /etc/resolv.conf points into it (systemd-resolved).
-net_ro = ["/run/systemd/resolve"]
+# Bound only for a lane whose network is `host`, each must be a file: /etc/resolv.conf points at the
+# stub file (systemd-resolved). The two files, NOT the directory /run/systemd/resolve: that directory
+# also holds the resolver's Varlink sockets (mode 0666), reachable with the host network.
+net_ro = ["/run/systemd/resolve/stub-resolv.conf", "/run/systemd/resolve/resolv.conf"]
 # PATH after the shim directory (which always comes first).
 path = ["~/.cargo/bin", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin"]
 
 [home]
-# Read-only toolchains. NOT ~/.cargo as a whole: it holds credentials.toml.
+# Read-only toolchains. NOT ~/.cargo as a whole: it holds credentials.toml and config.toml (tokens).
 toolchains_ro = ["~/.rustup", "~/.cargo/bin"]
 # Read-write caches shared by every run.
 caches_rw = ["~/.cargo/registry", "~/.cargo/git", "~/.cache/bq"]
 # Bound read-write for a build run only (a light run cannot build).
 check_target = "~/.cache/lucina-check-target"
 # The shim directory (lucina-shim: cargo through bq, refusals for proof tools and Python). Read-only,
-# first on PATH. It must exist when a run starts.
+# first on PATH. It must exist when a run starts, and hold an empty file named `empty` (bound read-only
+# over a worktree's config.worktree when that file does not exist, so it cannot be created inside).
 shims = "~/.local/lib/lucina-shims"
 
 # A lane not named below: no network, and a sign-in home of its own (`{lane}` is the lane's name).

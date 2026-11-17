@@ -1,5 +1,7 @@
-//! Unit tests of the sandbox policy and generator. No IO: the repository's policy file is
-//! compiled in with `include_str!`.
+//! Unit tests of the sandbox policy, plan and audit. No IO: the repository's policy file is compiled
+//! in with `include_str!`, and bind sources are resolved by [`Fake`], a file system in a table.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
@@ -8,7 +10,76 @@ const HOME: &str = "/home/nez";
 const WS: &str = "/home/nez/Projects/.worktrees/SecretaryIOS/lagent-x";
 const COMMON: &str = "/home/nez/Projects/Lucina/SecretaryIOS/.git";
 const OWN: &str = "/home/nez/Projects/Lucina/SecretaryIOS/.git/worktrees/lagent-x";
+const SHIMS: &str = "/home/nez/.local/lib/lucina-shims";
+const READER_WS: &str = "/home/nez/Projects/Work/notes";
 const QODER_HOME_LINE: &str = "home = \"~/.local/share/lane-homes/qoder\"";
+
+/// A file system in a table: every path is a directory unless it is listed as a file or a socket,
+/// is missing (or lies under a missing path), or goes through a symlink.
+#[derive(Default, Clone)]
+struct Fake {
+    files: BTreeSet<PathBuf>,
+    sockets: BTreeSet<PathBuf>,
+    missing: BTreeSet<PathBuf>,
+    links: BTreeMap<PathBuf, PathBuf>,
+    dangling: BTreeSet<PathBuf>,
+    nonempty: BTreeSet<PathBuf>,
+}
+
+impl Fake {
+    /// The worktree fixture: a worktree whose `config.worktree` and `reftable` do not exist, a
+    /// reader workspace without `.git`, the shim directory with its empty file.
+    fn standard() -> Fake {
+        let mut f = Fake::default();
+        for p in [
+            format!("{WS}/.git"),
+            format!("{COMMON}/config"),
+            format!("{COMMON}/packed-refs"),
+            format!("{OWN}/commondir"),
+            format!("{OWN}/gitdir"),
+            format!("{SHIMS}/empty"),
+            "/run/systemd/resolve/stub-resolv.conf".to_owned(),
+            "/run/systemd/resolve/resolv.conf".to_owned(),
+        ] {
+            f.files.insert(p.into());
+        }
+        for p in [
+            format!("{OWN}/config.worktree"),
+            format!("{COMMON}/reftable"),
+            format!("{READER_WS}/.git"),
+        ] {
+            f.missing.insert(p.into());
+        }
+        f
+    }
+
+    fn resolve(&self, p: &Path) -> io::Result<Resolved> {
+        if self.dangling.contains(p) {
+            return Err(io::Error::other("a dangling symlink"));
+        }
+        let mut real = p.to_path_buf();
+        for (link, target) in &self.links {
+            if let Ok(rest) = p.strip_prefix(link) {
+                real = target.join(rest);
+            }
+        }
+        if self.missing.iter().any(|m| real.starts_with(m)) {
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        }
+        let kind = if self.files.contains(&real) {
+            FileKind::File
+        } else if self.sockets.contains(&real) {
+            FileKind::Other
+        } else {
+            FileKind::Dir
+        };
+        Ok(Resolved {
+            len: u64::from(self.nonempty.contains(&real)),
+            path: real,
+            kind,
+        })
+    }
+}
 
 fn policy() -> Policy {
     Policy::from_toml(POLICY).expect("the repository's policy file")
@@ -18,8 +89,10 @@ fn run(lane: &str) -> RunInputs {
     RunInputs {
         home: HOME.into(),
         workspace: WS.into(),
-        common_git_dir: COMMON.into(),
-        worktree_git_dir: Some(OWN.into()),
+        git: Some(GitWorktree {
+            common_dir: COMMON.into(),
+            own_dir: OWN.into(),
+        }),
         lane: lane.to_owned(),
         cost: CostClass::Light,
         tmpdir: "/home/nez/scratch/tmp/run-1".into(),
@@ -27,29 +100,44 @@ fn run(lane: &str) -> RunInputs {
         env: vec![
             ("GIT_AUTHOR_NAME".into(), "Worker".into()),
             ("GIT_AUTHOR_EMAIL".into(), "w@example.invalid".into()),
-            ("LUCINA_RUN_ID".into(), "LA-R026".into()),
         ],
+        lead: Some("LA".into()),
+        run_id: Some("LA-R038".into()),
+        change: Some("LA-C013".into()),
     }
 }
 
-fn plain_run(lane: &str) -> RunInputs {
-    let ws = "/home/nez/Projects/Work/demo";
+fn reader_run(lane: &str) -> RunInputs {
     RunInputs {
-        workspace: ws.into(),
-        common_git_dir: format!("{ws}/.git").into(),
-        worktree_git_dir: None,
+        workspace: READER_WS.into(),
+        git: None,
         ..run(lane)
     }
 }
 
-fn args(r: &RunInputs) -> Vec<String> {
-    to_bwrap_args(&policy(), r).expect("a valid run")
+fn resolve_with(fs: &Fake, p: &Policy, r: &RunInputs) -> Result<Vec<String>> {
+    let resolver = |path: &Path| fs.resolve(path);
+    plan(p, r)?.resolve(&resolver)
 }
 
-/// Index of the triple `flag a a` (a bind of `a` at its own path).
-fn bind_at(a: &[String], flag: &str, p: &str) -> Option<usize> {
+fn args(r: &RunInputs) -> Vec<String> {
+    resolve_with(&Fake::standard(), &policy(), r).expect("a valid run")
+}
+
+/// Index of the triple `flag src dst`.
+fn bind_from(a: &[String], flag: &str, src: &str, dst: &str) -> Option<usize> {
     a.windows(3)
-        .position(|w| w[0] == flag && w[1] == p && w[2] == p)
+        .position(|w| w[0] == flag && w[1] == src && w[2] == dst)
+}
+
+/// Index of the triple `flag p p` (a bind of `p` at its own path).
+fn bind_at(a: &[String], flag: &str, p: &str) -> Option<usize> {
+    bind_from(a, flag, p, p)
+}
+
+fn any_bind_of(a: &[String], p: &str) -> bool {
+    a.windows(3)
+        .any(|w| w[0].contains("bind") && (w[1] == p || w[2] == p))
 }
 
 fn env_of<'a>(a: &'a [String], name: &str) -> Option<&'a str> {
@@ -81,6 +169,11 @@ fn the_repository_policy_parses_and_validates() {
     }
     assert_eq!(p.default.network, Network::None);
     assert!(p.default.home.ends_with("/{lane}"));
+    assert_eq!(p.system.ro, ["/usr", "/etc"]);
+    assert!(
+        p.system.net_ro.iter().all(|f| f.ends_with(".conf")),
+        "the resolver's files, not its directory"
+    );
 }
 
 #[test]
@@ -111,7 +204,6 @@ fn lane_names_resolve_to_exact_then_longest_prefix_then_default() {
 
 #[test]
 fn a_typical_run_of_each_lane() {
-    let p = policy();
     let homes = |lane: &str| format!("{HOME}/.local/share/lane-homes/{lane}");
     for (lane, own_home, net) in [
         ("qoder", homes("qoder"), Network::Host),
@@ -126,10 +218,7 @@ fn a_typical_run_of_each_lane() {
         let a = args(&run(lane));
         let s = joined(&a);
         assert_eq!(a.last().map(String::as_str), Some("--"), "{lane}");
-        assert!(
-            bind_at(&a, "--bind-try", &own_home).is_some(),
-            "{lane}: {s}"
-        );
+        assert!(bind_at(&a, "--bind", &own_home).is_some(), "{lane}: {s}");
         assert_eq!(env_of(&a, "LUCINA_LANE_HOME"), Some(own_home.as_str()));
         for other in [
             "qoder", "zen", "mistral", "zcode", "qwen", "cursor", "claude",
@@ -145,6 +234,10 @@ fn a_typical_run_of_each_lane() {
             "{lane}"
         );
         assert!(!s.contains("--dev-bind"), "{lane}: no device nodes");
+        assert!(
+            !s.contains("-try"),
+            "{lane}: a resolved list has no -try bind"
+        );
         for f in [
             "--die-with-parent",
             "--new-session",
@@ -153,6 +246,7 @@ fn a_typical_run_of_each_lane() {
             "--unshare-ipc",
             "--unshare-pid",
             "--unshare-uts",
+            "--unshare-cgroup",
             "--clearenv",
         ] {
             assert!(a.contains(&f.to_owned()), "{lane}: {f}");
@@ -161,32 +255,34 @@ fn a_typical_run_of_each_lane() {
         assert!(
             s.contains("--proc /proc") && s.contains("--dev /dev") && s.contains("--tmpfs /tmp")
         );
-        assert!(bind_at(&a, "--ro-bind-try", "/usr").is_some());
-        assert!(bind_at(&a, "--ro-bind-try", "/etc").is_some());
-        assert!(bind_at(&a, "--ro-bind-try", "/home/nez/.rustup").is_some());
-        assert!(bind_at(&a, "--ro-bind-try", "/home/nez/.cargo/bin").is_some());
-        assert!(bind_at(&a, "--bind-try", "/home/nez/.cargo/registry").is_some());
-        assert!(bind_at(&a, "--bind-try", "/home/nez/.cargo/git").is_some());
-        assert!(bind_at(&a, "--bind-try", "/home/nez/.cache/bq").is_some());
-        assert!(bind_at(&a, "--ro-bind", "/home/nez/.local/lib/lucina-shims").is_some());
+        assert!(s.contains(&format!("--perms 0700 --tmpfs {HOME}")));
+        assert!(bind_at(&a, "--ro-bind", "/usr").is_some());
+        assert!(bind_at(&a, "--ro-bind", "/etc").is_some());
+        assert!(bind_at(&a, "--ro-bind", "/home/nez/.rustup").is_some());
+        assert!(bind_at(&a, "--ro-bind", "/home/nez/.cargo/bin").is_some());
+        assert!(bind_at(&a, "--bind", "/home/nez/.cargo/registry").is_some());
+        assert!(bind_at(&a, "--bind", "/home/nez/.cargo/git").is_some());
+        assert!(bind_at(&a, "--bind", "/home/nez/.cache/bq").is_some());
+        assert!(bind_at(&a, "--ro-bind", SHIMS).is_some());
         assert!(bind_at(&a, "--bind", "/home/nez/scratch/tmp/run-1").is_some());
         assert!(bind_at(&a, "--bind", WS).is_some());
         assert_eq!(env_of(&a, "HOME"), Some(HOME));
         assert_eq!(env_of(&a, "TMPDIR"), Some("/home/nez/scratch/tmp/run-1"));
         assert!(env_of(&a, "PATH")
             .unwrap()
-            .starts_with("/home/nez/.local/lib/lucina-shims:"));
+            .starts_with(&format!("{SHIMS}:")));
         assert_eq!(env_of(&a, "GIT_CONFIG_GLOBAL"), Some("/dev/null"));
         assert_eq!(env_of(&a, "GIT_CONFIG_SYSTEM"), Some("/dev/null"));
         assert_eq!(env_of(&a, "GIT_AUTHOR_NAME"), Some("Worker"));
+        assert_eq!(env_of(&a, "LUCINA_LEAD"), Some("LA"));
+        assert_eq!(env_of(&a, "LUCINA_RUN_ID"), Some("LA-R038"));
+        assert_eq!(env_of(&a, "LUCINA_CHANGE"), Some("LA-C013"));
         assert!(s.contains(&format!("--chdir {WS}")));
-        // The home is a tmpfs, mounted before anything is bound into it.
         let tmpfs_home = a
             .windows(2)
             .position(|w| w[0] == "--tmpfs" && w[1] == HOME)
             .unwrap();
-        assert!(tmpfs_home < bind_at(&a, "--ro-bind-try", "/home/nez/.rustup").unwrap());
-        // The whole home, ~/.ssh, ~/.config, ~/.cargo are never bound.
+        assert!(tmpfs_home < bind_at(&a, "--ro-bind", "/home/nez/.rustup").unwrap());
         for never in [
             HOME,
             "/home/nez/.ssh",
@@ -194,16 +290,14 @@ fn a_typical_run_of_each_lane() {
             "/home/nez/.cargo",
             "/home/nez/.claude",
         ] {
-            for f in ["--bind", "--bind-try", "--ro-bind", "--ro-bind-try"] {
-                assert!(bind_at(&a, f, never).is_none(), "{lane}: {f} {never}");
-            }
+            assert!(!any_bind_of(&a, never), "{lane}: {never}");
         }
-        // Name resolution only with the host network.
+        // Name resolution only with the host network, and only the two files.
         assert_eq!(
-            bind_at(&a, "--ro-bind-try", "/run/systemd/resolve").is_some(),
+            bind_at(&a, "--ro-bind", "/run/systemd/resolve/stub-resolv.conf").is_some(),
             net == Network::Host
         );
-        let _ = &p;
+        assert!(!any_bind_of(&a, "/run/systemd/resolve"));
     }
 }
 
@@ -218,9 +312,14 @@ fn network_none_versus_host() {
         "[lanes.qoder]\nhome = \"~/.local/share/lane-homes/qoder\"\nnetwork = \"none\"",
     );
     assert_ne!(text, POLICY);
-    let a = to_bwrap_args(&Policy::from_toml(&text).unwrap(), &run("qoder")).unwrap();
+    let a = resolve_with(
+        &Fake::standard(),
+        &Policy::from_toml(&text).unwrap(),
+        &run("qoder"),
+    )
+    .unwrap();
     assert!(a.contains(&"--unshare-net".to_owned()));
-    assert!(bind_at(&a, "--ro-bind-try", "/run/systemd/resolve").is_none());
+    assert!(!joined(&a).contains("/run/systemd"));
 }
 
 #[test]
@@ -240,6 +339,140 @@ fn light_versus_build() {
     assert_eq!(env_of(&build, "CARGO_TARGET_DIR"), Some(ct));
 }
 
+#[test]
+fn a_missing_optional_source_is_left_out_and_a_missing_required_one_refused() {
+    let mut fs = Fake::standard();
+    fs.missing
+        .insert("/home/nez/.local/share/lane-homes/qoder".into());
+    fs.missing.insert("/home/nez/.rustup".into());
+    let a = resolve_with(&fs, &policy(), &run("qoder")).unwrap();
+    assert!(!any_bind_of(&a, "/home/nez/.local/share/lane-homes/qoder"));
+    assert!(!any_bind_of(&a, "/home/nez/.rustup"));
+    for required in [
+        WS.to_owned(),
+        SHIMS.to_owned(),
+        "/home/nez/scratch/tmp/run-1".to_owned(),
+        format!("{COMMON}/hooks"),
+        format!("{COMMON}/info"),
+        format!("{COMMON}/config"),
+        format!("{COMMON}/objects/info"),
+        format!("{OWN}/commondir"),
+        format!("{OWN}/gitdir"),
+        format!("{WS}/.git"),
+    ] {
+        let mut fs = Fake::standard();
+        fs.missing.insert(required.clone().into());
+        let e = resolve_with(&fs, &policy(), &run("qoder")).unwrap_err();
+        assert!(e.to_string().contains(&required), "{required}: {e}");
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Resolution: symlinks and kinds (Q1, G9).
+
+#[test]
+fn a_symlinked_bind_source_is_refused_wherever_it_is() {
+    let p = policy();
+    for (link, target) in [
+        (format!("{COMMON}/hooks"), "/home/nez/.ssh".to_owned()),
+        (
+            format!("{COMMON}/config"),
+            "/home/nez/.gitconfig".to_owned(),
+        ),
+        (
+            format!("{COMMON}/info"),
+            "/home/nez/Projects/Other/.git/info".to_owned(),
+        ),
+        (
+            format!("{COMMON}/objects/info"),
+            "/srv/elsewhere".to_owned(),
+        ),
+        (format!("{COMMON}/modules"), "/srv/elsewhere".to_owned()),
+        (
+            format!("{OWN}/commondir"),
+            "/srv/elsewhere/commondir".to_owned(),
+        ),
+        (format!("{OWN}/gitdir"), "/srv/elsewhere/gitdir".to_owned()),
+        (format!("{WS}/.git"), "/srv/elsewhere/gitfile".to_owned()),
+        (
+            "/home/nez/.cargo/bin".to_owned(),
+            "/home/nez/.ssh".to_owned(),
+        ),
+        ("/home/nez/Projects".to_owned(), "/data/Projects".to_owned()),
+        (SHIMS.to_owned(), "/srv/shims".to_owned()),
+    ] {
+        let mut fs = Fake::standard();
+        fs.links.insert(link.clone().into(), target.clone().into());
+        if link.ends_with("config")
+            || link.ends_with("commondir")
+            || link.ends_with("gitdir")
+            || link.ends_with(".git")
+        {
+            fs.files.insert(target.clone().into());
+        }
+        let e = resolve_with(&fs, &p, &run("qoder")).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                SandboxError::Resolve { .. } | SandboxError::Hidden { .. }
+            ),
+            "{link} -> {target}: {e}"
+        );
+        assert!(
+            e.to_string().contains(&target) || e.to_string().contains(&link),
+            "{e}"
+        );
+    }
+    // A config.worktree that is a symlink.
+    let mut fs = Fake::standard();
+    fs.missing.clear();
+    fs.links.insert(
+        format!("{OWN}/config.worktree").into(),
+        "/home/nez/.gitconfig".into(),
+    );
+    assert!(resolve_with(&fs, &p, &run("qoder")).is_err());
+    // An extra read-only path that is a symlink into a hidden tree.
+    let mut fs = Fake::standard();
+    fs.links.insert(
+        "/home/nez/Projects/Work/sibling".into(),
+        "/home/nez/.ssh".into(),
+    );
+    let mut r = run("qoder");
+    r.extra_ro = vec!["/home/nez/Projects/Work/sibling".into()];
+    assert!(resolve_with(&fs, &p, &r).is_err());
+    // A dangling symlink at an optional source is not "missing".
+    let mut fs = Fake::standard();
+    fs.dangling
+        .insert("/home/nez/.local/share/lane-homes/qoder".into());
+    assert!(resolve_with(&fs, &p, &run("qoder")).is_err());
+}
+
+#[test]
+fn a_source_of_the_wrong_kind_is_refused() {
+    let p = policy();
+    let mut fs = Fake::standard();
+    fs.files
+        .remove(Path::new("/run/systemd/resolve/stub-resolv.conf"));
+    fs.sockets
+        .insert("/run/systemd/resolve/stub-resolv.conf".into());
+    assert!(
+        resolve_with(&fs, &p, &run("qoder")).is_err(),
+        "a socket as a network file"
+    );
+    let mut fs = Fake::standard();
+    fs.files.remove(Path::new(&format!("{COMMON}/config")));
+    assert!(
+        resolve_with(&fs, &p, &run("qoder")).is_err(),
+        "a directory as config"
+    );
+    let mut fs = Fake::standard();
+    fs.files.insert(format!("{COMMON}/hooks").into());
+    assert!(
+        resolve_with(&fs, &p, &run("qoder")).is_err(),
+        "a file as hooks"
+    );
+}
+
 // ------------------------------------------------------------------------------------------------
 // Git.
 
@@ -247,102 +480,162 @@ fn light_versus_build() {
 fn the_worktree_case() {
     let a = args(&run("qoder"));
     let common_ro = bind_at(&a, "--ro-bind", COMMON).expect("common dir read-only");
-    for rw in ["objects", "refs"] {
-        let i = bind_at(&a, "--bind", &format!("{COMMON}/{rw}")).expect(rw);
-        assert!(i > common_ro);
+    let objects = bind_at(&a, "--bind", &format!("{COMMON}/objects")).expect("objects");
+    assert!(objects > common_ro);
+    let objects_info = bind_at(&a, "--ro-bind", &format!("{COMMON}/objects/info"))
+        .expect("objects/info read-only");
+    assert!(objects_info > objects);
+    for rw in ["refs", "logs", "packed-refs"] {
+        assert!(
+            bind_at(&a, "--bind", &format!("{COMMON}/{rw}")).unwrap() > common_ro,
+            "{rw}"
+        );
     }
-    for rw in ["logs", "packed-refs", "reftable"] {
-        assert!(bind_at(&a, "--bind-try", &format!("{COMMON}/{rw}")).unwrap() > common_ro);
-    }
+    assert!(
+        !any_bind_of(&a, &format!("{COMMON}/reftable")),
+        "missing: left out"
+    );
     let own = bind_at(&a, "--bind", OWN).expect("own worktree dir writable");
     for ro in ["commondir", "gitdir"] {
         assert!(bind_at(&a, "--ro-bind", &format!("{OWN}/{ro}")).unwrap() > own);
     }
-    assert!(bind_at(&a, "--ro-bind-try", &format!("{OWN}/config.worktree")).unwrap() > own);
     let ws = bind_at(&a, "--bind", WS).unwrap();
     let gitfile = bind_at(&a, "--ro-bind", &format!("{WS}/.git")).expect("gitfile read-only");
     assert!(gitfile > ws);
-    // No bind of the main checkout's working tree.
     assert!(!joined(&a).contains("/home/nez/Projects/Lucina/SecretaryIOS "));
 }
 
 #[test]
-fn the_plain_repository_case() {
-    let ws = "/home/nez/Projects/Work/demo";
-    let git = format!("{ws}/.git");
-    let a = args(&plain_run("qoder"));
-    let w = bind_at(&a, "--bind", ws).unwrap();
-    let g = bind_at(&a, "--bind", &git).unwrap();
-    assert!(g > w, "the git binds come after the workspace bind");
-    assert!(!joined(&a).contains("/worktrees/"));
-    assert!(bind_at(&a, "--ro-bind", &format!("{ws}/.git/.git")).is_none());
-    // The common directory must be the workspace's .git.
-    let mut r = plain_run("qoder");
-    r.common_git_dir = "/home/nez/Projects/Work/other/.git".into();
-    assert!(matches!(
-        to_bwrap_args(&policy(), &r),
-        Err(SandboxError::Git { .. })
-    ));
+fn config_worktree_is_read_only_whether_or_not_it_exists() {
+    let cw = format!("{OWN}/config.worktree");
+    let empty = format!("{SHIMS}/empty");
+    // Missing: the empty file is bound over it.
+    let a = args(&run("qoder"));
+    let i = bind_from(&a, "--ro-bind", &empty, &cw).expect("empty file over config.worktree");
+    assert!(i > bind_at(&a, "--bind", OWN).unwrap());
+    // Present: bound read-only at itself.
+    let mut fs = Fake::standard();
+    fs.missing.remove(Path::new(&cw));
+    fs.files.insert(cw.clone().into());
+    let a = resolve_with(&fs, &policy(), &run("qoder")).unwrap();
+    assert!(bind_at(&a, "--ro-bind", &cw).unwrap() > bind_at(&a, "--bind", OWN).unwrap());
+    // The empty file must exist and be empty.
+    let mut fs = Fake::standard();
+    fs.missing.insert(empty.clone().into());
+    assert!(resolve_with(&fs, &policy(), &run("qoder"))
+        .unwrap_err()
+        .to_string()
+        .contains(&empty));
+    let mut fs = Fake::standard();
+    fs.nonempty.insert(empty.clone().into());
+    assert!(resolve_with(&fs, &policy(), &run("qoder")).is_err());
 }
 
 #[test]
-fn hooks_config_and_info_are_read_only_after_the_common_dir_bind() {
-    for (r, common, flag) in [
-        (run("qoder"), COMMON.to_owned(), "--ro-bind"),
-        (
-            plain_run("qoder"),
-            "/home/nez/Projects/Work/demo/.git".to_owned(),
-            "--bind",
-        ),
-    ] {
-        let a = args(&r);
-        let c = bind_at(&a, flag, &common).expect("common dir bind");
-        for ro in ["hooks", "config", "info"] {
-            let i = bind_at(&a, "--ro-bind", &format!("{common}/{ro}")).expect(ro);
-            assert!(i > c, "{ro} must come after the common dir bind");
-        }
-        assert!(bind_at(&a, "--ro-bind-try", &format!("{common}/modules")).unwrap() > c);
-        // ... and nothing later binds the common dir or its hooks read-write again.
-        let last_rw = a
+fn a_plain_repository_is_refused_and_a_workspace_without_git_gets_nothing_git() {
+    // Without git: the workspace and nothing git-related.
+    let a = args(&reader_run("qoder"));
+    assert!(bind_at(&a, "--bind", READER_WS).is_some());
+    let s = joined(&a);
+    assert!(
+        !s.contains(".git") && !s.contains("/hooks") && !s.contains("objects"),
+        "{s}"
+    );
+    assert!(s.contains(&format!("--chdir {READER_WS}")));
+    // A plain repository: the workspace has a .git directory.
+    let mut fs = Fake::standard();
+    fs.missing.remove(Path::new(&format!("{READER_WS}/.git")));
+    let e = resolve_with(&fs, &policy(), &reader_run("qoder")).unwrap_err();
+    assert!(e.to_string().contains("plain repository"), "{e}");
+    // ... or a .git file pointing elsewhere.
+    let mut fs = Fake::standard();
+    fs.missing.remove(Path::new(&format!("{READER_WS}/.git")));
+    fs.files.insert(format!("{READER_WS}/.git").into());
+    assert!(resolve_with(&fs, &policy(), &reader_run("qoder")).is_err());
+}
+
+#[test]
+fn every_git_lock_comes_after_any_read_write_bind_that_holds_it() {
+    let a = args(&run("qoder"));
+    let locks: Vec<String> = ["hooks", "config", "info", "objects/info"]
+        .iter()
+        .map(|p| format!("{COMMON}/{p}"))
+        .chain(
+            ["commondir", "gitdir", "config.worktree"]
+                .iter()
+                .map(|p| format!("{OWN}/{p}")),
+        )
+        .chain([format!("{WS}/.git")])
+        .collect();
+    for lock in &locks {
+        let at = a
             .windows(3)
-            .rposition(|w| (w[0] == "--bind" || w[0] == "--bind-try") && common.starts_with(&w[1]))
-            .unwrap_or(0);
-        assert!(last_rw < bind_at(&a, "--ro-bind", &format!("{common}/hooks")).unwrap());
+            .position(|w| w[0] == "--ro-bind" && &w[2] == lock)
+            .unwrap_or_else(|| panic!("{lock} not locked"));
+        for (j, w) in a.windows(3).enumerate() {
+            if (w[0] == "--bind") && Path::new(lock).starts_with(&w[2]) {
+                assert!(
+                    j < at,
+                    "{} rw at {j} after the lock of {lock} at {at}",
+                    w[2]
+                );
+            }
+        }
     }
 }
 
 #[test]
 fn git_layout_mistakes_are_refused() {
     let p = policy();
-    let mut r = run("qoder");
-    r.worktree_git_dir = Some("/home/nez/Projects/Lucina/SecretaryIOS/.git/other/lagent-x".into());
+    let with = |common: &str, own: &str| {
+        let mut r = run("qoder");
+        r.git = Some(GitWorktree {
+            common_dir: common.into(),
+            own_dir: own.into(),
+        });
+        plan(&p, &r)
+    };
     assert!(matches!(
-        to_bwrap_args(&p, &r),
+        with(
+            COMMON,
+            "/home/nez/Projects/Lucina/SecretaryIOS/.git/other/lagent-x"
+        ),
         Err(SandboxError::Git { .. })
     ));
-    let mut r = run("qoder");
-    r.worktree_git_dir = Some(format!("{COMMON}/worktrees/a/b").into());
     assert!(matches!(
-        to_bwrap_args(&p, &r),
+        with(COMMON, &format!("{COMMON}/worktrees/a/b")),
         Err(SandboxError::Git { .. })
     ));
-    let mut r = run("qoder");
-    r.common_git_dir = "/home/nez/Projects/Lucina/SecretaryIOS".into();
-    r.worktree_git_dir = Some("/home/nez/Projects/Lucina/SecretaryIOS/worktrees/lagent-x".into());
-    let e = to_bwrap_args(&p, &r).unwrap_err();
+    let e = with(
+        "/home/nez/Projects/Lucina/SecretaryIOS",
+        "/home/nez/Projects/Lucina/SecretaryIOS/worktrees/lagent-x",
+    )
+    .unwrap_err();
     assert!(
         e.to_string()
             .contains("/home/nez/Projects/Lucina/SecretaryIOS"),
         "{e}"
     );
-    // A worktree whose common directory lies inside it.
-    let mut r = run("qoder");
-    r.common_git_dir = format!("{WS}/.git").into();
-    r.worktree_git_dir = Some(format!("{WS}/.git/worktrees/x").into());
     assert!(matches!(
-        to_bwrap_args(&p, &r),
+        with(&format!("{WS}/.git"), &format!("{WS}/.git/worktrees/x")),
         Err(SandboxError::Overlap { .. })
     ));
+}
+
+#[test]
+fn outside_git_options_turn_off_what_a_worker_tree_could_trigger() {
+    let o = outside_git_options();
+    for want in [
+        "core.hooksPath=/dev/null",
+        "core.fsmonitor=false",
+        "submodule.recurse=false",
+        "safe.bareRepository=explicit",
+    ] {
+        assert!(o.contains(&want), "{want}");
+    }
+    assert!(o
+        .iter()
+        .all(|kv| kv.split_once('=').is_some_and(|(k, _)| k.contains('.'))));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -353,22 +646,21 @@ fn git_layout_mistakes_are_refused() {
 /// Each refusal names the path.
 fn refused_by_all_routes(path: &str, lane_spec: Option<&str>) {
     let p = policy();
-    let mut ws = plain_run("qoder");
+    let mut ws = reader_run("qoder");
     ws.workspace = path.into();
-    ws.common_git_dir = format!("{path}/.git").into();
-    let e = to_bwrap_args(&p, &ws).expect_err(path);
+    let e = plan(&p, &ws).expect_err(path);
     assert!(e.to_string().contains(path), "workspace {path}: {e}");
 
     let mut ex = run("qoder");
     ex.extra_ro = vec![path.into()];
-    let e = to_bwrap_args(&p, &ex).expect_err(path);
+    let e = plan(&p, &ex).expect_err(path);
     assert!(e.to_string().contains(path), "extra {path}: {e}");
 
     if let Some(spec) = lane_spec {
         let text = POLICY.replace(QODER_HOME_LINE, &format!("home = \"{spec}\""));
         assert_ne!(text, POLICY);
         let e = Policy::from_toml(&text)
-            .and_then(|tampered| to_bwrap_args(&tampered, &run("qoder")))
+            .and_then(|tampered| plan(&tampered, &run("qoder")))
             .expect_err(spec);
         let shown = spec.replace('~', HOME);
         assert!(
@@ -378,7 +670,6 @@ fn refused_by_all_routes(path: &str, lane_spec: Option<&str>) {
     }
 }
 
-/// A tree entry: the path, a path inside it, and (where it is a directory) its parent route.
 fn tree(rel: &str) {
     refused_by_all_routes(&format!("{HOME}/{rel}"), Some(&format!("~/{rel}")));
     refused_by_all_routes(
@@ -433,11 +724,13 @@ fn refuses_cargo_as_a_whole() {
 }
 
 #[test]
-fn refuses_cargo_credentials() {
-    refused_by_all_routes(
-        &format!("{HOME}/.cargo/credentials.toml"),
-        Some("~/.cargo/credentials.toml"),
-    );
+fn refuses_cargo_credentials_and_config() {
+    for f in ["credentials.toml", "credentials", "config.toml", "config"] {
+        refused_by_all_routes(
+            &format!("{HOME}/.cargo/{f}"),
+            Some(&format!("~/.cargo/{f}")),
+        );
+    }
 }
 
 #[test]
@@ -488,21 +781,18 @@ fn refuses_agentd_state() {
 #[test]
 fn refuses_another_lanes_home() {
     let zen = format!("{HOME}/.local/share/lane-homes/zen");
-    // As the workspace and as an extra path; as qoder's home in a tampered policy it overlaps zen's.
     refused_by_all_routes(&zen, Some("~/.local/share/lane-homes/zen"));
     refused_by_all_routes(
         &format!("{zen}/sub"),
         Some("~/.local/share/lane-homes/zen/sub"),
     );
-    // An unnamed lane's home, seen from qoder.
     refused_by_all_routes(&format!("{HOME}/.local/share/lane-homes/brandnew"), None);
-    // The directory of all lane homes.
     refused_by_all_routes(
         &format!("{HOME}/.local/share/lane-homes"),
         Some("~/.local/share/lane-homes"),
     );
     // An unnamed lane whose name meets a named home (zen is not matched by zen-*).
-    let e = to_bwrap_args(&policy(), &run("zen")).unwrap_err();
+    let e = plan(&policy(), &run("zen")).unwrap_err();
     assert!(e.to_string().contains(&zen), "{e}");
 }
 
@@ -577,6 +867,24 @@ fn refuses_host_tmp_and_devices() {
     refused_by_all_routes("/dev/kfd", None);
 }
 
+/// Every fixed entry, as the workspace and as an extra path (G11: the entries the per-entry tests
+/// above do not name).
+#[test]
+fn refuses_every_fixed_hidden_entry() {
+    for rel in HOME_TREES {
+        refused_by_all_routes(&format!("{HOME}/{rel}"), None);
+    }
+    for rel in HOME_WHOLE {
+        refused_by_all_routes(
+            &normalize(&Path::new(HOME).join(rel)).to_string_lossy(),
+            None,
+        );
+    }
+    for abs in ABS_TREES {
+        refused_by_all_routes(abs, None);
+    }
+}
+
 #[test]
 fn refuses_a_dot_directory_of_the_home_as_a_run_input() {
     refused_by_all_routes(&format!("{HOME}/.some-new-tool/state"), None);
@@ -592,7 +900,7 @@ fn paths_are_normalised_before_the_check() {
     ] {
         let mut r = run("qoder");
         r.extra_ro = vec![sneaky.clone().into()];
-        assert!(to_bwrap_args(&policy(), &r).is_err(), "{sneaky}");
+        assert!(plan(&policy(), &r).is_err(), "{sneaky}");
     }
     let text = POLICY.replace(
         QODER_HOME_LINE,
@@ -604,44 +912,72 @@ fn paths_are_normalised_before_the_check() {
 }
 
 #[test]
+fn policy_paths_are_compared_ignoring_case() {
+    for spec in [
+        "~/.SSH",
+        "~/.Config/gh",
+        "~/.CLAUDE",
+        "~/.local/share/Lucina-Agentd",
+    ] {
+        let text = POLICY.replace(QODER_HOME_LINE, &format!("home = \"{spec}\""));
+        let e = Policy::from_toml(&text).unwrap_err();
+        assert!(e.to_string().contains(spec), "{spec}: {e}");
+    }
+    let text = POLICY.replace(
+        "caches_rw = [\"~/.cargo/registry\", \"~/.cargo/git\", \"~/.cache/bq\"]",
+        "caches_rw = [\"~/.Cargo/Config.toml\"]",
+    );
+    assert!(Policy::from_toml(&text).is_err());
+}
+
+#[test]
 fn a_tampered_policy_cannot_bind_a_hidden_path_by_any_field() {
     for (from, to) in [
+        ("ro = [\"/usr\", \"/etc\"]", "ro = [\"/usr\", \"/etc\", \"/\"]"),
+        ("ro = [\"/usr\", \"/etc\"]", "ro = [\"/usr\", \"/etc\", \"/run\"]"),
+        ("ro = [\"/usr\", \"/etc\"]", "ro = [\"/usr\", \"/etc\", \"/home/nez\"]"),
+        ("ro = [\"/usr\", \"/etc\"]", "ro = [\"/usr\", \"/etc\", \"/proc\"]"),
+        // Not hidden, but not one of the system roots either.
+        ("ro = [\"/usr\", \"/etc\"]", "ro = [\"/usr\", \"/etc\", \"/var/lib\"]"),
+        ("ro = [\"/usr\", \"/etc\"]", "ro = [\"/usr\", \"/etc\", \"/opt\"]"),
+        ("ro = [\"/usr\", \"/etc\"]", "ro = [\"/usr/share\"]"),
         (
-            "ro = [\"/usr\", \"/etc\"]",
-            "ro = [\"/usr\", \"/etc\", \"/\"]",
-        ),
-        (
-            "ro = [\"/usr\", \"/etc\"]",
-            "ro = [\"/usr\", \"/etc\", \"/run\"]",
-        ),
-        (
-            "ro = [\"/usr\", \"/etc\"]",
-            "ro = [\"/usr\", \"/etc\", \"/home/nez\"]",
-        ),
-        (
-            "ro = [\"/usr\", \"/etc\"]",
-            "ro = [\"/usr\", \"/etc\", \"/proc\"]",
-        ),
-        (
-            "net_ro = [\"/run/systemd/resolve\"]",
+            "net_ro = [\"/run/systemd/resolve/stub-resolv.conf\", \"/run/systemd/resolve/resolv.conf\"]",
             "net_ro = [\"/run/user/1000\"]",
+        ),
+        (
+            "net_ro = [\"/run/systemd/resolve/stub-resolv.conf\", \"/run/systemd/resolve/resolv.conf\"]",
+            "net_ro = [\"/run/podman/podman.sock\"]",
+        ),
+        (
+            "{ target = \"usr/bin\", link = \"/bin\" }",
+            "{ target = \"../run/user/1000\", link = \"/bin\" }",
+        ),
+        (
+            "{ target = \"usr/bin\", link = \"/bin\" }",
+            "{ target = \"/home/nez/.ssh\", link = \"/bin\" }",
         ),
         (
             "toolchains_ro = [\"~/.rustup\", \"~/.cargo/bin\"]",
             "toolchains_ro = [\"~/.rustup\", \"~/.cargo\"]",
         ),
         (
+            "toolchains_ro = [\"~/.rustup\", \"~/.cargo/bin\"]",
+            "toolchains_ro = [\"~/.bashrc\"]",
+        ),
+        (
             "caches_rw = [\"~/.cargo/registry\", \"~/.cargo/git\", \"~/.cache/bq\"]",
             "caches_rw = [\"~/.ssh\"]",
+        ),
+        (
+            "caches_rw = [\"~/.cargo/registry\", \"~/.cargo/git\", \"~/.cache/bq\"]",
+            "caches_rw = [\"~/.cargo/config.toml\"]",
         ),
         (
             "check_target = \"~/.cache/lucina-check-target\"",
             "check_target = \"~/.config\"",
         ),
-        (
-            "shims = \"~/.local/lib/lucina-shims\"",
-            "shims = \"~/.local/bin\"",
-        ),
+        ("shims = \"~/.local/lib/lucina-shims\"", "shims = \"~/.local/bin\""),
         (
             "home = \"~/.local/share/lane-homes/{lane}\"",
             "home = \"~/.ssh/{lane}\"",
@@ -655,7 +991,6 @@ fn a_tampered_policy_cannot_bind_a_hidden_path_by_any_field() {
         assert_ne!(text, POLICY, "{from}");
         assert!(Policy::from_toml(&text).is_err(), "{to}");
     }
-    // An unknown field is a typo, not a default.
     let text = POLICY.replace(
         "network = \"none\"",
         "network = \"none\"\nnetwrok = \"host\"",
@@ -665,14 +1000,14 @@ fn a_tampered_policy_cannot_bind_a_hidden_path_by_any_field() {
 }
 
 #[test]
-fn a_policy_built_by_hand_is_validated_by_the_generator() {
+fn a_policy_built_by_hand_is_validated_by_the_planner() {
     let mut p = policy();
     p.home.caches_rw.push("~/.ssh".into());
-    let e = to_bwrap_args(&p, &run("qoder")).unwrap_err();
+    let e = plan(&p, &run("qoder")).unwrap_err();
     assert!(e.to_string().contains(".ssh"), "{e}");
     let mut p = policy();
     p.system.ro.push("/home/nez/.config".into());
-    assert!(to_bwrap_args(&p, &run("qoder")).is_err());
+    assert!(plan(&p, &run("qoder")).is_err());
 }
 
 #[test]
@@ -687,15 +1022,14 @@ fn overlapping_inputs_are_refused() {
     ] {
         let mut r = run("qoder");
         r.extra_ro = vec![extra.into()];
-        assert!(to_bwrap_args(&p, &r).is_err(), "{extra}");
+        assert!(plan(&p, &r).is_err(), "{extra}");
     }
     let mut r = run("qoder");
     r.tmpdir = WS.into();
-    assert!(to_bwrap_args(&p, &r).is_err());
-    // A sibling checkout read-only is what extra_ro is for.
+    assert!(plan(&p, &r).is_err());
     let mut r = run("qoder");
     r.extra_ro = vec!["/home/nez/Projects/Work/sibling".into()];
-    let a = to_bwrap_args(&p, &r).unwrap();
+    let a = resolve_with(&Fake::standard(), &p, &r).unwrap();
     assert!(bind_at(&a, "--ro-bind", "/home/nez/Projects/Work/sibling").is_some());
 }
 
@@ -704,20 +1038,17 @@ fn relative_and_odd_inputs_are_refused() {
     let p = policy();
     let mut r = run("qoder");
     r.workspace = "Projects/x".into();
-    assert!(matches!(
-        to_bwrap_args(&p, &r),
-        Err(SandboxError::BadPath { .. })
-    ));
+    assert!(matches!(plan(&p, &r), Err(SandboxError::BadPath { .. })));
     let mut r = run("qoder");
     r.home = "/".into();
-    assert!(to_bwrap_args(&p, &r).is_err());
+    assert!(plan(&p, &r).is_err());
     let mut r = run("qoder");
     r.extra_ro = vec!["/srv/a\0b".into()];
-    assert!(to_bwrap_args(&p, &r).is_err());
+    assert!(plan(&p, &r).is_err());
 }
 
 // ------------------------------------------------------------------------------------------------
-// Environment.
+// Environment (Q4, G8).
 
 #[test]
 fn the_environment_is_cleared_and_filtered() {
@@ -731,31 +1062,99 @@ fn the_environment_is_cleared_and_filtered() {
         "PATH",
         "TMPDIR",
         "GIT_CONFIG_GLOBAL",
-        "CARGO_TARGET_DIR",
-        "SSH_AUTH_SOCK",
-        "DBUS_SESSION_BUS_ADDRESS",
-        "XDG_RUNTIME_DIR",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_EXEC_PATH",
+        "GIT_SSH_COMMAND",
         "GIT_ASKPASS",
         "GIT_DIR",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "BASH_ENV",
+        "ENV",
+        "CDPATH",
+        "GCONV_PATH",
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTFLAGS",
+        "CARGO_TARGET_DIR",
+        "CARGO_HOME",
+        "CARGO_REGISTRIES_X_TOKEN",
+        "NODE_OPTIONS",
+        "PYTHONSTARTUP",
+        "PYTHONPATH",
+        "PERL5OPT",
+        "RUBYOPT",
+        "XDG_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "SSH_AUTH_SOCK",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "LUCINA_RUN_ID",
+        "LUCINA_ANYTHING",
         "1BAD",
         "A=B",
         "",
     ] {
         let mut r = run("qoder");
         r.env.push((name.into(), "x".into()));
-        let e = to_bwrap_args(&p, &r).unwrap_err();
+        let e = plan(&p, &r).unwrap_err();
         assert!(matches!(e, SandboxError::Env { .. }), "{name}: {e}");
     }
     let mut r = run("qoder");
     r.env.push(("GIT_AUTHOR_NAME".into(), "again".into()));
-    assert!(to_bwrap_args(&p, &r).is_err(), "a name passed twice");
+    assert!(plan(&p, &r).is_err(), "a name passed twice");
     let mut r = run("qoder");
     r.env.push(("X".into(), "a\0b".into()));
-    assert!(to_bwrap_args(&p, &r).is_err());
+    assert!(plan(&p, &r).is_err());
+}
+
+#[test]
+fn environment_values_naming_hidden_paths_are_refused() {
+    let p = policy();
+    for value in [
+        "/home/nez/.ssh/id_ed25519",
+        "/usr/bin:/home/nez/.config/gh",
+        "/run/user/1000/bus",
+        "/home/nez",
+        "/",
+    ] {
+        let mut r = run("qoder");
+        r.env.push(("SOME_TOOL_PATH".into(), value.into()));
+        let e = plan(&p, &r).unwrap_err();
+        assert!(matches!(e, SandboxError::Env { .. }), "{value}: {e}");
+    }
+    let mut r = run("qoder");
+    r.env
+        .push(("SOME_TOOL_PATH".into(), format!("{WS}/bin:/usr/bin")));
+    r.env
+        .push(("A_URL".into(), "https://example.invalid/x".into()));
+    assert!(plan(&p, &r).is_ok());
+}
+
+#[test]
+fn run_identifiers_are_typed_inputs() {
+    let p = policy();
+    for bad in ["", "LA R038", "LA/R038", "x;y", &"a".repeat(33)] {
+        let mut r = run("qoder");
+        r.run_id = Some(bad.into());
+        assert!(
+            matches!(plan(&p, &r), Err(SandboxError::Env { .. })),
+            "{bad:?}"
+        );
+    }
+    let mut r = run("qoder");
+    r.lead = None;
+    r.change = None;
+    let a = args(&r);
+    assert_eq!(env_of(&a, "LUCINA_LEAD"), None);
+    assert_eq!(env_of(&a, "LUCINA_RUN_ID"), Some("LA-R038"));
 }
 
 // ------------------------------------------------------------------------------------------------
-// The audit.
+// The audit (G10).
 
 #[test]
 fn the_audit_refuses_what_the_generator_never_emits() {
@@ -769,44 +1168,73 @@ fn the_audit_refuses_what_the_generator_never_emits() {
         a.push("--".into());
         audit(&hidden, &a)
     };
-    assert!(with(&["--ro-bind", "/home/nez/.ssh", "/home/nez/.ssh"]).is_err());
-    assert!(with(&["--bind", "/home/nez", "/home/nez"]).is_err());
-    assert!(with(&["--ro-bind", "/home/nez/.ssh/id", "/home/nez/Projects/x"]).is_err());
-    assert!(with(&["--ro-bind", "/srv/ok", "/home/nez/.ssh"]).is_err());
-    assert!(with(&["--dev-bind", "/dev/dri", "/dev/dri"]).is_err());
-    assert!(with(&["--bind-fd", "3", "/x"]).is_err());
-    assert!(with(&["--ro-bind", "relative", "relative"]).is_err());
-    assert!(with(&["--clearenv"]).is_err(), "a late --clearenv");
+    let hooks = format!("{COMMON}/hooks");
+    let objects_info = format!("{COMMON}/objects/info");
+    let cw = format!("{OWN}/config.worktree");
+    let (hooks, objects_info, cw) = (hooks.as_str(), objects_info.as_str(), cw.as_str());
+    for bad in [
+        vec!["--ro-bind", "/home/nez/.ssh", "/home/nez/.ssh"],
+        vec!["--bind", "/home/nez", "/home/nez"],
+        vec!["--ro-bind", "/home/nez/.ssh/id", "/home/nez/Projects/x"],
+        vec!["--ro-bind", "/srv/ok", "/home/nez/.ssh"],
+        vec!["--bind", "/srv/a", "/srv/b"],
+        vec!["--dev-bind", "/dev/dri", "/dev/dri"],
+        vec!["--bind-fd", "3", "/x"],
+        vec!["--ro-bind", "relative", "relative"],
+        vec!["--clearenv"],
+        // Undoing a lock: the path itself, or a path that holds it.
+        vec!["--bind", hooks, hooks],
+        vec!["--bind", COMMON, COMMON],
+        vec!["--bind", objects_info, objects_info],
+        vec!["--bind", cw, cw],
+        vec!["--bind-try", hooks, hooks],
+        // Symlinks into hidden paths.
+        vec!["--symlink", "/home/nez/.ssh", "/alias"],
+        vec!["--symlink", "../run/user/1000", "/x/y"],
+        // Perms other than the home's.
+        vec!["--perms", "0777", "--tmpfs", "/x"],
+        // Environment, re-checked.
+        vec!["--setenv", "SSH_AUTH_SOCK", "/x"],
+        vec!["--setenv", "GIT_CONFIG_KEY_0", "core.hooksPath"],
+        vec!["--setenv", "LD_PRELOAD", "/usr/lib/x.so"],
+        vec!["--setenv", "SOME", "/home/nez/.ssh/id"],
+        vec!["--setenv", "GIT_AUTHOR_NAME", "twice"],
+    ] {
+        assert!(with(&bad).is_err(), "{bad:?}");
+    }
+    // A fence variable with the wrong value.
+    for (name, value) in [
+        ("HOME", "/home/other"),
+        ("GIT_CONFIG_GLOBAL", "/home/nez/.gitconfig"),
+        ("GIT_CONFIG_NOSYSTEM", "0"),
+        ("LUCINA_RUN_ID", "a b"),
+        ("TMPDIR", "/tmp"),
+    ] {
+        let mut a: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < good.len() {
+            if good[i] == "--setenv" && good[i + 1] == name {
+                a.extend(["--setenv".into(), name.into(), value.into()]);
+                i += 3;
+            } else {
+                a.push(good[i].clone());
+                i += 1;
+            }
+        }
+        if !a.windows(2).any(|w| w[0] == "--setenv" && w[1] == name) {
+            a.pop();
+            a.extend(["--setenv".into(), name.into(), value.into(), "--".into()]);
+        }
+        assert!(audit(&hidden, &a).is_err(), "{name}={value}");
+    }
     let mut no_dash = good.clone();
     no_dash.pop();
     assert!(audit(&hidden, &no_dash).is_err());
-    let no_pid: Vec<String> = good
-        .iter()
-        .filter(|x| *x != "--unshare-pid")
-        .cloned()
-        .collect();
-    assert!(audit(&hidden, &no_pid).is_err());
+    for flag in ["--unshare-pid", "--unshare-cgroup", "--disable-userns"] {
+        let without: Vec<String> = good.iter().filter(|x| *x != flag).cloned().collect();
+        assert!(audit(&hidden, &without).is_err(), "{flag}");
+    }
     let mut env_first = vec!["--setenv".to_owned(), "A".into(), "b".into()];
     env_first.extend(good.iter().cloned());
     assert!(audit(&hidden, &env_first).is_err());
-}
-
-#[test]
-fn bound_paths_lists_every_bind_source() {
-    let a = args(&run("qoder"));
-    let b = bound_paths(&a);
-    assert!(b.contains(&WS));
-    assert!(b.contains(&"/usr"));
-    assert!(b.contains(&OWN));
-    assert!(!b.contains(&"/proc"));
-    assert!(!b.contains(&"/tmp"));
-    assert_eq!(
-        b.len(),
-        a.iter()
-            .filter(|x| matches!(
-                x.as_str(),
-                "--bind" | "--bind-try" | "--ro-bind" | "--ro-bind-try"
-            ))
-            .count()
-    );
 }
