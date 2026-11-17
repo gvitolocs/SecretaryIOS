@@ -16,6 +16,7 @@ use crate::config::{default_socket, shorten_path};
 
 mod attest;
 mod device;
+mod ids;
 mod orch;
 mod pipe;
 mod rewind;
@@ -131,6 +132,11 @@ pub enum Command {
     /// Worker runs that go through `lane`: start, list, show and wait (Lucina only)
     #[command(subcommand)]
     Work(work::WorkCommand),
+    /// Identifiers of runs, changes, versions and findings: issue, change state, list, import (Lucina only)
+    #[command(subcommand)]
+    Id(ids::IdCommand),
+    /// Follow an id, or a commit, to the runs, lanes, models and briefs behind it (Lucina only)
+    Trace(ids::TraceArgs),
     /// Which workspaces and main checkouts have processes running, and how much memory they use (Lucina only)
     Top,
     /// Record which model wrote commits, after checking their Co-Authored-By trailer (Lucina only)
@@ -1516,6 +1522,8 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Device(cmd) => pipe::device(&client, cmd).await,
         Command::Board => pipe::board(&client).await,
         Command::Work(cmd) => work::work(&client, cmd, cli.json || cli.format == "json").await,
+        Command::Id(cmd) => ids::ids(&client, cmd).await,
+        Command::Trace(a) => ids::trace(&client, a).await,
         Command::Top => pipe::top(&client).await,
         Command::Attest(a) => attest::attest(a),
         Command::Ledger(cmd) => attest::ledger_cmd(cmd),
