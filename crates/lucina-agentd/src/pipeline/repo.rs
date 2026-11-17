@@ -24,6 +24,8 @@
 //! [deploy.lucina-agentd]         # what `lagent deploy lucina-agentd` runs from main's tip
 //! build = "cargo build --release -p lucina-agentd"
 //! install = "deploy/lucina-agentd/install.sh"
+//! env = ["DEPLOY_HOST"]          # extra names from agentd's own environment, passed to this
+//!                                # recipe's deploy job only (and through the denylist)
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -119,6 +121,11 @@ pub struct DeployRule {
     pub health: Option<String>,
     #[serde(default)]
     pub timeout_min: Option<u64>,
+    /// `env = ["NAME", …]`: names taken from agentd's own environment that this recipe's
+    /// deploy job passes to its commands, on top of the built allowlist. They pass the
+    /// denylist — that is the point of declaring them.
+    #[serde(default)]
+    pub env: Vec<String>,
 }
 
 /// `[attribution]`: which model ids the commit ledger knows ([`crate::ledger`]).
@@ -717,6 +724,21 @@ mod tests {
         assert_eq!(r.gates[0].paths, vec!["web/".to_string()]);
         assert_eq!(r.deploy["lucina-agentd"].install, "deploy/x.sh");
         assert!(Rules::parse("[merge]\ncargo = 3").is_err());
+    }
+
+    #[test]
+    fn a_deploy_recipe_declares_its_env_names() {
+        let r = Rules::parse(
+            "trunk = \"main\"\n[deploy.ios]\ninstall = \"deploy/x.sh\"\nenv = [\"FAKE_DEPLOY_CERT\", \"DEPLOY_HOST\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            r.deploy["ios"].env,
+            vec!["FAKE_DEPLOY_CERT".to_string(), "DEPLOY_HOST".to_string()]
+        );
+        let r =
+            Rules::parse("trunk = \"main\"\n[deploy.ios]\ninstall = \"deploy/x.sh\"\n").unwrap();
+        assert!(r.deploy["ios"].env.is_empty());
     }
 
     #[test]

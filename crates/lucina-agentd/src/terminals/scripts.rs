@@ -52,23 +52,78 @@ pub fn configs(dir: &Path) -> BTreeMap<String, ScriptConfig> {
     let paseo = setup::read_config(dir);
     if let Some(scripts) = paseo["scripts"].as_object() {
         for (name, entry) in scripts {
-            let Some(command) = entry["command"].as_str().map(str::trim).filter(|c| !c.is_empty()) else { continue };
+            let Some(command) = entry["command"]
+                .as_str()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+            else {
+                continue;
+            };
             let service = entry["type"] == "service";
-            let port = if service { entry["port"].as_f64().filter(|p| p.fract() == 0.0 && (1.0..=65535.0).contains(p)).map(|p| p as u16) } else { None };
-            out.insert(name.clone(), ScriptConfig { name: name.clone(), command: command.to_string(), service, port, health: None, source: "paseo.json" });
+            let port = if service {
+                entry["port"]
+                    .as_f64()
+                    .filter(|p| p.fract() == 0.0 && (1.0..=65535.0).contains(p))
+                    .map(|p| p as u16)
+            } else {
+                None
+            };
+            out.insert(
+                name.clone(),
+                ScriptConfig {
+                    name: name.clone(),
+                    command: command.to_string(),
+                    service,
+                    port,
+                    health: None,
+                    source: "paseo.json",
+                },
+            );
         }
     }
-    let toml: Option<toml::Value> = std::fs::read_to_string(dir.join(LUCINA_CONFIG)).ok().and_then(|t| toml::from_str(&t).ok());
-    if let Some(scripts) = toml.as_ref().and_then(|t| t.get("scripts")).and_then(|s| s.as_table()) {
+    let toml: Option<toml::Value> = std::fs::read_to_string(dir.join(LUCINA_CONFIG))
+        .ok()
+        .and_then(|t| toml::from_str(&t).ok());
+    if let Some(scripts) = toml
+        .as_ref()
+        .and_then(|t| t.get("scripts"))
+        .and_then(|s| s.as_table())
+    {
         for (name, entry) in scripts {
             let get = |k: &str| entry.get(k);
-            let Some(command) = get("cmd").or_else(|| get("command")).and_then(|c| c.as_str()).map(str::trim).filter(|c| !c.is_empty()) else { continue };
+            let Some(command) = get("cmd")
+                .or_else(|| get("command"))
+                .and_then(|c| c.as_str())
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+            else {
+                continue;
+            };
             let port_value = get("port");
-            let port = port_value.and_then(|p| p.as_integer()).and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
+            let port = port_value
+                .and_then(|p| p.as_integer())
+                .and_then(|p| u16::try_from(p).ok())
+                .filter(|p| *p > 0);
             let auto = port_value.and_then(|p| p.as_str()) == Some("auto");
-            let health = get("health").and_then(|h| h.as_str()).filter(|h| h.starts_with('/') && h.len() <= 200).map(str::to_string);
-            let service = port.is_some() || auto || health.is_some() || get("type").and_then(|t| t.as_str()) == Some("service");
-            out.insert(name.clone(), ScriptConfig { name: name.clone(), command: command.to_string(), service, port, health, source: LUCINA_CONFIG });
+            let health = get("health")
+                .and_then(|h| h.as_str())
+                .filter(|h| h.starts_with('/') && h.len() <= 200)
+                .map(str::to_string);
+            let service = port.is_some()
+                || auto
+                || health.is_some()
+                || get("type").and_then(|t| t.as_str()) == Some("service");
+            out.insert(
+                name.clone(),
+                ScriptConfig {
+                    name: name.clone(),
+                    command: command.to_string(),
+                    service,
+                    port,
+                    health,
+                    source: LUCINA_CONFIG,
+                },
+            );
         }
     }
     out
@@ -77,7 +132,11 @@ pub fn configs(dir: &Path) -> BTreeMap<String, ScriptConfig> {
 /// Paseo `toHostnameLabel`.
 fn hostname_label(v: &str) -> String {
     let mut out = String::new();
-    for c in v.to_lowercase().chars().filter(|c| !('\u{300}'..='\u{36f}').contains(c)) {
+    for c in v
+        .to_lowercase()
+        .chars()
+        .filter(|c| !('\u{300}'..='\u{36f}').contains(c))
+    {
         let c = match c {
             'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
             'è' | 'é' | 'ê' | 'ë' => 'e',
@@ -103,7 +162,11 @@ fn hostname_label(v: &str) -> String {
 }
 
 fn sha_hex(s: &str, n: usize) -> String {
-    Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>()[..n].to_string()
+    Sha256::digest(s.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..n]
+        .to_string()
 }
 
 /// Paseo `buildServiceProxyLabel`: `<script>[--<branch>]--<project>`, capped at a DNS label.
@@ -120,14 +183,28 @@ pub fn proxy_label(project_slug: &str, branch: Option<&str>, script: &str) -> St
     let suffix = sha_hex(&label, 8);
     let keep = MAX_DNS_LABEL - suffix.len() - 2;
     let prefix = label[..keep].trim_end_matches('-');
-    format!("{}--{suffix}", if prefix.is_empty() { "svc" } else { prefix })
+    format!(
+        "{}--{suffix}",
+        if prefix.is_empty() { "svc" } else { prefix }
+    )
 }
 
 /// Paseo `deriveProjectServiceSlug`.
 pub fn project_service_slug(root_path: &str, project_id: &str) -> String {
-    let base = Path::new(root_path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let base = Path::new(root_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     let slug = lucina_agents::branch_slug::slugify(&base);
-    format!("{}-{}", if slug.is_empty() { "untitled".into() } else { slug }, sha_hex(project_id, 8))
+    format!(
+        "{}-{}",
+        if slug.is_empty() {
+            "untitled".into()
+        } else {
+            slug
+        },
+        sha_hex(project_id, 8)
+    )
 }
 
 pub fn service_path(workspace_id: &str, script: &str) -> String {
@@ -169,10 +246,22 @@ impl Hub {
     fn urls(&self, ctx: &Ctx, script: &str) -> Urls {
         let cfg = self.config();
         let label = proxy_label(&ctx.project_slug, ctx.branch.as_deref(), script);
-        let local = cfg.listen_port.map(|p| format!("http://{label}.localhost:{p}"));
-        let public = cfg.public_url.as_ref().map(|u| format!("{u}{}", service_path(&ctx.workspace_id, script)));
-        let proxy = public.clone().or_else(|| local.clone()).or_else(|| Some(service_path(&ctx.workspace_id, script)));
-        Urls { local, public, proxy }
+        let local = cfg
+            .listen_port
+            .map(|p| format!("http://{label}.localhost:{p}"));
+        let public = cfg
+            .public_url
+            .as_ref()
+            .map(|u| format!("{u}{}", service_path(&ctx.workspace_id, script)));
+        let proxy = public
+            .clone()
+            .or_else(|| local.clone())
+            .or_else(|| Some(service_path(&ctx.workspace_id, script)));
+        Urls {
+            local,
+            public,
+            proxy,
+        }
     }
 
     /// Paseo's script payloads for a workspace (configured, then orphaned runs), by name.
@@ -193,9 +282,22 @@ impl Hub {
         out
     }
 
-    fn payload(&self, ctx: &Ctx, name: &str, cfg: Option<&ScriptConfig>, run: Option<&Run>) -> Value {
-        let service = cfg.map(|c| c.service).or(run.map(|r| r.service)).unwrap_or(false);
-        let lifecycle = if run.is_some_and(|r| r.running) { "running" } else { "stopped" };
+    fn payload(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        cfg: Option<&ScriptConfig>,
+        run: Option<&Run>,
+    ) -> Value {
+        let service = cfg
+            .map(|c| c.service)
+            .or(run.map(|r| r.service))
+            .unwrap_or(false);
+        let lifecycle = if run.is_some_and(|r| r.running) {
+            "running"
+        } else {
+            "stopped"
+        };
         let common = json!({
             "scriptName": name,
             "lifecycle": lifecycle,
@@ -217,7 +319,10 @@ impl Hub {
         let running = run.filter(|r| r.running);
         let urls = self.urls(ctx, name);
         v["type"] = json!("service");
-        v["hostname"] = json!(format!("{}.localhost", proxy_label(&ctx.project_slug, ctx.branch.as_deref(), name)));
+        v["hostname"] = json!(format!(
+            "{}.localhost",
+            proxy_label(&ctx.project_slug, ctx.branch.as_deref(), name)
+        ));
         v["port"] = json!(running.and_then(|r| r.port).or(cfg.and_then(|c| c.port)));
         v["localProxyUrl"] = json!(urls.local);
         v["publicProxyUrl"] = json!(urls.public);
@@ -229,23 +334,36 @@ impl Hub {
 
     fn publish_scripts(&self, ctx: &Ctx) {
         let scripts = self.scripts(ctx);
-        self.publish(HubEvent::Scripts { workspace_id: ctx.workspace_id.clone(), scripts });
+        self.publish(HubEvent::Scripts {
+            workspace_id: ctx.workspace_id.clone(),
+            scripts,
+        });
     }
 
     fn reserved_ports(&self) -> HashSet<u16> {
-        lock(&self.inner.runs).values().filter(|r| r.running).filter_map(|r| r.port).collect()
+        lock(&self.inner.runs)
+            .values()
+            .filter(|r| r.running)
+            .filter_map(|r| r.port)
+            .collect()
     }
 
     async fn allocate(&self, ctx: &Ctx, cfg: &ScriptConfig) -> Result<u16, String> {
         let reserved = self.reserved_ports();
         if let Some(p) = cfg.port {
             if reserved.contains(&p) {
-                return Err(format!("Port {p} of script '{}' is used by another running script", cfg.name));
+                return Err(format!(
+                    "Port {p} of script '{}' is used by another running script",
+                    cfg.name
+                ));
             }
             return Ok(p);
         }
         let ports = &setup::read_config(&ctx.cwd)["worktree"]["servicePorts"];
-        if let Some(script) = ports["portScript"].as_str().filter(|s| !s.trim().is_empty()) {
+        if let Some(script) = ports["portScript"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+        {
             return port_from_script(script, ctx, &cfg.name, &reserved).await;
         }
         let range = match ports["range"].as_str() {
@@ -256,14 +374,31 @@ impl Hub {
     }
 
     /// Start a configured script. `owner` and `agent` go on its terminal.
-    pub async fn start_script(&self, ctx: &Ctx, name: &str, owner: &str, agent: Option<String>) -> Result<Value, String> {
-        let cfg = configs(&ctx.cwd).remove(name).ok_or_else(|| format!("Script '{name}' is not configured in paseo.json or {LUCINA_CONFIG}"))?;
+    pub async fn start_script(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        owner: &str,
+        agent: Option<String>,
+    ) -> Result<Value, String> {
+        let cfg = configs(&ctx.cwd).remove(name).ok_or_else(|| {
+            format!("Script '{name}' is not configured in paseo.json or {LUCINA_CONFIG}")
+        })?;
         let key = (ctx.workspace_id.clone(), name.to_string());
         if lock(&self.inner.runs).get(&key).is_some_and(|r| r.running) {
             return Err(format!("Script '{name}' is already running"));
         }
-        let port = if cfg.service { Some(self.allocate(ctx, &cfg).await?) } else { None };
-        let mut env = setup::env(&ctx.source, &ctx.cwd, ctx.branch.as_deref().unwrap_or_default(), ctx.worktree_port);
+        let port = if cfg.service {
+            Some(self.allocate(ctx, &cfg).await?)
+        } else {
+            None
+        };
+        let mut env = setup::env(
+            &ctx.source,
+            &ctx.cwd,
+            ctx.branch.as_deref().unwrap_or_default(),
+            ctx.worktree_port,
+        );
         env.extend([
             ("PASEO_SCRIPTNAME".into(), name.to_string()),
             ("LUCINA_SCRIPT_NAME".into(), name.to_string()),
@@ -271,12 +406,17 @@ impl Hub {
         if let Some(p) = port {
             let mut peers: Vec<(String, u16)> = lock(&self.inner.runs)
                 .iter()
-                .filter(|((ws, n), r)| ws == &ctx.workspace_id && n != name && r.running && r.port.is_some())
+                .filter(|((ws, n), r)| {
+                    ws == &ctx.workspace_id && n != name && r.running && r.port.is_some()
+                })
                 .map(|((_, n), r)| (n.clone(), r.port.unwrap_or_default()))
                 .collect();
             peers.push((name.to_string(), p));
             let envs: Vec<String> = peers.iter().map(|(n, _)| service_env_name(n)).collect();
-            if let Some(dup) = envs.iter().find(|e| envs.iter().filter(|x| x == e).count() > 1) {
+            if let Some(dup) = envs
+                .iter()
+                .find(|e| envs.iter().filter(|x| x == e).count() > 1)
+            {
                 return Err(format!("Service env name collision for {dup}"));
             }
             let url = self.urls(ctx, name).proxy.unwrap_or_default();
@@ -287,7 +427,10 @@ impl Hub {
                 ("PORT".into(), p.to_string()),
                 ("PASEO_URL".into(), url.clone()),
                 ("LUCINA_SERVICE_URL".into(), url),
-                ("LUCINA_SERVICE_PATH".into(), service_path(&ctx.workspace_id, name)),
+                (
+                    "LUCINA_SERVICE_PATH".into(),
+                    service_path(&ctx.workspace_id, name),
+                ),
             ]);
             for (n, port) in &peers {
                 let e = service_env_name(n);
@@ -301,9 +444,23 @@ impl Hub {
         let (program, args) = match self.config().cpu_quota {
             Some(q) => (
                 "systemd-run".to_string(),
-                vec!["--user".into(), "--scope".into(), "--quiet".into(), "--collect".into(), "-p".into(), format!("CPUQuota={q}"), "--".into(), "/bin/sh".into(), "-c".into(), cfg.command.clone()],
+                vec![
+                    "--user".into(),
+                    "--scope".into(),
+                    "--quiet".into(),
+                    "--collect".into(),
+                    "-p".into(),
+                    format!("CPUQuota={q}"),
+                    "--".into(),
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    cfg.command.clone(),
+                ],
             ),
-            None => ("/bin/sh".to_string(), vec!["-c".into(), cfg.command.clone()]),
+            None => (
+                "/bin/sh".to_string(),
+                vec!["-c".into(), cfg.command.clone()],
+            ),
         };
         let term = self.spawn(Spawn {
             name: name.to_string(),
@@ -319,25 +476,50 @@ impl Hub {
         })?;
         lock(&self.inner.runs).insert(
             key,
-            Run { service: cfg.service, running: term.running(), terminal_id: term.id.clone(), exit_code: term.exit_code().flatten(), port, health_path: cfg.health.clone(), health: None, ctx: ctx.clone() },
+            Run {
+                service: cfg.service,
+                running: term.running(),
+                terminal_id: term.id.clone(),
+                exit_code: term.exit_code().flatten(),
+                port,
+                health_path: cfg.health.clone(),
+                health: None,
+                ctx: ctx.clone(),
+            },
         );
         self.publish_scripts(ctx);
-        self.scripts(ctx).into_iter().find(|s| s["scriptName"] == name).ok_or_else(|| format!("Script '{name}' did not produce a status record"))
+        self.scripts(ctx)
+            .into_iter()
+            .find(|s| s["scriptName"] == name)
+            .ok_or_else(|| format!("Script '{name}' did not produce a status record"))
     }
 
     pub async fn stop_script(&self, ctx: &Ctx, name: &str) -> Result<Value, String> {
-        let run = lock(&self.inner.runs).get(&(ctx.workspace_id.clone(), name.to_string())).cloned();
-        let run = run.filter(|r| r.running).ok_or_else(|| format!("Script '{name}' is not running"))?;
-        let Some(term) = self.get(&run.terminal_id) else { return Err(format!("Terminal for script '{name}' is no longer available")) };
+        let run = lock(&self.inner.runs)
+            .get(&(ctx.workspace_id.clone(), name.to_string()))
+            .cloned();
+        let run = run
+            .filter(|r| r.running)
+            .ok_or_else(|| format!("Script '{name}' is not running"))?;
+        let Some(term) = self.get(&run.terminal_id) else {
+            return Err(format!(
+                "Terminal for script '{name}' is no longer available"
+            ));
+        };
         super::stop_term(&term).await;
         self.mark_stopped(&term.id, term.exit_code().flatten());
         self.publish_scripts(ctx);
-        self.scripts(ctx).into_iter().find(|s| s["scriptName"] == name).ok_or_else(|| format!("Script '{name}' did not produce a status record"))
+        self.scripts(ctx)
+            .into_iter()
+            .find(|s| s["scriptName"] == name)
+            .ok_or_else(|| format!("Script '{name}' did not produce a status record"))
     }
 
     fn mark_stopped(&self, terminal_id: &str, code: Option<i32>) -> Option<Ctx> {
         let mut runs = lock(&self.inner.runs);
-        let run = runs.values_mut().find(|r| r.terminal_id == terminal_id && r.running)?;
+        let run = runs
+            .values_mut()
+            .find(|r| r.terminal_id == terminal_id && r.running)?;
         run.running = false;
         run.exit_code = code;
         run.health = None;
@@ -352,7 +534,10 @@ impl Hub {
 
     /// The port of a running service of a workspace.
     pub fn service_port(&self, workspace_id: &str, name: &str) -> Option<u16> {
-        lock(&self.inner.runs).get(&(workspace_id.to_string(), name.to_string())).filter(|r| r.running && r.service).and_then(|r| r.port)
+        lock(&self.inner.runs)
+            .get(&(workspace_id.to_string(), name.to_string()))
+            .filter(|r| r.running && r.service)
+            .and_then(|r| r.port)
     }
 
     /// Running services by `.localhost` label (the host-routed proxy).
@@ -360,12 +545,17 @@ impl Hub {
         lock(&self.inner.runs)
             .iter()
             .filter(|(_, r)| r.running && r.service)
-            .find(|((_, name), r)| proxy_label(&r.ctx.project_slug, r.ctx.branch.as_deref(), name) == label)
+            .find(|((_, name), r)| {
+                proxy_label(&r.ctx.project_slug, r.ctx.branch.as_deref(), name) == label
+            })
             .and_then(|(_, r)| r.port)
     }
 
     /// Running services of a workspace: `(name, port, terminal, health)`.
-    pub fn running_services(&self, workspace_id: &str) -> Vec<(String, u16, String, Option<&'static str>)> {
+    pub fn running_services(
+        &self,
+        workspace_id: &str,
+    ) -> Vec<(String, u16, String, Option<&'static str>)> {
         let mut v: Vec<_> = lock(&self.inner.runs)
             .iter()
             .filter(|((ws, _), r)| ws == workspace_id && r.running && r.service)
@@ -383,12 +573,20 @@ impl Hub {
     }
 
     pub(super) async fn check_health(&self) {
-        let targets: Vec<((String, String), u16, Option<String>)> =
-            lock(&self.inner.runs).iter().filter(|(_, r)| r.running && r.service).filter_map(|(k, r)| Some((k.clone(), r.port?, r.health_path.clone()))).collect();
+        let targets: Vec<((String, String), u16, Option<String>)> = lock(&self.inner.runs)
+            .iter()
+            .filter(|(_, r)| r.running && r.service)
+            .filter_map(|(k, r)| Some((k.clone(), r.port?, r.health_path.clone())))
+            .collect();
         for (key, port, path) in targets {
             let healthy = match &path {
                 Some(p) => http_ok(port, p).await,
-                None => tokio::time::timeout(Duration::from_secs(1), tokio::net::TcpStream::connect(("127.0.0.1", port))).await.is_ok_and(|r| r.is_ok()),
+                None => tokio::time::timeout(
+                    Duration::from_secs(1),
+                    tokio::net::TcpStream::connect(("127.0.0.1", port)),
+                )
+                .await
+                .is_ok_and(|r| r.is_ok()),
             };
             let health = if healthy { "healthy" } else { "unhealthy" };
             let ctx = {
@@ -409,8 +607,18 @@ impl Hub {
 }
 
 async fn http_ok(port: u16, path: &str) -> bool {
-    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(2)).redirect(reqwest::redirect::Policy::none()).build() else { return false };
-    client.get(format!("http://127.0.0.1:{port}{path}")).send().await.is_ok_and(|r| r.status().as_u16() < 400)
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(format!("http://127.0.0.1:{port}{path}"))
+        .send()
+        .await
+        .is_ok_and(|r| r.status().as_u16() < 400)
 }
 
 /// Paseo `normalizeServiceEnvName`.
@@ -429,7 +637,10 @@ pub fn service_env_name(name: &str) -> String {
 fn parse_range(r: &str) -> Result<(u16, u16), String> {
     let bad = || format!("Invalid service port range '{r}'");
     let (a, b) = r.split_once('-').ok_or_else(bad)?;
-    let (a, b): (u16, u16) = (a.trim().parse().map_err(|_| bad())?, b.trim().parse().map_err(|_| bad())?);
+    let (a, b): (u16, u16) = (
+        a.trim().parse().map_err(|_| bad())?,
+        b.trim().parse().map_err(|_| bad())?,
+    );
     if a == 0 || a > b {
         return Err(bad());
     }
@@ -450,7 +661,12 @@ pub fn port_in_range((a, b): (u16, u16), reserved: &HashSet<u16>) -> Result<u16,
         .ok_or_else(|| format!("No available service port in configured range {a}-{b}"))
 }
 
-async fn port_from_script(script: &str, ctx: &Ctx, name: &str, reserved: &HashSet<u16>) -> Result<u16, String> {
+async fn port_from_script(
+    script: &str,
+    ctx: &Ctx,
+    name: &str,
+    reserved: &HashSet<u16>,
+) -> Result<u16, String> {
     let fail = |d: String| format!("Service port script '{script}' failed: {d}");
     let branch = ctx.branch.clone().unwrap_or_default();
     let cwd = ctx.cwd.display().to_string();
@@ -459,6 +675,8 @@ async fn port_from_script(script: &str, ctx: &Ctx, name: &str, reserved: &HashSe
         tokio::process::Command::new(script)
             .args([name, &ctx.workspace_id, &branch, &cwd])
             .current_dir(&ctx.cwd)
+            .env_clear()
+            .envs(crate::env::scrubbed_env(&[]))
             .env("PASEO_SCRIPTNAME", name)
             .env("PASEO_WORKSPACE_ID", &ctx.workspace_id)
             .env("PASEO_BRANCH_NAME", &branch)
@@ -474,13 +692,21 @@ async fn port_from_script(script: &str, ctx: &Ctx, name: &str, reserved: &HashSe
     if !out.status.success() {
         return Err(fail(format!("exit {}", out.status.code().unwrap_or(-1))));
     }
-    let text = String::from_utf8_lossy(&out.stdout[..out.stdout.len().min(1024)]).trim().to_string();
+    let text = String::from_utf8_lossy(&out.stdout[..out.stdout.len().min(1024)])
+        .trim()
+        .to_string();
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("Service port script '{script}' must print exactly one TCP port"));
+        return Err(format!(
+            "Service port script '{script}' must print exactly one TCP port"
+        ));
     }
-    let port: u16 = text.parse().ok().filter(|p| *p > 0).ok_or_else(|| format!("Service port script '{script}' returned invalid TCP port '{text}'"))?;
+    let port: u16 = text.parse().ok().filter(|p| *p > 0).ok_or_else(|| {
+        format!("Service port script '{script}' returned invalid TCP port '{text}'")
+    })?;
     if reserved.contains(&port) {
-        return Err(format!("Service port script '{script}' returned reserved port {port}"));
+        return Err(format!(
+            "Service port script '{script}' returned reserved port {port}"
+        ));
     }
     Ok(port)
 }
@@ -491,7 +717,10 @@ mod tests {
 
     #[test]
     fn labels_and_names_follow_paseo() {
-        assert_eq!(proxy_label("secretaryios-1a2b3c4d", Some("feat/x"), "web"), "web--feat-x--secretaryios-1a2b3c4d");
+        assert_eq!(
+            proxy_label("secretaryios-1a2b3c4d", Some("feat/x"), "web"),
+            "web--feat-x--secretaryios-1a2b3c4d"
+        );
         assert_eq!(proxy_label("p", Some("main"), "Web App"), "web-app--p");
         assert_eq!(proxy_label("p", None, "--"), "untitled--p");
         let long = proxy_label(&"x".repeat(80), None, "web");
@@ -512,9 +741,16 @@ mod tests {
         let a = port_in_range((4100, 4999), &HashSet::new()).unwrap();
         assert!((4100..=4999).contains(&a));
         // Reserved ports are skipped. An ephemeral port, because other tests probe 4100-4999.
-        let open = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let open = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let next = open.saturating_sub(1);
-        assert_eq!(port_in_range((next, open), &HashSet::from([next])).unwrap(), open);
+        assert_eq!(
+            port_in_range((next, open), &HashSet::from([next])).unwrap(),
+            open
+        );
     }
 
     #[test]
@@ -533,7 +769,14 @@ mod tests {
         assert!(c["web"].service);
         assert_eq!(c["lint"].command, "cargo clippy");
         assert!(!c["lint"].service);
-        assert_eq!((c["api"].service, c["api"].health.as_deref(), c["api"].source), (true, Some("/health"), LUCINA_CONFIG));
+        assert_eq!(
+            (
+                c["api"].service,
+                c["api"].health.as_deref(),
+                c["api"].source
+            ),
+            (true, Some("/health"), LUCINA_CONFIG)
+        );
         assert!(!c["docs"].service);
     }
 }

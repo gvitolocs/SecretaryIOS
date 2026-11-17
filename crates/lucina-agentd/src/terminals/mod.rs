@@ -73,9 +73,21 @@ pub struct TerminalView {
 #[derive(Debug, Clone)]
 pub enum HubEvent {
     Terminal(Box<TerminalView>),
-    Removed { terminal_id: String, workspace_id: String },
-    Scripts { workspace_id: String, scripts: Vec<serde_json::Value> },
-    Attention { terminal_id: String, workspace_id: String, reason: String, title: String, body: String },
+    Removed {
+        terminal_id: String,
+        workspace_id: String,
+    },
+    Scripts {
+        workspace_id: String,
+        scripts: Vec<serde_json::Value>,
+    },
+    Attention {
+        terminal_id: String,
+        workspace_id: String,
+        reason: String,
+        title: String,
+        body: String,
+    },
 }
 
 pub type Publish = Arc<dyn Fn(HubEvent) + Send + Sync>;
@@ -101,14 +113,24 @@ pub struct Spawn {
 #[derive(Debug, Clone)]
 pub enum Frame {
     /// Raw bytes; `end` is the offset after them.
-    Output { end: u64, bytes: Arc<Vec<u8>> },
-    Exit { code: Option<i32> },
+    Output {
+        end: u64,
+        bytes: Arc<Vec<u8>>,
+    },
+    Exit {
+        code: Option<i32>,
+    },
 }
 
 /// Where a viewer starts.
 pub enum Start {
     /// The screen as it is now (ANSI), at `offset`.
-    Snapshot { rows: u16, cols: u16, data: String, offset: u64 },
+    Snapshot {
+        rows: u16,
+        cols: u16,
+        data: String,
+        offset: u64,
+    },
     /// The bytes after the viewer's offset.
     Replay { bytes: Vec<u8>, end: u64 },
 }
@@ -182,7 +204,11 @@ impl Term {
             rows: st.rows,
             cols: st.cols,
             pid: self.pid,
-            status: if st.exit.is_none() { "running" } else { "exited" },
+            status: if st.exit.is_none() {
+                "running"
+            } else {
+                "exited"
+            },
             exit_code: st.exit.flatten(),
             activity: st.activity.clone(),
             ports,
@@ -202,7 +228,9 @@ impl Term {
     }
 
     pub fn input_mode(&self) -> keys::InputMode {
-        keys::InputMode { application_cursor: lock(&self.screen).screen().application_cursor() }
+        keys::InputMode {
+            application_cursor: lock(&self.screen).screen().application_cursor(),
+        }
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
@@ -210,12 +238,21 @@ impl Term {
             return Err(format!("Terminal {} has exited", self.id));
         }
         let mut w = lock(&self.writer);
-        w.write_all(data).and_then(|_| w.flush()).map_err(|e| e.to_string())
+        w.write_all(data)
+            .and_then(|_| w.flush())
+            .map_err(|e| e.to_string())
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
         let (rows, cols) = (rows.clamp(2, 500), cols.clamp(10, 1000));
-        lock(&self.master).resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
+        lock(&self.master)
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
         lock(&self.screen).set_size(rows, cols);
         let mut st = lock(&self.state);
         st.rows = rows;
@@ -227,7 +264,12 @@ impl Term {
     /// without trailing blanks; `start`/`end` are line indexes (negative counts from
     /// the end), clamped. `ansi` keeps colours and attributes (Paseo's cells carry
     /// none, so its `--ansi` is plain text too).
-    pub fn capture(&self, start: Option<i64>, end: Option<i64>, ansi: bool) -> (Vec<String>, usize) {
+    pub fn capture(
+        &self,
+        start: Option<i64>,
+        end: Option<i64>,
+        ansi: bool,
+    ) -> (Vec<String>, usize) {
         let all = {
             let mut p = lock(&self.screen);
             all_lines(&mut p, ansi)
@@ -266,7 +308,15 @@ impl Term {
         let p = lock(&self.screen);
         let (rows, cols) = p.screen().size();
         let data = String::from_utf8_lossy(&p.screen().state_formatted()).to_string();
-        (Start::Snapshot { rows, cols, data, offset: end }, rx)
+        (
+            Start::Snapshot {
+                rows,
+                cols,
+                data,
+                offset: end,
+            },
+            rx,
+        )
     }
 
     pub fn exited(&self) -> watch::Receiver<bool> {
@@ -321,7 +371,13 @@ pub struct Config {
 impl Default for Config {
     /// No scope, no public URL; uploads under the temp directory (tests).
     fn default() -> Self {
-        Config { uploads: std::env::temp_dir().join("lucina-agentd-terminal-uploads"), socket: None, cpu_quota: None, public_url: None, listen_port: None }
+        Config {
+            uploads: std::env::temp_dir().join("lucina-agentd-terminal-uploads"),
+            socket: None,
+            cpu_quota: None,
+            public_url: None,
+            listen_port: None,
+        }
     }
 }
 
@@ -331,20 +387,29 @@ impl Config {
         let cpu_quota = match scope.as_str() {
             "off" | "0" | "false" => None,
             _ if crate::process::resolve_program("systemd-run").is_none() => None,
-            _ => Some(std::env::var("LUCINA_AGENTD_SCRIPT_CPU_QUOTA").ok().filter(|q| valid_quota(q)).unwrap_or_else(|| "200%".into())),
+            _ => Some(
+                std::env::var("LUCINA_AGENTD_SCRIPT_CPU_QUOTA")
+                    .ok()
+                    .filter(|q| valid_quota(q))
+                    .unwrap_or_else(|| "200%".into()),
+            ),
         };
         Config {
             uploads: state_dir.join("terminal-uploads"),
             socket: None,
             cpu_quota,
-            public_url: std::env::var("LUCINA_AGENTD_PUBLIC_URL").ok().map(|u| u.trim_end_matches('/').to_string()).filter(|u| u.starts_with("https://") || u.starts_with("http://")),
+            public_url: std::env::var("LUCINA_AGENTD_PUBLIC_URL")
+                .ok()
+                .map(|u| u.trim_end_matches('/').to_string())
+                .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
             listen_port: None,
         }
     }
 }
 
 fn valid_quota(q: &str) -> bool {
-    q.strip_suffix('%').is_some_and(|n| !n.is_empty() && n.len() <= 5 && n.bytes().all(|b| b.is_ascii_digit()))
+    q.strip_suffix('%')
+        .is_some_and(|n| !n.is_empty() && n.len() <= 5 && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The terminals and scripts.
@@ -367,17 +432,31 @@ fn new_id() -> String {
 
 /// `lagent` next to the running binary (the daemon's install dir), else on `PATH`.
 fn hook_cli() -> Option<PathBuf> {
-    let beside = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("lagent"))).filter(|p| p.is_file());
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.join("lagent")))
+        .filter(|p| p.is_file());
     beside.or_else(|| crate::process::resolve_program("lagent"))
 }
 
 fn default_shell() -> String {
-    std::env::var("SHELL").ok().filter(|s| s.starts_with('/') && Path::new(s).exists()).unwrap_or_else(|| "/bin/bash".into())
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| s.starts_with('/') && Path::new(s).exists())
+        .unwrap_or_else(|| "/bin/bash".into())
 }
 
 impl Hub {
     pub fn new(config: Config, registry: Option<Registry>, publish: Publish) -> Self {
-        Hub { inner: Arc::new(Inner { terms: Mutex::new(BTreeMap::new()), runs: Mutex::new(HashMap::new()), publish, registry, config: Mutex::new(config) }) }
+        Hub {
+            inner: Arc::new(Inner {
+                terms: Mutex::new(BTreeMap::new()),
+                runs: Mutex::new(HashMap::new()),
+                publish,
+                registry,
+                config: Mutex::new(config),
+            }),
+        }
     }
 
     pub fn config(&self) -> Config {
@@ -411,28 +490,55 @@ impl Hub {
             return Some(t.clone());
         }
         let q = query.to_lowercase();
-        let one = |v: Vec<&Arc<Term>>| if v.len() == 1 { Some(v[0].clone()) } else { None };
-        let prefix: Vec<&Arc<Term>> = candidates.iter().filter(|t| t.id.to_lowercase().starts_with(&q)).collect();
+        let one = |v: Vec<&Arc<Term>>| {
+            if v.len() == 1 {
+                Some(v[0].clone())
+            } else {
+                None
+            }
+        };
+        let prefix: Vec<&Arc<Term>> = candidates
+            .iter()
+            .filter(|t| t.id.to_lowercase().starts_with(&q))
+            .collect();
         if !prefix.is_empty() {
             return one(prefix);
         }
-        one(candidates.iter().filter(|t| t.name.to_lowercase() == q).collect())
-            .or_else(|| one(candidates.iter().filter(|t| t.name.to_lowercase().contains(&q)).collect()))
+        one(candidates
+            .iter()
+            .filter(|t| t.name.to_lowercase() == q)
+            .collect())
+        .or_else(|| {
+            one(candidates
+                .iter()
+                .filter(|t| t.name.to_lowercase().contains(&q))
+                .collect())
+        })
     }
 
     /// The session leaders of the running terminals (agent processes, for [`crate::peer`]).
     pub fn session_pids(&self) -> HashSet<u32> {
-        lock(&self.inner.terms).values().filter(|t| t.running()).filter_map(|t| t.pid).collect()
+        lock(&self.inner.terms)
+            .values()
+            .filter(|t| t.running())
+            .filter_map(|t| t.pid)
+            .collect()
     }
 
     pub fn by_pid(&self, pid: u32) -> Option<Arc<Term>> {
-        lock(&self.inner.terms).values().find(|t| t.pid == Some(pid)).cloned()
+        lock(&self.inner.terms)
+            .values()
+            .find(|t| t.pid == Some(pid))
+            .cloned()
     }
 
     /// Views with fresh ports (one `/proc` scan for all of them).
     pub fn views(&self, terms: &[Arc<Term>]) -> Vec<TerminalView> {
         let table = Table::read();
-        terms.iter().map(|t| t.view_with(self.ports_of(&table, t))).collect()
+        terms
+            .iter()
+            .map(|t| t.view_with(self.ports_of(&table, t)))
+            .collect()
     }
 
     fn ports_of(&self, table: &Table, t: &Term) -> Vec<Listen> {
@@ -445,13 +551,34 @@ impl Hub {
     pub fn spawn(&self, s: Spawn) -> Result<Arc<Term>, String> {
         let id = new_id();
         let config = self.config();
-        let rows = if s.rows == 0 { DEFAULT_ROWS } else { s.rows.clamp(2, 500) };
-        let cols = if s.cols == 0 { DEFAULT_COLS } else { s.cols.clamp(10, 1000) };
-        let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| format!("cannot open a terminal: {e}"))?;
+        let rows = if s.rows == 0 {
+            DEFAULT_ROWS
+        } else {
+            s.rows.clamp(2, 500)
+        };
+        let cols = if s.cols == 0 {
+            DEFAULT_COLS
+        } else {
+            s.cols.clamp(10, 1000)
+        };
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("cannot open a terminal: {e}"))?;
         let program = s.program.clone().unwrap_or_else(default_shell);
         let mut cmd = CommandBuilder::new(&program);
         cmd.args(&s.args);
         cmd.cwd(&s.cwd);
+        // The terminal gets the built environment (the allowlist from agentd's own), not
+        // whatever agentd inherited; everything set below goes on top of it.
+        cmd.env_clear();
+        for (k, v) in crate::env::scrubbed_env(&[]) {
+            cmd.env(k, v);
+        }
         cmd.env_remove(crate::notify::TOKEN_ENV);
         cmd.env_remove("LUCINA_AGENT_ID");
         cmd.env("TERM", "xterm-256color");
@@ -475,12 +602,18 @@ impl Hub {
             cmd.env("LUCINA_HOOK_CLI", &cli);
         }
         if let Some(port) = config.listen_port {
-            cmd.env("PASEO_TERMINAL_ACTIVITY_URL", format!("http://127.0.0.1:{port}/terminal-activity"));
+            cmd.env(
+                "PASEO_TERMINAL_ACTIVITY_URL",
+                format!("http://127.0.0.1:{port}/terminal-activity"),
+            );
         }
         for (k, v) in &s.env {
             cmd.env(k, v);
         }
-        let child = pair.slave.spawn_command(cmd).map_err(|e| format!("cannot start {program}: {e}"))?;
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("cannot start {program}: {e}"))?;
         drop(pair.slave);
         let pid = child.process_id();
         if let (Some(r), Some(p)) = (&self.inner.registry, pid) {
@@ -488,13 +621,20 @@ impl Hub {
         }
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-        let mut command = std::iter::once(program.clone()).chain(s.args.iter().cloned()).collect::<Vec<_>>().join(" ");
+        let mut command = std::iter::once(program.clone())
+            .chain(s.args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
         if command.len() > 500 {
             command = format!("{}…", command.chars().take(500).collect::<String>());
         }
         let term = Arc::new(Term {
             id: id.clone(),
-            name: if s.name.trim().is_empty() { format!("Terminal {}", lock(&self.inner.terms).len() + 1) } else { s.name.trim().chars().take(80).collect() },
+            name: if s.name.trim().is_empty() {
+                format!("Terminal {}", lock(&self.inner.terms).len() + 1)
+            } else {
+                s.name.trim().chars().take(80).collect()
+            },
             cwd: s.cwd.display().to_string(),
             workspace_id: s.workspace_id.clone(),
             agent_id: s.agent_id.clone(),
@@ -504,9 +644,20 @@ impl Hub {
             created_at: now_iso(),
             pid,
             token,
-            state: Mutex::new(State { title: s.name.trim().chars().take(80).collect(), rows, cols, exit: None, exited_at: None, activity: None, ports: Vec::new() }),
+            state: Mutex::new(State {
+                title: s.name.trim().chars().take(80).collect(),
+                rows,
+                cols,
+                exit: None,
+                exited_at: None,
+                activity: None,
+                ports: Vec::new(),
+            }),
             screen: Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)),
-            out: Mutex::new(Out { buf: VecDeque::new(), start: 0 }),
+            out: Mutex::new(Out {
+                buf: VecDeque::new(),
+                start: 0,
+            }),
             tx: broadcast::channel(256).0,
             exited: watch::channel(false).0,
             writer: Mutex::new(writer),
@@ -542,7 +693,10 @@ impl Hub {
                         out.buf.drain(..over);
                         out.start += over as u64;
                     }
-                    let _ = term.tx.send(Frame::Output { end: out.end(), bytes: Arc::new(bytes.to_vec()) });
+                    let _ = term.tx.send(Frame::Output {
+                        end: out.end(),
+                        bytes: Arc::new(bytes.to_vec()),
+                    });
                 }
             })
             .ok();
@@ -553,7 +707,13 @@ impl Hub {
         std::thread::Builder::new()
             .name(format!("pty-wait-{}", term.id))
             .spawn(move || {
-                let code = child.wait().ok().and_then(|s| if s.signal().is_some() { None } else { i32::try_from(s.exit_code()).ok() });
+                let code = child.wait().ok().and_then(|s| {
+                    if s.signal().is_some() {
+                        None
+                    } else {
+                        i32::try_from(s.exit_code()).ok()
+                    }
+                });
                 // Give the reader a moment for the last output.
                 std::thread::sleep(Duration::from_millis(50));
                 {
@@ -577,34 +737,65 @@ impl Hub {
     /// the owner's shell with its command typed in followed by `\r`.
     pub fn open_configured(&self, workspace_id: &str, cwd: &Path) {
         let cfg = crate::workspaces::setup::read_config(cwd);
-        for (i, t) in cfg["worktree"]["terminals"].as_array().into_iter().flatten().enumerate() {
-            let Some(command) = t["command"].as_str().map(str::trim).filter(|c| !c.is_empty()) else { continue };
-            let name = t["name"].as_str().map(str::to_string).unwrap_or_else(|| format!("Terminal {}", i + 1));
-            let spawned = self.spawn(Spawn { name, cwd: cwd.to_path_buf(), workspace_id: workspace_id.to_string(), owner: "owner".into(), ..Spawn::default() });
+        for (i, t) in cfg["worktree"]["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let Some(command) = t["command"]
+                .as_str()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+            else {
+                continue;
+            };
+            let name = t["name"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Terminal {}", i + 1));
+            let spawned = self.spawn(Spawn {
+                name,
+                cwd: cwd.to_path_buf(),
+                workspace_id: workspace_id.to_string(),
+                owner: "owner".into(),
+                ..Spawn::default()
+            });
             match spawned {
                 Ok(term) => {
                     if let Err(e) = term.write(format!("{command}\r").as_bytes()) {
                         tracing::warn!(workspace = workspace_id, error = %e, "worktree terminal: cannot type its command");
                     }
                 }
-                Err(e) => tracing::warn!(workspace = workspace_id, error = %e, "worktree terminal did not start"),
+                Err(e) => {
+                    tracing::warn!(workspace = workspace_id, error = %e, "worktree terminal did not start")
+                }
             }
         }
     }
 
     /// Kill a terminal's whole session and forget it. `true` when it existed.
     pub async fn kill(&self, id: &str) -> bool {
-        let Some(term) = self.get(id) else { return false };
+        let Some(term) = self.get(id) else {
+            return false;
+        };
         stop_term(&term).await;
         lock(&self.inner.terms).remove(id);
         let _ = std::fs::remove_dir_all(self.config().uploads.join(id));
-        self.publish(HubEvent::Removed { terminal_id: id.to_string(), workspace_id: term.workspace_id.clone() });
+        self.publish(HubEvent::Removed {
+            terminal_id: id.to_string(),
+            workspace_id: term.workspace_id.clone(),
+        });
         true
     }
 
     /// Kill every terminal `pick` selects (agent stop, workspace archive, shutdown).
     pub async fn kill_where(&self, pick: impl Fn(&Term) -> bool) -> usize {
-        let ids: Vec<String> = lock(&self.inner.terms).values().filter(|t| pick(t)).map(|t| t.id.clone()).collect();
+        let ids: Vec<String> = lock(&self.inner.terms)
+            .values()
+            .filter(|t| pick(t))
+            .map(|t| t.id.clone())
+            .collect();
         let mut set = tokio::task::JoinSet::new();
         for id in &ids {
             let hub = self.clone();
@@ -630,7 +821,13 @@ impl Hub {
     /// `lagent hooks`: a terminal's agent CLI reports running / idle / needs-input.
     pub fn activity(&self, id: &str, token: &str, state: &str) -> bool {
         let Some(t) = self.get(id) else { return false };
-        if t.token.len() != token.len() || !t.token.bytes().zip(token.bytes()).fold(true, |ok, (a, b)| ok & (a == b)) {
+        if t.token.len() != token.len()
+            || !t
+                .token
+                .bytes()
+                .zip(token.bytes())
+                .fold(true, |ok, (a, b)| ok & (a == b))
+        {
             return false;
         }
         if !matches!(state, "running" | "idle" | "needs-input") {
@@ -660,11 +857,22 @@ impl Hub {
     /// Save a pasted or dropped file and type its quoted path into the terminal.
     pub fn paste(&self, t: &Term, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
         if bytes.len() > PASTE_LIMIT {
-            return Err(format!("Pasted files are limited to {} MB", PASTE_LIMIT >> 20));
+            return Err(format!(
+                "Pasted files are limited to {} MB",
+                PASTE_LIMIT >> 20
+            ));
         }
-        let clean: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).take(80).collect();
+        let clean: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+            .take(80)
+            .collect();
         let clean = clean.trim_start_matches('.');
-        let clean = if clean.is_empty() { "paste.bin".to_string() } else { clean.to_string() };
+        let clean = if clean.is_empty() {
+            "paste.bin".to_string()
+        } else {
+            clean.to_string()
+        };
         let dir = self.config().uploads.join(&t.id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f");
@@ -684,10 +892,13 @@ impl Hub {
         let me = self.clone();
         let scanned = tokio::task::spawn_blocking(move || {
             let table = Table::read();
-            running.into_iter().map(|t| {
-                let ports = me.ports_of(&table, &t);
-                (t, ports)
-            }).collect::<Vec<_>>()
+            running
+                .into_iter()
+                .map(|t| {
+                    let ports = me.ports_of(&table, &t);
+                    (t, ports)
+                })
+                .collect::<Vec<_>>()
         })
         .await
         .unwrap_or_default();
@@ -724,7 +935,10 @@ async fn stop_term(term: &Term) {
     let mut exited = term.exited();
     procs::signal_session(pid, "HUP");
     procs::signal_session(pid, "TERM");
-    if tokio::time::timeout(KILL_GRACE, exited.wait_for(|e| *e)).await.is_err() {
+    if tokio::time::timeout(KILL_GRACE, exited.wait_for(|e| *e))
+        .await
+        .is_err()
+    {
         procs::signal_session(pid, "KILL");
         let _ = lock(&term.killer).kill();
         let _ = tokio::time::timeout(Duration::from_secs(2), exited.wait_for(|e| *e)).await;
@@ -746,7 +960,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
-        let hub = Hub::new(Config { uploads: dir.path().join("up"), ..Config::default() }, None, Arc::new(move |e| lock(&s).push(e)));
+        let hub = Hub::new(
+            Config {
+                uploads: dir.path().join("up"),
+                ..Config::default()
+            },
+            None,
+            Arc::new(move |e| lock(&s).push(e)),
+        );
         (hub, dir, seen)
     }
 
@@ -757,49 +978,104 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("timed out waiting for {what}: {:?}", t.capture(None, None, false).0);
+        panic!(
+            "timed out waiting for {what}: {:?}",
+            t.capture(None, None, false).0
+        );
     }
 
     #[tokio::test]
     async fn keys_capture_resize_and_kill() {
         let (hub, dir, seen) = hub();
         let t = hub
-            .spawn(Spawn { cwd: dir.path().into(), workspace_id: "wks_1".into(), owner: "owner".into(), program: Some("/bin/sh".into()), ..Spawn::default() })
+            .spawn(Spawn {
+                cwd: dir.path().into(),
+                workspace_id: "wks_1".into(),
+                owner: "owner".into(),
+                program: Some("/bin/sh".into()),
+                ..Spawn::default()
+            })
             .unwrap();
-        until("a prompt", &t, || t.capture(None, None, false).0.iter().any(|l| l.starts_with('$'))).await;
-        let line = keys::resolve("echo lucina-$((6*7))", false, t.input_mode()) + &keys::resolve("Enter", false, t.input_mode());
+        until("a prompt", &t, || {
+            t.capture(None, None, false)
+                .0
+                .iter()
+                .any(|l| l.starts_with('$'))
+        })
+        .await;
+        let line = keys::resolve("echo lucina-$((6*7))", false, t.input_mode())
+            + &keys::resolve("Enter", false, t.input_mode());
         t.write(line.as_bytes()).unwrap();
-        until("lucina-42", &t, || t.capture(None, None, false).0.iter().any(|l| l.ends_with("lucina-42"))).await;
+        until("lucina-42", &t, || {
+            t.capture(None, None, false)
+                .0
+                .iter()
+                .any(|l| l.ends_with("lucina-42"))
+        })
+        .await;
         let (lines, total) = t.capture(None, None, false);
         assert_eq!(total, DEFAULT_ROWS as usize);
-        assert!(lines.iter().any(|l| l.ends_with("echo lucina-$((6*7))")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.ends_with("echo lucina-$((6*7))")),
+            "{lines:?}"
+        );
         let (last, _) = t.capture(Some(-1), None, false);
         assert_eq!(last.len(), 1);
         t.resize(30, 100).unwrap();
         assert_eq!((t.view().rows, t.view().cols), (30, 100));
         // A viewer that saw offset 0 gets everything again; a new one a snapshot.
         let (start, _rx) = t.attach(Some(0));
-        assert!(matches!(start, Start::Replay { ref bytes, .. } if String::from_utf8_lossy(bytes).contains("lucina-42")));
+        assert!(
+            matches!(start, Start::Replay { ref bytes, .. } if String::from_utf8_lossy(bytes).contains("lucina-42"))
+        );
         assert!(matches!(t.attach(None).0, Start::Snapshot { .. }));
         // A background job in the session dies with the terminal.
         t.write(b"sleep 300 & echo bg=$!\r").unwrap();
-        until("bg=", &t, || t.capture(None, None, false).0.iter().any(|l| l.starts_with("bg="))).await;
-        let bg: u32 = t.capture(None, None, false).0.iter().find_map(|l| l.strip_prefix("bg=").and_then(|p| p.parse().ok())).unwrap();
+        until("bg=", &t, || {
+            t.capture(None, None, false)
+                .0
+                .iter()
+                .any(|l| l.starts_with("bg="))
+        })
+        .await;
+        let bg: u32 = t
+            .capture(None, None, false)
+            .0
+            .iter()
+            .find_map(|l| l.strip_prefix("bg=").and_then(|p| p.parse().ok()))
+            .unwrap();
         assert!(hub.session_pids().contains(&t.pid.unwrap()));
         assert!(hub.kill(&t.id).await);
-        until("bg gone", &t, || !Path::new(&format!("/proc/{bg}")).exists() || std::fs::read_to_string(format!("/proc/{bg}/stat")).is_ok_and(|s| s.contains(") Z "))).await;
+        until("bg gone", &t, || {
+            !Path::new(&format!("/proc/{bg}")).exists()
+                || std::fs::read_to_string(format!("/proc/{bg}/stat"))
+                    .is_ok_and(|s| s.contains(") Z "))
+        })
+        .await;
         assert!(hub.get(&t.id).is_none());
-        assert!(lock(&seen).iter().any(|e| matches!(e, HubEvent::Removed { .. })));
+        assert!(lock(&seen)
+            .iter()
+            .any(|e| matches!(e, HubEvent::Removed { .. })));
     }
 
     #[tokio::test]
     async fn exit_codes_and_activity() {
         let (hub, dir, seen) = hub();
         let t = hub
-            .spawn(Spawn { cwd: dir.path().into(), workspace_id: "w".into(), owner: "owner".into(), program: Some("/bin/sh".into()), args: vec!["-c".into(), "echo $PASEO_TERMINAL_ID; exit 3".into()], ..Spawn::default() })
+            .spawn(Spawn {
+                cwd: dir.path().into(),
+                workspace_id: "w".into(),
+                owner: "owner".into(),
+                program: Some("/bin/sh".into()),
+                args: vec!["-c".into(), "echo $PASEO_TERMINAL_ID; exit 3".into()],
+                ..Spawn::default()
+            })
             .unwrap();
         let mut ex = t.exited();
-        tokio::time::timeout(Duration::from_secs(5), ex.wait_for(|e| *e)).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), ex.wait_for(|e| *e))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(t.exit_code(), Some(Some(3)));
         assert_eq!(t.view().status, "exited");
         assert!(t.capture(None, None, false).0.iter().any(|l| l == &t.id));
@@ -808,7 +1084,9 @@ mod tests {
         let token = t.token.clone();
         assert!(hub.activity(&t.id, &token, "needs-input"));
         assert!(!hub.activity(&t.id, &token, "bogus"));
-        assert!(lock(&seen).iter().any(|e| matches!(e, HubEvent::Attention { .. })));
+        assert!(lock(&seen)
+            .iter()
+            .any(|e| matches!(e, HubEvent::Attention { .. })));
         assert_eq!(shell_quote("a'b"), r"'a'\''b'");
     }
 }
