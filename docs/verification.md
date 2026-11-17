@@ -273,7 +273,7 @@ Invariants:
 | `OperatorCutover`, `ScriptStep` | `cutover.sh`: preflight; chown + `cutover.env` + restart `lucina-rs`; p1 `SECRETARY_LUCINA_URL` + restart |
 | `OperatorRollback` | `rollback.sh`: p1 first, then `shadow.env` + restart |
 | `ScriptFails` | `set -euo pipefail` (an ssh step fails) |
-| `RustCrashRestart` | `Restart=on-failure`, `lucina-rs-health.timer` |
+| `RustCrashRestart` | `Restart=always`, `lucina-rs-health.timer` (either Lucina unit: started when inactive with no `lucina-maint` marker, reset and started when failed) |
 | `AppStartJob` | job actions: Node `insertJob` (`secretary-api.js`), Rust `JobStore::insert` |
 | `RuntimeFinish` | Node `updateJob`, Rust `JobStore::update` + `finish` |
 | `AppPoll` | `GET …/jobs/:id`: Node `findJob`, Rust `JobStore::find` (marks a running job it is not working on as `interrupted`) |
