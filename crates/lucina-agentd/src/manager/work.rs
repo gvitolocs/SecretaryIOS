@@ -453,6 +453,12 @@ impl Manager {
         if let Some(e) = &expect {
             check_expect(e)?;
         }
+        if req.cost == Some(CostClass::Light) && expect.is_none() {
+            return Err(ManagerError::Invalid(
+                "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
+                    .into(),
+            ));
+        }
         let lanes = LaneConfig::load();
         let lucina = crate::workspaces::is_lucina_project(
             &self.inner.options.workspaces,
@@ -863,6 +869,8 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
         (None, None) => return Err("no lane or chain".into()),
     };
     cmd.arg("--workspace").arg(&job.workspace);
+    cmd.arg("--owner").arg(&job.lead);
+    cmd.arg("--cost").arg(job.cost.as_str());
     if let Some(e) = &job.expect {
         cmd.arg("--expect-file").arg(e);
     }

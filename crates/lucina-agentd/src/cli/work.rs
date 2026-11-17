@@ -39,7 +39,7 @@ pub struct StartArgs {
     /// Who runs first when the host is busy: owner, high, normal or backlog
     #[arg(long, default_value = "normal")]
     pub priority: String,
-    /// light when the worker runs no build on the host, build when it compiles or tests
+    /// light: the worker reads, reviews or measures and never builds (its cargo calls are refused by lane and it needs --expect); build: it compiles or tests
     #[arg(long, default_value = "build")]
     pub cost: String,
     /// The lane to run (one of --lane and --chain)

@@ -282,6 +282,8 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
     assert!(has("--lane", "qoder"), "{args:?}");
     assert!(has("--workspace", &ws), "{args:?}");
     assert!(has("--verify", "true"), "{args:?}");
+    assert!(has("--owner", "chat-a"), "{args:?}");
+    assert!(has("--cost", "build"), "{args:?}");
     assert!(!args.iter().any(|a| a == "--expect-file"), "{args:?}");
     assert_eq!(
         read(&f.data().join(format!("{id}.stdin"))),
@@ -389,6 +391,59 @@ fn an_expected_file_is_handed_to_lane_as_expect_file() {
     // After --workspace <ws>, before --verify.
     assert!(at("--workspace") < at("--expect-file"), "{args:?}");
     assert!(at("--expect-file") < at("--verify"), "{args:?}");
+}
+
+#[test]
+fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let job = start(
+        &d,
+        &f,
+        "chat-l",
+        &ws,
+        &["--cost", "light", "--expect", "out/r.md"],
+    );
+    let id = job["id"].as_str().unwrap();
+    let args: Vec<String> = read(&f.data().join(format!("{id}.args")))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let pos = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+    assert_eq!(args[pos("--cost") + 1], "light", "{args:?}");
+    assert_eq!(args[pos("--owner") + 1], "chat-l", "{args:?}");
+    // run --id <id> --lane L --workspace W --owner O --cost C --expect-file E
+    assert!(pos("--workspace") < pos("--owner"), "{args:?}");
+    assert!(pos("--owner") < pos("--cost"), "{args:?}");
+    assert!(pos("--cost") < pos("--expect-file"), "{args:?}");
+
+    let spec = f.spec();
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "chat-l",
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+            "--cost",
+            "light",
+        ],
+    );
+    assert_ne!(r.code, 0);
+    assert!(
+        r.stderr.contains(
+            "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
+        ),
+        "{}",
+        r.stderr
+    );
 }
 
 #[test]
