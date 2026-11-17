@@ -37,6 +37,9 @@ pub mod cli;
 pub mod client;
 pub mod config;
 pub mod devices;
+/// The built environment ([`env`]) every gate command, deploy step, agent and terminal
+/// starts with, instead of whatever the daemon's own environment holds.
+pub mod env;
 pub mod external;
 pub mod journal;
 pub mod jsonrpc;

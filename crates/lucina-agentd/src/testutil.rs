@@ -72,6 +72,15 @@ pub fn write_exec(path: &Path, contents: &str) {
     }
 }
 
+/// A stand-in source environment for the built-environment tests ([`crate::env`]): plain
+/// pairs, so a test never has to mutate the process environment.
+pub fn env_source(pairs: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    pairs
+        .iter()
+        .map(|(k, v)| (std::ffi::OsString::from(*k), std::ffi::OsString::from(*v)))
+        .collect()
+}
+
 /// A name next to `path`, based on its file name, that no other thread is using.
 fn unique_in_dir(path: &Path, suffix: &str) -> PathBuf {
     static SEQ: AtomicUsize = AtomicUsize::new(0);
