@@ -1,0 +1,154 @@
+#!/bin/sh
+# "Stopped on purpose" is a marker, not an inference (incident:lucina-rs-earlyoom:20261117): the
+# watchdog (deploy/lucina-rs/health-check.sh, run by lucina-rs-health.timer every 2 min) starts any
+# Lucina user unit it finds inactive, so a deliberate stop has to leave a file saying so. A marker is
+# $XDG_STATE_HOME/lucina/maintenance/<unit>, key=value lines. This is not what keeps a stopped unit
+# down - systemd already queues no start for a stop it was asked for - it is what keeps the watchdog
+# from treating it as a kill.
+#
+#   lucina-maint stop <unit> --reason "<text>" [--for <minutes, default 120>]
+#   lucina-maint start <unit>
+#   lucina-maint ls
+#
+# Installed by deploy/lucina-rs/install.sh as ~/.local/bin/lucina-maint.
+set -eu
+
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/lucina/maintenance
+now=$(date +%s)
+unit=''
+reason=''
+for_min=120
+
+die() {
+    printf 'lucina-maint: %s\n' "$*" >&2
+    exit 2
+}
+
+usage() {
+    printf 'usage: lucina-maint stop <unit> --reason "<why>" [--for <minutes>]\n'
+    printf '       lucina-maint start <unit>\n'
+    printf '       lucina-maint ls\n'
+}
+
+# The last until= wins, the way the watchdog reads the marker.
+marker_field() { sed -n "s/^$2=//p" "$1" | tail -1; }
+
+case ${1:-} in
+    '')
+        usage >&2
+        exit 2
+        ;;
+    -h | --help | help)
+        usage
+        exit 0
+        ;;
+esac
+cmd=$1
+shift
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --reason)
+            [ $# -ge 2 ] || die '--reason wants a value'
+            reason=$2
+            shift 2
+            ;;
+        --for)
+            [ $# -ge 2 ] || die '--for wants a value'
+            for_min=$2
+            shift 2
+            ;;
+        -*) die "unknown option: $1" ;;
+        *)
+            [ -z "$unit" ] || die "one unit at a time, not '$unit' and '$1'"
+            unit=$1
+            shift
+            ;;
+    esac
+done
+
+case $cmd in
+    stop | start)
+        case $unit in
+            '') die "$cmd wants a unit" ;;
+            */* | *[[:space:]]*) die "not a unit name: '$unit'" ;;
+        esac
+        # Keyed by the full unit name, so `lucina-rs` and `lucina-rs.service` cannot mean two markers.
+        case $unit in
+            *.*) ;;
+            *) unit=$unit.service ;;
+        esac
+        marker=$state_dir/$unit
+        ;;
+    ls)
+        [ -z "$unit" ] || die 'ls takes no unit'
+        ;;
+esac
+
+case $cmd in
+    stop)
+        [ -n "$reason" ] || die 'stop wants --reason "<why>"'
+        case $for_min in
+            '' | 0 | *[!0-9]*) die "--for wants whole minutes above 0, not '$for_min'" ;;
+        esac
+        until=$((now + for_min * 60))
+        mkdir -p "$state_dir" || die "cannot create $state_dir"
+        # Written apart and moved in, so a watchdog reading it never sees half a marker.
+        tmp=$marker.new.$$
+        {
+            printf 'unit=%s\n' "$unit"
+            printf 'reason=%s\n' "$(printf '%s' "$reason" | tr '\n\r' '  ')"
+            printf 'who=%s\n' "$(id -un)"
+            printf 'until=%s\n' "$until"
+        } >"$tmp" || {
+            rm -f "$tmp"
+            die "cannot write $tmp"
+        }
+        mv -f "$tmp" "$marker" || {
+            rm -f "$tmp"
+            die "cannot move $marker into place"
+        }
+        if ! systemctl --user stop "$unit"; then
+            rm -f "$marker"
+            die "systemctl --user stop $unit failed: nothing is stopped on purpose, no marker stays"
+        fi
+        printf '%s stopped on purpose for %s min (until %s): %s\n' "$unit" "$for_min" "$until" "$reason"
+        ;;
+    start)
+        if systemctl --user start "$unit"; then
+            rm -f "$marker"
+            printf '%s started; its maintenance marker is gone\n' "$unit"
+        else
+            # Keep the marker: a start that fails here is a unit someone is working on, and the
+            # watchdog must not retry behind them every 2 minutes.
+            printf 'lucina-maint: systemctl --user start %s failed: %s keeps its marker\n' "$unit" "$marker" >&2
+            exit 1
+        fi
+        ;;
+    ls)
+        [ -d "$state_dir" ] || exit 0
+        found=''
+        for m in "$state_dir"/*; do
+            [ -f "$m" ] || continue
+            found=1
+            until=$(marker_field "$m" until)
+            case $until in
+                '' | *[!0-9]*)
+                    until=0
+                    left='no usable until='
+                    ;;
+                *)
+                    if [ "$until" -le "$now" ]; then
+                        left="expired $(( (now - until + 59) / 60 )) min ago"
+                    else
+                        left="valid, $(( (until - now + 59) / 60 )) min left"
+                    fi
+                    ;;
+            esac
+            printf '%-26s until=%s  %s  %s: %s\n' "${m##*/}" "$until" "$left" \
+                "$(marker_field "$m" who)" "$(marker_field "$m" reason)"
+        done
+        [ -n "$found" ] || printf 'no maintenance markers in %s\n' "$state_dir"
+        ;;
+    *) die "unknown command: $cmd" ;;
+esac
