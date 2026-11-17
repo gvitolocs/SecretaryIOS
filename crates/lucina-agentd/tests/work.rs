@@ -1321,7 +1321,7 @@ fn done_with_after_head(
     ws: &str,
     after: impl Fn(&str) -> String,
 ) -> Value {
-    let job = start(d, f, "chat-a", ws, &[]);
+    let job = start(d, f, "chat-a", ws, &["--cost", "build"]);
     let id = job["id"].as_str().unwrap().to_string();
     let base = job["baseHead"].as_str().unwrap().to_string();
     let after = after(&base);
