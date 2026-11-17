@@ -507,11 +507,11 @@ The §5 diff, applied with the real tailnet address and provider string `raffy`.
 - `crates/lucina-server/src/main.rs` — `model-try --provider` help lists `raffy`.
 - Tests: `crates/lucina-llm/tests/raffy.rs` (new, four lookup-closure tests: `RAFFY_*` only, the
   defaults, the key file source, `Debug` redaction) and `crates/lucina-server/tests/model_try.rs`
-  (`with_raffy` plus five tests: defaults through `Config`, picked by name on the plain dialect with
+  (`with_raffy` plus six tests: defaults through `Config`, picked by name on the plain dialect with
   her real tool specs and listed in `/health`, 503 `no_key` without a key, key redaction, and a
-  near-miss name still 400). No existing assertion was edited; the `{"provider":"qwen"}` → 400 guard
-  is untouched. `cargo test -p lucina-llm --test raffy` 4/4, `cargo test -p lucina-server --test
-  model_try` 11/11.
+  near-miss name still 400, and the start-up note). No existing assertion was edited; the
+  `{"provider":"qwen"}` → 400 guard is untouched. `cargo test -p lucina-llm --test raffy` 4/4,
+  `cargo test -p lucina-server --test model_try` 12/12.
 
 **Still to do on nezopt, outside this repo** (no deploy file changed in this run):
 
