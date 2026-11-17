@@ -284,6 +284,9 @@ Invariants:
 | `Crash` | SIGTERM/SIGKILL mid-tick (Node `shutdown()` exits without waiting for the tick) |
 | Channels `Operator`, `Kill`, `LockExpires`, `Acquire` | PORT_PLAN §5 phases 3/4; gateway-lock record (heartbeat 30 s, live 90 s); `releaseGatewayLocks` on SIGTERM |
 
+A planned stop of `lucina-rs` or `lucina-agentd` goes through `lucina-maint stop <unit> --reason "…" --for <min>`;
+a plain `systemctl --user stop` is undone by the watchdog within 2 minutes.
+
 ### 3. Shopping v2 ops + outbox
 
 Invariants:
