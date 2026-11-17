@@ -180,9 +180,24 @@ pub fn session() -> String {
 /// The workspace path as the owner's Mac sees it over the nezopt mount.
 fn mac_path(p: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    let prefix = std::env::var("LAGENT_MAC_PREFIX").unwrap_or_else(|_| "/Users/giuseppe/mnt/nezopt".into());
+    let prefix = mac_prefix();
     match p.strip_prefix(&home) {
         Some(rest) if !home.is_empty() => format!("{prefix}{rest}"),
+        _ => p.to_string(),
+    }
+}
+
+/// Where the Mac mounts this host's home (`LAGENT_MAC_PREFIX`).
+fn mac_prefix() -> String {
+    std::env::var("LAGENT_MAC_PREFIX").unwrap_or_else(|_| "/Users/giuseppe/mnt/nezopt".into())
+}
+
+/// The reverse of [`mac_path`]: a path given through the Mac's mount of this host, as the host sees it.
+pub(super) fn host_path(p: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let prefix = mac_prefix();
+    match p.strip_prefix(prefix.as_str()) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => format!("{home}{rest}"),
         _ => p.to_string(),
     }
 }
@@ -459,5 +474,10 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
     text.push_str("\n\nRecent deploys:\n");
     let rows: Vec<Vec<String>> = deploys.iter().take(8).map(|d| vec![s(&d["recorded"]), s(&d["runtime"]), d["commit"].as_str().map(|c| c[..c.len().min(10)].to_string()).unwrap_or_default()]).collect();
     text.push_str(&table(&["WHEN", "RUNTIME", "COMMIT"], &rows));
+    // An older daemon has no work route: then there is nothing to add.
+    if let Some(work) = super::work::board_section(client).await {
+        text.push_str("\n\n");
+        text.push_str(&work);
+    }
     Ok(Output { text, json: Some(v) })
 }
