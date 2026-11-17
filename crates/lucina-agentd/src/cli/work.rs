@@ -25,7 +25,9 @@ pub enum WorkCommand {
         /// The work id (`wk-…`)
         id: String,
     },
-    /// Wait for a run to end; the exit code says how it ended
+    /// Wait for a run to end; the exit code says how it ended: 0 done or verified, 1 failed
+    /// or lost, 3 all lanes exhausted, 4 dirty after quota, 5 still going at the timeout,
+    /// 6 ended with jobs queued, 7 ended dirty, 8 ended empty
     Wait(WaitArgs),
 }
 

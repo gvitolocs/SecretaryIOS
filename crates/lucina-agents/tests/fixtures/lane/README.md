@@ -11,3 +11,7 @@ tests) read them with `include_str!`.
 
 If the output of `lane` changes, capture new samples from the real tool. Never edit these
 files by hand: they are the only record of what `lane` really prints.
+
+`ended_empty` (lane LB-V003, 2026-11-17 13:00Z) has no captured sample yet because no real
+run had ended in that state when the samples were taken; the tests build its status from
+the `reported_done` sample. Capture a real one when it exists.

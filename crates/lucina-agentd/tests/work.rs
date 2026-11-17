@@ -282,6 +282,7 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
     assert!(has("--lane", "qoder"), "{args:?}");
     assert!(has("--workspace", &ws), "{args:?}");
     assert!(has("--verify", "true"), "{args:?}");
+    assert!(!args.iter().any(|a| a == "--expect-file"), "{args:?}");
     assert_eq!(
         read(&f.data().join(format!("{id}.stdin"))),
         "Write the report.\n"
@@ -364,6 +365,52 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
         (Some(3), Some(1)),
         "{lead}"
     );
+}
+
+#[test]
+fn an_expected_file_is_handed_to_lane_as_expect_file() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let job = start(
+        &d,
+        &f,
+        "chat-a",
+        &ws,
+        &["--expect", "out/report.md", "--verify", "true"],
+    );
+    let id = job["id"].as_str().unwrap();
+    let args: Vec<String> = read(&f.data().join(format!("{id}.args")))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let at = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+    assert_eq!(args[at("--expect-file") + 1], "out/report.md", "{args:?}");
+    // After --workspace <ws>, before --verify.
+    assert!(at("--workspace") < at("--expect-file"), "{args:?}");
+    assert!(at("--expect-file") < at("--verify"), "{args:?}");
+}
+
+#[test]
+fn an_ended_empty_run_ends_in_that_state_and_waits_with_exit_8() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut v: Value = serde_json::from_str(include_str!(
+        "../../lucina-agents/tests/fixtures/lane/status-reported_done.json"
+    ))
+    .unwrap();
+    v["id"] = json!(id);
+    v["state"] = json!("ended_empty");
+    f.status(&id, &serde_json::to_string_pretty(&v).unwrap());
+    let job = wait_state(&d, &id, "ended_empty");
+    assert_eq!(job["empty"], true, "{job}");
+    assert!(job["endedAt"].is_string(), "{job}");
+    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 8);
 }
 
 #[test]

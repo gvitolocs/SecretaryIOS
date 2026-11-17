@@ -390,6 +390,11 @@ fn nonblank(v: Option<String>) -> Option<String> {
 /// Sets the end of a job: when it ended and whether it produced nothing.
 fn finish(job: &mut WorkJob) {
     job.ended_at = Some(now_iso());
+    // `lane` itself found nothing: no need to ask the heads.
+    if job.state == WorkState::EndedEmpty {
+        job.empty = Some(true);
+        return;
+    }
     let expect_present = job.expect.as_ref().map(|e| {
         std::fs::metadata(Path::new(&job.workspace).join(e))
             .map(|m| m.is_file() && m.len() > 0)
@@ -858,6 +863,9 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
         (None, None) => return Err("no lane or chain".into()),
     };
     cmd.arg("--workspace").arg(&job.workspace);
+    if let Some(e) = &job.expect {
+        cmd.arg("--expect-file").arg(e);
+    }
     if let Some(v) = &job.verify {
         cmd.arg("--verify").arg(v);
     }
@@ -1117,6 +1125,26 @@ deep-codex = ["qoder", "codex-a"]
         full.as_object_mut().unwrap().remove("dirty_files");
         apply_read(&mut job, &full);
         assert_eq!(job.note.as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn an_ended_empty_run_is_empty() {
+        let mut status: Value = serde_json::from_str(include_str!(
+            "../../../lucina-agents/tests/fixtures/lane/status-reported_done.json"
+        ))
+        .unwrap();
+        status["state"] = serde_json::json!("ended_empty");
+        let mut job = WorkJob {
+            id: "wk-1".into(),
+            // A head that differs from the fixture's would say "not empty" if it were asked.
+            base_head: Some("0".repeat(40)),
+            ..WorkJob::default()
+        };
+        apply_read(&mut job, &status);
+        assert_eq!(job.state, WorkState::EndedEmpty);
+        finish(&mut job);
+        assert_eq!(job.empty, Some(true));
+        assert!(job.ended_at.is_some());
     }
 
     #[test]

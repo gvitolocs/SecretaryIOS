@@ -96,6 +96,8 @@ pub enum WorkState {
     DirtyAfterQuota,
     EndedDirty,
     EndedJobsQueued,
+    /// The attempt ended ok but left nothing: no commit, no change, no expected file.
+    EndedEmpty,
     /// `lane` has no record of the run any more.
     Lost,
 }
@@ -114,6 +116,7 @@ impl WorkState {
             "all_exhausted" => WorkState::Exhausted,
             "dirty_after_quota" => WorkState::DirtyAfterQuota,
             "ended_dirty" => WorkState::EndedDirty,
+            "ended_empty" => WorkState::EndedEmpty,
             "ended_with_jobs_queued" => WorkState::EndedJobsQueued,
             _ => return None,
         })
@@ -131,6 +134,7 @@ impl WorkState {
             WorkState::Exhausted => "exhausted",
             WorkState::DirtyAfterQuota => "dirty_after_quota",
             WorkState::EndedDirty => "ended_dirty",
+            WorkState::EndedEmpty => "ended_empty",
             WorkState::EndedJobsQueued => "ended_jobs_queued",
             WorkState::Lost => "lost",
         }
@@ -153,6 +157,7 @@ impl WorkState {
             WorkState::Starting | WorkState::Queued | WorkState::Running => 5,
             WorkState::EndedJobsQueued => 6,
             WorkState::EndedDirty => 7,
+            WorkState::EndedEmpty => 8,
         }
     }
 }
@@ -614,7 +619,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const ALL: [WorkState; 12] = [
+    const ALL: [WorkState; 13] = [
         WorkState::Starting,
         WorkState::Queued,
         WorkState::Running,
@@ -626,6 +631,7 @@ mod tests {
         WorkState::DirtyAfterQuota,
         WorkState::EndedDirty,
         WorkState::EndedJobsQueued,
+        WorkState::EndedEmpty,
         WorkState::Lost,
     ];
 
@@ -653,6 +659,7 @@ mod tests {
             ("all_exhausted", WorkState::Exhausted),
             ("dirty_after_quota", WorkState::DirtyAfterQuota),
             ("ended_dirty", WorkState::EndedDirty),
+            ("ended_empty", WorkState::EndedEmpty),
             ("ended_with_jobs_queued", WorkState::EndedJobsQueued),
         ];
         for (raw, want) in pairs {
@@ -677,6 +684,7 @@ mod tests {
             (WorkState::DirtyAfterQuota, true, 4),
             (WorkState::EndedDirty, true, 7),
             (WorkState::EndedJobsQueued, true, 6),
+            (WorkState::EndedEmpty, true, 8),
             (WorkState::Lost, true, 1),
         ];
         assert_eq!(want.len(), ALL.len());
@@ -1132,6 +1140,18 @@ mod tests {
         };
         assert!(empty(&after));
         assert!(!empty("0000000000000000000000000000000000000000"));
+    }
+
+    #[test]
+    fn an_ended_empty_status_ends_the_job_in_that_state() {
+        let mut status: Value = serde_json::from_str(STATUS_DONE).unwrap();
+        status["state"] = json!("ended_empty");
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        assert_eq!(j.state, WorkState::EndedEmpty);
+        assert_eq!(j.lane_state.as_deref(), Some("ended_empty"));
+        assert_eq!(j.note, None);
+        assert_eq!(serde_json::to_value(j.state).unwrap(), json!("ended_empty"));
     }
 
     #[test]
