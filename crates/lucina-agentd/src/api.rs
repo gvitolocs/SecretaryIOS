@@ -43,6 +43,7 @@
 //! The Homelab service catalog (project tree, health, impact, drift): [`catalog`].
 //! Tasks, the merge and deploy queue, device leases and the board: [`pipeline`].
 //! Installs on leased devices (the iPhone) and test-run grants: [`devices`].
+//! Work jobs that run through `lane`: [`work`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
 //! makes a subagent (depth-limited, supervised), its `send` is a queued agent message,
@@ -83,6 +84,7 @@ mod orch;
 mod pipeline;
 mod rewind;
 mod sessions;
+mod work;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -117,6 +119,7 @@ impl From<ManagerError> for ApiError {
             ManagerError::ForkBoundary(_) | ManagerError::Busy(_) => StatusCode::CONFLICT,
             ManagerError::CodexNotAllowed(_) => StatusCode::FORBIDDEN,
             ManagerError::JunoToolRefused(_) => StatusCode::FORBIDDEN,
+            ManagerError::WorkNotFound(_) => StatusCode::NOT_FOUND,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -167,6 +170,7 @@ pub fn router(manager: Manager) -> Router {
         .merge(catalog::routes())
         .merge(pipeline::routes())
         .merge(devices::routes())
+        .merge(work::routes())
         // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
         .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
         .with_state(manager)

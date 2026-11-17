@@ -43,6 +43,7 @@ mod rewind;
 mod schedules;
 mod search;
 mod sessions;
+mod work;
 mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
@@ -53,6 +54,7 @@ pub use rewind::{ForkOutcome, ForkRequest, RewindOutcome, RewindRequest};
 pub use search::{PromptEntry, SearchMatch, SearchResult};
 pub use provider_subagents::{Direction as SubagentDirection, SubagentTimeline};
 pub use permissions::{ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
+pub use work::{StartWork, WorkConfig, WorkList};
 pub use pipeline::{AdoptTask, DeployRequest, LeaseRequest, MergeRequest, ReleaseRequest, StartTask, STALE_DAYS};
 pub use workspaces::{metadata_provider, SWEEP_EVERY};
 
@@ -72,6 +74,8 @@ pub struct Options {
     pub pipeline: crate::pipeline::Config,
     /// Installs on leased devices (the owner's iPhone).
     pub devices: crate::devices::Config,
+    /// Work jobs run through `lane` (`LUCINA_AGENTD_LANE`).
+    pub work: WorkConfig,
 }
 
 impl Default for Options {
@@ -85,6 +89,7 @@ impl Default for Options {
             terminals: crate::terminals::Config::default(),
             pipeline: crate::pipeline::Config::from_env(&std::env::temp_dir().join("lucina-agentd")),
             devices: crate::devices::Config::default(),
+            work: WorkConfig::default(),
         }
     }
 }
@@ -198,6 +203,8 @@ pub enum ManagerError {
     NotOwner(String),
     #[error("{0}")]
     CommandNotFound(String),
+    #[error("No work job found matching: {0}")]
+    WorkNotFound(String),
     #[error("{0}")]
     CommandExpired(String),
     /// A subagent tried to start another agent (the depth limit).
@@ -276,6 +283,7 @@ impl ManagerError {
             ManagerError::Busy(_) => "AGENT_BUSY",
             ManagerError::CodexNotAllowed(_) => "CODEX_NOT_ALLOWED",
             ManagerError::JunoToolRefused(_) => "JUNO_TOOL_REFUSED",
+            ManagerError::WorkNotFound(_) => "WORK_NOT_FOUND",
         }
     }
 }
@@ -513,6 +521,7 @@ struct Inner {
     orch: orch::Orch,
     pipeline: crate::pipeline::Pipeline,
     devices: crate::devices::Devices,
+    work: work::Work,
 }
 
 #[derive(Clone)]
@@ -594,6 +603,7 @@ impl Manager {
         let orch = orch::Orch::open(&store)?;
         let pipeline = crate::pipeline::Pipeline::open(store.clone(), options.pipeline.clone())?;
         let devices = crate::devices::Devices::open(options.devices.clone());
+        let work = work::Work::open(options.work.clone());
         let manager = Manager {
             inner: Arc::new(Inner {
                 workspaces,
@@ -601,6 +611,7 @@ impl Manager {
                 orch,
                 pipeline,
                 devices,
+                work,
                 store,
                 providers,
                 lanes,

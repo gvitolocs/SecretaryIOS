@@ -51,7 +51,7 @@ pub fn routes() -> Router<Manager> {
         .route("/devices/{id}/release", post(release))
 }
 
-fn allow(m: &Manager, peer: &Peer, headers: &HeaderMap, agents_too: bool, what: &str) -> Result<(), ApiError> {
+pub(super) fn allow(m: &Manager, peer: &Peer, headers: &HeaderMap, agents_too: bool, what: &str) -> Result<(), ApiError> {
     match origin(peer, headers, &m.provider_pids()) {
         Origin::Local | Origin::OwnerDevice => Ok(()),
         Origin::Agent if agents_too => Ok(()),

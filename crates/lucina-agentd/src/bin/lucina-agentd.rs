@@ -84,10 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         terminals: lucina_agentd::terminals::Config::from_env(&state_dir),
         pipeline: lucina_agentd::pipeline::Config::from_env(&state_dir),
         devices: lucina_agentd::devices::Config::from_env(&state_dir),
+        work: lucina_agentd::manager::WorkConfig::from_env(&state_dir),
     };
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();
     manager.spawn_pipeline();
+    manager.spawn_work();
     manager.spawn_command_sweeper();
     manager.spawn_session_sweeper();
     manager.spawn_terminal_ticker();
