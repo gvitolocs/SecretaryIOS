@@ -22,14 +22,27 @@
 #   Telegram poller, reminder scheduler, Discord, Bot Hospital, delivery monitor):
 #   restart. One failure is only remembered, so a slow answer during a busy turn
 #   never restarts a healthy process.
+# - An episode, not a tick: a unit is reported once, by the run that first finds it down.
+#   $episode/<unit>.reported marks the episode and goes when the unit is seen active again, so the next
+#   time it comes down reports again; the non-zero exit now means "came down", not "is down".
+# - Both units start through infisical-broker exec, so while its upstream is down a start cannot work.
+#   The run probes that upstream once, only when a broker-wrapped unit ($broker_units) is about to be
+#   started, and a failed probe starts none of them: they wait for it, and report once as above.
 # A report is the line it prints plus a non-zero exit at the end of the run: that exit is what makes
-# OnFailure=pokoin-notify@%n.service on deploy/lucina-rs-health.service notify the owner, once, since
-# the next run finds the unit active again. Both recoveries report, the failed one included: silence
-# is what let the 23 minutes happen, and a unit still down two minutes later is reported again
-# because it is still down.
+# OnFailure=pokoin-notify@%n.service on deploy/lucina-rs-health.service notify the owner, once per
+# episode rather than once per tick. Both recoveries report, the failed one included: silence is what
+# let the 23 minutes happen. A unit still down two minutes later is said to the journal and started
+# again, but not to the owner: it is the episode that has already been reported.
 units="lucina-rs.service lucina-agentd.service"
+# The units whose ExecStart runs through `infisical-broker exec` (on nezopt, both: the host's
+# 70-infisical.conf drop-ins). Only these wait for the broker probe; a unit that is not broker-wrapped
+# is left out of this list and starts whatever the broker is doing.
+broker_units="lucina-rs.service lucina-agentd.service"
+# Answered for real by infisical-brokerd on the host; LUCINA_BROKER_UPSTREAM exists for the tests.
+broker_upstream="${LUCINA_BROKER_UPSTREAM:-http://127.0.0.1:8088/api/status}"
 unit=lucina-rs.service
 state="${XDG_RUNTIME_DIR:-/tmp}/lucina-rs-health.failures"
+episode="${XDG_RUNTIME_DIR:-/tmp}/lucina-watchdog"
 maint="${XDG_STATE_HOME:-$HOME/.local/state}/lucina/maintenance"
 
 # 0 when $1 was stopped on purpose and that has not expired yet. A marker with no readable until=
@@ -43,32 +56,95 @@ marker_holds() {
     [ "$(date +%s)" -lt "$until" ]
 }
 
+# 0 when $1 starts through `infisical-broker exec`, so its start depends on that upstream answering.
+broker_wrapped() {
+    for b in $broker_units; do
+        [ "$b" = "$1" ] && return 0
+    done
+    return 1
+}
+
+# The broker upstream is probed at most once a tick, and only when a start of a broker-wrapped unit is
+# on the table: a tick with nothing to start has no business knocking on the secret store. Held in
+# $broker_up once known (yes/down), empty while unknown.
+broker_up=''
+broker_ok() {
+    if [ -z "$broker_up" ]; then
+        if curl -fsS -m 5 -o /dev/null "$broker_upstream"; then
+            broker_up=yes
+        else
+            broker_up=down
+        fi
+    fi
+    [ "$broker_up" = yes ]
+}
+
+# The episode file is written the first time a unit coming down is reported, and removed when the unit
+# is seen active: it is what makes the next failure a new episode again. umask 077 so the directory is
+# 0700 and the file 0600, the way anything living in $XDG_RUNTIME_DIR next to other programs should.
+episode_mark() {
+    (umask 077 && mkdir -p "$episode" && : >"$episode/$1.reported")
+}
+
 started=''
+reported=''
+waiting=''
 for u in $units; do
     # LoadState first: show answers ActiveState=inactive for a unit this host does not have at all,
     # and starting that is a failure, not a recovery.
     [ "$(systemctl --user show -p LoadState --value "$u")" = loaded ] || continue
-    case $(systemctl --user show -p ActiveState --value "$u") in
+    st=$(systemctl --user show -p ActiveState --value "$u")
+    if [ "$st" = active ]; then
+        rm -f "$episode/$u.reported"
+        continue
+    fi
+    case $st in
+        failed) ;;
+        inactive) marker_holds "$u" && continue ;;
+        *) continue ;;
+    esac
+    new=''
+    [ -f "$episode/$u.reported" ] || new=1
+    if broker_wrapped "$u" && ! broker_ok; then
+        # A start now would only fail and leave the unit failed again, so the episode waits.
+        waiting="$waiting $u"
+        if [ -n "$new" ]; then
+            episode_mark "$u"
+            reported=1
+        fi
+        continue
+    fi
+    case $st in
         failed)
             echo "$u: failed, resetting and starting" >&2
             systemctl --user reset-failed "$u"
             ;;
-        inactive)
-            marker_holds "$u" && continue
+        *)
             echo "$u: inactive with no maintenance marker, starting" >&2
             ;;
-        *) continue ;;
     esac
     systemctl --user start "$u"
     # Only the unit /health speaks for owns the counter: a start of it replaces the process the
     # strikes were counting, so a strike from before it cannot be the first of the two.
     [ "$u" = "$unit" ] && rm -f "$state"
     started=$u
+    if [ -n "$new" ]; then
+        episode_mark "$u"
+        reported=1
+    fi
 done
-if [ -n "$started" ]; then
+if [ -n "$waiting" ]; then
+    echo "${waiting# }: the Infisical broker upstream is down, not starting, waiting for it" >&2
+fi
+if [ -n "$started" ] || [ -n "$reported" ]; then
     # Nothing else runs this tick: that process is seconds old, and /health is not a judgement on a
     # unit still coming up. The next run looks at all of it again, two minutes away.
-    exit 1
+    if [ -n "$reported" ]; then
+        # Only a new episode exits non-zero, and that exit is what OnFailure notifies on: an episode
+        # already reported is the journal's business, not the owner's.
+        exit 1
+    fi
+    exit 0
 fi
 systemctl --user is-active --quiet "$unit" || exit 0
 if curl -fsS -m 10 -o /dev/null http://127.0.0.1:8790/health; then
