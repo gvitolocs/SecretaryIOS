@@ -93,6 +93,8 @@ status)
     else
       first=1
       while IFS= read -r line || [ -n "$line" ]; do
+        # The real status carries the field already: ours replaces it.
+        case "$line" in *'"runner_lost"'*) continue ;; esac
         printf '%s\n' "$line"
         if [ "$first" = 1 ]; then
           printf '  "runner_lost": %s,\n' "$lost"
