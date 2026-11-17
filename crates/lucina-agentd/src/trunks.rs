@@ -33,6 +33,10 @@ pub struct TrunkEntry {
     /// remote does not carry is a refused merge. A repo whose trunk its remote can be pushed to
     /// is `local: false`: `true` is the marker for a fork whose trunk never reaches its origin.
     pub local: bool,
+    /// Refs (tags or full commit ids) a task of this repo may also be based on, besides the
+    /// trunk tip: what `lagent task start --base` accepts for it. Nothing else about a task
+    /// follows from them: the trunk, and where its merges land, stay what the row says.
+    pub allowed_bases: &'static [&'static str],
 }
 
 /// The repos whose trunk this table decides, whatever their remote or their pipeline file says.
@@ -50,6 +54,7 @@ const TRUNKS: &[TrunkEntry] = &[TrunkEntry {
     repo: "LucinaNet-servo",
     branch: "lucinanet",
     local: true,
+    allowed_bases: &[],
 }];
 
 /// The table's row for a repo whose checkout is named `name`.
@@ -79,6 +84,13 @@ impl Trunk {
             Some(r) => format!("{r}/{}", self.branch),
             None => self.branch.clone(),
         }
+    }
+
+    /// The refs a task of this repo may be based on besides the trunk tip: the row of [`TRUNKS`]
+    /// that names this checkout, empty for a repo the row says nothing about. Read
+    /// [`TrunkEntry::local`] before adding a row: the trunk a task bases on is this one's.
+    pub fn allowed_bases(&self) -> &'static [&'static str] {
+        table_entry(&self.name).map_or(&[], |e| e.allowed_bases)
     }
 }
 
