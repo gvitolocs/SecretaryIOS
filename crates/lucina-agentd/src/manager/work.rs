@@ -594,7 +594,9 @@ impl Manager {
         if let Some(e) = &expect {
             check_expect(e)?;
         }
-        if req.cost == Some(CostClass::Light) && expect.is_none() {
+        // No cost at all is a light run, the same as a plain `lane run` since lane LB-V010.
+        let cost = req.cost.unwrap_or(CostClass::Light);
+        if cost == CostClass::Light && expect.is_none() {
             return Err(ManagerError::Invalid(
                 "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
                     .into(),
@@ -631,7 +633,7 @@ impl Manager {
             id: id.clone(),
             lead,
             priority: req.priority.unwrap_or_default(),
-            cost: req.cost.unwrap_or_default(),
+            cost,
             lane: lane.clone(),
             chain: chain.clone(),
             workspace: workspace.clone(),
