@@ -1,6 +1,11 @@
 [Unit]
-Description=Lucina (Rust) watchdog: restart lucina-rs when /health fails twice or the unit failed
+# Since 2026-11-17 it also starts lucina-agentd again (the name and the file it runs are what the host
+# already has installed; deploy/lucina-memo/lucina-memo-backup.service is the same notify pattern).
+Description=Lucina (Rust) watchdog: start an inactive Lucina unit that no maintenance marker excuses, reset a failed one, restart lucina-rs when /health fails twice
 After=lucina-rs.service
+# The watchdog reports a start it had to do by printing a line and exiting non-zero; this turns that
+# into one notification to the owner (the repo's existing notify path for a failed oneshot).
+OnFailure=pokoin-notify@%n.service
 
 [Service]
 Type=oneshot

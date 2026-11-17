@@ -98,7 +98,7 @@ pub enum WorkState {
     EndedJobsQueued,
     /// The attempt ended ok but left nothing: no commit, no change, no expected file.
     EndedEmpty,
-    /// `lane` has no record of the run any more.
+    /// The run is gone: `lane` ended it as `lost`, or it stopped answering for a run old enough.
     Lost,
 }
 
@@ -118,6 +118,7 @@ impl WorkState {
             "ended_dirty" => WorkState::EndedDirty,
             "ended_empty" => WorkState::EndedEmpty,
             "ended_with_jobs_queued" => WorkState::EndedJobsQueued,
+            "lost" => WorkState::Lost,
             _ => return None,
         })
     }
@@ -151,13 +152,15 @@ impl WorkState {
     pub fn wait_exit_code(self) -> i32 {
         match self {
             WorkState::Done | WorkState::Verified => 0,
-            WorkState::Failed | WorkState::VerifyFailed | WorkState::Lost => 1,
+            WorkState::Failed | WorkState::VerifyFailed => 1,
             WorkState::Exhausted => 3,
             WorkState::DirtyAfterQuota => 4,
             WorkState::Starting | WorkState::Queued | WorkState::Running => 5,
             WorkState::EndedJobsQueued => 6,
             WorkState::EndedDirty => 7,
             WorkState::EndedEmpty => 8,
+            // 9 is what `lane wait` itself gives for a lost run.
+            WorkState::Lost => 9,
         }
     }
 }
@@ -256,6 +259,10 @@ pub struct WorkJob {
     /// `lane status` says the run's runner process is gone (`runner_lost: true`).
     #[serde(default)]
     pub runner_lost: bool,
+    /// `lane` itself called the run `lost`: that is its own end, and nothing asks it again. A
+    /// run agentd marked `lost` after repeated misses keeps this false and is followed for a day.
+    #[serde(default)]
+    pub lane_lost: bool,
 }
 
 /// What [`parse_ls`] read from `lane ls --json`.
@@ -394,6 +401,8 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
         match WorkState::from_lane(raw) {
             Some(s) => {
                 job.state = s;
+                // Only an answer that says `lost` itself ends the run for good.
+                job.lane_lost = s == WorkState::Lost;
                 // An earlier unknown-state note no longer holds.
                 if job
                     .note
@@ -728,7 +737,7 @@ mod tests {
         }
         assert_eq!(WorkState::from_lane("sleeping"), None);
         assert_eq!(WorkState::from_lane(""), None);
-        assert_eq!(WorkState::from_lane("lost"), None);
+        assert_eq!(WorkState::from_lane("lost"), Some(WorkState::Lost));
     }
 
     #[test]
@@ -746,7 +755,7 @@ mod tests {
             (WorkState::EndedDirty, true, 7),
             (WorkState::EndedJobsQueued, true, 6),
             (WorkState::EndedEmpty, true, 8),
-            (WorkState::Lost, true, 1),
+            (WorkState::Lost, true, 9),
         ];
         assert_eq!(want.len(), ALL.len());
         for (state, terminal, code) in want {
@@ -1576,5 +1585,103 @@ mod tests {
         let j: WorkJob = serde_json::from_str(r#"{"id":"wk-1","lead":"l"}"#).unwrap();
         assert_eq!(j.scope, None);
         assert!(!j.runner_lost);
+    }
+
+    const STATUS_LOST: &str = include_str!("../tests/fixtures/lane/status-lost.json");
+    const LS_LOST: &str = include_str!("../tests/fixtures/lane/ls-lost.jsonl");
+
+    #[test]
+    fn lane_now_has_a_state_of_its_own_called_lost() {
+        assert_eq!(WorkState::from_lane("lost"), Some(WorkState::Lost));
+        assert!(WorkState::Lost.is_terminal());
+        assert_eq!(WorkState::Lost.as_str(), "lost");
+        assert_eq!(WorkState::Lost.wait_exit_code(), 9);
+    }
+
+    #[test]
+    fn a_status_that_says_lost_ends_the_job_in_lost() {
+        let status: Value = serde_json::from_str(STATUS_LOST).unwrap();
+        assert!(
+            missing_status_fields(&status).is_empty(),
+            "{:?}",
+            missing_status_fields(&status)
+        );
+        let mut j = job(
+            "wk-227b78845239",
+            "LA",
+            WorkState::Queued,
+            Priority::Normal,
+            "2026-11-17",
+        );
+        j.queue_position = Some(2);
+        assert!(apply_status(&mut j, &status));
+        assert_eq!(j.state, WorkState::Lost);
+        assert_eq!(j.state.wait_exit_code(), 9);
+        assert_eq!(j.lane_state.as_deref(), Some("lost"));
+        assert!(j.lane_lost, "lane said it itself: that is final");
+        // The note is the one lane wrote, not an unknown state of ours.
+        assert_eq!(j.note.as_deref(), Some("<text removed>"));
+        assert!(!j
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("unknown lane state:"));
+        assert_eq!(j.queue_position, None);
+        assert!(!j.runner_lost);
+        assert!(!j.direct);
+        // What ends the run is agentd's doing, and it does not ask whether a lost run is empty.
+        assert_eq!(j.ended_at, None);
+        assert_eq!(j.empty, None);
+        assert_eq!(j.status_errors, 0);
+        assert!(!apply_status(&mut j, &status), "the same answer is no news");
+    }
+
+    #[test]
+    fn an_ls_row_that_says_lost_is_an_ended_direct_run() {
+        let ls = parse_ls(LS_LOST);
+        assert_eq!(ls.rows.len(), 1);
+        assert_eq!(ls.unparsed, 0);
+        let row = &ls.rows[0];
+        assert!(
+            missing_ls_fields(row).is_empty(),
+            "{:?}",
+            missing_ls_fields(row)
+        );
+        let j = from_direct(row).unwrap();
+        assert_eq!(j.id, "wk-227b78845239");
+        assert_eq!(j.state, WorkState::Lost);
+        assert!(j.state.is_terminal());
+        assert_eq!(j.state.wait_exit_code(), 9);
+        assert_eq!(j.lane_state.as_deref(), Some("lost"));
+        assert_eq!(j.ended_at.as_deref(), Some("2026-11-17T16:59:11Z"));
+        assert!(j.direct);
+        assert_eq!(j.note, None);
+    }
+
+    #[test]
+    fn only_lane_saying_lost_marks_the_run_as_final() {
+        let mut j = job(
+            "wk-1",
+            "l",
+            WorkState::Running,
+            Priority::Normal,
+            "2026-11-17",
+        );
+        // The verdict agentd reaches on its own, from repeated misses, is not lane's word.
+        j.state = WorkState::Lost;
+        assert!(!j.lane_lost);
+        assert!(apply_status(&mut j, &json!({"state": "running"})));
+        assert!(!j.lane_lost);
+        assert!(apply_status(&mut j, &json!({"state": "lost"})));
+        assert!(j.lane_lost);
+        // An answer that does not speak of the state leaves lane's word standing.
+        assert!(apply_status(&mut j, &json!({"note": "gone for good"})));
+        assert!(j.lane_lost);
+        assert_eq!(j.note.as_deref(), Some("gone for good"));
+        // A job file from before the field still loads, and is not final.
+        let old: WorkJob =
+            serde_json::from_str(r#"{"id":"wk-1","lead":"l","state":"lost"}"#).unwrap();
+        assert_eq!(old.state, WorkState::Lost);
+        assert!(!old.lane_lost);
     }
 }

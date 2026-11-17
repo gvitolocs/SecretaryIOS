@@ -774,7 +774,12 @@ fn a_work_start_issues_the_run_and_follows_it_to_its_end() {
     let head = git(&ws, &["rev-parse", "HEAD"]);
     let branch = git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]);
 
-    let r = work_start(&d, &f, &ws, &["--lane", "qoder", "--name", "Ids writer"]);
+    let r = work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Ids writer"],
+    );
     assert_eq!(r.code, 0, "{}", r.stderr);
     let job = work_job(&r);
     let id = job["id"].as_str().unwrap().to_string();
@@ -874,7 +879,12 @@ fn a_work_start_issues_the_run_and_follows_it_to_its_end() {
     assert!(rs[1]["result"].as_str().unwrap().contains("empty"));
 
     // failed: a `failed` row.
-    work_start(&d, &f, &ws, &["--lane", "qoder", "--name", "Third"]);
+    work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Third"],
+    );
     f.status(
         "la-r003-third",
         &lane_status("la-r003-third", "failed", json!({"note": "nothing left"})),
@@ -883,7 +893,12 @@ fn a_work_start_issues_the_run_and_follows_it_to_its_end() {
     assert_eq!(rs[1]["state"], "failed", "{rs:?}");
 
     // A plain reported_done that made a commit is for the lead to accept: no second row.
-    work_start(&d, &f, &ws, &["--lane", "qoder", "--name", "Fourth"]);
+    work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Fourth"],
+    );
     f.status(
         "la-r004-fourth",
         &lane_status(
@@ -916,7 +931,12 @@ fn a_chain_run_shows_no_lane_until_the_final_lane_is_known() {
     let d = f.daemon();
     setup_la(&d);
     let ws = f.repo("ws");
-    let r = work_start(&d, &f, &ws, &["--chain", "deep", "--name", "chained"]);
+    let r = work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--chain", "deep", "--name", "chained"],
+    );
     assert_eq!(r.code, 0, "{}", r.stderr);
     let id = work_job(&r)["id"].as_str().unwrap().to_string();
     assert_eq!(id, "la-r001-chained");
@@ -964,7 +984,12 @@ fn a_failing_lane_leaves_the_started_row_and_a_failed_row() {
     let d = f.daemon();
     setup_la(&d);
     let ws = f.repo("ws");
-    let r = work_start(&d, &f, &ws, &["--lane", "qoder", "--name", "doomed"]);
+    let r = work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "doomed"],
+    );
     assert_eq!(r.code, 1, "{}", r.stderr);
     // `lane run` was called (it copied the store) and the row was already there.
     let at_run = read(&f.data().join("la-r001-doomed.ids-at-run"));
@@ -988,7 +1013,12 @@ fn a_read_only_store_refuses_the_start_and_lane_is_not_called() {
     std::fs::write(&file, &text).unwrap();
     start_again(&mut d, &f.env());
     let ws = f.repo("ws");
-    let r = work_start(&d, &f, &ws, &["--lane", "qoder", "--name", "blocked"]);
+    let r = work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "blocked"],
+    );
     assert_ne!(r.code, 0);
     assert!(
         r.stderr
@@ -1026,6 +1056,8 @@ fn work_refusals() {
         &[
             "work",
             "start",
+            "--cost",
+            "build",
             "--lead",
             "LA",
             "--lane",
@@ -1038,13 +1070,15 @@ fn work_refusals() {
     );
     assert!(e.contains("--change"), "{e}");
     // A change of another lead.
-    let r = work_start(&d, &f, &ws, &["--lane", "qoder"]);
+    let r = work_start(&d, &f, &ws, &["--cost", "build", "--lane", "qoder"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let r = lagent(
         &d,
         &[
             "work",
             "start",
+            "--cost",
+            "build",
             "--lead",
             "JS",
             "--change",
@@ -1070,6 +1104,8 @@ fn work_refusals() {
         &[
             "work",
             "start",
+            "--cost",
+            "build",
             "--lead",
             "ZZ",
             "--change",
@@ -1094,6 +1130,8 @@ fn work_refusals() {
         &[
             "work",
             "start",
+            "--cost",
+            "build",
             "--lead",
             "LA",
             "--change",
@@ -1113,6 +1151,8 @@ fn work_refusals() {
         &[
             "work",
             "start",
+            "--cost",
+            "build",
             "--lead",
             "LA",
             "--change",
@@ -1152,7 +1192,12 @@ fn a_trace_follows_a_finding_to_the_runs_and_a_commit_to_its_run() {
     );
     let repo = f.repo("repo");
     let base = git(&repo, &["rev-parse", "HEAD"]);
-    let r = work_start(&d, &f, &repo, &["--lane", "qoder", "--name", "tracer"]);
+    let r = work_start(
+        &d,
+        &f,
+        &repo,
+        &["--cost", "build", "--lane", "qoder", "--name", "tracer"],
+    );
     assert_eq!(r.code, 0, "{}", r.stderr);
     let run = work_job(&r)["runId"].as_str().unwrap().to_string();
     assert_eq!(run, "LA-R001");

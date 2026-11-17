@@ -13,7 +13,7 @@ struct ApprovalsWidget: Widget {
         func placeholder(in context: Context) -> Entry {
             Entry(date: Date(), section: ApprovalsSection(fetchedAt: Date(), items: [
                 .init(id: "apr_1", requester: "nezopt-upgrade", summary: "Run 3 commands as root on nezopt: upgrade window start",
-                      details: "systemctl stop lucina-rs\nlvcreate -s -n root-snap ubuntu-vg/ubuntu-lv\ndo-release-upgrade -f DistUpgradeViewNonInteractive",
+                      details: "lucina-maint stop lucina-rs --reason \"release upgrade\" --for 180\nlvcreate -s -n root-snap ubuntu-vg/ubuntu-lv\ndo-release-upgrade -f DistUpgradeViewNonInteractive",
                       sensitive: true, payloadHash: "sha256:0", expiresAt: Date().addingTimeInterval(240)),
             ]), state: .ok)
         }

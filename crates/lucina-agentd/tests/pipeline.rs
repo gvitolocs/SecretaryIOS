@@ -512,3 +512,413 @@ async fn leases_are_exclusive_until_they_expire_or_are_released() {
     );
     assert!(m.leases().iter().all(|d| d["lease"].is_null()));
 }
+
+/// The LucinaNet-servo shape: `origin` is the upstream servo (its `main` is the mirror's HEAD,
+/// and its push URL refuses), while the fork's trunk is the local branch `lucinanet`, which
+/// origin has no branch for. The checkout is named as the compiled table knows it.
+fn servo_repo(root: &Path) -> (PathBuf, PathBuf) {
+    let origin = root.join("LucinaNet-servo.git");
+    let repo = root.join("LucinaNet-servo");
+    Command::new("git")
+        .args(["init", "-q", "--bare", "-b", "main"])
+        .arg(&origin)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&origin)
+        .arg(&repo)
+        .status()
+        .unwrap();
+    git(&repo, &["config", "user.email", "t@t"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+    // The file names `main`: what sent merges to the mirror before the table knew this repo.
+    std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\ncargo = \"off\"\ntrunk = \"main\"\n[[gate]]\nname = \"g\"\nrun = \"true\"\n").unwrap();
+    commit(&repo, "a.txt", "1\n", "a");
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["checkout", "-q", "-b", "lucinanet"]);
+    commit(&repo, "fork.txt", "ours\n", "the fork's own work");
+    git(&repo, &["config", "remote.origin.pushurl", "no-push://x"]);
+    (origin, repo)
+}
+
+#[tokio::test]
+async fn a_table_trunk_merges_on_the_local_branch_and_pushes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (origin, repo) = servo_repo(&root);
+    let mirror = git(&origin, &["rev-parse", "main"]);
+    let trunk = git(&repo, &["rev-parse", "lucinanet"]);
+    let m = manager(&root);
+    let (task, w) = m
+        .start_task(StartTask {
+            title: "Servo fix".into(),
+            repo: Some(repo.display().to_string()),
+            ..StartTask::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        task.trunk, "lucinanet",
+        "the table's trunk, not the mirror or the file's"
+    );
+    let wt = PathBuf::from(&w.cwd);
+    assert_eq!(w.base_ref.as_deref(), Some("refs/heads/lucinanet"));
+    assert_eq!(
+        git(&wt, &["rev-parse", "HEAD"]),
+        trunk,
+        "the workspace branches off the local trunk"
+    );
+    assert!(
+        wt.join("fork.txt").is_file(),
+        "which is ahead of the mirror origin has"
+    );
+    git(&wt, &["config", "user.email", "t@t"]);
+    git(&wt, &["config", "user.name", "t"]);
+    let head = commit(&wt, "fix.txt", "fixed\n", "the fix");
+    // A trunk in the repo's git config is not read by anything.
+    git(&repo, &["config", "lucina.trunk", "main"]);
+    let job = m
+        .queue_merge(MergeRequest {
+            workspace: w.workspace_id.clone(),
+            ..MergeRequest::default()
+        })
+        .await
+        .unwrap();
+    let done = run_until_done(&m, &job.job_id).await;
+    let out = done.outcome.clone().unwrap();
+    assert_eq!(
+        done.state,
+        JobState::Succeeded,
+        "{out:?}\n{}",
+        m.job_log(&job.job_id, 0).unwrap().1
+    );
+    assert_eq!(
+        (out.code.as_str(), out.method.as_deref()),
+        ("MERGED", Some("merge"))
+    );
+    assert_eq!(out.gates.len(), 1, "the trunk's gates ran as usual");
+    let landed = git(&repo, &["rev-parse", "lucinanet"]);
+    assert_eq!(out.landed.as_deref(), Some(landed.as_str()));
+    assert_eq!(
+        git(&repo, &["rev-parse", &format!("{landed}^2")]),
+        head,
+        "the branch's commit is the merge's second parent"
+    );
+    assert!(
+        git(&repo, &["log", "--format=%s", "-1", "lucinanet"])
+            .starts_with(&format!("Merge {}: ", task.branch)),
+        "a merge commit naming the branch"
+    );
+    assert_eq!(
+        git(&origin, &["rev-parse", "main"]),
+        mirror,
+        "the mirror did not move"
+    );
+    assert!(
+        git(&origin, &["branch", "--list", "lucinanet"]).is_empty(),
+        "nothing was pushed"
+    );
+    assert_eq!(
+        git(&repo, &["config", "--get", "remote.origin.pushurl"]),
+        "no-push://x"
+    );
+    // The report names the trunk it landed on.
+    assert!(out.message.contains("lucinanet"), "{}", out.message);
+    let log = m.job_log(&job.job_id, 0).unwrap().1;
+    assert!(log.contains("into lucinanet"), "{log}");
+    assert_eq!(
+        done.after.as_deref(),
+        Some("archived: worktree and branch removed")
+    );
+    assert_eq!(
+        git(&repo, &["rev-parse", "HEAD"]),
+        landed,
+        "the checkout the trunk is in followed it"
+    );
+}
+
+#[tokio::test]
+async fn a_conflict_is_reported_against_the_local_trunk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (origin, repo) = servo_repo(&root);
+    let mirror = git(&origin, &["rev-parse", "main"]);
+    let trunk = git(&repo, &["rev-parse", "lucinanet"]);
+    let m = manager(&root);
+    // A branch off the mirror that edits what the fork's own commit added: it clashes with
+    // `lucinanet`, and with nothing else.
+    let wt = root.join("wt/LucinaNet-servo/clash");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "clash",
+            &wt.display().to_string(),
+            "main",
+        ],
+    );
+    commit(&wt, "fork.txt", "theirs\n", "clash");
+    let (task, _) = m
+        .adopt_task(AdoptTask {
+            path: wt.display().to_string(),
+            ..AdoptTask::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(task.trunk, "lucinanet");
+    let job = m
+        .queue_merge(MergeRequest {
+            workspace: "clash".into(),
+            ..MergeRequest::default()
+        })
+        .await
+        .unwrap();
+    let done = run_until_done(&m, &job.job_id).await;
+    let out = done.outcome.clone().unwrap();
+    assert_eq!(out.code, "CONFLICT", "{out:?}");
+    assert_eq!(out.conflicts, vec!["fork.txt".to_string()]);
+    assert!(
+        out.message
+            .starts_with("clash conflicts with lucinanet: merge lucinanet into the branch"),
+        "{}",
+        out.message
+    );
+    assert_eq!(
+        git(&repo, &["rev-parse", "lucinanet"]),
+        trunk,
+        "the trunk did not move"
+    );
+    assert_eq!(git(&origin, &["rev-parse", "main"]), mirror);
+}
+
+#[tokio::test]
+async fn the_board_measures_a_worktree_with_no_base_against_the_local_trunk() {
+    use lucina_agentd::workspaces::CreateWorkspace;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_, repo) = servo_repo(&root);
+    // A worktree of the mirror's tip, registered without a base of its own: the board measures
+    // it against the repo's trunk, which is one commit ahead.
+    let wt = root.join("wt/LucinaNet-servo/old");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "old",
+            &wt.display().to_string(),
+            "main",
+        ],
+    );
+    let m = manager(&root);
+    let (w, _) = m
+        .workspaces()
+        .create(CreateWorkspace {
+            isolation: "local".into(),
+            path: Some(wt.display().to_string()),
+            ..CreateWorkspace::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        w.base_ref.is_none(),
+        "the board takes its base from the repo"
+    );
+    let board = m.board().await;
+    let row = board["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["cwd"] == wt.display().to_string())
+        .expect("the worktree is on the board");
+    assert_eq!(
+        (row["ahead"].as_u64(), row["behind"].as_u64()),
+        (Some(0), Some(1)),
+        "{row}"
+    );
+    assert_eq!(row["state"], "merged");
+}
+
+/// A repo the table does not mark local lands through its remote: a trunk the remote does not
+/// carry is a refused merge, and nothing moves anywhere.
+#[tokio::test]
+async fn a_merge_to_a_trunk_the_remote_does_not_carry_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Plain", "true");
+    let origin = root.join("Plain.git");
+    let m = manager(&root);
+    let (task, w) = m
+        .start_task(StartTask {
+            title: "Add b".into(),
+            repo: Some(repo.display().to_string()),
+            ..StartTask::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(task.trunk, "main", "the branch origin does have");
+    let wt = PathBuf::from(&w.cwd);
+    git(&wt, &["config", "user.email", "t@t"]);
+    git(&wt, &["config", "user.name", "t"]);
+    let head = commit(&wt, "b.txt", "b\n", "b");
+    let rules = "trunk = \"release\"\n[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"g\"\nrun = \"true\"\n";
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    // The trunk's file now names `release`, which the remote never gets: only a local branch of
+    // that name exists, and a local branch is not where this merge may land.
+    commit(
+        &repo,
+        ".lucina/pipeline.toml",
+        rules,
+        "the trunk moves to release",
+    );
+    let main = git(&repo, &["rev-parse", "main"]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["branch", "release", &main_before]);
+    let job = m
+        .queue_merge(MergeRequest {
+            workspace: w.workspace_id.clone(),
+            ..MergeRequest::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(job.spec.trunk, "release");
+    assert_eq!(job.spec.remote.as_deref(), Some("origin"));
+    let done = run_until_done(&m, &job.job_id).await;
+    let out = done.outcome.clone().unwrap();
+    assert_eq!(done.state, JobState::Failed, "{done:?}");
+    assert_eq!(out.code, "FETCH_FAILED", "{out:?}");
+    assert!(
+        out.message.contains("origin/release does not exist"),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message.contains("the remote does not carry the trunk"),
+        "{}",
+        out.message
+    );
+    assert!(out.landed.is_none(), "nothing landed: {out:?}");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), main, "main unmoved");
+    assert_eq!(
+        git(&origin, &["rev-parse", "main"]),
+        main,
+        "nothing was pushed"
+    );
+    assert!(
+        git(&origin, &["branch", "--list", "release"]).is_empty(),
+        "origin still has no release"
+    );
+    assert_eq!(
+        git(&repo, &["rev-parse", "release"]),
+        main_before,
+        "the local branch of the trunk's name was not landed on either"
+    );
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), head, "the work is kept");
+}
+
+/// `lagent task start --base`: a commit on the trunk is taken, a commit off it is refused
+/// before anything is made, and with no `--base` the task still starts from the trunk tip.
+#[tokio::test]
+async fn a_task_can_be_based_on_a_trunk_commit_and_on_nothing_else() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Baseable", "true");
+    // Two commits on the trunk, and a third on a branch nothing on the trunk leads to.
+    let older = git(&repo, &["rev-parse", "HEAD"]);
+    let tip = commit(&repo, "b.txt", "b\n", "b");
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["checkout", "-q", "-b", "side", &older]);
+    let side = commit(&repo, "side.txt", "side\n", "the side commit");
+    git(&repo, &["checkout", "-q", "main"]);
+
+    let m = manager(&root);
+    let start = |title: &str, branch: &str, base: Option<&str>| {
+        let m = m.clone();
+        let title = title.to_string();
+        let repo = repo.display().to_string();
+        let branch = branch.to_string();
+        let base = base.map(str::to_string);
+        async move {
+            m.start_task(StartTask {
+                title,
+                repo: Some(repo),
+                branch: Some(branch),
+                base,
+                ..StartTask::default()
+            })
+            .await
+        }
+    };
+
+    // With no base asked for: the trunk tip, and nothing recorded about a base.
+    let (task, w) = start("Plain start", "no-base", None).await.unwrap();
+    assert_eq!(git(&PathBuf::from(&w.cwd), &["rev-parse", "HEAD"]), tip);
+    assert_eq!(task.base, None, "no base asked for, none recorded");
+    assert_eq!(task.base_ref, None);
+
+    // An older commit of the trunk, named by an abbreviation: the worktree is made at it, and
+    // the record keeps both the full id and what was typed.
+    let short = older[..10].to_string();
+    let (task, w) = start("From the older commit", "older-base", Some(short.as_str()))
+        .await
+        .unwrap();
+    assert_eq!(
+        git(&PathBuf::from(&w.cwd), &["rev-parse", "HEAD"]),
+        older,
+        "the worktree starts at the commit asked for"
+    );
+    assert_eq!(task.base.as_deref(), Some(older.as_str()));
+    assert_eq!(task.base_ref.as_deref(), Some(short.as_str()));
+    assert_eq!(
+        m.pipeline().task(&w.workspace_id),
+        Some(task),
+        "the stored record is the one handed back"
+    );
+
+    // A commit the trunk does not have: refused, and nothing was made for it.
+    let trees = git(&repo, &["worktree", "list", "--porcelain"]);
+    let ManagerError::Invalid(msg) =
+        start("From the side commit", "side-base", Some(side.as_str()))
+            .await
+            .expect_err("the side commit is no base")
+    else {
+        panic!("a base off the trunk is a refused request, not another error");
+    };
+    assert_eq!(
+        msg,
+        format!(
+            "base {} is not on origin/main nor on an allowed base of Baseable; allowed: none",
+            &side[..10]
+        )
+    );
+    assert!(
+        git(&repo, &["branch", "--list", "side-base"]).is_empty(),
+        "no branch was made"
+    );
+    assert_eq!(
+        git(&repo, &["worktree", "list", "--porcelain"]),
+        trees,
+        "no worktree was made"
+    );
+    assert!(m.pipeline().tasks().iter().all(|t| t.branch != "side-base"));
+
+    // A word that is no commit here at all: refused the same way, before anything is measured.
+    let ManagerError::Invalid(msg) = start("Nonsense", "words-base", Some("not-a-rev"))
+        .await
+        .expect_err("not-a-rev is no commit")
+    else {
+        panic!("a base that is no commit is a refused request");
+    };
+    assert_eq!(msg, "base not-a-rev is not a commit in Baseable");
+    assert!(git(&repo, &["branch", "--list", "words-base"]).is_empty());
+}

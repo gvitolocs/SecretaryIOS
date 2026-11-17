@@ -377,7 +377,7 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
         &f,
         "LA",
         &ws,
-        &["--verify", "true", "--title", "report"],
+        &["--cost", "build", "--verify", "true", "--title", "report"],
     );
     let id = job["id"].as_str().unwrap().to_string();
     // The job id is the lane run id: the run id and a slug of the title.
@@ -440,7 +440,7 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
 
-    let a = start(&d, &f, "LA", &ws, &["--verify", "true"]);
+    let a = start(&d, &f, "LA", &ws, &["--cost", "build", "--verify", "true"]);
     let a = a["id"].as_str().unwrap().to_string();
     f.status(
         &a,
@@ -567,12 +567,58 @@ fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
     );
 }
 
+/// No `--cost` is a light run, the way a plain `lane run` has been since lane LB-V010.
+#[test]
+fn a_job_started_without_a_cost_is_light() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let job = start(&d, &f, "LA", &ws, &["--expect", "out/n.md"]);
+    let id = job["id"].as_str().unwrap();
+    assert_eq!(job["cost"], "light", "{job}");
+    let args: Vec<String> = read(&f.data().join(format!("{id}.args")))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let at = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+    assert_eq!(args[at("--cost") + 1], "light", "{args:?}");
+
+    // Light is the default, and a light job must name the file it leaves behind.
+    let spec = f.spec();
+    let change = change_for(&d, "LA");
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "LA",
+            "--change",
+            &change,
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+        ],
+    );
+    assert_ne!(r.code, 0);
+    assert!(
+        r.stderr.contains(
+            "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
+        ),
+        "{}",
+        r.stderr
+    );
+}
+
 #[test]
 fn an_ended_empty_run_ends_in_that_state_and_waits_with_exit_8() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -663,6 +709,8 @@ fn refusals() {
             "LA",
             "--change",
             &change,
+            "--cost",
+            "build",
             "--lane",
             "nope",
             "--workspace",
@@ -737,6 +785,8 @@ fn refusals() {
             &[
                 "work",
                 "start",
+                "--cost",
+                "build",
                 "--lead",
                 "LA",
                 "--change",
@@ -767,6 +817,8 @@ fn refusals() {
             "LA",
             "--change",
             &change,
+            "--cost",
+            "build",
             "--lane",
             "codex-a",
             "--workspace",
@@ -818,7 +870,7 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     let f = Fixture::new();
     let mut d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -860,7 +912,7 @@ fn a_runner_that_is_gone_shows_as_lost_and_the_state_stays() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -954,7 +1006,7 @@ fn scope_on_starts_lane_through_systemd_run() {
         ("PATH", bin.clone()),
     ]);
     let ws = f.repo("ws");
-    let job = start(&d, &f, "LA", &ws, &[]);
+    let job = start(&d, &f, "LA", &ws, &["--cost", "build"]);
     let id = job["id"].as_str().unwrap().to_string();
     let unit = format!("lucina-work-{id}");
     assert_eq!(job["scope"], unit.as_str(), "{job}");
@@ -994,7 +1046,7 @@ fn runs_started_with_lane_directly_are_listed_as_direct() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let mine = start(&d, &f, "LA", &ws, &[])["id"]
+    let mine = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1097,7 +1149,7 @@ fn a_run_lane_does_not_know_is_lost() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1105,7 +1157,7 @@ fn a_run_lane_does_not_know_is_lost() {
     let job = wait_state(&d, &id, "lost");
     assert_eq!(job["note"], "lane has no record of this run");
     assert!(job["endedAt"].is_string());
-    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 1);
+    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 9);
 }
 
 #[test]
@@ -1132,6 +1184,8 @@ fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
             &ws,
             "--spec",
             &spec,
+            "--cost",
+            "build",
             "--json",
         ],
     );
@@ -1199,6 +1253,8 @@ fn a_dot_workspace_means_the_callers_directory() {
                 ".",
                 "--spec",
                 &spec,
+                "--cost",
+                "build",
                 "--json",
             ])
             .current_dir(&ws)
@@ -1225,7 +1281,7 @@ fn a_lane_run_that_fails_after_lane_registered_the_run_is_not_failed() {
     .unwrap();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let job = start(&d, &f, "LA", &ws, &[]);
+    let job = start(&d, &f, "LA", &ws, &["--cost", "build"]);
     assert_eq!(job["state"], "running", "{job}");
     assert!(
         job["note"]
@@ -1240,7 +1296,7 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1267,7 +1323,7 @@ fn a_lane_status_that_cannot_start_counts_as_a_miss() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1283,7 +1339,7 @@ fn a_status_that_is_not_json_changes_nothing_until_it_is_valid() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1308,7 +1364,7 @@ fn done_with_after_head(
     ws: &str,
     after: impl Fn(&str) -> String,
 ) -> Value {
-    let job = start(d, f, "LA", ws, &[]);
+    let job = start(d, f, "LA", ws, &["--cost", "build"]);
     let id = job["id"].as_str().unwrap().to_string();
     let base = job["baseHead"].as_str().unwrap().to_string();
     let after = after(&base);
@@ -1340,7 +1396,7 @@ fn waiting_on_a_running_job_times_out_with_exit_5() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1355,7 +1411,7 @@ fn board_shows_the_work_section() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    start(&d, &f, "LA", &ws, &[]);
+    start(&d, &f, "LA", &ws, &["--cost", "build"]);
     let r = lagent(&d, &["board"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stdout.contains("\nWORK\n"), "{}", r.stdout);
@@ -1365,4 +1421,66 @@ fn board_shows_the_work_section() {
         "{}",
         r.stdout
     );
+}
+
+/// [`FAKE_LANE`] with one addition: every `lane status <id>` call, however it ends, appends a
+/// byte to `<id>.status-calls`. Counting those tells a test whether the poller still asks.
+fn counting_stand_in() -> String {
+    let script = FAKE_LANE.replace(
+        "status)\n  if [ -f",
+        "status)\n  printf x >> \"$D/$1.status-calls\"\n  if [ -f",
+    );
+    assert_ne!(
+        script, FAKE_LANE,
+        "the stand-in has no status case to count"
+    );
+    script
+}
+
+#[test]
+fn a_run_lane_calls_lost_is_final_and_is_never_asked_again() {
+    let f = Fixture::new();
+    common::write_exec(&f.root.path().join("lane/lane"), &counting_stand_in());
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let asked = || {
+        std::fs::metadata(f.data().join(format!("{id}.status-calls")))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
+    f.status(
+        &id,
+        &lane_status(
+            &id,
+            "lost",
+            json!({"attempts": [], "dirty_files": [], "note": "the runner is gone"}),
+        ),
+    );
+    let job = wait_state(&d, &id, "lost");
+    assert_eq!(job["laneState"], "lost", "{job}");
+    // Lane's own note, not the `unknown lane state` of a word it did not know.
+    assert_eq!(job["note"], "the runner is gone", "{job}");
+    assert!(
+        !job["note"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("unknown lane state:"),
+        "{job}"
+    );
+    assert_eq!(job["laneLost"], true, "{job}");
+    assert!(job["endedAt"].is_string(), "{job}");
+    assert_eq!(job["empty"], Value::Null, "{job}");
+    let asked_before = asked();
+    assert!(asked_before > 0, "the status was never read");
+    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 9);
+    // Three poll intervals, and the listing that reads `lane ls`: the run is asked no more.
+    std::thread::sleep(Duration::from_millis(3_500));
+    assert_eq!(asked(), asked_before, "the poller asked again");
+    assert_eq!(show(&d, &id)["state"], "lost");
+    lagent_json(&d, &["work", "ls"]);
+    assert_eq!(asked(), asked_before, "the poller asked a final run");
 }
