@@ -1,0 +1,69 @@
+{
+  "id": "rev-1315-glm",
+  "state": "reported_done",
+  "runner_lost": false,
+  "owner": "juno-timerq-1029",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "zen-glm-flash",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/Projects/.worktrees/LucinaOS/juno-timerq-1029",
+  "repo": "/home/nez/Projects/Lucina/LucinaOS/.git",
+  "final_lane": "zen-glm-flash",
+  "model": "glm-5.3-flash-free",
+  "effort": null,
+  "session_id": "session-0432d0ea-c4f8-4734-a1ae-e32480af8f27",
+  "live": null,
+  "attempts": [
+    {
+      "lane": "zen-glm-flash",
+      "outcome": "ok",
+      "reason": "<text removed>",
+      "duration_s": 650.3,
+      "changed_files": [],
+      "looks": [],
+      "model_used": null,
+      "before_head": "4cc7be8ea2af6e21cab12289bd4859352a73b399",
+      "after_head": "4cc7be8ea2af6e21cab12289bd4859352a73b399"
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": "<text removed>",
+  "verify": null,
+  "diffgate": {
+    "exit_code": 0,
+    "refused": false,
+    "base": "<text removed>",
+    "report": {
+      "ok": true,
+      "refusals": [],
+      "schema": "<text removed>",
+      "stats": {
+        "added": 0,
+        "files": 0,
+        "removed": 0,
+        "rules": {
+          "assertion-removed": 0,
+          "code-stub": 0,
+          "evidence-placeholder": 0,
+          "guard-deleted": 0,
+          "oracle-changed": 0,
+          "placeholder-comment": 0,
+          "skipped-test": 0,
+          "test-removed": 0,
+          "tmp-write": 0,
+          "tree-wide-reformat": 0
+        }
+      },
+      "waived": []
+    }
+  },
+  "dirty_files": [],
+  "dirty_check": "<text removed>",
+  "cooldowns": [],
+  "note": null,
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/rev-1315-glm",
+  "updated": "2026-11-17T11:21:38Z"
+}

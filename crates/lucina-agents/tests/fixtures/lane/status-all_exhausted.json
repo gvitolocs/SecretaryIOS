@@ -1,0 +1,42 @@
+{
+  "id": "ended-empty-impl",
+  "state": "all_exhausted",
+  "runner_lost": false,
+  "owner": "lane-ended-empty",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "zen-deepseek-flash",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/Projects/.worktrees/lane/lane-ended-empty",
+  "repo": "/home/nez/Projects/AI/lane/.git",
+  "final_lane": null,
+  "model": null,
+  "effort": null,
+  "session_id": null,
+  "live": null,
+  "attempts": [
+    {
+      "lane": "zen-deepseek-flash",
+      "outcome": "quota",
+      "reason": "<text removed>",
+      "duration_s": 160.5,
+      "changed_files": [],
+      "looks": [],
+      "model_used": null,
+      "before_head": "8166366d041d94bb3b6b62e5380df62507894e9a",
+      "after_head": "8166366d041d94bb3b6b62e5380df62507894e9a"
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": null,
+  "verify": null,
+  "diffgate": null,
+  "dirty_files": [],
+  "dirty_check": null,
+  "cooldowns": [],
+  "note": null,
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/ended-empty-impl",
+  "updated": "2026-11-17T11:30:23Z"
+}

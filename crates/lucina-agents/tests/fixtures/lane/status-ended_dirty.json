@@ -1,0 +1,57 @@
+{
+  "id": "private-only-check",
+  "state": "ended_dirty",
+  "runner_lost": false,
+  "owner": "private-only-check",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "qoder",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/Projects/.worktrees/LucinaOS/private-only-check",
+  "repo": "/home/nez/Projects/Lucina/LucinaOS/.git",
+  "final_lane": "qoder",
+  "model": "auto-free",
+  "effort": null,
+  "session_id": "a868b2ee-739c-45f6-9675-a78fb6381f8e",
+  "live": null,
+  "attempts": [
+    {
+      "lane": "qoder",
+      "outcome": "ok",
+      "reason": "<text removed>",
+      "duration_s": 4794.1,
+      "changed_files": [
+        "docs/ci/AUTO-SYNC.md",
+        "tools/ci/lucina-ci/src/coverage.rs",
+        "tools/ci/lucina-ci/src/main.rs",
+        "tools/ci/public-snapshot.rules"
+      ],
+      "looks": [
+        {
+          "at_s": 2700,
+          "time": "<text removed>",
+          "verdict": "<text removed>",
+          "since_progress_s": 470,
+          "changed": [
+            "<text removed>"
+          ]
+        }
+      ],
+      "model_used": null,
+      "before_head": "f83c86dda64a899bdfe8f1bd6b6124203e1276f4",
+      "after_head": "f83c86dda64a899bdfe8f1bd6b6124203e1276f4"
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": "<text removed>",
+  "verify": null,
+  "diffgate": null,
+  "dirty_files": [],
+  "dirty_check": "<text removed>",
+  "cooldowns": [],
+  "note": "<text removed>",
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/private-only-check",
+  "updated": "2026-11-17T11:53:33Z"
+}

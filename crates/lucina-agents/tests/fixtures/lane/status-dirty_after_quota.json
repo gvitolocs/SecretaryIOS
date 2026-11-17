@@ -1,0 +1,61 @@
+{
+  "id": "rb-1315",
+  "state": "dirty_after_quota",
+  "runner_lost": false,
+  "owner": "juno-timerq-1029",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "qoder",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/Projects/.worktrees/LucinaOS/juno-timerq-1029",
+  "repo": "/home/nez/Projects/Lucina/LucinaOS/.git",
+  "final_lane": "qoder",
+  "model": "auto-free",
+  "effort": null,
+  "session_id": null,
+  "live": null,
+  "attempts": [
+    {
+      "lane": "qoder",
+      "outcome": "unavailable",
+      "reason": "<text removed>",
+      "duration_s": 3910.4,
+      "changed_files": [
+        "evidence/juno-timerq-1029/1315-interdiff-2026-11-17.txt",
+        "kernel/patches/1315-sync-A-FIFO-ticket-lock-for-the-timer-managers-juno-.patch",
+        "tests/guest/timer-fair.sh"
+      ],
+      "looks": [
+        {
+          "at_s": 2700,
+          "time": "<text removed>",
+          "verdict": "<text removed>",
+          "since_progress_s": 1374,
+          "changed": [
+            "<text removed>",
+            "<text removed>"
+          ]
+        }
+      ],
+      "model_used": null,
+      "before_head": "825f1f98e980beba8314cc932a38fa3aa924f53c",
+      "after_head": "675f80f0a0e90a70b4173e67dd74ec4ddf4ac8ee"
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": "<text removed>",
+  "verify": null,
+  "diffgate": null,
+  "dirty_files": [
+    "evidence/juno-timerq-1029/1315-interdiff-2026-11-17.txt",
+    "kernel/patches/1315-sync-A-FIFO-ticket-lock-for-the-timer-managers-juno-.patch",
+    "tests/guest/timer-fair.sh"
+  ],
+  "dirty_check": null,
+  "cooldowns": [],
+  "note": null,
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/rb-1315",
+  "updated": "2026-11-17T09:36:45Z"
+}

@@ -21,6 +21,7 @@ mod pipe;
 mod rewind;
 mod session;
 mod term;
+mod work;
 mod ws;
 
 #[derive(Parser, Debug)]
@@ -127,6 +128,9 @@ pub enum Command {
     Device(pipe::DeviceCommand),
     /// Every workspace's state, the queue, leases and recent deploys (Lucina only)
     Board,
+    /// Worker runs that go through `lane`: start, list, show and wait (Lucina only)
+    #[command(subcommand)]
+    Work(work::WorkCommand),
     /// Which workspaces and main checkouts have processes running, and how much memory they use (Lucina only)
     Top,
     /// Record which model wrote commits, after checking their Co-Authored-By trailer (Lucina only)
@@ -1511,6 +1515,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Session(cmd) => session::session_cmd(&client, cmd).await,
         Command::Device(cmd) => pipe::device(&client, cmd).await,
         Command::Board => pipe::board(&client).await,
+        Command::Work(cmd) => work::work(&client, cmd, cli.json || cli.format == "json").await,
         Command::Top => pipe::top(&client).await,
         Command::Attest(a) => attest::attest(a),
         Command::Ledger(cmd) => attest::ledger_cmd(cmd),

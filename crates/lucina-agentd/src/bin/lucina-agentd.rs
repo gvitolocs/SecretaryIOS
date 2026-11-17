@@ -48,7 +48,9 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .with_writer(std::io::stderr)
         .init();
     let args = Args::parse();
@@ -61,10 +63,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Registry::open(&state_dir)?;
     let reaped = registry.reap_leftovers();
     if !reaped.is_empty() {
-        tracing::warn!(count = reaped.len(), "reaped provider processes from a previous run");
+        tracing::warn!(
+            count = reaped.len(),
+            "reaped provider processes from a previous run"
+        );
     }
     let lanes = LaneConfig::load();
-    let mut providers: Vec<Arc<dyn Provider>> = if args.no_real_providers { Vec::new() } else { providers::installed(&lanes, &registry) };
+    let mut providers: Vec<Arc<dyn Provider>> = if args.no_real_providers {
+        Vec::new()
+    } else {
+        providers::installed(&lanes, &registry)
+    };
     if dev_enabled() {
         providers.push(Arc::new(MockProvider));
         providers.push(Arc::new(MockSlowProvider));
@@ -72,9 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let notifier = Notifier::from_env();
     if notifier.is_none() {
-        tracing::info!("notifications off: set {} and {}", lucina_agentd::notify::URL_ENV, lucina_agentd::notify::TOKEN_ENV);
+        tracing::info!(
+            "notifications off: set {} and {}",
+            lucina_agentd::notify::URL_ENV,
+            lucina_agentd::notify::TOKEN_ENV
+        );
     }
-    let permission_ttl = std::env::var("LUCINA_AGENTD_PERMISSION_TTL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3600);
+    let permission_ttl = std::env::var("LUCINA_AGENTD_PERMISSION_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3600);
     let options = Options {
         registry: Some(registry.clone()),
         notifier,
@@ -84,10 +100,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         terminals: lucina_agentd::terminals::Config::from_env(&state_dir),
         pipeline: lucina_agentd::pipeline::Config::from_env(&state_dir),
         devices: lucina_agentd::devices::Config::from_env(&state_dir),
+        work: lucina_agentd::manager::WorkConfig::from_env(&state_dir),
     };
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();
     manager.spawn_pipeline();
+    manager.spawn_work();
     manager.spawn_command_sweeper();
     manager.spawn_session_sweeper();
     manager.spawn_terminal_ticker();
@@ -119,7 +137,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let app = app.clone();
         servers.push(tokio::spawn(async move {
             axum::serve(unix, app.into_make_service_with_connect_info::<Peer>())
-                .with_graceful_shutdown(async move { let _ = rx.recv().await; })
+                .with_graceful_shutdown(async move {
+                    let _ = rx.recv().await;
+                })
                 .await
         }));
     }
@@ -131,7 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut rx = stop_tx.subscribe();
         servers.push(tokio::spawn(async move {
             axum::serve(tcp, app.into_make_service_with_connect_info::<Peer>())
-                .with_graceful_shutdown(async move { let _ = rx.recv().await; })
+                .with_graceful_shutdown(async move {
+                    let _ = rx.recv().await;
+                })
                 .await
         }));
     }
