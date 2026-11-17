@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use lucina_agents::sandbox::{to_bwrap_args, CostClass, Policy, RunInputs};
+use lucina_agents::sandbox::{host, CostClass, GitWorktree, Policy, RunInputs, EMPTY_FILE};
 use lucina_delegate::sandbox::{bwrap_args, Mounts};
 
 const POLICY: &str = include_str!("../../../deploy/lucina-agentd/sandbox-policy.toml");
@@ -225,7 +225,8 @@ fn the_new_sandbox_hides_everything_the_delegate_sandbox_hides() {
     );
     std::fs::create_dir_all(repo.join(".git/info")).unwrap();
     write(&ws.join("work.txt"), "work");
-    std::fs::create_dir_all(h.join(".local/lib/lucina-shims")).unwrap();
+    std::fs::create_dir_all(repo.join(".git/objects/info")).unwrap();
+    write(&h.join(".local/lib/lucina-shims").join(EMPTY_FILE), "");
     let run_tmp = h.join("scratch/tmp/run-1");
     std::fs::create_dir_all(&run_tmp).unwrap();
     // The old view's job directory.
@@ -272,15 +273,20 @@ fn the_new_sandbox_hides_everything_the_delegate_sandbox_hides() {
     let run = RunInputs {
         home: h.clone(),
         workspace: ws.clone(),
-        common_git_dir: repo.join(".git"),
-        worktree_git_dir: Some(repo.join(".git/worktrees/run1")),
+        git: Some(GitWorktree {
+            common_dir: repo.join(".git"),
+            own_dir: repo.join(".git/worktrees/run1"),
+        }),
         lane: "qoder".into(),
         cost: CostClass::Light,
         tmpdir: run_tmp,
         extra_ro: Vec::new(),
         env: vec![("P1".into(), p1.into()), ("P2".into(), p2.into())],
+        lead: None,
+        run_id: None,
+        change: None,
     };
-    let new_args = to_bwrap_args(&policy, &run).unwrap();
+    let new_args = host::bwrap_args(&policy, &run).unwrap_or_else(|e| panic!("{e}"));
     let mut cmd = Command::new(BWRAP);
     cmd.args(&new_args)
         .args(["/bin/sh", "-c", &probe])
@@ -311,6 +317,8 @@ fn the_new_sandbox_hides_everything_the_delegate_sandbox_hides() {
         if n == Some("hidden") && o != Some("hidden") {
             findings.push(name);
         }
+        // Every canary is a secret: the new view must hide it, whatever the old one did.
+        assert_eq!(n, Some("hidden"), "the new sandbox shows the canary {name}");
     }
     eprintln!("hidden by the new sandbox but shown by the delegate's: {findings:?}");
     assert!(
