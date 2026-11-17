@@ -3,13 +3,19 @@
 #   deploy/lucina-agentd/install.sh        (what `lagent deploy lucina-agentd` runs, after deploy-guard check)
 # - builds both binaries (cargo is incremental; an old binary must never be installed by mistake);
 # - keeps the running ones as ~/.local/bin/<name>.bak-<UTC stamp>-pre-<sha8>;
-# - restarts lucina-agentd and waits for /health on its socket. The unit file and its drop-ins
-#   (Honcho MCP, Infisical) are not touched: deploy/lucina-agentd.service is only the template.
+# - installs deploy/lucina-agentd.service and reloads, so the keys incident:lucina-rs-earlyoom:20261117
+#   decided on reach the host instead of staying in git: without this the unit kept the Restart= and
+#   OOMScoreAdjust it was hand-copied with, however many times this script ran (JD-R016 finding 2).
+#   The drop-ins in lucina-agentd.service.d are the host's and stay as they are (Honcho MCP, the
+#   infisical-broker ExecStart, the journal name); they keep overriding whatever they set, the way a
+#   drop-in does.
+# - restarts lucina-agentd and waits for it to answer `lagent providers`.
 # A pipeline job that runs this keeps going while agentd restarts: jobs are their own systemd units.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 TARGET=${CARGO_TARGET_DIR:-$REPO/target}
 BIN=$HOME/.local/bin
+UNITS=$HOME/.config/systemd/user
 SHA=$(git -C "$REPO" rev-parse --short=8 HEAD)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
@@ -21,6 +27,10 @@ for name in lucina-agentd lagent; do
   mv -f "$BIN/$name.new" "$BIN/$name"
 done
 echo "installed lucina-agentd + lagent at $SHA (previous: *.bak-$STAMP-pre-$SHA)"
+
+mkdir -p "$UNITS"
+install -m 0644 "$REPO/deploy/lucina-agentd.service" "$UNITS/"
+systemctl --user daemon-reload
 
 # `restart` does not fight the unit's Restart=always: systemd queues no start for a stop it was asked
 # for, and a restart job is that suppressed stop plus one start. No maintenance marker wanted: the

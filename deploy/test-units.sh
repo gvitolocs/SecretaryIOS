@@ -87,6 +87,35 @@ check 'it is a oneshot' key_is "$h" Service Type oneshot
 check 'and runs the watchdog these tests cover' \
     key_is "$h" Service ExecStart '%h/.local/bin/lucina-rs-health-check'
 
+# first_line <file> <pattern>: line number of the first match, empty when the file has none.
+first_line() { grep -n -- "$2" "$1" | head -1 | cut -d: -f1 || true; }
+# comes_first <file> <pattern a> <pattern b>: both are in the file and a is above b.
+comes_first() {
+    a=$(first_line "$1" "$2")
+    b=$(first_line "$1" "$3")
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
+no_line() { ! grep -q -- "$2" "$1"; }
+
+# An install script builds and installs, so no test runs one; what is checkable is that the unit file
+# is part of it, in the order systemd needs. Until JD-R016 finding 2 that was true of lucina-rs only,
+# and the keys above reached nezopt for one of the two services.
+printf 'the deploy that carries these keys to the host\n'
+for unit in lucina-rs lucina-agentd; do
+    i=$here/$unit/install.sh
+    check "$unit/install.sh installs $unit.service" comes_first "$i" \
+        "install -m 0644 \"\$REPO/deploy/$unit.service\"" 'systemctl --user daemon-reload'
+    check "... reloads before it restarts" comes_first "$i" \
+        'systemctl --user daemon-reload' "systemctl --user restart $unit.service"
+    # The host's drop-ins hold what the unit file must not carry (the infisical-broker ExecStart, the
+    # Honcho MCP line, secret references): installing a unit file is never a reason to touch them.
+    check "... and leaves $unit.service.d alone" no_line "$i" 'rm.*service\.d'
+done
+check 'the agentd unit says its file is installed by that script, not by hand cp' \
+    grep -q '^#.*deploy/lucina-agentd/install.sh' "$here/lucina-agentd.service"
+check '... and no longer tells anyone to copy it in' no_line "$here/lucina-agentd.service" \
+    '^# *cp deploy/lucina-agentd.service'
+
 printf 'systemd-analyze --user verify (static: nothing is started or stopped)\n'
 if ! command -v systemd-analyze >/dev/null 2>&1; then
     printf '  no systemd-analyze on this host: the keys above are the check\n'
