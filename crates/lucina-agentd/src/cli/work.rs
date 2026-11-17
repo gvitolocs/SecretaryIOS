@@ -25,9 +25,9 @@ pub enum WorkCommand {
         /// The work id (`wk-…`)
         id: String,
     },
-    /// Wait for a run to end; the exit code says how it ended: 0 done or verified, 1 failed
-    /// or lost, 3 all lanes exhausted, 4 dirty after quota, 5 still going at the timeout,
-    /// 6 ended with jobs queued, 7 ended dirty, 8 ended empty
+    /// Wait for a run to end; the exit code says how it ended: 0 done or verified, 1 failed,
+    /// 3 all lanes exhausted, 4 dirty after quota, 5 still going at the timeout, 6 ended with
+    /// jobs queued, 7 ended dirty, 8 ended empty, 9 lost
     Wait(WaitArgs),
 }
 
@@ -39,8 +39,10 @@ pub struct StartArgs {
     /// Who runs first when the host is busy: owner, high, normal or backlog
     #[arg(long, default_value = "normal")]
     pub priority: String,
-    /// light: the worker reads, reviews or measures and never builds (its cargo calls are refused by lane and it needs --expect); build: it compiles or tests
-    #[arg(long, default_value = "build")]
+    /// light: the worker reads, reviews or measures and never builds (its cargo calls are refused
+    /// by lane and it needs --expect); build: it compiles or tests. The default is light, the same
+    /// as a plain `lane run`: a worker that builds passes --cost build.
+    #[arg(long, default_value = "light")]
     pub cost: String,
     /// The lane to run (one of --lane and --chain)
     #[arg(long, conflicts_with = "chain")]

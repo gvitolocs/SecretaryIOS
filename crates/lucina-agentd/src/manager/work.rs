@@ -519,6 +519,11 @@ fn finish(job: &mut WorkJob) {
         job.empty = Some(true);
         return;
     }
+    // A lost run is not asked whether it produced something: a run whose runner vanished
+    // leaves no heads to compare, which is how agentd has always treated its own lost jobs.
+    if job.state == WorkState::Lost {
+        return;
+    }
     let expect_present = job.expect.as_ref().map(|e| {
         std::fs::metadata(Path::new(&job.workspace).join(e))
             .map(|m| m.is_file() && m.len() > 0)
@@ -589,7 +594,9 @@ impl Manager {
         if let Some(e) = &expect {
             check_expect(e)?;
         }
-        if req.cost == Some(CostClass::Light) && expect.is_none() {
+        // No cost at all is a light run, the same as a plain `lane run` since lane LB-V010.
+        let cost = req.cost.unwrap_or(CostClass::Light);
+        if cost == CostClass::Light && expect.is_none() {
             return Err(ManagerError::Invalid(
                 "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
                     .into(),
@@ -626,7 +633,7 @@ impl Manager {
             id: id.clone(),
             lead,
             priority: req.priority.unwrap_or_default(),
-            cost: req.cost.unwrap_or_default(),
+            cost,
             lane: lane.clone(),
             chain: chain.clone(),
             workspace: workspace.clone(),
@@ -964,13 +971,18 @@ async fn query_status(bin: &Path, id: &str) -> StatusReply {
 }
 
 /// Whether the poller follows a job: it is unfinished, or it was lost less than a day ago.
+/// A run `lane` called `lost` itself is not followed at all: that is the tool's own end, and
+/// only the runs agentd marked lost on its misses are asked again, in case it shows up.
 fn pollable(job: &WorkJob) -> bool {
     match job.state {
-        WorkState::Lost => job
-            .ended_at
-            .as_deref()
-            .and_then(age_secs)
-            .is_some_and(|a| a < DAY),
+        WorkState::Lost => {
+            !job.lane_lost
+                && job
+                    .ended_at
+                    .as_deref()
+                    .and_then(age_secs)
+                    .is_some_and(|a| a < DAY)
+        }
         s => !s.is_terminal(),
     }
 }
@@ -1415,5 +1427,41 @@ deep-codex = ["qoder", "codex-a"]
         assert!(!recent(WorkState::Verified, Some(&old)));
         assert!(recent(WorkState::Verified, Some(&fresh)));
         assert!(recent(WorkState::Verified, None));
+    }
+
+    #[test]
+    fn the_two_kinds_of_lost_are_polled_differently() {
+        let fresh = chrono::Utc::now().to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
+        let lost = |lane_lost: bool, ended_at: Option<String>| WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Lost,
+            lane_lost,
+            ended_at,
+            ..WorkJob::default()
+        };
+        // What agentd concluded from its misses is asked again for a day, then dropped.
+        assert!(pollable(&lost(false, Some(fresh.clone()))));
+        assert!(!pollable(&lost(false, Some(old))));
+        // Lane's own word is final from the answer that gave it.
+        assert!(!pollable(&lost(true, Some(fresh))));
+        assert!(!pollable(&lost(true, None)));
+    }
+
+    #[test]
+    fn a_lost_run_is_not_asked_whether_it_produced_anything() {
+        // A head to start from and nothing since would say `empty` if the heads were asked.
+        for lane_lost in [true, false] {
+            let mut job = WorkJob {
+                id: "wk-1".into(),
+                state: WorkState::Lost,
+                lane_lost,
+                base_head: Some("a".repeat(40)),
+                ..WorkJob::default()
+            };
+            finish(&mut job);
+            assert!(job.ended_at.is_some(), "{lane_lost}");
+            assert_eq!(job.empty, None, "{lane_lost}");
+        }
     }
 }
