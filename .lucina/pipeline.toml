@@ -12,6 +12,15 @@ timeout_min = 45
 # Standalone crates (tools/*, crates/secretary-{instagram,pixiv}, firmware/lucinavoice-core, ...) are
 # built through --manifest-path when touched. These use other toolchains and are left alone:
 skip = ["firmware/lucinavoice"]
+# The worker sandbox (docs/design/agents-sandbox.md): its policy, its generator and their tests. Loosening any of them
+# is a gate change.
+gate_files = [
+    "deploy/lucina-agentd/sandbox-policy.toml",
+    "crates/lucina-agents/src/sandbox.rs",
+    "crates/lucina-agents/src/sandbox/",
+    "crates/lucina-agents/tests/sandbox_host.rs",
+    "crates/lucina-delegate/tests/sandbox_parity.rs",
+]
 
 # The Verus proofs run on GitHub Actions, one proof unit per runner (docs/ci/VERUS.md). A branch that reaches a proof unit must be
 # pushed (git push origin <branch>) and have verus-gate green on its exact commit; one that reaches none passes. Never reruns proofs.
