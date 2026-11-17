@@ -481,6 +481,7 @@ impl Manager {
             force: false,
             full: req.full,
             ledger: Some(self.ledger_path()),
+            requested_by: req.requested_by.clone(),
         };
         let job = Job {
             job_id: id.clone(),
@@ -560,6 +561,7 @@ impl Manager {
             force: req.force,
             full: false,
             ledger: Some(self.ledger_path()),
+            requested_by: None,
         };
         let job = Job {
             job_id: id,
