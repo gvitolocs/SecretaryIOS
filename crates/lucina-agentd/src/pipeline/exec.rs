@@ -14,6 +14,7 @@
 //! tag, ops record).
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -76,6 +77,10 @@ struct Exec {
     members: Option<Members>,
     /// The job's allows as gate-command environment (empty while diffgate or a non-merge command runs).
     gate_env: Vec<(String, String)>,
+    /// The environment a gate command starts from, instead of this process's own. None in
+    /// production; a test injects a caller environment so it can hold an exported shell
+    /// function without touching the process environment of the test binary.
+    env_source: Option<Vec<(OsString, OsString)>>,
 }
 
 struct Members {
@@ -105,6 +110,7 @@ impl Exec {
             log,
             path,
             members: None,
+            env_source: None,
         })
     }
 
@@ -181,6 +187,19 @@ impl Exec {
         };
         let limit = format!("{}m", timeout_min.max(1));
         let mut run = Command::new("timeout");
+        // The child's environment is built, not inherited: exactly `source` plus the sets below,
+        // minus the names the strip drops. Production passes this process's own environment as
+        // `source`; a test passes a stand-in so the strip below is exercised against a
+        // BASH_FUNC_* name without touching the test process's environment. `source` goes in
+        // first, so every explicit set below — the job's PATH above all — overrides it.
+        run.env_clear();
+        let source = self
+            .env_source
+            .clone()
+            .unwrap_or_else(|| std::env::vars_os().collect());
+        for (k, v) in source.iter() {
+            run.envs(std::iter::once((k, v)));
+        }
         run.args(["--kill-after=30s", &limit, "bash", "-c", cmd])
             .current_dir(cwd)
             .env("PATH", &self.path)
@@ -205,10 +224,11 @@ impl Exec {
         // An exported shell function travels in the environment as BASH_FUNC_<name>%%, and bash
         // resolves it before PATH: a gate command `cargo test` would then run whoever exported
         // a cargo wrapper, not what the PATH the job built says. Drop them like BASH_ENV above.
-        for k in std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()) {
-            if k.starts_with("BASH_FUNC_") {
-                run.env_remove(k);
-            }
+        for k in source.iter().filter_map(|(k, _)| {
+            let n = k.to_string_lossy();
+            n.starts_with("BASH_FUNC_").then_some(n.into_owned())
+        }) {
+            run.env_remove(k);
         }
         let status = run.status();
         match status {
@@ -1101,6 +1121,60 @@ mod tests {
         assert!(out.gates[0].flaky, "{out:?}\nLOG:\n{log}");
         // Both gate runs went through the shadow, not through a cargo of the machine: it failed
         // once (one line in its state file) and passed on the retry.
+        assert_eq!(
+            std::fs::read_to_string(&ran).ok().as_deref(),
+            Some("once\n"),
+            "{out:?}\nLOG:\n{log}"
+        );
+        assert!(
+            out.message.contains("flaky, passed on retry: t"),
+            "{}\nLOG:\n{log}",
+            out.message
+        );
+        assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
+    }
+
+    #[test]
+    fn an_exported_cargo_function_does_not_beat_the_gate_s_path() {
+        // The 2026-11-17 failure: the caller had exported a `cargo` shell function, and the
+        // gate's bash resolved it before PATH, so the machine's cargo answered both gate runs
+        // ("could not find Cargo.toml") and the flaky test failed everywhere. The strip in
+        // `sh()` closes it; this is the test that would have caught it before that strip
+        // existed. The function is injected as the caller environment's stand-in (never as a
+        // process-wide variable): a gate that sees it runs `echo HIJACKED` instead of the
+        // shadow, which shows up as a non-flaky pass and an empty state file.
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let ran = root.join("cargo-ran-fn");
+        write_exec(
+            &bin.join("cargo"),
+            &format!(
+                "#!/bin/sh\nif [ -s {r} ]; then exit 0; fi\necho once >>{r}\nexit 1\n",
+                r = ran.display()
+            ),
+        );
+        std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let dir = root.join("job-fn");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        x.env_source = Some(vec![(
+            OsString::from("BASH_FUNC_cargo%%"),
+            OsString::from("() { echo HIJACKED; }"),
+        )]);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert!(out.gates[0].flaky, "{out:?}\nLOG:\n{log}");
         assert_eq!(
             std::fs::read_to_string(&ran).ok().as_deref(),
             Some("once\n"),
