@@ -824,3 +824,101 @@ async fn a_merge_to_a_trunk_the_remote_does_not_carry_is_refused() {
     );
     assert_eq!(git(&wt, &["rev-parse", "HEAD"]), head, "the work is kept");
 }
+
+/// `lagent task start --base`: a commit on the trunk is taken, a commit off it is refused
+/// before anything is made, and with no `--base` the task still starts from the trunk tip.
+#[tokio::test]
+async fn a_task_can_be_based_on_a_trunk_commit_and_on_nothing_else() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Baseable", "true");
+    // Two commits on the trunk, and a third on a branch nothing on the trunk leads to.
+    let older = git(&repo, &["rev-parse", "HEAD"]);
+    let tip = commit(&repo, "b.txt", "b\n", "b");
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["checkout", "-q", "-b", "side", &older]);
+    let side = commit(&repo, "side.txt", "side\n", "the side commit");
+    git(&repo, &["checkout", "-q", "main"]);
+
+    let m = manager(&root);
+    let start = |title: &str, branch: &str, base: Option<&str>| {
+        let m = m.clone();
+        let title = title.to_string();
+        let repo = repo.display().to_string();
+        let branch = branch.to_string();
+        let base = base.map(str::to_string);
+        async move {
+            m.start_task(StartTask {
+                title,
+                repo: Some(repo),
+                branch: Some(branch),
+                base,
+                ..StartTask::default()
+            })
+            .await
+        }
+    };
+
+    // With no base asked for: the trunk tip, and nothing recorded about a base.
+    let (task, w) = start("Plain start", "no-base", None).await.unwrap();
+    assert_eq!(git(&PathBuf::from(&w.cwd), &["rev-parse", "HEAD"]), tip);
+    assert_eq!(task.base, None, "no base asked for, none recorded");
+    assert_eq!(task.base_ref, None);
+
+    // An older commit of the trunk, named by an abbreviation: the worktree is made at it, and
+    // the record keeps both the full id and what was typed.
+    let short = older[..10].to_string();
+    let (task, w) = start("From the older commit", "older-base", Some(short.as_str()))
+        .await
+        .unwrap();
+    assert_eq!(
+        git(&PathBuf::from(&w.cwd), &["rev-parse", "HEAD"]),
+        older,
+        "the worktree starts at the commit asked for"
+    );
+    assert_eq!(task.base.as_deref(), Some(older.as_str()));
+    assert_eq!(task.base_ref.as_deref(), Some(short.as_str()));
+    assert_eq!(
+        m.pipeline().task(&w.workspace_id),
+        Some(task),
+        "the stored record is the one handed back"
+    );
+
+    // A commit the trunk does not have: refused, and nothing was made for it.
+    let trees = git(&repo, &["worktree", "list", "--porcelain"]);
+    let ManagerError::Invalid(msg) =
+        start("From the side commit", "side-base", Some(side.as_str()))
+            .await
+            .expect_err("the side commit is no base")
+    else {
+        panic!("a base off the trunk is a refused request, not another error");
+    };
+    assert_eq!(
+        msg,
+        format!(
+            "base {} is not on origin/main nor on an allowed base of Baseable; allowed: none",
+            &side[..10]
+        )
+    );
+    assert!(
+        git(&repo, &["branch", "--list", "side-base"]).is_empty(),
+        "no branch was made"
+    );
+    assert_eq!(
+        git(&repo, &["worktree", "list", "--porcelain"]),
+        trees,
+        "no worktree was made"
+    );
+    assert!(m.pipeline().tasks().iter().all(|t| t.branch != "side-base"));
+
+    // A word that is no commit here at all: refused the same way, before anything is measured.
+    let ManagerError::Invalid(msg) = start("Nonsense", "words-base", Some("not-a-rev"))
+        .await
+        .expect_err("not-a-rev is no commit")
+    else {
+        panic!("a base that is no commit is a refused request");
+    };
+    assert_eq!(msg, "base not-a-rev is not a commit in Baseable");
+    assert!(git(&repo, &["branch", "--list", "words-base"]).is_empty());
+}

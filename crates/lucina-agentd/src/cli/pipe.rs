@@ -41,6 +41,10 @@ pub struct StartArgs {
     /// The flaw's platform: web, mac, android, ios or juno
     #[arg(long, requires = "flaw")]
     pub target: Option<String>,
+    /// A commit or ref to base the worktree on instead of the trunk tip: it must be on the
+    /// trunk, or on one of the repo's allowed bases
+    #[arg(long)]
+    pub base: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -262,7 +266,7 @@ pub async fn task(client: &Client, cmd: &TaskCommand) -> Result<Output, CmdError
     match cmd {
         TaskCommand::Start(a) => {
             let session = a.session.clone().unwrap_or_else(session);
-            let body = json!({"title": a.title, "repo": a.repo, "branch": a.branch, "owner": a.owner.clone().unwrap_or_else(|| session.clone()), "session": session, "flaw": a.flaw, "flawTarget": a.target});
+            let body = json!({"title": a.title, "repo": a.repo, "branch": a.branch, "owner": a.owner.clone().unwrap_or_else(|| session.clone()), "session": session, "flaw": a.flaw, "flawTarget": a.target, "base": a.base});
             Ok(started(
                 client.post("/pipeline/tasks", &body).await.map_err(api)?,
             ))
@@ -643,6 +647,11 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
                 s(&w["state"]),
                 s(&w["project"]),
                 s(&w["branch"]),
+                // Only a task started with `--base` has one: the commit it branched off.
+                w["task"]["base"]
+                    .as_str()
+                    .map(|b| b[..b.len().min(10)].to_string())
+                    .unwrap_or_default(),
                 format!(
                     "{}{}",
                     w["ahead"]
@@ -670,6 +679,7 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
             "STATE",
             "REPO",
             "BRANCH",
+            "BASE",
             "CHANGES",
             "IDLE",
             "RUNNING",

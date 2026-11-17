@@ -42,6 +42,10 @@ pub struct StartTask {
     pub flaw: Option<String>,
     #[serde(default)]
     pub flaw_target: Option<String>,
+    /// A commit or ref to base the worktree on instead of the trunk tip (`--base`), accepted only
+    /// when it is on the trunk or on one of the repo's allowed bases.
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -125,6 +129,89 @@ fn repo_info(path: &Path) -> Result<Trunk, ManagerError> {
         .ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))
 }
 
+/// The full commit id `rev` names in `dir` (`^{commit}`, so a tag or a tree goes to its commit),
+/// `None` when it names nothing there.
+async fn commit_at(dir: &Path, rev: &str) -> Option<String> {
+    git::read(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )
+    .await
+    .filter(|s| !s.is_empty())
+}
+
+/// The pure part of the `--base` check, from what git answered about the base: `commit` is the
+/// full id `<rev>` resolved to (`None` when it resolves to nothing here), `on_trunk` and
+/// `on_allowed` whether that commit is an ancestor of, or equal to, the trunk tip and one of
+/// `allowed`.
+///
+/// `Ok` is the full id to create the worktree from; `Err` why the base is refused.
+fn base_decision(
+    rev: &str,
+    repo: &str,
+    trunk_ref: &str,
+    allowed: &[&str],
+    commit: Option<&str>,
+    on_trunk: bool,
+    on_allowed: bool,
+) -> Result<String, String> {
+    let Some(commit) = commit else {
+        return Err(format!("base {rev} is not a commit in {repo}"));
+    };
+    if on_trunk || on_allowed {
+        return Ok(commit.to_string());
+    }
+    Err(format!(
+        "base {} is not on {trunk_ref} nor on an allowed base of {repo}; allowed: {}",
+        &commit[..commit.len().min(10)],
+        if allowed.is_empty() {
+            "none".to_string()
+        } else {
+            allowed.join(", ")
+        }
+    ))
+}
+
+/// `lagent task start --base <rev>`: the commit the worktree is to be created from, resolved in
+/// the repository and checked against the trunk tip and [`Trunk::allowed_bases`] before anything
+/// is created. An allowed base the checkout does not have is skipped and logged: the row is the
+/// owner's, not a promise about what every machine has fetched.
+async fn requested_base(repo: &Trunk, rev: &str) -> Result<String, ManagerError> {
+    let trunk_ref = repo.base_ref();
+    let allowed = repo.allowed_bases();
+    let commit = commit_at(&repo.root, rev).await;
+    let mut on_trunk = false;
+    let mut on_allowed = false;
+    if let Some(commit) = &commit {
+        on_trunk = git::merged_into(&repo.root, commit, &trunk_ref).await;
+        for &name in allowed {
+            let Some(tip) = commit_at(&repo.root, name).await else {
+                tracing::warn!(repo = %repo.name, base = %name, "allowed base does not resolve");
+                continue;
+            };
+            if git::merged_into(&repo.root, commit, &tip).await {
+                on_allowed = true;
+                break;
+            }
+        }
+    }
+    base_decision(
+        rev,
+        &repo.name,
+        &trunk_ref,
+        allowed,
+        commit.as_deref(),
+        on_trunk,
+        on_allowed,
+    )
+    .map_err(invalid)
+}
+
 fn slug(title: &str) -> String {
     let s = lucina_agents::branch_slug::slugify(title);
     let s: String = s.chars().take(48).collect();
@@ -199,6 +286,13 @@ impl Manager {
         if branch.is_empty() {
             return Err(invalid("Give the task a --branch"));
         }
+        // `--base` names a commit to start from instead of the trunk tip; nothing is created
+        // before it has been resolved and checked, and without it the base is the trunk tip.
+        let base = match &req.base {
+            Some(rev) => Some(requested_base(&repo, rev).await?),
+            None => None,
+        };
+        let start = base.clone().unwrap_or_else(|| repo.base_ref());
         let (w, _) = self
             .create_workspace(CreateWorkspace {
                 isolation: "worktree".into(),
@@ -206,7 +300,7 @@ impl Manager {
                 title: Some(req.title.trim().to_string()),
                 mode: Some("branch-off".into()),
                 new_branch: Some(branch),
-                base: Some(repo.base_ref()),
+                base: Some(start),
                 ..CreateWorkspace::default()
             })
             .await?;
@@ -216,6 +310,8 @@ impl Manager {
             repo: repo.root.display().to_string(),
             branch: w.branch.clone().unwrap_or_default(),
             trunk: repo.branch,
+            base,
+            base_ref: req.base,
             owner: req.owner,
             session: req.session,
             flaw: req.flaw,
@@ -274,6 +370,8 @@ impl Manager {
             repo: repo.root.display().to_string(),
             branch: w.branch.clone().unwrap_or_default(),
             trunk: repo.branch,
+            base: None,
+            base_ref: None,
             owner: req.owner,
             session: req.session,
             flaw: None,
@@ -1210,5 +1308,79 @@ async fn stop_runner(runner: &str) {
             .args(["--user", "stop", runner])
             .status()
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full commit id, as `rev-parse --verify --quiet <rev>^{commit}` answers it.
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// The check asks nothing of git: it is the two ancestor questions, answered.
+    fn verdict(
+        rev: &str,
+        allowed: &[&str],
+        commit: Option<&str>,
+        on_trunk: bool,
+        on_allowed: bool,
+    ) -> Result<String, String> {
+        base_decision(
+            rev,
+            "LucinaNet-servo",
+            "lucinanet",
+            allowed,
+            commit,
+            on_trunk,
+            on_allowed,
+        )
+    }
+
+    #[test]
+    fn a_base_on_the_trunk_is_accepted() {
+        assert_eq!(
+            verdict("v1.2.3", &[], Some(COMMIT), true, false),
+            Ok(COMMIT.into())
+        );
+    }
+
+    #[test]
+    fn a_base_on_an_allowed_base_is_accepted() {
+        assert_eq!(
+            verdict(
+                COMMIT,
+                &["upstream-56", "servo-53.1a"],
+                Some(COMMIT),
+                false,
+                true
+            ),
+            Ok(COMMIT.into())
+        );
+    }
+
+    /// The refusal says which commit the base resolved to, what it was measured against, and
+    /// what else this repo's row would have allowed.
+    #[test]
+    fn a_base_on_neither_the_trunk_nor_an_allowed_base_is_refused() {
+        assert_eq!(
+            verdict("side-work", &[], Some(COMMIT), false, false).unwrap_err(),
+            "base 0123456789 is not on lucinanet nor on an allowed base of LucinaNet-servo; allowed: none"
+        );
+        assert_eq!(
+            verdict("side-work", &["upstream-56", "servo-53.1a"], Some(COMMIT), false, false)
+                .unwrap_err(),
+            "base 0123456789 is not on lucinanet nor on an allowed base of LucinaNet-servo; allowed: upstream-56, servo-53.1a"
+        );
+    }
+
+    /// A base that names no commit here is refused before anything is measured, in the caller's
+    /// own words.
+    #[test]
+    fn a_base_that_is_not_a_commit_is_refused() {
+        assert_eq!(
+            verdict("not-a-rev", &["upstream-56"], None, false, false).unwrap_err(),
+            "base not-a-rev is not a commit in LucinaNet-servo"
+        );
     }
 }
