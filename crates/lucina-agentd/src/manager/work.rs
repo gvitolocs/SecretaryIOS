@@ -15,7 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use lucina_agents::work::{
-    apply_status, from_direct, is_empty, missing_ls_fields, missing_status_fields, new_id,
+    apply_status, emptiness, from_direct, missing_ls_fields, missing_status_fields, new_id,
     parse_ls, status_unreadable, summarize, validate_target, CostClass, LeadSummary, LsRows,
     Priority, WorkJob, WorkState,
 };
@@ -397,13 +397,13 @@ fn finish(job: &mut WorkJob) {
     });
     // Without a head from the start (not a git directory) lane's own start head is the base.
     let base = job.base_head.as_deref().or(job.lane_base_head.as_deref());
-    job.empty = Some(is_empty(
+    job.empty = emptiness(
         expect_present,
         base,
         job.after_head.as_deref(),
         job.verify_head.as_deref(),
         job.dirty_files,
-    ));
+    );
 }
 
 impl Manager {

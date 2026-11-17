@@ -478,6 +478,34 @@ pub fn is_empty(
     dirty_files == 0 && !moved(after_head) && !moved(verify_head)
 }
 
+/// [`is_empty`] with a third answer: `None` when there is no evidence either way, that is
+/// no expected file, nothing dirty and no head at all (a workspace that is not a git
+/// repository gives none).
+pub fn emptiness(
+    expect_present: Option<bool>,
+    base_head: Option<&str>,
+    after_head: Option<&str>,
+    verify_head: Option<&str>,
+    dirty_files: u64,
+) -> Option<bool> {
+    if let Some(present) = expect_present {
+        return Some(!present);
+    }
+    if dirty_files > 0 {
+        return Some(false);
+    }
+    if base_head.is_none() && after_head.is_none() && verify_head.is_none() {
+        return None;
+    }
+    Some(is_empty(
+        None,
+        base_head,
+        after_head,
+        verify_head,
+        dirty_files,
+    ))
+}
+
 /// A job for a `lane ls --json` row of a run agentd did not start.
 pub fn from_direct(row: &Value) -> Option<WorkJob> {
     let id = row
@@ -1104,6 +1132,45 @@ mod tests {
         };
         assert!(empty(&after));
         assert!(!empty("0000000000000000000000000000000000000000"));
+    }
+
+    #[test]
+    fn emptiness_branches() {
+        // An expected file decides alone.
+        assert_eq!(emptiness(Some(true), None, None, None, 0), Some(false));
+        assert_eq!(
+            emptiness(Some(false), Some("a"), Some("b"), None, 5),
+            Some(true)
+        );
+        // Dirty files: not empty.
+        assert_eq!(emptiness(None, None, None, None, 2), Some(false));
+        // No evidence at all: unknown.
+        assert_eq!(emptiness(None, None, None, None, 0), None);
+        // Any head makes it known.
+        assert_eq!(emptiness(None, Some("a"), None, None, 0), Some(true));
+        assert_eq!(emptiness(None, Some("a"), Some("a"), None, 0), Some(true));
+        assert_eq!(emptiness(None, Some("a"), Some("b"), None, 0), Some(false));
+        assert_eq!(emptiness(None, None, Some("b"), None, 0), Some(false));
+        assert_eq!(emptiness(None, None, None, Some("c"), 0), Some(false));
+    }
+
+    #[test]
+    fn a_fixture_without_heads_is_unknown_unless_a_file_decides() {
+        let status: Value = serde_json::from_str(STATUS_VERIFIED).unwrap();
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        let with = |expect: Option<bool>| {
+            emptiness(
+                expect,
+                j.base_head.as_deref().or(j.lane_base_head.as_deref()),
+                j.after_head.as_deref(),
+                j.verify_head.as_deref(),
+                j.dirty_files,
+            )
+        };
+        assert_eq!(with(None), None);
+        assert_eq!(with(Some(true)), Some(false));
+        assert_eq!(with(Some(false)), Some(true));
     }
 
     #[test]

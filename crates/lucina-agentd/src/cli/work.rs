@@ -143,6 +143,14 @@ fn text(v: &Value) -> &str {
     v.as_str().unwrap_or_default()
 }
 
+/// A finished job that agentd started, whose `empty` could not be decided.
+fn emptiness_unknown(j: &Value) -> bool {
+    let finished = j["state"]
+        .as_str()
+        .is_some_and(|s| !matches!(s, "starting" | "queued" | "running"));
+    finished && j["empty"].is_null() && j["direct"] != true
+}
+
 fn job_row(j: &Value) -> Vec<String> {
     let lane = [&j["finalLane"], &j["lane"], &j["chain"]]
         .into_iter()
@@ -167,6 +175,8 @@ fn job_row(j: &Value) -> Vec<String> {
         age(text(&j["createdAt"])),
         if j["empty"] == true {
             "empty".to_string()
+        } else if emptiness_unknown(j) {
+            "?".to_string()
         } else {
             String::new()
         },
@@ -218,10 +228,14 @@ fn show_text(job: &Value) -> String {
     let width = map.keys().map(|k| k.len()).max().unwrap_or(0);
     map.iter()
         .map(|(k, v)| {
-            format!(
-                "{k:<width$}  {}",
-                if v.is_null() { "-".to_string() } else { s(v) }
-            )
+            let shown = if k == "empty" && emptiness_unknown(job) {
+                "unknown (no git heads and no expected file)".to_string()
+            } else if v.is_null() {
+                "-".to_string()
+            } else {
+                s(v)
+            };
+            format!("{k:<width$}  {shown}")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -456,6 +470,24 @@ mod tests {
         assert_eq!(r[5], "2");
         assert_eq!(r[7], "");
         assert_eq!(job_row(&json!({"empty": true}))[7], "empty");
+        // A finished job whose emptiness is unknown shows `?`; a running or direct one stays blank.
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": null}))[7],
+            "?"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": false}))[7],
+            ""
+        );
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": null, "direct": true}))[7],
+            ""
+        );
+        let shown = show_text(&json!({"state": "done", "empty": null}));
+        assert!(
+            shown.contains("unknown (no git heads and no expected file)"),
+            "{shown}"
+        );
         assert_eq!(r[8], "repo");
         assert_eq!(r[9].len(), 60);
         assert!(r[6].ends_with('d'));
