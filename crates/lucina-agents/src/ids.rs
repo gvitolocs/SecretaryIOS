@@ -1191,7 +1191,7 @@ LA\t2026-11-01T00:00:00Z\tlead\tregistered\tLucina Agents
         }
         // A blank line before the bad one still counts.
         let err = parse_tsv(&format!("{head}\n{ok}\n\nX\n")).unwrap_err();
-        assert!(err.starts_with("line 5: "), "{err}");
+        assert!(err.starts_with("line 6: "), "{err}");
     }
 
     #[test]
