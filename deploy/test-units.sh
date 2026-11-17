@@ -96,6 +96,7 @@ comes_first() {
     [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
 }
 no_line() { ! grep -q -- "$2" "$1"; }
+mentions() { [ -n "$(first_line "$1" "$2")" ]; }
 
 # An install script builds and installs, so no test runs one; what is checkable is that the unit file
 # is part of it, in the order systemd needs. Until JD-R016 finding 2 that was true of lucina-rs only,
@@ -115,6 +116,16 @@ check 'the agentd unit says its file is installed by that script, not by hand cp
     grep -q '^#.*deploy/lucina-agentd/install.sh' "$here/lucina-agentd.service"
 check '... and no longer tells anyone to copy it in' no_line "$here/lucina-agentd.service" \
     '^# *cp deploy/lucina-agentd.service'
+# The marker the watchdog reads lives under ${XDG_STATE_HOME:-$HOME/.local/state}; a deploy that
+# removes a path it worked out on its own clears the wrong file and leaves the excuse in place
+# (JD-R016 finding 5). So: no state directory in a deploy script, and the clear goes through
+# lucina-maint, on both hosts.
+for unit in lucina-rs lucina-agentd; do
+    check "$unit/install.sh names no marker directory of its own" \
+        no_line "$here/$unit/install.sh" 'local/state'
+    check "... and clears the marker through lucina-maint, which resolves that path" \
+        mentions "$here/$unit/install.sh" 'lucina-maint" start'
+done
 
 printf 'systemd-analyze --user verify (static: nothing is started or stopped)\n'
 if ! command -v systemd-analyze >/dev/null 2>&1; then

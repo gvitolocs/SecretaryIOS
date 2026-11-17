@@ -37,8 +37,14 @@ systemctl --user daemon-reload
 # watchdog only reads a marker while the unit is inactive, and a restart leaves it active.
 systemctl --user restart lucina-agentd.service
 # A deploy overrules an earlier stop on purpose (deploy/lucina-maint wrote that marker, and the unit
-# is up now); leaving it would excuse the next unexpected exit until it expired.
-rm -f "$HOME/.local/state/lucina/maintenance/lucina-agentd.service"
+# is up now); leaving it would excuse the next unexpected exit until it expired. Cleared through the
+# command itself, the way lucina-rs/install.sh does it, because that is what resolves the marker path
+# from XDG_STATE_HOME: the hand-worked `rm -f` this replaces always looked under $HOME, so on a host
+# that sets that variable it removed a file the watchdog never reads and left the real excuse in place
+# (JD-R016 finding 5). This script installs its own copy of lucina-maint, so an agentd deploy never
+# depends on the other service having been installed; it is the same file from the same checkout.
+install -m 0755 "$REPO/deploy/lucina-maint" "$BIN/lucina-maint"
+"$BIN/lucina-maint" start lucina-agentd >/dev/null
 for _ in $(seq 1 30); do
   if "$BIN/lagent" --json providers >/dev/null 2>&1; then
     systemctl --user --no-pager --lines=0 status lucina-agentd.service | head -3
