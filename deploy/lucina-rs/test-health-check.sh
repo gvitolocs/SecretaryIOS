@@ -123,12 +123,21 @@ call_count() {
     n=$(grep -c "^$1\$" "$fake_calls" || true)
     [ "$n" = "$2" ]
 }
+# called_before <call a> <call b>: both were made this tick and a came first - the order the recovery
+# needs, since a start before the reset-failed would be refused by the very limit being reset.
+called_before() {
+    a=$(grep -n "^$1\$" "$fake_calls" | head -1 | cut -d: -f1 || true)
+    b=$(grep -n "^$2\$" "$fake_calls" | head -1 | cut -d: -f1 || true)
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
 started() { calls_is "systemctl --user start $1"; }
 not_started() { ! calls_is "systemctl --user start $1"; }
 restarted() { calls_is "systemctl --user restart $1"; }
 not_restarted() { ! calls_is "systemctl --user restart $1"; }
-reported() { printf '%s\n' "$log" | grep -q "^$1: inactive with no maintenance marker, starting\$"; }
-not_reported() { ! printf '%s\n' "$log" | grep -q 'no maintenance marker'; }
+reported_inactive() { printf '%s\n' "$log" | grep -q "^$1: inactive with no maintenance marker, starting\$"; }
+reported_failed() { printf '%s\n' "$log" | grep -q "^$1: failed, resetting and starting\$"; }
+# A tick that recovers nothing says nothing at all: no start, no reset, no /health judgement.
+not_reported() { [ -z "$log" ]; }
 exited() { [ "$rc" = "$1" ]; }
 exited_nonzero() { [ "$rc" != 0 ]; }
 counter_holds() { [ -f "$counter" ] && [ "$(cat "$counter")" = "$1" ]; }
@@ -144,7 +153,7 @@ reset inactive active
 run_watch
 check 'inactive with no marker starts lucina-rs' started "$rs"
 check '... once, not twice' probe_once
-check '... and reports it by name' reported "$rs"
+check '... and reports it by name' reported_inactive "$rs"
 check '... and exits non-zero, which is what notifies' exited_nonzero
 
 # 2. inactive with a valid marker: stopped on purpose, so nothing happens.
@@ -163,7 +172,7 @@ sed 's/^until=.*/until=1/' "$maint_dir/$rs" >"$maint_dir/$rs.old"
 mv -f "$maint_dir/$rs.old" "$maint_dir/$rs"
 run_watch
 check 'an expired marker still starts' started "$rs"
-check '... and reports' reported "$rs"
+check '... and reports' reported_inactive "$rs"
 check '... and exits non-zero' exited_nonzero
 
 # 4. a marker with no readable until= is not an excuse.
@@ -173,13 +182,39 @@ printf 'unit=%s\nreason=hand-edited\n' "$rs" >"$maint_dir/$rs"
 run_watch
 check 'a marker with no until= still starts' started "$rs"
 
-# 5. failed: reset-failed and start, exactly as before; the inactive rule adds nothing to it.
+# 5. failed: reset-failed, then start, and reported. A failed unit is the state Restart= leaves behind
+# once the start limit is spent, so systemd is not going to bring it back by itself: this is the one
+# branch that must not stay silent.
 reset failed active
 run_watch
-check 'a failed unit is reset' calls_is "systemctl --user reset-failed $rs"
+check 'a failed lucina-rs is reset' calls_is "systemctl --user reset-failed $rs"
 check '... and started, once' probe_once
-check '... without a report' not_reported
-check '... and a clean exit, as before' exited 0
+check '... reset first, then started' called_before \
+    "systemctl --user reset-failed $rs" "systemctl --user start $rs"
+check '... and reported by name' reported_failed "$rs"
+check '... and the report exits non-zero, which is what notifies' exited_nonzero
+
+# 5b. the same for lucina-agentd, which is the unit that spends its burst fastest (10 x RestartSec=2,
+# about 20 s) and whose [Unit] comment promises this recovery (finding 1, JD-R016). Without it agentd
+# stays failed tick after tick, and the owner hears nothing because the watchdog exits 0.
+reset active failed
+run_watch
+check 'a failed lucina-agentd is reset' calls_is "systemctl --user reset-failed $agentd"
+check '... and then started' started "$agentd"
+check '... reset first, then started' called_before \
+    "systemctl --user reset-failed $agentd" "systemctl --user start $agentd"
+check '... reported by name' reported_failed "$agentd"
+check '... and lucina-rs is left alone' not_started "$rs"
+check '... and the run exits non-zero' exited_nonzero
+
+# 5c. failed is never on purpose: lucina-maint stops through `systemctl stop`, which leaves a unit
+# inactive, so a marker is not read here.
+reset active failed
+sh "$maint" stop "$agentd" --reason 'stopped, then it failed on a start' >/dev/null
+printf 'failed\n' >"$fake_units/$agentd"
+run_watch
+check 'a marker does not excuse a failed unit' calls_is "systemctl --user reset-failed $agentd"
+check '... and it is started anyway' started "$agentd"
 
 # 6. activating is not inactive: a deploy mid-restart waits on /health in ExecStartPost.
 reset activating active
@@ -191,7 +226,7 @@ check '... and not reported' not_reported
 reset active inactive
 run_watch
 check 'an inactive lucina-agentd is started' started "$agentd"
-check '... and reported by name' reported "$agentd"
+check '... and reported by name' reported_inactive "$agentd"
 check '... and lucina-rs is not touched' not_started "$rs"
 reset active inactive
 sh "$maint" stop "$agentd" --reason 'walking its drop-ins' >/dev/null

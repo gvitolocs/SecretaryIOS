@@ -1,17 +1,20 @@
-# Lucina Agents daemon (the Rust rebuild of Paseo). User unit on nezopt.
-# Not installed yet: Paseo (paseo.service) stays the live orchestrator until the
-# parity matrix (docs/design/agents-parity.md) is green and the owner signs off.
+# Lucina Agents daemon (the Rust rebuild of Paseo; docs/design/agents-parity.md tracks what Paseo
+# still does that this does not). User unit on nezopt, and this file is what the repo carries of it:
+# deploy/lucina-agentd/install.sh - what `lagent deploy lucina-agentd` runs - installs it to
+# ~/.config/systemd/user/, reloads and restarts, and leaves the host's drop-ins in
+# lucina-agentd.service.d alone (they hold the Honcho MCP line, the infisical-broker ExecStart and the
+# journal name). Enabled once by hand, as any user unit:
 #
-#   install -m 0755 target/release/lucina-agentd target/release/lagent ~/.local/bin/
-#   cp deploy/lucina-agentd.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #   systemctl --user enable --now lucina-agentd     (then add it to ~/.config/pokoin/expected-active.txt)
 [Unit]
 Description=Lucina Agents daemon (agent supervisor)
 After=network-online.target
-# Same shape as lucina-rs.service: 10 starts in 10 min, and tripping the limit is a pause the
-# watchdog ends (its reset-failed clears this counter). Named instead of inherited: the user-manager
-# defaults (5 starts in 10 s) already trip on the fifth RestartSec=2 attempt, about 8 s in, and come
-# from the host's config rather than from the repo.
+# Same shape as lucina-rs.service: 10 starts in 10 min, and tripping the limit is a pause and not a
+# dead end - the unit ends failed, Restart= is spent, and the watchdog resets it and starts it again
+# within 2 minutes and says so (deploy/lucina-rs/health-check.sh runs reset-failed on every unit it
+# watches, this one included). Named instead of inherited: the user-manager defaults (5 starts in
+# 10 s) already trip on the fifth RestartSec=2 attempt, about 8 s in, and come from the host's config
+# rather than from the repo.
 StartLimitIntervalSec=600
 StartLimitBurst=10
 
