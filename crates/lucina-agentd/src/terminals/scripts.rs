@@ -675,6 +675,8 @@ async fn port_from_script(
         tokio::process::Command::new(script)
             .args([name, &ctx.workspace_id, &branch, &cwd])
             .current_dir(&ctx.cwd)
+            .env_clear()
+            .envs(crate::env::scrubbed_env(&[]))
             .env("PASEO_SCRIPTNAME", name)
             .env("PASEO_WORKSPACE_ID", &ctx.workspace_id)
             .env("PASEO_BRANCH_NAME", &branch)

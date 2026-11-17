@@ -63,8 +63,14 @@ impl Registry {
     }
 
     fn record(&self, pid: u32, program: &str) {
-        let Some(start_ticks) = start_ticks(pid) else { return };
-        let rec = Record { pid, start_ticks, program: program.to_string() };
+        let Some(start_ticks) = start_ticks(pid) else {
+            return;
+        };
+        let rec = Record {
+            pid,
+            start_ticks,
+            program: program.to_string(),
+        };
         if let Ok(json) = serde_json::to_string(&rec) {
             let _ = std::fs::write(self.dir.join(format!("{pid}.json")), json);
         }
@@ -87,7 +93,9 @@ impl Registry {
     /// The pids of the provider processes alive now (a record whose pid was reused
     /// by another process doesn't count).
     pub fn live_pids(&self) -> std::collections::HashSet<u32> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Default::default() };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Default::default();
+        };
         entries
             .flatten()
             .filter_map(|e| std::fs::read_to_string(e.path()).ok())
@@ -102,10 +110,14 @@ impl Registry {
     /// Returns the pids that were killed.
     pub fn reap_leftovers(&self) -> Vec<u32> {
         let mut killed = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return killed };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return killed;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            let rec: Option<Record> = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok());
+            let rec: Option<Record> = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok());
             if let Some(rec) = rec {
                 if start_ticks(rec.pid) == Some(rec.start_ticks) {
                     tracing::warn!(pid = rec.pid, program = %rec.program, "reaping a provider process left by a previous daemon");
@@ -128,8 +140,23 @@ pub struct Proc {
 }
 
 impl Proc {
-    /// Start `spec` with piped stdin/stdout; stderr is read into the tail buffer.
-    pub fn spawn(spec: &Spec, registry: Option<&Registry>) -> std::io::Result<(Proc, ChildStdin, ChildStdout)> {
+    /// Start `spec` with piped stdin/stdout; stderr is read into the tail buffer. The child
+    /// gets the built environment ([`crate::env`], from this process's own), and `spec.env`
+    /// on top of it.
+    pub fn spawn(
+        spec: &Spec,
+        registry: Option<&Registry>,
+    ) -> std::io::Result<(Proc, ChildStdin, ChildStdout)> {
+        Self::spawn_from(spec, registry, std::env::vars_os().collect())
+    }
+
+    /// [`Proc::spawn`], built from `source` instead of this process's environment — a
+    /// parameter, so tests pass a stand-in in instead of mutating the process environment.
+    pub fn spawn_from(
+        spec: &Spec,
+        registry: Option<&Registry>,
+        source: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    ) -> std::io::Result<(Proc, ChildStdin, ChildStdout)> {
         let mut cmd = Command::new(&spec.program);
         cmd.args(&spec.args)
             .current_dir(&spec.cwd)
@@ -137,7 +164,9 @@ impl Proc {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            .env_clear()
+            .envs(crate::env::scrubbed_env_from(source, &[]).0);
         for key in &spec.env_remove {
             cmd.env_remove(key);
         }
@@ -146,8 +175,14 @@ impl Proc {
         }
         let mut child = cmd.spawn()?;
         let pid = child.id().unwrap_or(0);
-        let stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("no stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("no stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("no stdout"))?;
         let tail = Arc::new(Mutex::new(VecDeque::new()));
         if let Some(stderr) = child.stderr.take() {
             let tail = tail.clone();
@@ -165,7 +200,16 @@ impl Proc {
         if let Some(r) = registry {
             r.record(pid, &spec.program.display().to_string());
         }
-        Ok((Proc { pid, child: Some(child), stderr_tail: tail, registry: registry.cloned() }, stdin, stdout))
+        Ok((
+            Proc {
+                pid,
+                child: Some(child),
+                stderr_tail: tail,
+                registry: registry.cloned(),
+            },
+            stdin,
+            stdout,
+        ))
     }
 
     /// The last stderr lines, joined.
@@ -176,7 +220,9 @@ impl Proc {
 
     /// SIGTERM the group, wait up to `grace`, then SIGKILL.
     pub async fn shutdown(&mut self, grace: std::time::Duration) {
-        let Some(mut child) = self.child.take() else { return };
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
         kill_group(self.pid, "TERM");
         if tokio::time::timeout(grace, child.wait()).await.is_err() {
             kill_group(self.pid, "KILL");
@@ -230,14 +276,21 @@ mod tests {
 
     fn alive(pid: u32) -> bool {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
-            && std::fs::read_to_string(format!("/proc/{pid}/stat")).map(|s| !s.contains(") Z ")).unwrap_or(false)
+            && std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map(|s| !s.contains(") Z "))
+                .unwrap_or(false)
     }
 
     #[tokio::test]
     async fn leftovers_of_a_crashed_daemon_are_reaped() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::open(dir.path()).unwrap();
-        let spec = Spec { program: "sleep".into(), args: vec!["300".into()], cwd: "/tmp".into(), ..Spec::default() };
+        let spec = Spec {
+            program: "sleep".into(),
+            args: vec!["300".into()],
+            cwd: "/tmp".into(),
+            ..Spec::default()
+        };
         let (proc_, _stdin, _stdout) = Proc::spawn(&spec, Some(&reg)).unwrap();
         let pid = proc_.pid;
         // A crash: the daemon dies without running destructors.
@@ -261,7 +314,11 @@ mod tests {
         let reg = Registry::open(dir.path()).unwrap();
         // A record whose start time doesn't match the live process with that pid.
         let me = std::process::id();
-        std::fs::write(dir.path().join("procs").join(format!("{me}.json")), format!(r#"{{"pid":{me},"start_ticks":1,"program":"x"}}"#)).unwrap();
+        std::fs::write(
+            dir.path().join("procs").join(format!("{me}.json")),
+            format!(r#"{{"pid":{me},"start_ticks":1,"program":"x"}}"#),
+        )
+        .unwrap();
         assert!(reg.reap_leftovers().is_empty());
     }
 
@@ -269,11 +326,59 @@ mod tests {
     async fn shutdown_kills_the_group_and_forgets_the_record() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::open(dir.path()).unwrap();
-        let spec = Spec { program: "sh".into(), args: vec!["-c".into(), "sleep 300 & sleep 300".into()], cwd: "/tmp".into(), ..Spec::default() };
+        let spec = Spec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 300 & sleep 300".into()],
+            cwd: "/tmp".into(),
+            ..Spec::default()
+        };
         let (mut proc_, _i, _o) = Proc::spawn(&spec, Some(&reg)).unwrap();
         let pid = proc_.pid;
         proc_.shutdown(std::time::Duration::from_secs(2)).await;
         assert!(!alive(pid));
-        assert_eq!(std::fs::read_dir(dir.path().join("procs")).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("procs")).unwrap().count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_process_gets_the_allowlisted_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let names_path = dir.path().join("env-names.txt");
+        crate::testutil::write_exec(
+            &dir.path().join("dump-env"),
+            &format!("#!/bin/sh\nenv | cut -d= -f1 > {}\n", names_path.display()),
+        );
+        let spec = Spec {
+            program: dir.path().join("dump-env"),
+            args: vec![],
+            cwd: dir.path().display().to_string(),
+            env: vec![("SPEC_CALL_SITE".into(), "1".into())],
+            env_remove: vec![],
+        };
+        let source = crate::testutil::env_source(&[
+            ("PATH", "/usr/bin:/bin"),
+            ("HOME", "/home/fake"),
+            ("FAKE_API_TOKEN", "fake-token"),
+            ("CLOUDFLARE_FAKE_ID", "fake-id"),
+        ]);
+        let (mut proc_, _stdin, _stdout) = Proc::spawn_from(&spec, None, source).unwrap();
+        let mut exited = false;
+        for _ in 0..100 {
+            if proc_.try_exit().is_some() {
+                exited = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(exited, "the dump did not finish");
+        let names = std::fs::read_to_string(&names_path).unwrap();
+        for n in ["FAKE_API_TOKEN", "CLOUDFLARE_FAKE_ID"] {
+            assert!(!names.lines().any(|l| l == n), "{names}");
+        }
+        for n in ["PATH", "HOME", "SPEC_CALL_SITE"] {
+            assert!(names.lines().any(|l| l == n), "{names}");
+        }
     }
 }

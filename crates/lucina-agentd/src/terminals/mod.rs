@@ -573,6 +573,12 @@ impl Hub {
         let mut cmd = CommandBuilder::new(&program);
         cmd.args(&s.args);
         cmd.cwd(&s.cwd);
+        // The terminal gets the built environment (the allowlist from agentd's own), not
+        // whatever agentd inherited; everything set below goes on top of it.
+        cmd.env_clear();
+        for (k, v) in crate::env::scrubbed_env(&[]) {
+            cmd.env(k, v);
+        }
         cmd.env_remove(crate::notify::TOKEN_ENV);
         cmd.env_remove("LUCINA_AGENT_ID");
         cmd.env("TERM", "xterm-256color");
