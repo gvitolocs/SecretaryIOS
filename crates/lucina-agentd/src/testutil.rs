@@ -73,7 +73,9 @@ pub fn write_exec(path: &Path, contents: &str) {
 }
 
 /// A stand-in source environment for the built-environment tests ([`crate::env`]): plain
-/// pairs, so a test never has to mutate the process environment.
+/// pairs, so a test never has to mutate the process environment. Only the unit tests in
+/// `src/` call it; the integration tests compile this file too.
+#[allow(dead_code)]
 pub fn env_source(pairs: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     pairs
         .iter()
