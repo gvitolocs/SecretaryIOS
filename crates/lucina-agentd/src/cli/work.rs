@@ -33,9 +33,18 @@ pub enum WorkCommand {
 
 #[derive(Args, Debug)]
 pub struct StartArgs {
-    /// The chat that owns the run (default: $LAGENT_SESSION, $CLAUDE_CODE_HOST_SESSION_ID, $CLAUDE_CODE_SESSION_ID)
+    /// The lead code of the chat that owns the run (two capital letters, registered with `lagent id lead add`)
     #[arg(long)]
-    pub lead: Option<String>,
+    pub lead: String,
+    /// The change the run works for (`LA-C004`; `lagent id new change`); it belongs to the lead
+    #[arg(long)]
+    pub change: String,
+    /// A short name for the run; it ends up in the run's lane id (`la-r023-ids-writer`)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The chat that starts the run (default: $LAGENT_SESSION, $CLAUDE_CODE_HOST_SESSION_ID, $CLAUDE_CODE_SESSION_ID; may be absent)
+    #[arg(long)]
+    pub session: Option<String>,
     /// Who runs first when the host is busy: owner, high, normal or backlog
     #[arg(long, default_value = "normal")]
     pub priority: String,
@@ -87,8 +96,8 @@ pub struct WaitArgs {
     pub timeout: u64,
 }
 
-/// The lead: the first of the session variables that is set.
-fn session_lead() -> Option<String> {
+/// The session: the first of the session variables that is set.
+fn session_from_env() -> Option<String> {
     [
         "LAGENT_SESSION",
         "CLAUDE_CODE_HOST_SESSION_ID",
@@ -112,17 +121,33 @@ fn api(e: ClientError) -> CmdError {
     e.into()
 }
 
-/// `<lead>: N running, N queued, N ended, N empty`.
+/// `<lead>: N running, N queued, N ended, N empty`, and `, N lost` when `lane` lost the
+/// runner of an unfinished run.
 pub(super) fn lead_header(l: &Value) -> String {
     let n = |k: &str| l[k].as_u64().unwrap_or(0);
+    let lost = match n("lost") {
+        0 => String::new(),
+        k => format!(", {k} lost"),
+    };
     format!(
-        "{}: {} running, {} queued, {} ended, {} empty",
+        "{}: {} running, {} queued, {} ended, {} empty{lost}",
         s(&l["lead"]),
         n("running"),
         n("queued"),
         n("ended"),
         n("empty")
     )
+}
+
+/// The state as listed: an unfinished run whose runner `lane` lost shows `queued(lost)`.
+fn state_shown(j: &Value) -> String {
+    let state = s(&j["state"]);
+    let unfinished = matches!(state.as_str(), "starting" | "queued" | "running");
+    if unfinished && j["runnerLost"] == true {
+        format!("{state}(lost)")
+    } else {
+        state
+    }
 }
 
 /// A short age, `5m`, `3h`, `2d`, for an RFC 3339 time.
@@ -166,7 +191,7 @@ fn job_row(j: &Value) -> Vec<String> {
         .to_string();
     vec![
         s(&j["id"]),
-        s(&j["state"]),
+        state_shown(j),
         s(&j["priority"]),
         s(&j["cost"]),
         lane.to_string(),
@@ -187,6 +212,14 @@ fn job_row(j: &Value) -> Vec<String> {
     ]
 }
 
+/// An id as listed; a job without one (a run `lane` has no ids for) shows `-`.
+fn ident(v: &Value) -> String {
+    v.as_str()
+        .filter(|x| !x.is_empty())
+        .unwrap_or("-")
+        .to_string()
+}
+
 fn list_text(leads: &[Value]) -> String {
     if leads.is_empty() {
         return "No work jobs.".into();
@@ -199,10 +232,17 @@ fn list_text(leads: &[Value]) -> String {
                 .map(Vec::as_slice)
                 .unwrap_or_default()
                 .iter()
-                .map(job_row)
+                .map(|j| {
+                    // The run and the change come first; the rest is the old row.
+                    let mut row = vec![ident(&j["runId"]), ident(&j["change"])];
+                    row.extend(job_row(j));
+                    row
+                })
                 .collect();
             let t = table(
                 &[
+                    "RUN",
+                    "CHANGE",
                     "ID",
                     "STATE",
                     "PRI",
@@ -228,7 +268,8 @@ fn show_text(job: &Value) -> String {
         return s(job);
     };
     let width = map.keys().map(|k| k.len()).max().unwrap_or(0);
-    map.iter()
+    let mut lines: Vec<String> = map
+        .iter()
         .map(|(k, v)| {
             let shown = if k == "empty" && emptiness_unknown(job) {
                 "unknown (no git heads and no expected file)".to_string()
@@ -239,8 +280,11 @@ fn show_text(job: &Value) -> String {
             };
             format!("{k:<width$}  {shown}")
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    if job["runnerLost"] == true {
+        lines.push("runner lost: yes (resume or dismiss it with lane)".to_string());
+    }
+    lines.join("\n")
 }
 
 fn show_output(job: Value) -> Output {
@@ -305,9 +349,11 @@ fn print_and_exit(out: &Output, json: bool, code: i32) -> ! {
 pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Output, CmdError> {
     match cmd {
         WorkCommand::Start(a) => {
-            let lead = a.lead.clone().filter(|l| !l.trim().is_empty()).or_else(session_lead).ok_or_else(|| {
-                invalid("no lead: pass --lead <chat> (or set LAGENT_SESSION, CLAUDE_CODE_HOST_SESSION_ID or CLAUDE_CODE_SESSION_ID)")
-            })?;
+            let session = a
+                .session
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(session_from_env);
             if a.lane.is_none() && a.chain.is_none() {
                 return Err(invalid("give --lane <name> or --chain <name>"));
             }
@@ -319,7 +365,8 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
                 .display()
                 .to_string();
             let body = json!({
-                "lead": lead, "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
+                "lead": a.lead, "change": a.change, "name": a.name, "session": session,
+                "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
                 "workspace": pipe::host_path(&workspace), "verify": a.verify, "expect": a.expect,
                 "title": a.title, "spec": spec,
             });
@@ -529,5 +576,61 @@ mod tests {
         assert!(t.contains("id") && t.contains("wk-1"));
         assert!(t.lines().any(|l| l.starts_with("note") && l.ends_with('-')));
         assert_eq!(t.lines().count(), 3);
+    }
+
+    #[test]
+    fn a_lost_runner_shows_in_the_state_the_header_and_show() {
+        let queued = json!({"id": "x", "state": "queued", "runnerLost": true});
+        assert_eq!(job_row(&queued)[1], "queued(lost)");
+        let running = json!({"state": "running", "runnerLost": true});
+        assert_eq!(job_row(&running)[1], "running(lost)");
+        // A finished run, or one whose runner is fine, shows its plain state.
+        assert_eq!(
+            job_row(&json!({"state": "failed", "runnerLost": true}))[1],
+            "failed"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "queued", "runnerLost": false}))[1],
+            "queued"
+        );
+        let l = json!({"lead": "PK", "running": 1, "queued": 1, "ended": 0, "empty": 0, "lost": 2});
+        assert_eq!(
+            lead_header(&l),
+            "PK: 1 running, 1 queued, 0 ended, 0 empty, 2 lost"
+        );
+        let shown = show_text(&queued);
+        assert!(
+            shown.ends_with("runner lost: yes (resume or dismiss it with lane)"),
+            "{shown}"
+        );
+        assert!(!show_text(&json!({"state": "queued"})).contains("runner lost"));
+    }
+
+    #[test]
+    fn the_list_has_the_run_and_the_change_first() {
+        let leads = vec![json!({
+            "lead": "LA", "running": 0, "queued": 1, "ended": 0, "empty": 0,
+            "jobs": [
+                {"id": "la-r001-x", "runId": "LA-R001", "change": "LA-C001", "state": "queued", "runnerLost": true},
+                {"id": "zz-direct", "state": "running"}
+            ]
+        })];
+        let t = list_text(&leads);
+        let mut lines = t.lines();
+        assert_eq!(
+            lines.next(),
+            Some("LA: 0 running, 1 queued, 0 ended, 0 empty")
+        );
+        let head = lines.next().unwrap();
+        assert!(head.starts_with("RUN"), "{head}");
+        assert!(head.contains("CHANGE") && head.contains("ID"), "{head}");
+        let first = lines.next().unwrap();
+        assert!(first.starts_with("LA-R001"), "{first}");
+        assert!(
+            first.contains("LA-C001") && first.contains("queued(lost)"),
+            "{first}"
+        );
+        let second = lines.next().unwrap();
+        assert!(second.starts_with("-"), "{second}");
     }
 }

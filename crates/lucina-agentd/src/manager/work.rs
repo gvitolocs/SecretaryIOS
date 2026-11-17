@@ -14,10 +14,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use lucina_agents::ids::{lane_run_id, run_state_for, IdRow, Kind};
 use lucina_agents::work::{
-    apply_status, emptiness, from_direct, missing_ls_fields, missing_status_fields, new_id,
-    parse_ls, status_unreadable, summarize, validate_target, CostClass, LeadSummary, LsRows,
-    Priority, WorkJob, WorkState,
+    apply_status, emptiness, from_direct, missing_ls_fields, missing_status_fields, parse_ls,
+    status_unreadable, summarize, validate_target, CostClass, LeadSummary, LsRows, Priority,
+    WorkJob, WorkState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -217,7 +218,7 @@ fn utf8_vars(
 }
 
 /// A child with the cleared environment of [`lane_env`].
-fn clean_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(super) fn clean_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut c = Command::new(program);
     c.env_clear()
         .envs(lane_env(utf8_vars(std::env::vars_os())))
@@ -332,6 +333,15 @@ pub struct StartWork {
     pub title: Option<String>,
     #[serde(default)]
     pub spec: String,
+    /// The change (`LA-C004`) the run works for; it must exist and belong to the lead.
+    #[serde(default)]
+    pub change: String,
+    /// A short name for the run; it ends up in the lane run id (`la-r023-ids-writer`).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The chat that starts the run.
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 /// What `GET /work` answers.
@@ -465,22 +475,89 @@ impl Manager {
             Path::new(&workspace),
         );
         check_target(&lanes, lane.as_deref(), chain.as_deref(), lucina)?;
+        let change = nonblank(Some(req.change)).ok_or_else(|| {
+            ManagerError::Invalid(
+                "change is required: the run works for a change (`lagent id new change --lead <code> --title <text>`)"
+                    .into(),
+            )
+        })?;
+        self.check_work_ids(&lead, &change)?;
+        let name = nonblank(req.name);
+        let session = nonblank(req.session);
+        let title = nonblank(req.title);
 
-        let dir = self.work().cfg.dir.clone();
-        let id = loop {
-            let id = new_id(uuid::Uuid::new_v4().as_u128());
-            if !self.work().jobs().iter().any(|j| j.id == id) && !dir.join(&id).exists() {
-                break id;
-            }
+        // The run's row is written BEFORE `lane run` starts, so the lead, the lane, the base
+        // commit and the workspace are on record before the worker can make a commit. A trailer
+        // in a commit is text the worker types; this row, written by the daemon, is what later
+        // checks trust. When the store cannot be written the start is refused.
+        let facts = git_facts(&workspace).await;
+        let run_title = title.clone().unwrap_or_else(|| first_line(&req.spec, 80));
+        let lane_model = lane
+            .as_deref()
+            .and_then(|l| lanes.lanes.get(l))
+            .and_then(|l| l.model.clone())
+            .filter(|m| !m.is_empty());
+        let by = match (&lane, &chain) {
+            (Some(l), _) => match &lane_model {
+                Some(m) => format!("{l} {m}"),
+                None => l.clone(),
+            },
+            (None, Some(c)) => format!("chain {c}"),
+            (None, None) => String::new(),
         };
+        let dir = self.work().cfg.dir.clone();
+        let name_for_id = name.clone().unwrap_or_else(|| run_title.clone());
+        let mut chosen = String::new();
+        let run = self
+            .inner
+            .ids
+            .issue(Kind::Run, &lead, None, "daemon", |run_id| {
+                let base = lane_run_id(run_id, &name_for_id);
+                let mut id = base.clone();
+                let mut n = 2;
+                while self.work().jobs().iter().any(|j| j.id == id) || dir.join(&id).exists() {
+                    id = format!("{base}-{n}");
+                    n += 1;
+                }
+                let spec_path = dir.join(&id).join("spec.md").display().to_string();
+                chosen = id;
+                IdRow {
+                    state: "started".into(),
+                    title: run_title.clone(),
+                    by,
+                    spec: spec_path,
+                    where_: workspace.clone(),
+                    base: facts.head.clone().unwrap_or_default(),
+                    refs: vec![change.clone()],
+                    lane: lane.clone(),
+                    model: lane_model.clone(),
+                    chain: chain.clone(),
+                    repo: facts.repo.clone(),
+                    workspace: Some(workspace.clone()),
+                    branch: facts.branch.clone(),
+                    ..IdRow::default()
+                }
+            })?;
+        let id = chosen;
+        let run_id = run.id.clone();
         let run_dir = dir.join(&id);
         let spec_path = run_dir.join("spec.md");
-        std::fs::create_dir_all(&run_dir)
-            .map_err(|e| ManagerError::Invalid(format!("cannot store the spec: {e}")))?;
-        std::fs::write(&spec_path, &req.spec)
-            .map_err(|e| ManagerError::Invalid(format!("cannot store the spec: {e}")))?;
+        let stored =
+            std::fs::create_dir_all(&run_dir).and_then(|_| std::fs::write(&spec_path, &req.spec));
+        if let Err(e) = stored {
+            let note = format!("cannot store the spec: {e}");
+            self.append_run_row(
+                &run_id,
+                IdRow {
+                    state: "failed".into(),
+                    result: note.clone(),
+                    ..IdRow::default()
+                },
+            );
+            return Err(ManagerError::Invalid(note));
+        }
 
-        let base_head = git_head(&workspace).await;
+        let base_head = facts.head.clone();
         let job = WorkJob {
             id: id.clone(),
             lead,
@@ -491,11 +568,14 @@ impl Manager {
             workspace: workspace.clone(),
             verify: nonblank(req.verify),
             expect,
-            title: nonblank(req.title),
+            title,
             spec_path: spec_path.display().to_string(),
             created_at: now_iso(),
             base_head,
             state: WorkState::Starting,
+            run_id: Some(run_id),
+            change: Some(change),
+            session,
             ..WorkJob::default()
         };
         self.work()
@@ -527,6 +607,7 @@ impl Manager {
                 self.work().persist(&jobs);
                 let out = jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job);
                 drop(jobs);
+                self.record_end(&out);
                 self.work().unlaunch(&id);
                 Ok(out)
             }
@@ -571,6 +652,8 @@ impl Manager {
             self.work().persist(&jobs);
             jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job)
         };
+        // While the id is in `launching` the poller leaves the job alone: one end row.
+        self.record_end(&out);
         self.work().unlaunch(&id);
         out
     }
@@ -780,15 +863,146 @@ impl Manager {
         if job.state.is_terminal() && job.ended_at.is_none() {
             finish(&mut job);
         }
+        self.record_final_lane(&job);
         if job == before {
             return;
         }
-        let mut jobs = self.work().jobs();
-        // A start that failed in the meantime wins: only an unfinished (or lost) job takes the update.
-        if let Some(stored) = jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
-            *stored = job;
-            self.work().persist(&jobs);
+        let ended_now = job.state.is_terminal() && job.state != before.state;
+        let stored = {
+            let mut jobs = self.work().jobs();
+            // A start that failed in the meantime wins: only an unfinished (or lost) job takes the update.
+            match jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
+                Some(stored) => {
+                    *stored = job.clone();
+                    self.work().persist(&jobs);
+                    true
+                }
+                None => false,
+            }
+        };
+        if stored && ended_now {
+            self.record_end(&job);
         }
+    }
+
+    /// The stored job whose run id is `run_id`.
+    pub(super) fn work_job_of_run(&self, run_id: &str) -> Option<WorkJob> {
+        self.work()
+            .jobs()
+            .iter()
+            .find(|j| j.run_id.as_deref() == Some(run_id))
+            .cloned()
+    }
+
+    /// Appends a row of a run the daemon declares; a store that cannot be written is logged.
+    fn append_run_row(&self, run_id: &str, row: IdRow) {
+        if let Err(e) = self.inner.ids.append(run_id, row, "daemon") {
+            tracing::error!(run = run_id, error = %e, "cannot write the run's id row");
+        }
+    }
+
+    /// For a chain: the first time `lane status` names the lane that is writing, one `started`
+    /// row says which lane and model it is, so they are on record while the work is going on.
+    fn record_final_lane(&self, job: &WorkJob) {
+        let (Some(run_id), Some(lane)) = (&job.run_id, &job.final_lane) else {
+            return;
+        };
+        if job.chain.is_none()
+            || job.state.is_terminal()
+            || self.inner.ids.has_lane_row(run_id, lane)
+        {
+            return;
+        }
+        self.append_run_row(
+            run_id,
+            IdRow {
+                state: "started".into(),
+                by: lane_by(lane, job.model.as_deref()),
+                lane: Some(lane.clone()),
+                model: job.model.clone().filter(|m| !m.is_empty()),
+                ..IdRow::default()
+            },
+        );
+    }
+
+    /// When a job reaches a final state: one run row from [`run_state_for`] (nothing when it
+    /// gives none, and nothing when the run's latest row already has that state).
+    fn record_end(&self, job: &WorkJob) {
+        let Some(run_id) = &job.run_id else {
+            return;
+        };
+        let Some(state) = run_state_for(job.state, job.empty) else {
+            return;
+        };
+        if self.inner.ids.latest_state(run_id).as_deref() == Some(state) {
+            return;
+        }
+        let mut result = job
+            .lane_state
+            .clone()
+            .unwrap_or_else(|| job.state.as_str().to_string());
+        if let Some(head) = job.after_head.as_ref().or(job.verify_head.as_ref()) {
+            result.push_str(&format!(" head {head}"));
+        }
+        if job.empty == Some(true) {
+            result.push_str(" empty");
+        }
+        let mut row = IdRow {
+            state: state.into(),
+            result,
+            ..IdRow::default()
+        };
+        if let Some(lane) = &job.final_lane {
+            row.by = lane_by(lane, job.model.as_deref());
+            row.lane = Some(lane.clone());
+            row.model = job.model.clone().filter(|m| !m.is_empty());
+        }
+        self.append_run_row(run_id, row);
+    }
+}
+
+/// `<lane> <model>` (the lane alone when it has no model).
+fn lane_by(lane: &str, model: Option<&str>) -> String {
+    match model.filter(|m| !m.is_empty()) {
+        Some(m) => format!("{lane} {m}"),
+        None => lane.to_string(),
+    }
+}
+
+/// The first non-blank line of `text`, cut to `max` characters.
+fn first_line(text: &str, max: usize) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(max)
+        .collect()
+}
+
+/// What `git` says about a workspace at the start of a run.
+#[derive(Debug, Default)]
+struct GitFacts {
+    /// `git rev-parse HEAD`, the full 40 characters.
+    head: Option<String>,
+    /// The directory that holds the repository's common git directory.
+    repo: Option<String>,
+    /// The branch, absent on a detached head.
+    branch: Option<String>,
+}
+
+async fn git_facts(workspace: &str) -> GitFacts {
+    let head = git_output(workspace, &["rev-parse", "HEAD"]).await;
+    let common = git_output(
+        workspace,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await;
+    let branch = git_output(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+    GitFacts {
+        head,
+        repo: common.map(|c| c.strip_suffix("/.git").unwrap_or(&c).to_string()),
+        branch: branch.filter(|b| b != "HEAD"),
     }
 }
 
@@ -833,12 +1047,12 @@ fn pollable(job: &WorkJob) -> bool {
     }
 }
 
-/// `git rev-parse HEAD` in the workspace, `None` when it fails.
-async fn git_head(workspace: &str) -> Option<String> {
+/// A `git` call in the workspace: its trimmed output, `None` when it fails or prints nothing.
+async fn git_output(workspace: &str, args: &[&str]) -> Option<String> {
     let mut cmd = clean_command("git");
     cmd.arg("-C")
         .arg(workspace)
-        .args(["rev-parse", "HEAD"])
+        .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     let out = tokio::time::timeout(QUERY_LIMIT, cmd.output())
@@ -871,6 +1085,15 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
     cmd.arg("--workspace").arg(&job.workspace);
     cmd.arg("--owner").arg(&job.lead);
     cmd.arg("--cost").arg(job.cost.as_str());
+    // The ids as flags (they win over the environment) and as variables for the worker.
+    if let (Some(run), Some(change)) = (&job.run_id, &job.change) {
+        cmd.arg("--lead").arg(&job.lead);
+        cmd.arg("--run-id").arg(run);
+        cmd.arg("--change").arg(change);
+        cmd.env("LUCINA_RUN_ID", run)
+            .env("LUCINA_LEAD", &job.lead)
+            .env("LUCINA_CHANGE", change);
+    }
     if let Some(e) = &job.expect {
         cmd.arg("--expect-file").arg(e);
     }

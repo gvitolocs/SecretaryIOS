@@ -197,13 +197,27 @@ fn lagent_json_code(d: &Daemon, args: &[&str], code: i32) -> Value {
     serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("lagent {args:?}: {e}: {}", r.stdout))
 }
 
+/// Registers the lead (an already registered one is fine) and opens a change of it; the
+/// change's id. A work start needs both.
+fn change_for(d: &Daemon, lead: &str) -> String {
+    let _ = lagent(d, &["id", "lead", "add", lead, "a test lead"]);
+    let row = lagent_json(
+        d,
+        &["id", "new", "change", "--lead", lead, "--title", "a change"],
+    );
+    row["id"].as_str().unwrap().to_string()
+}
+
 fn start(d: &Daemon, f: &Fixture, lead: &str, ws: &str, extra: &[&str]) -> Value {
     let spec = f.spec();
+    let change = change_for(d, lead);
     let mut args = vec![
         "work",
         "start",
         "--lead",
         lead,
+        "--change",
+        &change,
         "--lane",
         "qoder",
         "--workspace",
@@ -258,14 +272,15 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
     let job = start(
         &d,
         &f,
-        "chat-a",
+        "LA",
         &ws,
         &["--verify", "true", "--title", "report"],
     );
     let id = job["id"].as_str().unwrap().to_string();
-    assert!(id.starts_with("wk-"), "{job}");
+    // The job id is the lane run id: the run id and a slug of the title.
+    assert_eq!(id, "la-r001-report", "{job}");
     assert_eq!(job["state"], "starting");
-    assert_eq!(job["lead"], "chat-a");
+    assert_eq!(job["lead"], "LA");
     assert_eq!(job["priority"], "normal");
     assert_eq!(job["cost"], "build");
     assert!(
@@ -282,7 +297,7 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
     assert!(has("--lane", "qoder"), "{args:?}");
     assert!(has("--workspace", &ws), "{args:?}");
     assert!(has("--verify", "true"), "{args:?}");
-    assert!(has("--owner", "chat-a"), "{args:?}");
+    assert!(has("--owner", "LA"), "{args:?}");
     assert!(has("--cost", "build"), "{args:?}");
     assert!(!args.iter().any(|a| a == "--expect-file"), "{args:?}");
     assert_eq!(
@@ -300,7 +315,7 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
     );
     wait_state(&d, &id, "running");
     let list = lagent_json(&d, &["work", "ls"]);
-    let lead = lead_of(&list, "chat-a").unwrap_or_else(|| panic!("{list}"));
+    let lead = lead_of(&list, "LA").unwrap_or_else(|| panic!("{list}"));
     assert_eq!(lead["running"], 1);
     assert_eq!(lead["jobs"][0]["id"], id.as_str());
     assert_eq!(lead["jobs"][0]["finalLane"], "qoder");
@@ -309,7 +324,7 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
     assert!(
         table
             .stdout
-            .contains("chat-a: 1 running, 0 queued, 0 ended, 0 empty"),
+            .contains("LA: 1 running, 0 queued, 0 ended, 0 empty"),
         "{}",
         table.stdout
     );
@@ -322,7 +337,7 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
 
-    let a = start(&d, &f, "chat-a", &ws, &["--verify", "true"]);
+    let a = start(&d, &f, "LA", &ws, &["--verify", "true"]);
     let a = a["id"].as_str().unwrap().to_string();
     f.status(
         &a,
@@ -345,14 +360,14 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
     let w = lagent(&d, &["work", "wait", &a, "--timeout", "5"]);
     assert_eq!(w.code, 0, "{}", w.stderr);
 
-    let b = start(&d, &f, "chat-a", &ws, &["--expect", "out/report.md"]);
+    let b = start(&d, &f, "LA", &ws, &["--expect", "out/report.md"]);
     let b = b["id"].as_str().unwrap().to_string();
     f.status(&b, &lane_status(&b, "reported_done", json!({})));
     let done = wait_state(&d, &b, "done");
     assert_eq!(done["empty"], true, "{done}");
     assert!(done["endedAt"].is_string());
 
-    let c = start(&d, &f, "chat-a", &ws, &["--expect", "out/report.md"]);
+    let c = start(&d, &f, "LA", &ws, &["--expect", "out/report.md"]);
     let c = c["id"].as_str().unwrap().to_string();
     std::fs::create_dir_all(Path::new(&ws).join("out")).unwrap();
     std::fs::write(Path::new(&ws).join("out/report.md"), "# report\n").unwrap();
@@ -361,7 +376,7 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
     assert_eq!(done["empty"], false, "{done}");
 
     let list = lagent_json(&d, &["work", "ls"]);
-    let lead = lead_of(&list, "chat-a").unwrap();
+    let lead = lead_of(&list, "LA").unwrap();
     assert_eq!(
         (lead["ended"].as_u64(), lead["empty"].as_u64()),
         (Some(3), Some(1)),
@@ -377,7 +392,7 @@ fn an_expected_file_is_handed_to_lane_as_expect_file() {
     let job = start(
         &d,
         &f,
-        "chat-a",
+        "LA",
         &ws,
         &["--expect", "out/report.md", "--verify", "true"],
     );
@@ -401,7 +416,7 @@ fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
     let job = start(
         &d,
         &f,
-        "chat-l",
+        "LA",
         &ws,
         &["--cost", "light", "--expect", "out/r.md"],
     );
@@ -412,20 +427,23 @@ fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
         .collect();
     let pos = |flag: &str| args.iter().position(|a| a == flag).unwrap();
     assert_eq!(args[pos("--cost") + 1], "light", "{args:?}");
-    assert_eq!(args[pos("--owner") + 1], "chat-l", "{args:?}");
+    assert_eq!(args[pos("--owner") + 1], "LA", "{args:?}");
     // run --id <id> --lane L --workspace W --owner O --cost C --expect-file E
     assert!(pos("--workspace") < pos("--owner"), "{args:?}");
     assert!(pos("--owner") < pos("--cost"), "{args:?}");
     assert!(pos("--cost") < pos("--expect-file"), "{args:?}");
 
     let spec = f.spec();
+    let change = change_for(&d, "LA");
     let r = lagent(
         &d,
         &[
             "work",
             "start",
             "--lead",
-            "chat-l",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "qoder",
             "--workspace",
@@ -451,7 +469,7 @@ fn an_ended_empty_run_ends_in_that_state_and_waits_with_exit_8() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -478,6 +496,7 @@ fn refusals() {
     let d = f.daemon(&[("WT_PROJECTS", projects.display().to_string())]);
     let ws = f.repo("ws");
     let spec = f.spec();
+    let change = change_for(&d, "LA");
 
     let no_lead = lagent(
         &d,
@@ -501,7 +520,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "qoder",
             "--chain",
@@ -519,7 +540,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--workspace",
             &ws,
             "--spec",
@@ -534,7 +557,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "nope",
             "--workspace",
@@ -551,7 +576,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--chain",
             "nope",
             "--workspace",
@@ -568,7 +595,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "qoder",
             "--workspace",
@@ -584,7 +613,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "qoder",
             "--workspace",
@@ -604,7 +635,9 @@ fn refusals() {
                 "work",
                 "start",
                 "--lead",
-                "c",
+                "LA",
+                "--change",
+                &change,
                 target[0],
                 target[1],
                 "--workspace",
@@ -628,7 +661,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "codex-a",
             "--workspace",
@@ -659,7 +694,9 @@ fn refusals() {
             "work",
             "start",
             "--lead",
-            "c",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "qoder",
             "--workspace",
@@ -677,7 +714,7 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     let f = Fixture::new();
     let mut d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -691,7 +728,7 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     );
     d.guard = common::spawn_daemon_env(d.dir.path(), &f.env(&[]));
     let job = show(&d, &id);
-    assert_eq!(job["lead"], "chat-a", "{job}");
+    assert_eq!(job["lead"], "LA", "{job}");
 
     f.status(
         &id,
@@ -707,7 +744,7 @@ fn runs_started_with_lane_directly_are_listed_as_direct() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let mine = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let mine = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -744,7 +781,7 @@ fn runs_started_with_lane_directly_are_listed_as_direct() {
         1,
         "{list}"
     );
-    assert!(lead_of(&list, "chat-a").is_some());
+    assert!(lead_of(&list, "LA").is_some());
     assert_eq!(list["warning"], Value::Null);
 
     let all = lagent_json(&d, &["work", "ls", "--old"]);
@@ -759,7 +796,7 @@ fn runs_started_with_lane_directly_are_listed_as_direct() {
 
     let none = lagent_json(&d, &["work", "ls", "--no-direct"]);
     assert!(lead_of(&none, "direct:chat-x").is_none(), "{none}");
-    assert!(lead_of(&none, "chat-a").is_some());
+    assert!(lead_of(&none, "LA").is_some());
 }
 
 #[test]
@@ -810,7 +847,7 @@ fn a_run_lane_does_not_know_is_lost() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -829,13 +866,16 @@ fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
     let ws = f.repo("ws");
     // A failed start still prints the job, and the exit code says it failed.
     let spec = f.spec();
+    let change = change_for(&d, "LA");
     let r = lagent(
         &d,
         &[
             "work",
             "start",
             "--lead",
-            "chat-a",
+            "LA",
+            "--change",
+            &change,
             "--lane",
             "qoder",
             "--workspace",
@@ -893,13 +933,16 @@ fn a_dot_workspace_means_the_callers_directory() {
     let d = f.daemon(&[]);
     let ws = f.repo("here");
     let spec = f.spec();
+    let change = change_for(&d, "LA");
     let r = common::run(
         Command::new(common::LAGENT)
             .args([
                 "work",
                 "start",
                 "--lead",
-                "c",
+                "LA",
+                "--change",
+                &change,
                 "--lane",
                 "qoder",
                 "--workspace",
@@ -932,7 +975,7 @@ fn a_lane_run_that_fails_after_lane_registered_the_run_is_not_failed() {
     .unwrap();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let job = start(&d, &f, "chat-a", &ws, &[]);
+    let job = start(&d, &f, "LA", &ws, &[]);
     assert_eq!(job["state"], "running", "{job}");
     assert!(
         job["note"]
@@ -947,7 +990,7 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -974,7 +1017,7 @@ fn a_lane_status_that_cannot_start_counts_as_a_miss() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -990,7 +1033,7 @@ fn a_status_that_is_not_json_changes_nothing_until_it_is_valid() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1015,7 +1058,7 @@ fn done_with_after_head(
     ws: &str,
     after: impl Fn(&str) -> String,
 ) -> Value {
-    let job = start(d, f, "chat-a", ws, &[]);
+    let job = start(d, f, "LA", ws, &[]);
     let id = job["id"].as_str().unwrap().to_string();
     let base = job["baseHead"].as_str().unwrap().to_string();
     let after = after(&base);
@@ -1047,7 +1090,7 @@ fn waiting_on_a_running_job_times_out_with_exit_5() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1062,13 +1105,13 @@ fn board_shows_the_work_section() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    start(&d, &f, "chat-a", &ws, &[]);
+    start(&d, &f, "LA", &ws, &[]);
     let r = lagent(&d, &["board"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stdout.contains("\nWORK\n"), "{}", r.stdout);
     assert!(
         r.stdout
-            .contains("chat-a: 0 running, 1 queued, 0 ended, 0 empty"),
+            .contains("LA: 0 running, 1 queued, 0 ended, 0 empty"),
         "{}",
         r.stdout
     );
