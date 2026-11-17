@@ -7,7 +7,10 @@
 
 use std::ffi::OsString;
 
-/// The names a child may keep, from the starting process's own environment.
+/// The names a child may keep, from the starting process's own environment. `SSH_AUTH_SOCK`
+/// is deliberately not among them: it names the agent that holds the owner's loaded SSH keys,
+/// so allowlisting it would hand those keys to whatever agentd starts. A command gets it only
+/// through a deploy recipe that declares it (`env = [...]`), and only for that recipe's steps.
 const ALLOW: &[&str] = &[
     "PATH",
     "HOME",
@@ -31,7 +34,6 @@ const ALLOW: &[&str] = &[
     "LUCINA_AGENTD_SOCKET",
     // A socket path, not a credential: the agent socket's name is how a child talks back
     // to agentd, and the value carries no secret material.
-    "SSH_AUTH_SOCK",
 ];
 
 /// Allowlist prefixes: `LC_*`, the locale overrides; `BQ_*`, the bq queue's own variables.
@@ -99,11 +101,10 @@ pub fn scrubbed_env_from(
 }
 
 /// Whether `name` looks like a credential: it contains a deny word (case-insensitive) or
-/// starts with a vendor prefix. `BQ_*` and `SSH_AUTH_SOCK` are exempt: the queue's
-/// variables are the bq queue's own bookkeeping (job, class, slot — the queue this very
-/// command runs under), and the agent socket name is a path, with no secret material in it.
+/// starts with a vendor prefix. `BQ_*` is exempt: the queue's variables are the bq queue's
+/// own bookkeeping (job, class, slot — the queue this very command runs under).
 fn denied(name: &str) -> bool {
-    if name == "SSH_AUTH_SOCK" || name.starts_with("BQ_") {
+    if name.starts_with("BQ_") {
         return false;
     }
     let up = name.to_ascii_uppercase();
@@ -193,25 +194,36 @@ mod tests {
         ] {
             assert!(denied(n), "{n}");
         }
-        for n in [
-            "PATH",
-            "HOME",
-            "TMPDIR",
-            "SSH_AUTH_SOCK",
-            "BQ_SESSION",
-            "BQ_TOKEN",
-        ] {
+        for n in ["PATH", "HOME", "TMPDIR", "BQ_SESSION", "BQ_TOKEN"] {
             assert!(!denied(n), "{n}");
         }
-        // The exemptions keep the queue's own variables and the agent socket, whatever
-        // their names look like.
-        let (built, not_passed) = scrubbed_env_from(
-            source(&[("BQ_SESSION", "s"), ("SSH_AUTH_SOCK", "/run/agent.sock")]),
-            &[],
+        // The exemption keeps the queue's own variables, whatever their names look like.
+        let (built, not_passed) = scrubbed_env_from(source(&[("BQ_SESSION", "s")]), &[]);
+        assert_eq!(names(&built), vec!["BQ_SESSION".to_string()]);
+        assert_eq!(not_passed, 0);
+    }
+
+    /// The SSH agent socket is kept back by the allowlist, not by the denylist: its name does
+    /// not look like a credential, and what it opens is the owner's loaded SSH keys all the same.
+    #[test]
+    fn ssh_auth_sock_reaches_only_a_recipe_that_declares_it() {
+        assert!(
+            !denied("SSH_AUTH_SOCK"),
+            "the allowlist, not the denylist, is what keeps it back"
         );
+        let src = source(&[
+            ("PATH", "/usr/bin"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/ssh.sock"),
+        ]);
+        // Not allowlisted: no agent, terminal, setup script or gate command is built with it.
+        let (built, not_passed) = scrubbed_env_from(src.clone(), &[]);
+        assert!(!names(&built).contains(&"SSH_AUTH_SOCK".to_string()));
+        assert_eq!(not_passed, 1);
+        // Declared by a deploy recipe, exactly as any other name it declares.
+        let (built, not_passed) = scrubbed_env_from(src, &["SSH_AUTH_SOCK"]);
         assert_eq!(
-            names(&built),
-            vec!["BQ_SESSION".to_string(), "SSH_AUTH_SOCK".to_string()]
+            value(&built, "SSH_AUTH_SOCK"),
+            Some(OsStr::new("/run/user/1000/ssh.sock"))
         );
         assert_eq!(not_passed, 0);
     }

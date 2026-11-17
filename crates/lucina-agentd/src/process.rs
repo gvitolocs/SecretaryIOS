@@ -360,6 +360,7 @@ mod tests {
         let source = crate::testutil::env_source(&[
             ("PATH", "/usr/bin:/bin"),
             ("HOME", "/home/fake"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/ssh.sock"),
             ("FAKE_API_TOKEN", "fake-token"),
             ("CLOUDFLARE_FAKE_ID", "fake-id"),
         ]);
@@ -374,7 +375,7 @@ mod tests {
         }
         assert!(exited, "the dump did not finish");
         let names = std::fs::read_to_string(&names_path).unwrap();
-        for n in ["FAKE_API_TOKEN", "CLOUDFLARE_FAKE_ID"] {
+        for n in ["FAKE_API_TOKEN", "CLOUDFLARE_FAKE_ID", "SSH_AUTH_SOCK"] {
             assert!(!names.lines().any(|l| l == n), "{names}");
         }
         for n in ["PATH", "HOME", "SPEC_CALL_SITE"] {

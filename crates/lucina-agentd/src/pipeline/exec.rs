@@ -1692,6 +1692,7 @@ mod tests {
             ("HOME", "/home/fake"),
             ("TMPDIR", "/fake/tmp"),
             ("CARGO_TARGET_DIR", "/fake/target"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/ssh.sock"),
             ("FAKE_API_TOKEN", "fake-token"),
             ("CLOUDFLARE_FAKE_ID", "fake-id"),
         ]);
@@ -1699,7 +1700,7 @@ mod tests {
         assert!(out.ok, "{out:?}");
         let landing = root.join("wt/.landing");
         let names = std::fs::read_to_string(landing.join("names.txt")).unwrap();
-        for n in ["FAKE_API_TOKEN", "CLOUDFLARE_FAKE_ID"] {
+        for n in ["FAKE_API_TOKEN", "CLOUDFLARE_FAKE_ID", "SSH_AUTH_SOCK"] {
             assert!(!names.lines().any(|l| l == n), "{names}");
         }
         for n in ["PATH", "HOME", "TMPDIR", "CARGO_TARGET_DIR"] {
@@ -1718,9 +1719,11 @@ mod tests {
         );
         // The count only: no names, no values.
         let log = std::fs::read_to_string(dir.join("log")).unwrap();
-        assert!(log.contains("env: 2 variable(s) not passed"), "{log}");
+        assert!(log.contains("env: 3 variable(s) not passed"), "{log}");
         assert!(
-            !log.contains("FAKE_API_TOKEN") && !log.contains("CLOUDFLARE_FAKE_ID"),
+            !log.contains("FAKE_API_TOKEN")
+                && !log.contains("CLOUDFLARE_FAKE_ID")
+                && !log.contains("SSH_AUTH_SOCK"),
             "{log}"
         );
     }
@@ -1803,6 +1806,71 @@ mod tests {
             let log = std::fs::read_to_string(dir.join("log")).unwrap();
             assert!(log.contains("env: 1 variable(s) not passed"), "{log}");
             assert!(!log.contains(other), "{log}");
+        }
+    }
+
+    /// The SSH agent socket: not allowlisted, so no gate command, agent, terminal or setup
+    /// script is built with it. A recipe that needs it for its own deploy steps asks for it by
+    /// name, exactly like any other declared variable.
+    #[test]
+    fn ssh_auth_sock_reaches_the_deploy_steps_of_the_recipe_that_declares_it() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (_origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            concat!(
+                "[merge]\ndiffgate = false\n",
+                "[deploy.asked]\nbuild = \"env | cut -d= -f1 > build-names.txt\"\ninstall = \"env | cut -d= -f1 > install-names.txt\"\nenv = [\"SSH_AUTH_SOCK\"]\n",
+                "[deploy.notasked]\nbuild = \"env | cut -d= -f1 > build-names.txt\"\ninstall = \"env | cut -d= -f1 > install-names.txt\"\n",
+            ),
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        // deploy-guard: plan sees something new, check and record pass.
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(
+            &bin.join("deploy-guard"),
+            "#!/bin/sh\ncase \"$1\" in\nplan) echo \"1 change(s) to deploy\";;\nesac\nexit 0\n",
+        );
+        let _on_path = path_stand_in(&bin);
+        let tip = git(&repo, &["rev-parse", "main"]);
+        for (runtime, declared) in [("asked", true), ("notasked", false)] {
+            let dir = root.join(format!("job-{runtime}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut s = spec(root, &repo, "main", &tip);
+            s.kind = JobKind::Deploy;
+            s.runtime = Some(runtime.into());
+            let mut x = Exec::open(&dir, s).unwrap();
+            x.source_env = crate::testutil::env_source(&[
+                ("PATH", "/gone"),
+                ("HOME", "/home/fake"),
+                ("SSH_AUTH_SOCK", "/run/user/1000/ssh.sock"),
+            ]);
+            x.path = format!("{}:{}", bin.display(), x.path);
+            let out = x.deploy();
+            assert_eq!(out.code, "DEPLOYED", "{runtime}: {}", out.message);
+            for step in ["build", "install"] {
+                let names =
+                    std::fs::read_to_string(root.join(format!("wt/.deploy/{step}-names.txt")))
+                        .unwrap();
+                assert_eq!(
+                    names.lines().any(|l| l == "SSH_AUTH_SOCK"),
+                    declared,
+                    "{runtime} {step}: {names}"
+                );
+            }
+            // The recipe that did not ask kept it back, and the log says so by count only.
+            let log = std::fs::read_to_string(dir.join("log")).unwrap();
+            assert_eq!(log.contains("variable(s) not passed"), !declared, "{log}");
+            assert!(
+                !log.contains("/run/user/1000/ssh.sock"),
+                "the log does not repeat the socket path"
+            );
         }
     }
 }
