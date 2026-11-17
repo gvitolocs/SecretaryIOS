@@ -363,7 +363,7 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
         &f,
         "chat-a",
         &ws,
-        &["--verify", "true", "--title", "report"],
+        &["--cost", "build", "--verify", "true", "--title", "report"],
     );
     let id = job["id"].as_str().unwrap().to_string();
     assert!(id.starts_with("wk-"), "{job}");
@@ -425,7 +425,13 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
 
-    let a = start(&d, &f, "chat-a", &ws, &["--verify", "true"]);
+    let a = start(
+        &d,
+        &f,
+        "chat-a",
+        &ws,
+        &["--cost", "build", "--verify", "true"],
+    );
     let a = a["id"].as_str().unwrap().to_string();
     f.status(
         &a,
@@ -549,12 +555,55 @@ fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
     );
 }
 
+/// No `--cost` is a light run, the way a plain `lane run` has been since lane LB-V010.
+#[test]
+fn a_job_started_without_a_cost_is_light() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let job = start(&d, &f, "chat-n", &ws, &["--expect", "out/n.md"]);
+    let id = job["id"].as_str().unwrap();
+    assert_eq!(job["cost"], "light", "{job}");
+    let args: Vec<String> = read(&f.data().join(format!("{id}.args")))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let at = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+    assert_eq!(args[at("--cost") + 1], "light", "{args:?}");
+
+    // Light is the default, and a light job must name the file it leaves behind.
+    let spec = f.spec();
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "chat-n",
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+        ],
+    );
+    assert_ne!(r.code, 0);
+    assert!(
+        r.stderr.contains(
+            "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
+        ),
+        "{}",
+        r.stderr
+    );
+}
+
 #[test]
 fn an_ended_empty_run_ends_in_that_state_and_waits_with_exit_8() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -781,7 +830,7 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     let f = Fixture::new();
     let mut d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -823,7 +872,7 @@ fn a_runner_that_is_gone_shows_as_lost_and_the_state_stays() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -914,7 +963,7 @@ fn scope_on_starts_lane_through_systemd_run() {
         ("PATH", bin.clone()),
     ]);
     let ws = f.repo("ws");
-    let job = start(&d, &f, "chat-a", &ws, &[]);
+    let job = start(&d, &f, "chat-a", &ws, &["--cost", "build"]);
     let id = job["id"].as_str().unwrap().to_string();
     let unit = format!("lucina-work-{id}");
     assert_eq!(job["scope"], unit.as_str(), "{job}");
@@ -954,7 +1003,7 @@ fn runs_started_with_lane_directly_are_listed_as_direct() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let mine = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let mine = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1057,7 +1106,7 @@ fn a_run_lane_does_not_know_is_lost() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1179,7 +1228,7 @@ fn a_lane_run_that_fails_after_lane_registered_the_run_is_not_failed() {
     .unwrap();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let job = start(&d, &f, "chat-a", &ws, &[]);
+    let job = start(&d, &f, "chat-a", &ws, &["--cost", "build"]);
     assert_eq!(job["state"], "running", "{job}");
     assert!(
         job["note"]
@@ -1194,7 +1243,7 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1221,7 +1270,7 @@ fn a_lane_status_that_cannot_start_counts_as_a_miss() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1237,7 +1286,7 @@ fn a_status_that_is_not_json_changes_nothing_until_it_is_valid() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1294,7 +1343,7 @@ fn waiting_on_a_running_job_times_out_with_exit_5() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1309,7 +1358,7 @@ fn board_shows_the_work_section() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    start(&d, &f, "chat-a", &ws, &[]);
+    start(&d, &f, "chat-a", &ws, &["--cost", "build"]);
     let r = lagent(&d, &["board"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stdout.contains("\nWORK\n"), "{}", r.stdout);
@@ -1341,7 +1390,7 @@ fn a_run_lane_calls_lost_is_final_and_is_never_asked_again() {
     common::write_exec(&f.root.path().join("lane/lane"), &counting_stand_in());
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+    let id = start(&d, &f, "chat-a", &ws, &["--cost", "build"])["id"]
         .as_str()
         .unwrap()
         .to_string();
