@@ -482,3 +482,50 @@ The provider *code*, the *dispatch* and the *test gates* are all here, as above.
 all on nezopt, all outside this workspace, and written by no deploy step
 (`deploy/lucina-rs/install.sh:7-9`). Numeric per-model limits are not in this repo at all, and a
 per-model context-window / tool-support registry does not exist in Rust — see §5.
+
+## Implemented (LM-R021)
+
+The §5 diff, applied with the real tailnet address and provider string `raffy`. Files changed:
+
+- `crates/lucina-llm/src/lib.rs` — `RAFFY_BASE_URL` (`http://100.74.158.126:8080/v1`),
+  `RAFFY_MODEL` (`qwen3-4b`), `DeepSeekConfig::raffy_from_lookup` (prefix `RAFFY`, `Dialect::DeepSeek`,
+  timeout and retries the existing defaults). No new parsing code, as predicted.
+- `crates/lucina-server/src/config.rs` — `ModelProvider::Raffy`, `Config::raffy`, both built in
+  `from_lookup`; `LUCINA_MODEL_PROVIDER=raffy` parses.
+- `crates/lucina-server/src/lib.rs` — the client is built and dropped without a key like Mistral's,
+  and a start-up without a key logs one line, `raffy: no key`; the server starts normally either way.
+  It is **not** wired into the turn match: a 4B model never answers her turns, so
+  `LUCINA_MODEL_PROVIDER=raffy` logs an error and DeepSeek keeps the turns (the guardrail, extended:
+  it logs whether or not the key is present, because the setting is wrong either way).
+- `crates/lucina-server/src/model_try.rs` — `NamedModels::raffy`, the `"raffy"` arm (503 `no_key`
+  without a key), header doc.
+- `crates/lucina-server/src/api.rs` — `/health` reports `raffy.{model, hasKey}` and
+  `modelProvider: "raffy"`. That is the plain root `/health` (`api.rs:343`, the one the unit gates on):
+  the Secretary `/api/secretary/health` (`api.rs:600`) lists no provider, so it stays as it is.
+- `crates/lucina-server/src/secrets.rs` — `RAFFY_API_KEY` registered with the redactor by digest, so
+  the key cannot come back in a reply.
+- `crates/lucina-server/src/main.rs` — `model-try --provider` help lists `raffy`.
+- Tests: `crates/lucina-llm/tests/raffy.rs` (new, four lookup-closure tests: `RAFFY_*` only, the
+  defaults, the key file source, `Debug` redaction) and `crates/lucina-server/tests/model_try.rs`
+  (`with_raffy` plus five tests: defaults through `Config`, picked by name on the plain dialect with
+  her real tool specs and listed in `/health`, 503 `no_key` without a key, key redaction, and a
+  near-miss name still 400). No existing assertion was edited; the `{"provider":"qwen"}` → 400 guard
+  is untouched. `cargo test -p lucina-llm --test raffy` 4/4, `cargo test -p lucina-server --test
+  model_try` 11/11.
+
+**Still to do on nezopt, outside this repo** (no deploy file changed in this run):
+
+1. The broker drop-in must map the Infisical secret
+   `secret://lucina/prod/raffy#RAFFY_LLAMA_API_KEY` to the **process variable `RAFFY_API_KEY`** —
+   one more `infisical-broker exec --env 'RAFFY_API_KEY=secret://lucina/prod/raffy#RAFFY_LLAMA_API_KEY'`
+   beside Mistral's (`deploy/lucina-rs/with-mistral-key.sh:5-9`), degrading to no key if the broker is
+   down. Without it the provider is simply absent (503 `no_key` by name), which is the intended state
+   until the owner adds it.
+2. `RAFFY_BASE_URL` / `RAFFY_MODEL` need **no** entry: the code defaults now carry the tailnet
+   address and `qwen3-4b`. Add them to `~/.config/lucina-rs/lucina.env` only to override.
+3. `deploy/lucina-rs/install.sh` restarts the unit, so the code lands with the next deploy.
+4. Follow-up, not done here: `crates/lucina-agentd/src/env.rs:60-71` denies `DEEPSEEK_`/`MISTRAL_`
+   into a child environment but knows nothing of `RAFFY_`, so a job would inherit `RAFFY_API_KEY`
+   unless the prefix is added to that denylist.
+5. The runtime caveat from §5 stands: confirm the llama-server accepts
+   `stream_options: {"include_usage": true}` with `lucina-rs model-try --provider raffy --stream "ping"`.
