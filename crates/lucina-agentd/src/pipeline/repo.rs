@@ -400,6 +400,41 @@ pub fn allow_env(allow: &[String]) -> Vec<(String, String)> {
     env
 }
 
+/// The file of a merge job's waivers (in the job directory) and the variable that names it for gate commands.
+pub const WAIVERS_FILE: &str = "waivers.jsonl";
+pub const WAIVERS_ENV: &str = "LAGENT_WAIVERS_FILE";
+
+#[derive(serde::Serialize)]
+struct Waiver<'a> {
+    rule: &'a str,
+    reason: &'a str,
+    by: &'a str,
+    job: &'a str,
+}
+
+/// One JSON line per `rule=reason` allow that has a reason, in the order given (every rule).
+/// Split at the first `=`; the rule is trimmed, the reason kept as given. An entry without `=`,
+/// with a blank reason or with a blank rule is not a waiver and gets no line.
+pub fn waiver_lines(allow: &[String], by: &str, job: &str) -> Vec<String> {
+    allow
+        .iter()
+        .filter_map(|a| {
+            let (rule, reason) = a.split_once('=')?;
+            let rule = rule.trim();
+            if rule.is_empty() || reason.trim().is_empty() {
+                return None;
+            }
+            serde_json::to_string(&Waiver {
+                rule,
+                reason,
+                by,
+                job,
+            })
+            .ok()
+        })
+        .collect()
+}
+
 /// The commit ledger's path for every gate command but diffgate (`LAGENT_COMMIT_LEDGER`).
 pub const LEDGER_ENV: &str = "LAGENT_COMMIT_LEDGER";
 
@@ -1175,5 +1210,71 @@ mod tests {
         );
         assert_eq!(g[1].run, "cargo check --quiet -p lucina-agents");
         assert_eq!(g[2].run, "cargo test --quiet -p lucina-agentd");
+    }
+
+    fn fields(line: &str) -> Vec<(String, String)> {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        v.as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn the_real_waiver_of_a_merge_job_round_trips() {
+        let log = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/merge/job_4ee819df2427.log"
+        ))
+        .unwrap();
+        let line9 = log.lines().nth(8).unwrap();
+        let rest = line9.split_once("--allow '").unwrap().1;
+        let allow = &rest[..rest.find('\'').unwrap()];
+        let reason = allow.split_once('=').unwrap().1;
+        let lines = waiver_lines(&[allow.to_string()], "local_x", "job_4ee819df2427");
+        assert_eq!(lines.len(), 1);
+        let f = fields(&lines[0]);
+        assert_eq!(f.len(), 4);
+        let get = |k: &str| f.iter().find(|(n, _)| n == k).unwrap().1.clone();
+        assert_eq!(get("rule"), "skipped-test");
+        assert_eq!(get("reason"), reason);
+        assert_eq!(get("by"), "local_x");
+        assert_eq!(get("job"), "job_4ee819df2427");
+        assert!(lines[0].starts_with("{\"rule\":\"skipped-test\",\"reason\":"));
+    }
+
+    #[test]
+    fn waiver_lines_keep_order_and_every_rule() {
+        let allow = [
+            "skipped-test=a".to_string(),
+            "gate-change=why".to_string(),
+            "spec-change=why2".to_string(),
+        ];
+        let lines = waiver_lines(&allow, "b", "j");
+        let rules: Vec<String> = lines
+            .iter()
+            .map(|l| fields(l).into_iter().find(|(k, _)| k == "rule").unwrap().1)
+            .collect();
+        assert_eq!(rules, ["skipped-test", "gate-change", "spec-change"]);
+    }
+
+    #[test]
+    fn waiver_lines_drop_entries_without_a_reason() {
+        for a in ["skipped-test=", "skipped-test=   ", "skipped-test", "=why"] {
+            assert!(waiver_lines(&[a.to_string()], "b", "j").is_empty(), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn a_hard_reason_round_trips_byte_for_byte() {
+        let reason = " a=b \"quoted\" \\ line\nnext\ttab \u{e5}\u{e6}\u{f8} \u{1f600} ";
+        let lines = waiver_lines(&[format!(" rule ={reason}")], "b", "j");
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].contains('\n'));
+        let f = fields(&lines[0]);
+        let get = |k: &str| f.iter().find(|(n, _)| n == k).unwrap().1.clone();
+        assert_eq!(get("rule"), "rule");
+        assert_eq!(get("reason"), reason);
     }
 }

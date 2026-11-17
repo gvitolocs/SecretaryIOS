@@ -1,0 +1,173 @@
+[14:20:48] merge job job_4ee819df2427 started; waiting for /tmp/lucina-merge-LucinaOS.lock
+[14:20:48] merge juno-gallery-hermetic at a2cc7fa5c1 into main (attempt 1)
+[14:20:48] $ git merge -q --no-ff -m Merge juno-gallery-hermetic: gallery-hermetic a2cc7fa5c1a79abafe12015311df78865795b403
+[14:20:48] merge: 19 file(s) changed
+[14:20:48] commit ledger: 0 of 5 non-merge commit(s) of the branch have a ledger entry (/home/nez/.local/share/lucina-agentd/commit-ledger.jsonl)
+[14:20:48] cargo check: runs (cargo = "check")
+[14:20:48] cargo test: skipped (cargo = "check"; --full runs the tests of touched crates)
+[14:20:48] gate: diffgate
+[14:20:48] $ diffgate --repo . --range 2ef62d3ba236e7f23ce0488b5d478b757f68d695..38d67292191de8cde4499e786410d3af269464e1 --allow 'skipped-test=real-server variants kept as #[ignore = needs LUCINA_MEDIA_BIN], reported ignored not passed; the same assertions run against the in-process Fake; the ignored variants run in a scheduled non-gating job; WM-C004 / GAL-01; coordinator allow 2026-11-17'
+waived(real-server variants kept as #[ignore = needs LUCINA_MEDIA_BIN], reported ignored not passed; the same assertions run against the in-process Fake; the ignored variants run in a scheduled non-gating job; WM-C004 / GAL-01; coordinator allow 2026-11-17) skipped-test crates/lucina-app-gallery/src/tests.rs:822  #[ignore = "needs LUCINA_MEDIA_BIN"]
+waived(real-server variants kept as #[ignore = needs LUCINA_MEDIA_BIN], reported ignored not passed; the same assertions run against the in-process Fake; the ignored variants run in a scheduled non-gating job; WM-C004 / GAL-01; coordinator allow 2026-11-17) skipped-test crates/lucina-app-gallery/src/tests.rs:830  #[ignore = "needs LUCINA_MEDIA_BIN"]
+waived(real-server variants kept as #[ignore = needs LUCINA_MEDIA_BIN], reported ignored not passed; the same assertions run against the in-process Fake; the ignored variants run in a scheduled non-gating job; WM-C004 / GAL-01; coordinator allow 2026-11-17) skipped-test crates/lucina-files/src/tests.rs:547  #[ignore = "needs LUCINA_MEDIA_BIN"]
+waived(real-server variants kept as #[ignore = needs LUCINA_MEDIA_BIN], reported ignored not passed; the same assertions run against the in-process Fake; the ignored variants run in a scheduled non-gating job; WM-C004 / GAL-01; coordinator allow 2026-11-17) skipped-test crates/lucina-files/src/tests.rs:610  #[ignore = "needs LUCINA_MEDIA_BIN"]
+waived(real-server variants kept as #[ignore = needs LUCINA_MEDIA_BIN], reported ignored not passed; the same assertions run against the in-process Fake; the ignored variants run in a scheduled non-gating job; WM-C004 / GAL-01; coordinator allow 2026-11-17) skipped-test crates/lucina-files/src/tests.rs:724  #[ignore = "needs LUCINA_MEDIA_BIN"]
+diffgate: ok (5 waived, 7 files, +1617/-244 lines)
+[14:20:49] gate: cargo check (workspace)
+[14:20:49] $ cargo check --quiet --workspace
+warning: unused variable: `bc`
+   --> tools/pkx-model/src/bch.rs:210:9
+    |
+210 |     let bc = r.u8(4);
+    |         ^^ help: if this is intentional, prefix it with an underscore: `_bc`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `q` is never read
+   --> tools/pkx-model/src/bch.rs:356:9
+    |
+356 |         q += 12;
+    |         ^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `flags`
+   --> tools/pkx-model/src/bch.rs:406:9
+    |
+406 |     let flags = r.u16(off + 2);
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_flags`
+
+warning: variable does not need to be mutable
+   --> tools/pkx-model/src/bch.rs:623:9
+    |
+623 |     let mut q = off + 4 + 48; // flags, scaling, silhouette count + world transform
+    |         ----^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `off`
+   --> tools/pkx-model/src/bch.rs:771:14
+    |
+771 |         let (off, count, names_off) = tables[i];
+    |              ^^^ help: if this is intentional, prefix it with an underscore: `_off`
+
+warning: unreachable pattern
+  --> tools/pkx-model/src/lib.rs:79:17
+   |
+69 |                 1 => {
+   |                 - matches all the relevant values
+...
+79 |                 1 => {
+   |                 ^ no value can reach this
+   |
+   = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable pattern
+  --> tools/pkx-model/src/lib.rs:84:17
+   |
+74 |                 3 => {
+   |                 - matches all the relevant values
+...
+84 |                 3 => {
+   |                 ^ no value can reach this
+
+warning: field `y_dc` is never read
+  --> crates/lucina-vp8/src/lib.rs:87:5
+   |
+86 | struct Quant {
+   |        ----- field in this struct
+87 |     y_dc: i32,
+   |     ^^^^
+   |
+   = note: `Quant` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u32>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/lucina-app-desk/src/host/mod.rs:136:44
+    |
+136 |                     let _ = shared.unacked.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(v.saturating_sub(1)));
+    |                                            ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+136 -                     let _ = shared.unacked.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(v.saturating_sub(1)));
+136 +                     let _ = shared.unacked.try_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(v.saturating_sub(1)));
+    |
+
+warning: field `line_feed` is never read
+  --> tools/fortuna-rom/src/bcfnt.rs:21:9
+   |
+17 | pub struct Font {
+   |            ---- field in this struct
+...
+21 |     pub line_feed: usize,
+   |         ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `flip` is never read
+  --> tools/fortuna-rom/src/bclyt.rs:34:9
+   |
+32 | pub struct Frame {
+   |            ----- field in this struct
+33 |     pub material: u16,
+34 |     pub flip: u8,
+   |         ^^^^
+   |
+   = note: `Frame` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `rot` is never read
+  --> tools/fortuna-rom/src/bclyt.rs:46:9
+   |
+38 | pub struct Pane {
+   |            ---- field in this struct
+...
+46 |     pub rot: [f32; 3],
+   |         ^^^
+   |
+   = note: `Pane` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+[14:23:18] gate: kernel patches apply
+[14:23:18] $ scripts/gate-kernel.sh apply
+gate-kernel: 384 patches apply
+[14:23:50] gate: armv7 kernel builds
+[14:23:50] $ scripts/gate-kernel.sh armv7
+gate-kernel: 384 patches apply
+gate-kernel: the armv7 kernel builds
+[14:25:31] gate: office lock file current
+[14:25:31] $ scripts/gate-office-lock.sh
+gate-office-lock: office/Cargo.lock is current
+[14:25:34] gate: public proofs green
+[14:25:34] $ bash scripts/gate-github-checks.sh
+merge-check: verus-gate, rust-gate verified 7016a68c81bf286342826573a4c6c9490cc7562b
+[14:25:53] gate: fast local check
+[14:25:53] $ bash scripts/check-fast --base HEAD^1 --merge-gate
+check-fast: warning: CARGO_TARGET_DIR=/home/nez/.cache/cargo-target/LucinaOS-landing (inherited) is outside /home/nez/.cache/lucina-check-target; a target shared with other worktrees can hold another commit's artifacts. lucina-ci also refuses a binary whose sources differ from this tree (set LUCINA_CHECK_ALLOW_TARGET=1 to silence this).
+sweep-target: /home/nez/.cache/lucina-check-target is 26.5 GiB (limit 30, sweep down to 24)
+bq: got short-0 after 0s
+lucina-ci src 16af0919c6923eff (tree 38d67292191de8cde4499e786410d3af269464e1) checks: diffgate build shellcheck actionlint secrets inventory spec roles trust mutants-text proofs
+check-fast: 19 changed file(s) against HEAD^1
+FAIL diffgate                        0.3s
+    skipped-test         crates/lucina-app-gallery/src/tests.rs:822  #[ignore = "needs LUCINA_MEDIA_BIN"]
+    skipped-test         crates/lucina-app-gallery/src/tests.rs:830  #[ignore = "needs LUCINA_MEDIA_BIN"]
+    skipped-test         crates/lucina-files/src/tests.rs:547  #[ignore = "needs LUCINA_MEDIA_BIN"]
+    skipped-test         crates/lucina-files/src/tests.rs:610  #[ignore = "needs LUCINA_MEDIA_BIN"]
+    skipped-test         crates/lucina-files/src/tests.rs:724  #[ignore = "needs LUCINA_MEDIA_BIN"]
+    diffgate: 5 refusal(s), 0 waived, 7 files, +1617/-244 lines
+ok   fmt                             0.5s
+ok   clippy                         41.5s
+ok   unit-tests                    166.2s
+ok   secrets                        29.2s
+ok   inventory                       3.9s
+ok   spec                            4.1s
+ok   roles                          33.5s
+ok   trust                           5.2s
+ok   mutants-text                    0.9s
+check-fast: 286s, 1 failed, 0 skipped
+[14:30:39] failed: exit 1
+[14:30:44] target sweep: bytes before=8037634048 after=5689307136 items removed=273 churn items removed=273 stable items removed=0 seconds=5.113
+[14:30:44] GATE_FAILED: gate failed: fast local check (lagent job logs job_4ee819df2427)
