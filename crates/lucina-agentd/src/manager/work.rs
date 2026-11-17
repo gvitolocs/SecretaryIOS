@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -95,17 +96,27 @@ pub(super) struct Work {
     misses: Mutex<HashMap<String, u32>>,
     /// Jobs whose `lane run` has not returned yet: the poller leaves them alone.
     launching: Mutex<HashSet<String>>,
+    /// An unreadable `jobs.json` could not be moved aside: nothing is written over it.
+    blocked: AtomicBool,
 }
 
 impl Work {
     pub(super) fn open(cfg: WorkConfig) -> Self {
-        let jobs = load(&cfg.dir);
+        let (jobs, blocked) = load_checked(&cfg.dir);
         Work {
             cfg,
             jobs: Mutex::new(jobs),
             misses: Mutex::new(HashMap::new()),
             launching: Mutex::new(HashSet::new()),
+            blocked: AtomicBool::new(blocked),
         }
+    }
+
+    fn unlaunch(&self, id: &str) {
+        self.launching
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
     }
 
     fn jobs(&self) -> std::sync::MutexGuard<'_, Vec<WorkJob>> {
@@ -114,6 +125,10 @@ impl Work {
 
     /// Writes `jobs.json` through a temp file in the same directory and a rename.
     fn persist(&self, jobs: &[WorkJob]) {
+        if self.blocked.load(Ordering::Relaxed) {
+            tracing::error!(dir = %self.cfg.dir.display(), "work jobs are not saved: the unreadable jobs.json could not be moved aside");
+            return;
+        }
         if let Err(e) = write_jobs(&self.cfg.dir, jobs) {
             tracing::error!(error = %e, dir = %self.cfg.dir.display(), "cannot write work jobs");
         }
@@ -128,31 +143,52 @@ fn unix_secs() -> u64 {
 }
 
 /// The stored jobs: none when the file is missing; an unreadable file is moved aside, never overwritten.
+#[cfg(test)]
 fn load(dir: &Path) -> Vec<WorkJob> {
+    load_checked(dir).0
+}
+
+/// The jobs, and whether an unreadable file is still in the way (it could not be moved aside).
+fn load_checked(dir: &Path) -> (Vec<WorkJob>, bool) {
     let file = dir.join("jobs.json");
     let text = match std::fs::read_to_string(&file) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), false),
         Err(e) => {
             tracing::error!(error = %e, file = %file.display(), "cannot read work jobs");
-            move_aside(&file);
-            return Vec::new();
+            return (Vec::new(), !move_aside(&file));
         }
     };
     match serde_json::from_str::<Vec<WorkJob>>(&text) {
-        Ok(jobs) => jobs,
+        Ok(jobs) => (jobs, false),
         Err(e) => {
-            tracing::error!(error = %e, file = %file.display(), "work jobs file is unreadable; moved aside");
-            move_aside(&file);
-            Vec::new()
+            tracing::error!(error = %e, file = %file.display(), "work jobs file is unreadable; moving it aside");
+            (Vec::new(), !move_aside(&file))
         }
     }
 }
 
-fn move_aside(file: &Path) {
-    let aside = file.with_file_name(format!("jobs.json.corrupt-{}", unix_secs()));
-    if let Err(e) = std::fs::rename(file, &aside) {
-        tracing::error!(error = %e, "cannot move the work jobs file aside");
+/// `jobs.json.corrupt-<unix secs>-<pid>-<n>`.
+fn aside_name(secs: u64, pid: u32, n: u64) -> String {
+    format!("jobs.json.corrupt-{secs}-{pid}-{n}")
+}
+
+/// Moves the file to a name nothing has; false when that did not work.
+fn move_aside(file: &Path) -> bool {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let aside = loop {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let p = file.with_file_name(aside_name(unix_secs(), std::process::id(), n));
+        if std::fs::symlink_metadata(&p).is_err() {
+            break p;
+        }
+    };
+    match std::fs::rename(file, &aside) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::error!(error = %e, "cannot move the work jobs file aside");
+            false
+        }
     }
 }
 
@@ -172,12 +208,24 @@ fn lane_env(vars: impl Iterator<Item = (String, String)>) -> Vec<(String, String
         .collect()
 }
 
-fn lane_command(bin: &Path) -> Command {
-    let mut c = Command::new(bin);
+/// The variables whose name and value are both valid UTF-8; others are skipped silently.
+fn utf8_vars(
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> impl Iterator<Item = (String, String)> {
+    vars.filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+}
+
+/// A child with the cleared environment of [`lane_env`].
+fn clean_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut c = Command::new(program);
     c.env_clear()
-        .envs(lane_env(std::env::vars()))
+        .envs(lane_env(utf8_vars(std::env::vars_os())))
         .kill_on_drop(true);
     c
+}
+
+fn lane_command(bin: &Path) -> Command {
+    clean_command(bin)
 }
 
 /// The last `n` characters.
@@ -228,6 +276,15 @@ fn check_target(
             .categories
             .get(name)
             .ok_or_else(|| lane_not_found("chain", name))?;
+        for member in members {
+            if let Some(l) = lanes.lanes.get(member) {
+                if is_forbidden(member, l) {
+                    return Err(ManagerError::Invalid(format!(
+                        "lane \"{member}\" (in chain \"{name}\") is not allowed (the paid DeepSeek key is never used)"
+                    )));
+                }
+            }
+        }
         if lucina && members.iter().any(|m| is_codex(m)) {
             return Err(ManagerError::CodexNotAllowed(NO_CODEX.into()));
         }
@@ -334,7 +391,12 @@ impl Manager {
         let chain = nonblank(req.chain);
         validate_target(lane.as_deref(), chain.as_deref()).map_err(ManagerError::Invalid)?;
         let workspace = req.workspace.trim().to_string();
-        if workspace.is_empty() || !Path::new(&workspace).is_dir() {
+        if !Path::new(&workspace).is_absolute() {
+            return Err(ManagerError::Invalid(
+                "workspace must be an absolute path".into(),
+            ));
+        }
+        if !Path::new(&workspace).is_dir() {
             return Err(ManagerError::Invalid(format!(
                 "workspace \"{workspace}\" is not a directory"
             )));
@@ -393,25 +455,70 @@ impl Manager {
             self.work().persist(&jobs);
         }
 
+        // The launch runs to its end even when the caller goes away.
+        let manager = self.clone();
+        let launched = job.clone();
+        let handle = tokio::spawn(async move { manager.launch(lane_bin, launched, run_dir).await });
+        match handle.await {
+            Ok(out) => Ok(out),
+            Err(e) => {
+                let mut jobs = self.work().jobs();
+                if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
+                    if !j.state.is_terminal() {
+                        j.state = WorkState::Failed;
+                        j.note = Some(format!("the start did not finish: {e}"));
+                        j.ended_at = Some(now_iso());
+                    }
+                }
+                self.work().persist(&jobs);
+                let out = jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job);
+                drop(jobs);
+                self.work().unlaunch(&id);
+                Ok(out)
+            }
+        }
+    }
+
+    /// `lane run`, then the job's state from it. When `lane run` failed but `lane` has a
+    /// record of the run, that record counts; otherwise the job is `failed`. The id leaves
+    /// `launching` on every path.
+    async fn launch(&self, lane_bin: PathBuf, job: WorkJob, run_dir: PathBuf) -> WorkJob {
+        let id = job.id.clone();
         let failure = run_lane(&lane_bin, &job, &run_dir).await.err();
+        let status = match &failure {
+            Some(_) => match query_status(&lane_bin, &id).await {
+                StatusReply::Status(v) => Some(v),
+                _ => None,
+            },
+            None => None,
+        };
         let out = {
             let mut jobs = self.work().jobs();
             if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
                 if let Some(note) = failure {
-                    j.state = WorkState::Failed;
-                    j.note = Some(note);
-                    j.ended_at = Some(now_iso());
+                    match status {
+                        Some(st) => {
+                            apply_status(j, &st);
+                            if j.note.is_none() {
+                                j.note = Some(note);
+                            }
+                            if j.state.is_terminal() && j.ended_at.is_none() {
+                                finish(j);
+                            }
+                        }
+                        None => {
+                            j.state = WorkState::Failed;
+                            j.note = Some(note);
+                            j.ended_at = Some(now_iso());
+                        }
+                    }
                 }
             }
             self.work().persist(&jobs);
             jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job)
         };
-        self.work()
-            .launching
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&id);
-        Ok(out)
+        self.work().unlaunch(&id);
+        out
     }
 
     /// The stored jobs, and with `include_direct` the runs started with `lane` directly.
@@ -533,7 +640,7 @@ impl Manager {
             self.work()
                 .jobs()
                 .iter()
-                .filter(|j| !j.state.is_terminal() && !launching.contains(&j.id))
+                .filter(|j| pollable(j) && !launching.contains(&j.id))
                 .map(|j| j.id.clone())
                 .collect()
         };
@@ -543,49 +650,47 @@ impl Manager {
     }
 
     async fn poll_one(&self, bin: &Path, id: &str) {
-        let mut cmd = lane_command(bin);
-        cmd.args(["status", id])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null());
-        let out = match tokio::time::timeout(QUERY_LIMIT, cmd.output()).await {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => return tracing::warn!(job = id, error = %e, "lane status did not start"),
-            Err(_) => return tracing::warn!(job = id, "lane status timed out"),
-        };
+        let reply = query_status(bin, id).await;
         let Some(mut job) = self.work().jobs().iter().find(|j| j.id == id).cloned() else {
             return;
         };
-        if job.state.is_terminal() {
+        if !pollable(&job) {
             return;
         }
         let before = job.clone();
-        if out.status.success() {
-            self.work()
-                .misses
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(id);
-            match serde_json::from_slice::<Value>(&out.stdout) {
-                Ok(status) => {
-                    apply_status(&mut job, &status);
+        match reply {
+            StatusReply::Status(status) => {
+                self.work()
+                    .misses
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(id);
+                if job.state == WorkState::Lost {
+                    // `lane` knows the run after all: it is not lost.
+                    job.ended_at = None;
+                    job.note = None;
+                    job.empty = None;
                 }
-                Err(e) => {
-                    return tracing::warn!(job = id, error = %e, "lane status printed bad JSON")
-                }
+                apply_status(&mut job, &status);
             }
-        } else {
-            let misses = {
-                let mut m = self.work().misses.lock().unwrap_or_else(|p| p.into_inner());
-                let n = m.entry(id.to_string()).or_insert(0);
-                *n += 1;
-                *n
-            };
-            let old_enough = age_secs(&job.created_at)
-                .is_some_and(|a| a >= self.work().cfg.lost_after.as_secs() as i64);
-            if misses >= LOST_MISSES && old_enough {
-                job.state = WorkState::Lost;
-                job.note = Some("lane has no record of this run".into());
-                job.ended_at = Some(now_iso());
+            StatusReply::BadJson(e) => {
+                return tracing::warn!(job = id, error = %e, "lane status printed bad JSON");
+            }
+            StatusReply::Miss if job.state == WorkState::Lost => return,
+            StatusReply::Miss => {
+                let misses = {
+                    let mut m = self.work().misses.lock().unwrap_or_else(|p| p.into_inner());
+                    let n = m.entry(id.to_string()).or_insert(0);
+                    *n += 1;
+                    *n
+                };
+                let old_enough = age_secs(&job.created_at)
+                    .is_some_and(|a| a >= self.work().cfg.lost_after.as_secs() as i64);
+                if misses >= LOST_MISSES && old_enough {
+                    job.state = WorkState::Lost;
+                    job.note = Some("lane has no record of this run".into());
+                    job.ended_at = Some(now_iso());
+                }
             }
         }
         if job.state.is_terminal() && job.ended_at.is_none() {
@@ -595,26 +700,63 @@ impl Manager {
             return;
         }
         let mut jobs = self.work().jobs();
-        // A start that failed in the meantime wins: only an unfinished job takes the update.
-        if let Some(stored) = jobs
-            .iter_mut()
-            .find(|j| j.id == id && !j.state.is_terminal())
-        {
+        // A start that failed in the meantime wins: only an unfinished (or lost) job takes the update.
+        if let Some(stored) = jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
             *stored = job;
             self.work().persist(&jobs);
         }
     }
 }
 
+/// What `lane status <id>` gave. A start failure, a timeout and a non-zero exit all count as a miss.
+enum StatusReply {
+    Status(Value),
+    BadJson(String),
+    Miss,
+}
+
+async fn query_status(bin: &Path, id: &str) -> StatusReply {
+    let mut cmd = lane_command(bin);
+    cmd.args(["status", id])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    match tokio::time::timeout(QUERY_LIMIT, cmd.output()).await {
+        Ok(Ok(o)) if o.status.success() => match serde_json::from_slice::<Value>(&o.stdout) {
+            Ok(v) => StatusReply::Status(v),
+            Err(e) => StatusReply::BadJson(e.to_string()),
+        },
+        Ok(Ok(_)) => StatusReply::Miss,
+        Ok(Err(e)) => {
+            tracing::warn!(job = id, error = %e, "lane status did not start");
+            StatusReply::Miss
+        }
+        Err(_) => {
+            tracing::warn!(job = id, "lane status timed out");
+            StatusReply::Miss
+        }
+    }
+}
+
+/// Whether the poller follows a job: it is unfinished, or it was lost less than a day ago.
+fn pollable(job: &WorkJob) -> bool {
+    match job.state {
+        WorkState::Lost => job
+            .ended_at
+            .as_deref()
+            .and_then(age_secs)
+            .is_some_and(|a| a < DAY),
+        s => !s.is_terminal(),
+    }
+}
+
 /// `git rev-parse HEAD` in the workspace, `None` when it fails.
 async fn git_head(workspace: &str) -> Option<String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = clean_command("git");
     cmd.arg("-C")
         .arg(workspace)
         .args(["rev-parse", "HEAD"])
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .stderr(Stdio::null());
     let out = tokio::time::timeout(QUERY_LIMIT, cmd.output())
         .await
         .ok()?
@@ -707,6 +849,21 @@ deep-codex = ["qoder", "codex-a"]
     }
 
     #[test]
+    fn a_chain_with_a_forbidden_member_is_refused() {
+        let mut c = cfg();
+        c.categories
+            .insert("with-paid".into(), vec!["qoder".into(), "paid".into()]);
+        c.categories
+            .insert("with-unknown".into(), vec!["qoder".into(), "ghost".into()]);
+        match check_target(&c, None, Some("with-paid"), false) {
+            Err(ManagerError::Invalid(m)) => assert!(m.contains("\"paid\""), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        // A member the config does not have is not a forbidden lane.
+        assert!(check_target(&c, None, Some("with-unknown"), false).is_ok());
+    }
+
+    #[test]
     fn target_checks() {
         let c = cfg();
         assert!(check_target(&c, Some("qoder"), None, true).is_ok());
@@ -796,6 +953,65 @@ deep-codex = ["qoder", "codex-a"]
             })
             .collect();
         assert_eq!(aside.len(), 1);
+    }
+
+    #[test]
+    fn aside_names_are_unique_and_never_replace_a_file() {
+        assert_eq!(aside_name(10, 7, 3), "jobs.json.corrupt-10-7-3");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("jobs.json");
+        let mut seen = Vec::new();
+        for i in 0..3 {
+            std::fs::write(&file, format!("bad {i}")).unwrap();
+            assert!(move_aside(&file));
+            assert!(!file.exists());
+        }
+        for e in std::fs::read_dir(dir.path()).unwrap() {
+            let e = e.unwrap();
+            seen.push(std::fs::read_to_string(e.path()).unwrap());
+        }
+        seen.sort();
+        assert_eq!(seen, ["bad 0", "bad 1", "bad 2"]);
+    }
+
+    #[test]
+    fn nothing_is_written_while_an_unreadable_file_is_in_the_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+        };
+        let work = Work::open(cfg);
+        let job = WorkJob {
+            id: "wk-1".into(),
+            ..WorkJob::default()
+        };
+        work.persist(std::slice::from_ref(&job));
+        assert!(work.cfg.dir.join("jobs.json").exists());
+        std::fs::remove_file(work.cfg.dir.join("jobs.json")).unwrap();
+        work.blocked.store(true, Ordering::Relaxed);
+        work.persist(std::slice::from_ref(&job));
+        work.persist(std::slice::from_ref(&job));
+        assert!(!work.cfg.dir.join("jobs.json").exists());
+    }
+
+    #[test]
+    fn non_utf8_variables_are_skipped() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let vars = vec![
+            (OsString::from("HOME"), OsString::from("/h")),
+            (OsString::from("LC_X"), OsString::from_vec(vec![0xff, 0xfe])),
+            (OsString::from_vec(vec![0xff]), OsString::from("v")),
+            (OsString::from("PATH"), OsString::from("/p")),
+        ];
+        let got: Vec<String> = lane_env(utf8_vars(vars.into_iter()))
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(got, ["HOME", "PATH"]);
     }
 
     #[test]

@@ -17,7 +17,7 @@ const WAIT_CHUNK_SECS: u64 = 300;
 #[derive(Subcommand, Debug)]
 pub enum WorkCommand {
     /// Start a worker run through `lane`; it belongs to a lead
-    Start(StartArgs),
+    Start(Box<StartArgs>),
     /// Every lead's runs, newest work first
     Ls(LsArgs),
     /// One run with every field
@@ -265,6 +265,18 @@ fn read_spec(path: &Option<String>) -> Result<String, CmdError> {
     Ok(spec)
 }
 
+/// The longest `lagent work wait --timeout`: 7 days.
+const WAIT_MAX_SECS: u64 = 604_800;
+
+fn capped_timeout(secs: u64) -> u64 {
+    secs.min(WAIT_MAX_SECS)
+}
+
+/// The exit code of `lagent work start`: 1 when `lane run` failed and the job is `failed`.
+fn start_exit_code(state: &str) -> i32 {
+    i32::from(state == "failed")
+}
+
 /// Prints a final output ourselves when the exit code is not 0 (`render` only knows 0 and 1).
 fn print_and_exit(out: &Output, json: bool, code: i32) -> ! {
     match (&out.json, json) {
@@ -286,17 +298,26 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
             let priority: Priority = a.priority.parse().map_err(invalid)?;
             let cost: CostClass = a.cost.parse().map_err(invalid)?;
             let spec = read_spec(&a.spec)?;
+            let workspace = std::path::absolute(&a.workspace)
+                .map_err(|e| invalid(format!("bad --workspace {}: {e}", a.workspace)))?
+                .display()
+                .to_string();
             let body = json!({
                 "lead": lead, "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
-                "workspace": pipe::host_path(&a.workspace), "verify": a.verify, "expect": a.expect,
+                "workspace": pipe::host_path(&workspace), "verify": a.verify, "expect": a.expect,
                 "title": a.title, "spec": spec,
             });
             let job = client.post("/work", &body).await.map_err(api)?;
+            let code = start_exit_code(job["state"].as_str().unwrap_or_default());
             let text = format!("{} {}", s(&job["id"]), s(&job["state"]));
-            Ok(Output {
+            let out = Output {
                 text,
                 json: Some(job),
-            })
+            };
+            match code {
+                0 => Ok(out),
+                code => print_and_exit(&out, json, code),
+            }
         }
         WorkCommand::Ls(a) => {
             let mut q = vec![format!("direct={}", !a.no_direct), format!("old={}", a.old)];
@@ -320,7 +341,7 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
             client.get(&format!("/work/{id}")).await.map_err(api)?,
         )),
         WorkCommand::Wait(a) => {
-            let deadline = Instant::now() + Duration::from_secs(a.timeout);
+            let deadline = Instant::now() + Duration::from_secs(capped_timeout(a.timeout));
             let job = loop {
                 let left = deadline.saturating_duration_since(Instant::now()).as_secs();
                 let job = client
@@ -365,6 +386,22 @@ pub async fn board_section(client: &Client) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_huge_timeout_is_capped() {
+        assert_eq!(capped_timeout(10), 10);
+        assert_eq!(capped_timeout(604_800), 604_800);
+        assert_eq!(capped_timeout(u64::MAX), 604_800);
+        // Adding the capped value to the clock does not overflow.
+        let _ = Instant::now() + Duration::from_secs(capped_timeout(u64::MAX));
+    }
+
+    #[test]
+    fn a_failed_start_exits_1() {
+        assert_eq!(start_exit_code("failed"), 1);
+        assert_eq!(start_exit_code("starting"), 0);
+        assert_eq!(start_exit_code(""), 0);
+    }
 
     #[test]
     fn header_line() {

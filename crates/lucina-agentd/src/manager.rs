@@ -203,7 +203,7 @@ pub enum ManagerError {
     NotOwner(String),
     #[error("{0}")]
     CommandNotFound(String),
-    #[error("No work job found matching: {0}")]
+    #[error("no work job \"{0}\"; a run started with lane directly is read with `lane status {0}`")]
     WorkNotFound(String),
     #[error("{0}")]
     CommandExpired(String),

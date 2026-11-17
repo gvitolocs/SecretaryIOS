@@ -28,6 +28,11 @@ run)
     echo "lane: out of cheese" >&2
     exit 1
   fi
+  if [ -f "$D/run-fail-registered" ]; then
+    printf '{"state":"running"}' > "$D/$id.status"
+    echo "lane: late failure" >&2
+    exit 1
+  fi
   printf '%s\n' "$@" > "$D/$id.args"
   cat > "$D/$id.stdin"
   echo "$id"
@@ -513,7 +518,7 @@ fn refusals() {
         ],
     );
     assert_ne!(r.code, 0);
-    assert!(r.stderr.contains("off"), "{}", r.stderr);
+    assert!(r.stderr.contains("work jobs are off"), "{}", r.stderr);
 }
 
 #[test]
@@ -638,7 +643,27 @@ fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
     std::fs::write(f.data().join("run-fail"), "").unwrap();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
-    let job = start(&d, &f, "chat-a", &ws, &[]);
+    // A failed start still prints the job, and the exit code says it failed.
+    let spec = f.spec();
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "chat-a",
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+            "--json",
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    let job: Value =
+        serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("{e}: {}", r.stdout));
     assert_eq!(job["state"], "failed", "{job}");
     assert!(
         job["note"]
@@ -651,6 +676,150 @@ fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
     // It stays failed: no later poll turns it into anything else.
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(show(&d, id)["state"], "failed");
+}
+
+#[test]
+fn the_api_refuses_a_relative_workspace() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let body = r#"{"lead":"c","lane":"qoder","workspace":"relative/dir","spec":"x"}"#;
+    let sock = d.socket().display().to_string();
+    let r = common::run(Command::new("curl").args([
+        "-s",
+        "-X",
+        "POST",
+        "-H",
+        "content-type: application/json",
+        "-d",
+        body,
+        "--unix-socket",
+        &sock,
+        "http://x/work",
+    ]));
+    let v: Value = serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("{e}: {}", r.stdout));
+    assert_eq!(
+        v["error"]["message"], "workspace must be an absolute path",
+        "{v}"
+    );
+}
+
+#[test]
+fn a_dot_workspace_means_the_callers_directory() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("here");
+    let spec = f.spec();
+    let r = common::run(
+        Command::new(common::LAGENT)
+            .args([
+                "work",
+                "start",
+                "--lead",
+                "c",
+                "--lane",
+                "qoder",
+                "--workspace",
+                ".",
+                "--spec",
+                &spec,
+                "--json",
+            ])
+            .current_dir(&ws)
+            .env("LUCINA_AGENTD_SOCKET", d.socket()),
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let job: Value = serde_json::from_str(&r.stdout).unwrap();
+    assert!(
+        job["workspace"]
+            .as_str()
+            .is_some_and(|w| w.ends_with("/here")),
+        "{job}"
+    );
+}
+
+#[test]
+fn a_lane_run_that_fails_after_lane_registered_the_run_is_not_failed() {
+    let f = Fixture::new();
+    std::fs::write(f.data().join("run-fail-registered"), "").unwrap();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let job = start(&d, &f, "chat-a", &ws, &[]);
+    assert_eq!(job["state"], "running", "{job}");
+    assert!(
+        job["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("late failure")),
+        "{job}"
+    );
+}
+
+#[test]
+fn a_lost_run_follows_lane_again_when_it_shows_up() {
+    let f = Fixture::new();
+    let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    wait_state(&d, &id, "lost");
+    f.status(&id, r#"{"state":"running"}"#);
+    let job = wait_state(&d, &id, "running");
+    assert!(job["endedAt"].is_null(), "{job}");
+    assert!(job["note"].is_null(), "{job}");
+    f.status(
+        &id,
+        r#"{"state":"verified","verify":{"exit_code":0,"head":"abc"}}"#,
+    );
+    let job = wait_state(&d, &id, "verified");
+    assert!(job["endedAt"].is_string(), "{job}");
+}
+
+#[test]
+fn a_lane_status_that_cannot_start_counts_as_a_miss() {
+    let f = Fixture::new();
+    let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, r#"{"state":"running"}"#);
+    wait_state(&d, &id, "running");
+    std::fs::remove_file(f.root.path().join("lane/lane")).unwrap();
+    let job = wait_state(&d, &id, "lost");
+    assert_eq!(job["note"], "lane has no record of this run");
+}
+
+#[test]
+fn a_status_that_is_not_json_changes_nothing_until_it_is_valid() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, "this is not json");
+    std::thread::sleep(Duration::from_millis(3000));
+    assert_eq!(show(&d, &id)["state"], "starting");
+    f.status(&id, r#"{"state":"running"}"#);
+    wait_state(&d, &id, "running");
+}
+
+#[test]
+fn waiting_on_a_running_job_times_out_with_exit_5() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, r#"{"state":"running"}"#);
+    wait_state(&d, &id, "running");
+    let r = lagent(&d, &["work", "wait", &id, "--timeout", "1"]);
+    assert_eq!(r.code, 5, "{}", r.stderr);
 }
 
 #[test]

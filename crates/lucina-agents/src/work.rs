@@ -245,7 +245,17 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
     if let Some(raw) = status.get("state").and_then(Value::as_str) {
         job.lane_state = Some(raw.to_string());
         match WorkState::from_lane(raw) {
-            Some(s) => job.state = s,
+            Some(s) => {
+                job.state = s;
+                // An earlier unknown-state note no longer holds.
+                if job
+                    .note
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("unknown lane state:"))
+                {
+                    job.note = None;
+                }
+            }
             None => job.note = Some(format!("unknown lane state: {raw}")),
         }
     }
@@ -642,6 +652,24 @@ mod tests {
         assert_eq!(j.state, WorkState::Running);
         assert_eq!(j.lane_state.as_deref(), Some("hibernating"));
         assert_eq!(j.note.as_deref(), Some("unknown lane state: hibernating"));
+    }
+
+    #[test]
+    fn an_unknown_state_note_goes_when_the_state_is_known_again() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &json!({"state": "hibernating"}));
+        assert!(apply_status(&mut j, &json!({"state": "running"})));
+        assert_eq!(j.note, None);
+        apply_status(&mut j, &json!({"state": "hibernating"}));
+        assert!(apply_status(
+            &mut j,
+            &json!({"state": "verified", "note": "from lane"})
+        ));
+        assert_eq!(j.note.as_deref(), Some("from lane"));
+        // Any other note stays.
+        j.note = Some("mine".into());
+        apply_status(&mut j, &json!({"state": "verified"}));
+        assert_eq!(j.note.as_deref(), Some("mine"));
     }
 
     #[test]
