@@ -687,6 +687,8 @@ fn refusals() {
             "start",
             "--lead",
             "c",
+            "--cost",
+            "build",
             "--lane",
             "nope",
             "--workspace",
@@ -755,6 +757,8 @@ fn refusals() {
             &[
                 "work",
                 "start",
+                "--cost",
+                "build",
                 "--lead",
                 "c",
                 target[0],
@@ -781,6 +785,8 @@ fn refusals() {
             "start",
             "--lead",
             "c",
+            "--cost",
+            "build",
             "--lane",
             "codex-a",
             "--workspace",
@@ -1138,6 +1144,8 @@ fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
             &ws,
             "--spec",
             &spec,
+            "--cost",
+            "build",
             "--json",
         ],
     );
@@ -1202,6 +1210,8 @@ fn a_dot_workspace_means_the_callers_directory() {
                 ".",
                 "--spec",
                 &spec,
+                "--cost",
+                "build",
                 "--json",
             ])
             .current_dir(&ws)
