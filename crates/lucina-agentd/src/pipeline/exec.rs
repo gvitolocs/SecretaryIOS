@@ -1693,6 +1693,7 @@ mod tests {
             ("TMPDIR", "/fake/tmp"),
             ("CARGO_TARGET_DIR", "/fake/target"),
             ("SSH_AUTH_SOCK", "/run/user/1000/ssh.sock"),
+            ("LAGENT_WAIVERS_FILE", "/run/fake/waivers.jsonl"),
             ("FAKE_API_TOKEN", "fake-token"),
             ("CLOUDFLARE_FAKE_ID", "fake-id"),
         ]);
@@ -1700,7 +1701,14 @@ mod tests {
         assert!(out.ok, "{out:?}");
         let landing = root.join("wt/.landing");
         let names = std::fs::read_to_string(landing.join("names.txt")).unwrap();
-        for n in ["FAKE_API_TOKEN", "CLOUDFLARE_FAKE_ID", "SSH_AUTH_SOCK"] {
+        // LAGENT_WAIVERS_FILE belongs to a gate command alone, set there explicitly by the
+        // merge job; whatever agentd's own environment holds for it is not a route in.
+        for n in [
+            "FAKE_API_TOKEN",
+            "CLOUDFLARE_FAKE_ID",
+            "SSH_AUTH_SOCK",
+            "LAGENT_WAIVERS_FILE",
+        ] {
             assert!(!names.lines().any(|l| l == n), "{names}");
         }
         for n in ["PATH", "HOME", "TMPDIR", "CARGO_TARGET_DIR"] {
@@ -1719,11 +1727,12 @@ mod tests {
         );
         // The count only: no names, no values.
         let log = std::fs::read_to_string(dir.join("log")).unwrap();
-        assert!(log.contains("env: 3 variable(s) not passed"), "{log}");
+        assert!(log.contains("env: 4 variable(s) not passed"), "{log}");
         assert!(
             !log.contains("FAKE_API_TOKEN")
                 && !log.contains("CLOUDFLARE_FAKE_ID")
-                && !log.contains("SSH_AUTH_SOCK"),
+                && !log.contains("SSH_AUTH_SOCK")
+                && !log.contains("LAGENT_WAIVERS_FILE"),
             "{log}"
         );
     }

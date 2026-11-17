@@ -11,6 +11,8 @@ use std::ffi::OsString;
 /// is deliberately not among them: it names the agent that holds the owner's loaded SSH keys,
 /// so allowlisting it would hand those keys to whatever agentd starts. A command gets it only
 /// through a deploy recipe that declares it (`env = [...]`), and only for that recipe's steps.
+/// `LAGENT_WAIVERS_FILE` is deliberately absent too: the merge job sets it on its own gate
+/// commands, explicitly; inherited, it would quietly decide whatever any gate accepts.
 const ALLOW: &[&str] = &[
     "PATH",
     "HOME",
