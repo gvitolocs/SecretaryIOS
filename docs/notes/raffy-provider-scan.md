@@ -533,7 +533,8 @@ The §5 diff, applied with the real tailnet address and provider string `raffy`.
 **Known red, and it is not LM-R021.** `cargo test -p lucina-server --test owner_secrets` fails
 `the_relay_passes_grants_and_writes_a_receipt` (`left: "x [secret:FIRST_KEY] y"`, `right:
 "x [secret:POKO_API_KEY] y"`, `owner_secrets.rs:297`) and did so at `d90c0f64` too: an export of that
-commit, built into a cold target directory, fails the same way in the same run. The mechanism:
+commit, rebuilt in a scratch directory, fails the same run the same way, parallel and
+`--test-threads=1` alike, and there too the relay test passes when run alone. The mechanism:
 
 - `--list` shows libtest runs the tests in this binary **alphabetically**, so
   `requests_come_one_card_at_a_time_and_the_value_goes_nowhere` (#9) runs before
@@ -550,8 +551,16 @@ test, `src/owner_secrets.rs`, `lucina-secrets/src/redact.rs` and `tests/common/m
 byte-identical between `d90c0f64` and this branch. The collision arrived with `0b9b84d3` (the
 one-card-at-a-time test granting the shared `VALUE`).
 
+A method note, because it cost a round trip: a base check by `git checkout --detach` in the worktree
+does rebuild the base sources, but it is easy to argue with — the target directory is shared, and
+`bq` only touches sources when another worktree built into it last. The check that settles it is
+`git archive <base>` into a scratch directory and building that, as above: no artifact there can
+belong to the branch.
+
 The fix belongs in the test and is one constant, exactly as `7bef8c26` did for the pasted-token
-collision: give the relay test its own value — `const POKO_VALUE: &str = "sk-proj-SyntheticPoko0123456789AbC";`
-— used at its three `VALUE` sites (the 200 grant, `sent[0]["value"]`, the redact assertion) and added
-to `assert_clean`'s list; the later 403/409/400 grants can keep `VALUE`. Editing `owner_secrets.rs`
-was refused for this run, so it is left for the lead.
+collision: `const POKO_VALUE: &str = "sk-proj-SyntheticPoko0123456789AbC";`, used at the relay test's
+three *saving* sites (the 200 grant at 273, `sent[0]["value"]` at 284, the redact assertion at 298)
+and added to `assert_clean`'s list at 53. The later 403/409/400 grants in the same test keep `VALUE`:
+they fail, so they never register. Verified on an export of this branch, not on the branch itself:
+with those five edits `owner_secrets` is `12 passed; 0 failed` both in parallel and with
+`--test-threads=1`. Editing `owner_secrets.rs` was refused for this run, so it is left for the lead.
