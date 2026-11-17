@@ -52,6 +52,7 @@ chmod 755 "$tmp/bin/systemctl"
 export PATH="$tmp/bin:$PATH"
 
 state=$XDG_STATE_HOME/lucina/maintenance
+marker_parent=$XDG_STATE_HOME/lucina
 rs=lucina-rs.service
 fails=''
 : >"$fake_calls"
@@ -86,6 +87,28 @@ calls_is() { grep -q "^$1\$" "$fake_calls"; }
 says() { printf '%s\n' "$out" | grep -q -- "$1"; }
 marker_has() { grep -q "^$2=$3\$" "$state/$1"; }
 no_marker() { [ ! -e "$state/$1" ]; }
+# The residue a marker write leaves is a `<unit>.new.<pid>` temp file. `..` aimed one of them at the
+# directory *above* the markers, where a failed stop cannot clean it (finding 3, JD-R016), so a refusal
+# is checked in both directories and not only for the marker itself.
+nothing_written() {
+    for d in "$state" "$marker_parent"; do
+        for f in "$d"/*.new.*; do
+            [ -e "$f" ] || continue
+            printf 'residue: %s\n' "$f" >&2
+            return 1
+        done
+    done
+}
+# Nothing hidden either: `.hidden` as a unit name would have become exactly that.
+no_hidden_marker() {
+    [ -d "$state" ] || return 0
+    for f in "$state"/.*; do
+        case ${f##*/} in
+            . | ..) ;;
+            *) return 1 ;;
+        esac
+    done
+}
 one_marker() { [ "$(ls "$state" | wc -l | tr -dc 0-9)" = 1 ]; }
 # minutes the marker for lucina-rs has left, rounded down, within <low>..<high>
 minutes_left() {
@@ -148,6 +171,30 @@ for args in 'stop lucina-rs' 'stop lucina-rs --reason' 'stop lucina-rs --reason 
     run 2 sh "$maint" $args
     check "  refused without writing: $args" no_marker "$rs"
     check "  the refusal said why: $args" test -n "$out"
+done
+
+# The names that passed every check until JD-R016 found them: `.` and `..` hold neither a slash nor a
+# space, and both match `*.*`, so they kept their name and became a path inside the state directory.
+# A hidden file is the same mistake one step away.
+for bad in . .. .hidden; do
+    run 2 sh "$maint" stop "$bad" --reason 'pretending to be a unit'
+    check "  '$bad' is refused before anything is written" nothing_written
+    check "  ... and named as what it is: '$bad'" says "not a unit name"
+    run 2 sh "$maint" start "$bad"
+    check "  start refuses '$bad' too" nothing_written
+done
+check 'no hidden marker of any of them is in the maintenance directory' no_hidden_marker
+
+long=$(printf '%0300d' 0)
+run 2 sh "$maint" stop "$long" --reason 'a name no unit has'
+# Refused for its length, not by a write that happened to fail on NAME_MAX: the message is the proof.
+check 'a 300-character name is refused by its length' says 'the cap is 200'
+check '... and nothing was written' nothing_written
+
+for weird in 'lucina-rs;rm -rf' 'lucina-rs$(whoami)' 'lucina-rs|tee' 'LUCINA_RS=agentd'; do
+    run 2 sh "$maint" stop "$weird" --reason 'shell, not a unit'
+    check "  a shell metacharacter is not a unit name: $weird" says 'only letters, digits'
+    check "  ... and nothing was written: $weird" nothing_written
 done
 
 printf 'lucina-maint: the format the watchdog parses\n'

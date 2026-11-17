@@ -69,10 +69,21 @@ done
 
 case $cmd in
     stop | start)
+        # A marker is a file named after the unit, inside the maintenance directory, and nothing else,
+        # so the name is settled before anything is written. A leading dot is refused because it covers
+        # the three names that are not units at all: `.`, `..` and a hidden file. `..` was accepted
+        # until JD-R016 found it: it matched `*.*` so it kept its name, the temp marker landed one
+        # directory above the maintenance directory, `systemctl stop ..` failed, and the rm that was
+        # supposed to undo the marker could not remove a directory - the junk stayed. The character
+        # class is what a systemd unit name is made of (a slash, a space, a quote or a `$()` is
+        # therefore not one), and 200 is the longest name this command will write a file after.
         case $unit in
             '') die "$cmd wants a unit" ;;
-            */* | *[[:space:]]*) die "not a unit name: '$unit'" ;;
+            .*) die "not a unit name: '$unit' starts with a dot" ;;
+            *[!A-Za-z0-9@_.:-]*) die "not a unit name: '$unit': only letters, digits and @ _ . : -" ;;
         esac
+        [ "${#unit}" -le 200 ] ||
+            die "not a unit name: '$unit' is ${#unit} characters, the cap is 200"
         # Keyed by the full unit name, so `lucina-rs` and `lucina-rs.service` cannot mean two markers.
         case $unit in
             *.*) ;;
