@@ -239,6 +239,19 @@ pub struct WorkJob {
     /// Consecutive `lane status` answers that could not be read.
     #[serde(default)]
     pub status_errors: u32,
+    /// The run id (`LA-R023`) agentd issued before it started the run; for a run started
+    /// with `lane` directly, the one `lane` recorded.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// The change (`LA-C004`) the run works for.
+    #[serde(default)]
+    pub change: Option<String>,
+    /// The chat that started the run.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// `lane` says the process that runs it is gone (`runner_lost`): resume or dismiss it with `lane`.
+    #[serde(default)]
+    pub runner_lost: bool,
 }
 
 /// What [`parse_ls`] read from `lane ls --json`.
@@ -463,6 +476,34 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
             job.note = Some(note.to_string());
         }
     }
+    if let Some(lost) = status.get("runner_lost").and_then(Value::as_bool) {
+        job.runner_lost = lost;
+    }
+    // What `lane run` recorded of the ids it was given. A job agentd started keeps its own.
+    let text = |key: &str| {
+        status
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    if job.lead.is_empty() {
+        if let Some(lead) = text("lead") {
+            job.lead = lead;
+        }
+    }
+    if job.change.is_none() {
+        job.change = text("change");
+    }
+    if let Some(run) = text("run") {
+        match &job.run_id {
+            None => job.run_id = Some(run),
+            Some(own) if *own != run => {
+                job.note = Some(format!("lane recorded run {run}, agentd issued {own}"));
+            }
+            Some(_) => {}
+        }
+    }
     *job != before
 }
 
@@ -521,9 +562,17 @@ pub fn from_direct(row: &Value) -> Option<WorkJob> {
     let text = |k: &str| row.get(k).and_then(Value::as_str).map(str::to_string);
     let owner = text("owner").unwrap_or_default();
     let updated = text("updated").unwrap_or_default();
+    // A newer `lane` records the lead, run and change it was given.
+    let given = |k: &str| text(k).filter(|s| !s.is_empty());
     let mut job = WorkJob {
         id,
-        lead: format!("direct:{owner}"),
+        lead: given("lead").unwrap_or_else(|| format!("direct:{owner}")),
+        run_id: given("run"),
+        change: given("change"),
+        runner_lost: row
+            .get("runner_lost")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         workspace: text("workspace").unwrap_or_default(),
         lane: text("final_lane"),
         chain: text("category"),
@@ -554,6 +603,9 @@ pub struct LeadSummary {
     pub queued: u64,
     pub ended: u64,
     pub empty: u64,
+    /// Unfinished jobs whose runner `lane` lost.
+    #[serde(default)]
+    pub lost: u64,
     pub jobs: Vec<WorkJob>,
 }
 
@@ -573,6 +625,9 @@ pub fn summarize(jobs: Vec<WorkJob>) -> Vec<LeadSummary> {
             }
         };
         let l = &mut leads[at];
+        if job.runner_lost && !job.state.is_terminal() {
+            l.lost += 1;
+        }
         match job.state {
             WorkState::Running => l.running += 1,
             WorkState::Starting | WorkState::Queued => l.queued += 1,
@@ -1345,5 +1400,125 @@ mod tests {
         assert_eq!(new_id(0xABCDEF), "wk-000000abcdef");
         assert_eq!(new_id(u128::MAX), "wk-ffffffffffff");
         assert_eq!(new_id(7).len(), 15);
+    }
+
+    const STATUS_QUEUED_LOST: &str = include_str!("../tests/fixtures/lane/status-queued_lost.json");
+    const LS_WITH_IDS: &str = include_str!("../tests/fixtures/lane/ls-with-ids.jsonl");
+
+    #[test]
+    fn a_queued_run_whose_runner_is_gone_is_marked_lost_and_takes_lanes_ids() {
+        let status: Value = serde_json::from_str(STATUS_QUEUED_LOST).unwrap();
+        // Older runs lack these fields: the reader does not need them.
+        assert!(missing_status_fields(&status).is_empty());
+        let mut older = status.clone();
+        for k in ["runner_lost", "lead", "run", "change"] {
+            older.as_object_mut().unwrap().remove(k);
+        }
+        assert!(missing_status_fields(&older).is_empty());
+
+        // A job without ids of its own takes lane's.
+        let mut j = WorkJob {
+            id: "pk-r018-pre-push".into(),
+            ..WorkJob::default()
+        };
+        assert!(apply_status(&mut j, &status));
+        assert_eq!(j.state, WorkState::Queued);
+        assert!(j.runner_lost);
+        assert_eq!(j.lead, "PK");
+        assert_eq!(j.run_id.as_deref(), Some("PK-R018"));
+        assert_eq!(j.change.as_deref(), Some("PK-C008"));
+        assert_eq!(j.note, None);
+        // The same status again changes nothing.
+        assert!(!apply_status(&mut j, &status));
+
+        // A job agentd started keeps its own ids; a run that differs is noted, the job's wins.
+        let mut own = WorkJob {
+            id: "la-r001-x".into(),
+            lead: "LA".into(),
+            run_id: Some("LA-R001".into()),
+            change: Some("LA-C001".into()),
+            ..WorkJob::default()
+        };
+        assert!(apply_status(&mut own, &status));
+        assert_eq!(own.lead, "LA");
+        assert_eq!(own.run_id.as_deref(), Some("LA-R001"));
+        assert_eq!(own.change.as_deref(), Some("LA-C001"));
+        assert_eq!(
+            own.note.as_deref(),
+            Some("lane recorded run PK-R018, agentd issued LA-R001")
+        );
+        assert!(own.runner_lost);
+        assert!(!apply_status(&mut own, &status));
+        // The same run: no note.
+        let mut same = WorkJob {
+            id: "pk-r018-pre-push".into(),
+            lead: "PK".into(),
+            run_id: Some("PK-R018".into()),
+            ..WorkJob::default()
+        };
+        apply_status(&mut same, &status);
+        assert_eq!(same.note, None);
+        assert_eq!(same.change.as_deref(), Some("PK-C008"));
+        // A status that no longer says the runner is lost clears it.
+        let mut back = status.clone();
+        back["runner_lost"] = json!(false);
+        assert!(apply_status(&mut j, &back));
+        assert!(!j.runner_lost);
+        // A status without the fields leaves a job's ids alone.
+        apply_status(&mut j, &older);
+        assert_eq!(j.run_id.as_deref(), Some("PK-R018"));
+    }
+
+    #[test]
+    fn listing_rows_with_ids_give_the_lead_instead_of_direct() {
+        let ls = parse_ls(LS_WITH_IDS);
+        assert_eq!(ls.rows.len(), 2);
+        let a = from_direct(&ls.rows[0]).unwrap();
+        assert!(a.direct);
+        assert_eq!(a.lead, "PK");
+        assert_eq!(a.run_id.as_deref(), Some("PK-R018"));
+        assert_eq!(a.change.as_deref(), Some("PK-C008"));
+        assert_eq!(a.state, WorkState::Queued);
+        let b = from_direct(&ls.rows[1]).unwrap();
+        assert_eq!(b.lead, "PK");
+        assert_eq!(b.run_id.as_deref(), Some("PK-R021"));
+        assert_eq!(b.change.as_deref(), Some("PK-C002"));
+        assert_eq!(b.state, WorkState::Running);
+        // Rows without the fields behave as before.
+        for row in &parse_ls(LS).rows {
+            let j = from_direct(row).unwrap();
+            assert!(j.lead.starts_with("direct:"), "{}", j.lead);
+            assert_eq!((j.run_id, j.change), (None, None));
+        }
+        let lost =
+            from_direct(&json!({"id": "r", "state": "queued", "owner": "o", "runner_lost": true}))
+                .unwrap();
+        assert!(lost.runner_lost);
+        assert_eq!(lost.lead, "direct:o");
+    }
+
+    #[test]
+    fn lost_runners_are_counted_per_lead() {
+        let mut a = job("1", "PK", WorkState::Queued, Priority::Normal, "t");
+        a.runner_lost = true;
+        let mut b = job("2", "PK", WorkState::Running, Priority::Normal, "t");
+        b.runner_lost = true;
+        let c = job("3", "PK", WorkState::Running, Priority::Normal, "t");
+        // A finished job is not counted even when the flag is still set.
+        let mut d = job("4", "PK", WorkState::Failed, Priority::Normal, "t");
+        d.runner_lost = true;
+        let out = summarize(vec![a, b, c, d]);
+        assert_eq!(out[0].lost, 2);
+        assert_eq!((out[0].running, out[0].queued, out[0].ended), (2, 1, 1));
+    }
+
+    #[test]
+    fn stored_jobs_without_the_new_fields_still_load() {
+        let old = r#"{"id":"wk-1","lead":"chat","state":"running"}"#;
+        let job: WorkJob = serde_json::from_str(old).unwrap();
+        assert_eq!(job.run_id, None);
+        assert_eq!(job.change, None);
+        assert_eq!(job.session, None);
+        assert!(!job.runner_lost);
     }
 }
