@@ -22,7 +22,13 @@ for name in lucina-agentd lagent; do
 done
 echo "installed lucina-agentd + lagent at $SHA (previous: *.bak-$STAMP-pre-$SHA)"
 
+# `restart` does not fight the unit's Restart=always: systemd queues no start for a stop it was asked
+# for, and a restart job is that suppressed stop plus one start. No maintenance marker wanted: the
+# watchdog only reads a marker while the unit is inactive, and a restart leaves it active.
 systemctl --user restart lucina-agentd.service
+# A deploy overrules an earlier stop on purpose (deploy/lucina-maint wrote that marker, and the unit
+# is up now); leaving it would excuse the next unexpected exit until it expired.
+rm -f "$HOME/.local/state/lucina/maintenance/lucina-agentd.service"
 for _ in $(seq 1 30); do
   if "$BIN/lagent" --json providers >/dev/null 2>&1; then
     systemctl --user --no-pager --lines=0 status lucina-agentd.service | head -3
