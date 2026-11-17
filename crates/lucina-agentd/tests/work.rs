@@ -1320,3 +1320,65 @@ fn board_shows_the_work_section() {
         r.stdout
     );
 }
+
+/// [`FAKE_LANE`] with one addition: every `lane status <id>` call, however it ends, appends a
+/// byte to `<id>.status-calls`. Counting those tells a test whether the poller still asks.
+fn counting_stand_in() -> String {
+    let script = FAKE_LANE.replace(
+        "status)\n  if [ -f",
+        "status)\n  printf x >> \"$D/$1.status-calls\"\n  if [ -f",
+    );
+    assert_ne!(
+        script, FAKE_LANE,
+        "the stand-in has no status case to count"
+    );
+    script
+}
+
+#[test]
+fn a_run_lane_calls_lost_is_final_and_is_never_asked_again() {
+    let f = Fixture::new();
+    common::write_exec(&f.root.path().join("lane/lane"), &counting_stand_in());
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let asked = || {
+        std::fs::metadata(f.data().join(format!("{id}.status-calls")))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
+    f.status(
+        &id,
+        &lane_status(
+            &id,
+            "lost",
+            json!({"attempts": [], "dirty_files": [], "note": "the runner is gone"}),
+        ),
+    );
+    let job = wait_state(&d, &id, "lost");
+    assert_eq!(job["laneState"], "lost", "{job}");
+    // Lane's own note, not the `unknown lane state` of a word it did not know.
+    assert_eq!(job["note"], "the runner is gone", "{job}");
+    assert!(
+        !job["note"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("unknown lane state:"),
+        "{job}"
+    );
+    assert_eq!(job["laneLost"], true, "{job}");
+    assert!(job["endedAt"].is_string(), "{job}");
+    assert_eq!(job["empty"], Value::Null, "{job}");
+    let asked_before = asked();
+    assert!(asked_before > 0, "the status was never read");
+    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 9);
+    // Three poll intervals, and the listing that reads `lane ls`: the run is asked no more.
+    std::thread::sleep(Duration::from_millis(3_500));
+    assert_eq!(asked(), asked_before, "the poller asked again");
+    assert_eq!(show(&d, &id)["state"], "lost");
+    lagent_json(&d, &["work", "ls"]);
+    assert_eq!(asked(), asked_before, "the poller asked a final run");
+}
