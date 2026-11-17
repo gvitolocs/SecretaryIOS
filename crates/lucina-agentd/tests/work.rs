@@ -1065,7 +1065,7 @@ fn a_run_lane_does_not_know_is_lost() {
     let job = wait_state(&d, &id, "lost");
     assert_eq!(job["note"], "lane has no record of this run");
     assert!(job["endedAt"].is_string());
-    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 1);
+    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 9);
 }
 
 #[test]

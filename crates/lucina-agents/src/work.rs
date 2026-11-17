@@ -694,7 +694,7 @@ mod tests {
         }
         assert_eq!(WorkState::from_lane("sleeping"), None);
         assert_eq!(WorkState::from_lane(""), None);
-        assert_eq!(WorkState::from_lane("lost"), None);
+        assert_eq!(WorkState::from_lane("lost"), Some(WorkState::Lost));
     }
 
     #[test]
@@ -712,7 +712,7 @@ mod tests {
             (WorkState::EndedDirty, true, 7),
             (WorkState::EndedJobsQueued, true, 6),
             (WorkState::EndedEmpty, true, 8),
-            (WorkState::Lost, true, 1),
+            (WorkState::Lost, true, 9),
         ];
         assert_eq!(want.len(), ALL.len());
         for (state, terminal, code) in want {
