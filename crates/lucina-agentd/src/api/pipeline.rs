@@ -31,7 +31,9 @@ use serde_json::json;
 
 use super::workspaces::view;
 use super::{to_json, ApiError, ApiResult};
-use crate::manager::{AdoptTask, DeployRequest, LeaseRequest, Manager, MergeRequest, ReleaseRequest, StartTask};
+use crate::manager::{
+    AdoptTask, DeployRequest, LeaseRequest, Manager, MergeRequest, ReleaseRequest, StartTask,
+};
 use crate::peer::{origin, Peer};
 
 pub fn routes() -> Router<Manager> {
@@ -51,11 +53,21 @@ pub fn routes() -> Router<Manager> {
         .route("/devices/{id}/release", post(release))
 }
 
-pub(super) fn allow(m: &Manager, peer: &Peer, headers: &HeaderMap, agents_too: bool, what: &str) -> Result<(), ApiError> {
+pub(super) fn allow(
+    m: &Manager,
+    peer: &Peer,
+    headers: &HeaderMap,
+    agents_too: bool,
+    what: &str,
+) -> Result<(), ApiError> {
     match origin(peer, headers, &m.provider_pids()) {
         Origin::Local | Origin::OwnerDevice => Ok(()),
         Origin::Agent if agents_too => Ok(()),
-        _ => Err(ApiError(StatusCode::FORBIDDEN, "OWNER_ONLY".into(), format!("Only the owner or lagent on the host can {what}"))),
+        _ => Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "OWNER_ONLY".into(),
+            format!("Only the owner or lagent on the host can {what}"),
+        )),
     }
 }
 
@@ -76,10 +88,19 @@ async fn tasks(State(m): State<Manager>) -> ApiResult {
 /// Lucina's flaw dispatcher (`X-Lucina-Origin: service:lucina` on the host's socket) may start a
 /// task and nothing else in the pipeline: it can't merge or deploy as her.
 fn lucina_service(peer: &Peer, headers: &HeaderMap) -> bool {
-    peer.unix && headers.get(crate::peer::ORIGIN_HEADER).and_then(|v| v.to_str().ok()) == Some("service:lucina")
+    peer.unix
+        && headers
+            .get(crate::peer::ORIGIN_HEADER)
+            .and_then(|v| v.to_str().ok())
+            == Some("service:lucina")
 }
 
-async fn start(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<StartTask>) -> ApiResult {
+async fn start(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Json(req): Json<StartTask>,
+) -> ApiResult {
     if !lucina_service(&peer, &headers) {
         allow(&m, &peer, &headers, true, "start a task")?;
     }
@@ -88,19 +109,34 @@ async fn start(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, h
     to_json(json!({"task": task, "workspace": view(&m, &w)}))
 }
 
-async fn adopt(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<AdoptTask>) -> ApiResult {
+async fn adopt(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Json(req): Json<AdoptTask>,
+) -> ApiResult {
     allow(&m, &peer, &headers, false, "adopt a worktree")?;
     let (task, w) = m.adopt_task(req).await?;
     link_session(&m, &peer, &headers, &task).await;
     to_json(json!({"task": task, "workspace": view(&m, &w)}))
 }
 
-async fn merge(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<MergeRequest>) -> ApiResult {
+async fn merge(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Json(req): Json<MergeRequest>,
+) -> ApiResult {
     allow(&m, &peer, &headers, true, "merge")?;
     to_json(m.queue_merge(req).await?)
 }
 
-async fn deploy(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<DeployRequest>) -> ApiResult {
+async fn deploy(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Json(req): Json<DeployRequest>,
+) -> ApiResult {
     allow(&m, &peer, &headers, false, "deploy")?;
     to_json(m.queue_deploy(req).await?)
 }
@@ -120,23 +156,41 @@ async fn jobs(State(m): State<Manager>, Query(q): Query<JobsQuery>) -> ApiResult
     to_json(json!({"jobs": m.pipeline().jobs(q.limit.unwrap_or(30).min(500))}))
 }
 
-async fn job(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<JobsQuery>) -> ApiResult {
+async fn job(
+    State(m): State<Manager>,
+    Path(id): Path<String>,
+    Query(q): Query<JobsQuery>,
+) -> ApiResult {
     let wait = Duration::from_millis(q.wait_ms.unwrap_or(0).min(120_000));
     to_json(m.wait_job(&id, wait).await?)
 }
 
-async fn log(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<JobsQuery>) -> ApiResult {
+async fn log(
+    State(m): State<Manager>,
+    Path(id): Path<String>,
+    Query(q): Query<JobsQuery>,
+) -> ApiResult {
     let (offset, text) = m.job_log(&id, q.offset.unwrap_or(0))?;
     let state = m.job(&id)?.state;
     to_json(json!({"offset": offset, "text": text, "state": state}))
 }
 
-async fn cancel(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn cancel(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     allow(&m, &peer, &headers, true, "cancel a job")?;
     to_json(m.cancel_job(&id).await?)
 }
 
-async fn next(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+async fn next(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
     allow(&m, &peer, &headers, false, "move a job up the queue")?;
     to_json(m.prioritize_job(&id)?)
 }
@@ -149,13 +203,31 @@ async fn devices(State(m): State<Manager>) -> ApiResult {
     to_json(json!({"devices": m.leases()}))
 }
 
-async fn lease(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(req): Json<LeaseRequest>) -> ApiResult {
+async fn lease(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<LeaseRequest>,
+) -> ApiResult {
     allow(&m, &peer, &headers, true, "lease a device")?;
     to_json(m.lease_device(&id, req)?)
 }
 
-async fn release(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(req): Json<ReleaseRequest>) -> ApiResult {
-    allow(&m, &peer, &headers, !req.force, "release someone else's lease")?;
+async fn release(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<ReleaseRequest>,
+) -> ApiResult {
+    allow(
+        &m,
+        &peer,
+        &headers,
+        !req.force,
+        "release someone else's lease",
+    )?;
     to_json(m.release_device(&id, req)?)
 }
 
@@ -171,8 +243,14 @@ mod flaw_dispatch_tests {
 
     #[test]
     fn only_lucina_on_the_socket_counts_as_lucina() {
-        let sock = Peer { pid: Some(1), unix: true };
-        let tcp = Peer { pid: None, unix: false };
+        let sock = Peer {
+            pid: Some(1),
+            unix: true,
+        };
+        let tcp = Peer {
+            pid: None,
+            unix: false,
+        };
         assert!(lucina_service(&sock, &with("service:lucina")));
         assert!(!lucina_service(&tcp, &with("service:lucina")));
         assert!(!lucina_service(&sock, &with("service:other")));
