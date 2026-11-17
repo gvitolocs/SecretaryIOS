@@ -1,0 +1,48 @@
+{
+  "id": "pk-r018-pre-push",
+  "state": "queued",
+  "runner_lost": true,
+  "owner": "PK",
+  "queued_at": "2026-11-17T13:59:06Z",
+  "queue_position": null,
+  "category": "routine",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/Projects/.worktrees/pokoin-web/pk-c008-pre-push",
+  "repo": "/home/nez/mnt/mybook/Projects/pokoin-web/.git",
+  "final_lane": null,
+  "model": null,
+  "effort": null,
+  "session_id": null,
+  "live": null,
+  "attempts": [],
+  "running_looks": [],
+  "result_excerpt": null,
+  "verify": null,
+  "diffgate": null,
+  "dirty_files": [],
+  "dirty_check": null,
+  "expect_files": [],
+  "empty_retry": false,
+  "empty_evidence": null,
+  "cooldowns": [
+    {
+      "lane": "qwen",
+      "until": "2026-11-17T17:59:10Z",
+      "reason": "<text removed>"
+    },
+    {
+      "lane": "zcode",
+      "until": "manual",
+      "reason": "<text removed>"
+    }
+  ],
+  "note": null,
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/pk-r018-pre-push",
+  "updated": "2026-11-17T14:04:39Z",
+  "lead": "PK",
+  "run": "PK-R018",
+  "change": "PK-C008",
+  "cost": "build"
+}
