@@ -62,10 +62,49 @@ run)
   fi
   printf '%s\n' "$@" > "$D/$id.args"
   cat > "$D/$id.stdin"
+  # Like the real tool, leave a detached runner behind: it records its PID and sleeps until
+  # the stop file of the run appears. It gets its own session, so a signal to the daemon's
+  # process group does not reach it.
+  setsid sh -c 'echo $$ > "$1"; while [ ! -f "$2" ]; do sleep 0.2; done' sh "$D/$id.runner" "$D/$id.stop" </dev/null >/dev/null 2>&1 &
+  n=0
+  while [ ! -s "$D/$id.runner" ] && [ "$n" -lt 100 ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
   echo "$id"
   ;;
 status)
-  if [ -f "$D/$1.status" ]; then cat "$D/$1.status"; else exit 2; fi
+  if [ -f "$D/$1.status" ]; then
+    lost=""
+    if [ -f "$D/$1.runner" ]; then
+      read -r pid < "$D/$1.runner"
+      lost=false
+      if [ -n "$pid" ]; then
+        if ! kill -0 "$pid" 2>/dev/null; then
+          lost=true
+        else
+          read -r _ _ st _ < "/proc/$pid/stat" 2>/dev/null
+          if [ "$st" = Z ]; then lost=true; fi
+        fi
+      fi
+    fi
+    if [ -z "$lost" ]; then
+      cat "$D/$1.status"
+    else
+      first=1
+      while IFS= read -r line || [ -n "$line" ]; do
+        # The real status carries the field already: ours replaces it.
+        case "$line" in *'"runner_lost"'*) continue ;; esac
+        printf '%s\n' "$line"
+        if [ "$first" = 1 ]; then
+          printf '  "runner_lost": %s,\n' "$lost"
+          first=0
+        fi
+      done < "$D/$1.status"
+    fi
+  else
+    exit 2
+  fi
   ;;
 ls)
   if [ -f "$D/ls-fail" ]; then exit 1; fi
@@ -148,6 +187,8 @@ impl Fixture {
                 self.root.path().join("lane/lane").display().to_string(),
             ),
             ("LUCINA_AGENTD_WORK_POLL_SECS", "1".to_string()),
+            // The stand-in `lane` is started directly; the scope tests turn it on.
+            ("LUCINA_AGENTD_WORK_SCOPE", "off".to_string()),
             (
                 "LANE_CONFIG",
                 self.root.path().join("chains.toml").display().to_string(),
@@ -167,6 +208,68 @@ impl Fixture {
         std::fs::write(&tmp, json).unwrap();
         std::fs::rename(tmp, self.data().join(format!("{id}.status"))).unwrap();
     }
+}
+
+/// Stops the runners the stand-in `lane` started: writes the stop file of every recorded
+/// runner, then signals exactly the PIDs in this fixture's own `*.runner` files (only while
+/// that process still has its stop file on its command line). Runs on panic too.
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let Ok(entries) = std::fs::read_dir(self.data()) else {
+            return;
+        };
+        let mut pids = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|x| x != "runner") {
+                continue;
+            }
+            let stop = path.with_extension("stop");
+            let _ = std::fs::write(&stop, "");
+            let Some(pid) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| t.trim().parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            if String::from_utf8_lossy(&cmdline).contains(&stop.display().to_string()) {
+                pids.push(pid);
+            }
+        }
+        for pid in pids {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
+    }
+}
+
+/// A directory with only what the stand-ins need, as the daemon's `PATH`; with a stand-in
+/// `systemd-run` when asked. The stand-in records its arguments in `systemd-run.args`, then
+/// runs the command after `--`.
+fn tool_dir(f: &Fixture, with_systemd_run: bool) -> String {
+    let bin = f.root.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for tool in ["dirname", "cat", "setsid", "sleep"] {
+        let real = ["/usr/bin", "/bin"]
+            .iter()
+            .map(|d| Path::new(d).join(tool))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| panic!("no {tool} on this host"));
+        std::os::unix::fs::symlink(real, bin.join(tool)).unwrap();
+    }
+    if with_systemd_run {
+        common::write_exec(
+            &bin.join("systemd-run"),
+            r#"#!/bin/sh
+D="${0%/*}"
+printf '%s\n' "$@" > "$D/systemd-run.args"
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+"#,
+        );
+    }
+    bin.display().to_string()
 }
 
 fn lagent(d: &Daemon, args: &[&str]) -> Run {
@@ -711,6 +814,7 @@ fn refusals() {
 
 #[test]
 fn a_restarted_daemon_keeps_following_its_runs() {
+    // This cannot show the control-group kill that the scope prevents: that is shown live.
     let f = Fixture::new();
     let mut d = f.daemon(&[]);
     let ws = f.repo("ws");
@@ -720,6 +824,12 @@ fn a_restarted_daemon_keeps_following_its_runs() {
         .to_string();
     f.status(&id, &lane_status(&id, "running", json!({})));
     wait_state(&d, &id, "running");
+    let runner_file = f.data().join(format!("{id}.runner"));
+    let runner_before = read(&runner_file).trim().to_string();
+    assert!(
+        Path::new(&format!("/proc/{runner_before}")).exists(),
+        "the runner is alive before the restart"
+    );
 
     assert_eq!(
         d.guard.terminate(Duration::from_secs(5)),
@@ -729,6 +839,12 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     d.guard = common::spawn_daemon_env(d.dir.path(), &f.env(&[]));
     let job = show(&d, &id);
     assert_eq!(job["lead"], "LA", "{job}");
+    assert_ne!(job["runnerLost"], true, "{job}");
+    assert_eq!(read(&runner_file).trim(), runner_before);
+    assert!(
+        Path::new(&format!("/proc/{runner_before}")).exists(),
+        "the same runner is still alive after the restart"
+    );
 
     f.status(
         &id,
@@ -737,6 +853,140 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     let job = wait_state(&d, &id, "failed");
     assert!(job["endedAt"].is_string());
     assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 1);
+}
+
+#[test]
+fn a_runner_that_is_gone_shows_as_lost_and_the_state_stays() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    let job = wait_state(&d, &id, "running");
+    assert_ne!(job["runnerLost"], true, "{job}");
+
+    // Stop the runner by the PID it recorded.
+    let pid = read(&f.data().join(format!("{id}.runner")))
+        .trim()
+        .to_string();
+    assert!(Command::new("kill").arg(&pid).status().unwrap().success());
+    let job = wait_for(&d, &id, "waiting for the lost runner", |j| {
+        j["runnerLost"] == true
+    });
+    assert_eq!(job["state"], "running", "{job}");
+
+    let list = lagent_json(&d, &["work", "ls"]);
+    assert_eq!(lead_of(&list, "LA").unwrap()["lost"], 1, "{list}");
+    let table = lagent(&d, &["work", "ls"]);
+    assert_eq!(table.code, 0, "{}", table.stderr);
+    assert!(
+        table
+            .stdout
+            .contains("LA: 1 running, 0 queued, 0 ended, 0 empty, 1 lost"),
+        "{}",
+        table.stdout
+    );
+    assert!(table.stdout.contains("running(lost)"), "{}", table.stdout);
+    let shown = lagent(&d, &["work", "show", &id]);
+    assert_eq!(shown.code, 0, "{}", shown.stderr);
+    assert!(
+        shown
+            .stdout
+            .lines()
+            .any(|l| l == "runner lost: yes (resume or dismiss it with lane)"),
+        "{}",
+        shown.stdout
+    );
+}
+
+#[test]
+fn scope_on_without_systemd_run_refuses_the_start() {
+    let f = Fixture::new();
+    let bin = tool_dir(&f, false);
+    let d = f.daemon(&[
+        ("LUCINA_AGENTD_WORK_SCOPE", "on".to_string()),
+        ("XDG_RUNTIME_DIR", f.root.path().display().to_string()),
+        ("PATH", bin),
+    ]);
+    let ws = f.repo("ws");
+    let spec = f.spec();
+    let change = change_for(&d, "LA");
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "LA",
+            "--change",
+            &change,
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+        ],
+    );
+    assert_ne!(r.code, 0, "{}", r.stdout);
+    assert!(r.stderr.contains("systemd-run"), "{}", r.stderr);
+    // The stand-in `lane` was never called, and no job was stored.
+    let called: Vec<_> = std::fs::read_dir(f.data())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(called.is_empty(), "{called:?}");
+    let list = lagent_json(&d, &["work", "ls"]);
+    assert!(list["jobs"].as_array().unwrap().is_empty(), "{list}");
+}
+
+#[test]
+fn scope_on_starts_lane_through_systemd_run() {
+    let f = Fixture::new();
+    let bin = tool_dir(&f, true);
+    let d = f.daemon(&[
+        ("LUCINA_AGENTD_WORK_SCOPE", "on".to_string()),
+        ("XDG_RUNTIME_DIR", f.root.path().display().to_string()),
+        ("PATH", bin.clone()),
+    ]);
+    let ws = f.repo("ws");
+    let job = start(&d, &f, "LA", &ws, &[]);
+    let id = job["id"].as_str().unwrap().to_string();
+    let unit = format!("lucina-work-{id}");
+    assert_eq!(job["scope"], unit.as_str(), "{job}");
+    assert_ne!(job["state"], "failed", "{job}");
+    assert_eq!(show(&d, &id)["scope"], unit.as_str());
+
+    let recorded: Vec<String> = read(&Path::new(&bin).join("systemd-run.args"))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let lane = f.root.path().join("lane/lane").display().to_string();
+    let head = [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--unit",
+        &unit,
+        "--",
+        &lane,
+        "run",
+        "--id",
+        &id,
+    ];
+    assert_eq!(recorded[..head.len()], head, "{recorded:?}");
+    // The command after `--` ran with the spec on stdin.
+    assert_eq!(
+        read(&f.data().join(format!("{id}.stdin"))),
+        "Write the report.\n"
+    );
+    let shown = lagent(&d, &["work", "show", &id]);
+    assert!(shown.stdout.contains(&unit), "{}", shown.stdout);
 }
 
 #[test]

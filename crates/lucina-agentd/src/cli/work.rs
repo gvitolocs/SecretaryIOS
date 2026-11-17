@@ -121,13 +121,12 @@ fn api(e: ClientError) -> CmdError {
     e.into()
 }
 
-/// `<lead>: N running, N queued, N ended, N empty`, and `, N lost` when `lane` lost the
-/// runner of an unfinished run.
+/// `<lead>: N running, N queued, N ended, N empty`, then `, N lost` when N > 0.
 pub(super) fn lead_header(l: &Value) -> String {
     let n = |k: &str| l[k].as_u64().unwrap_or(0);
     let lost = match n("lost") {
         0 => String::new(),
-        k => format!(", {k} lost"),
+        c => format!(", {c} lost"),
     };
     format!(
         "{}: {} running, {} queued, {} ended, {} empty{lost}",
@@ -139,15 +138,12 @@ pub(super) fn lead_header(l: &Value) -> String {
     )
 }
 
-/// The state as listed: an unfinished run whose runner `lane` lost shows `queued(lost)`.
-fn state_shown(j: &Value) -> String {
-    let state = s(&j["state"]);
-    let unfinished = matches!(state.as_str(), "starting" | "queued" | "running");
-    if unfinished && j["runnerLost"] == true {
-        format!("{state}(lost)")
-    } else {
-        state
-    }
+/// An unfinished job whose runner is gone.
+fn runner_lost(j: &Value) -> bool {
+    j["runnerLost"] == true
+        && j["state"]
+            .as_str()
+            .is_some_and(|s| matches!(s, "starting" | "queued" | "running"))
 }
 
 /// A short age, `5m`, `3h`, `2d`, for an RFC 3339 time.
@@ -191,7 +187,11 @@ fn job_row(j: &Value) -> Vec<String> {
         .to_string();
     vec![
         s(&j["id"]),
-        state_shown(j),
+        if runner_lost(j) {
+            format!("{}(lost)", s(&j["state"]))
+        } else {
+            s(&j["state"])
+        },
         s(&j["priority"]),
         s(&j["cost"]),
         lane.to_string(),
@@ -268,8 +268,9 @@ fn show_text(job: &Value) -> String {
         return s(job);
     };
     let width = map.keys().map(|k| k.len()).max().unwrap_or(0);
-    let mut lines: Vec<String> = map
-        .iter()
+    let lost =
+        runner_lost(job).then(|| "runner lost: yes (resume or dismiss it with lane)".to_string());
+    map.iter()
         .map(|(k, v)| {
             let shown = if k == "empty" && emptiness_unknown(job) {
                 "unknown (no git heads and no expected file)".to_string()
@@ -280,11 +281,9 @@ fn show_text(job: &Value) -> String {
             };
             format!("{k:<width$}  {shown}")
         })
-        .collect();
-    if job["runnerLost"] == true {
-        lines.push("runner lost: yes (resume or dismiss it with lane)".to_string());
-    }
-    lines.join("\n")
+        .chain(lost)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn show_output(job: Value) -> Output {
@@ -580,6 +579,55 @@ mod tests {
 
     #[test]
     fn a_lost_runner_shows_in_the_state_the_header_and_show() {
+        let lost = json!({"id": "wk-1", "state": "queued", "runnerLost": true});
+        assert_eq!(job_row(&lost)[1], "queued(lost)");
+        assert_eq!(
+            job_row(&json!({"state": "running", "runnerLost": true}))[1],
+            "running(lost)"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "starting", "runnerLost": true}))[1],
+            "starting(lost)"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "queued", "runnerLost": false}))[1],
+            "queued"
+        );
+        // A finished job is not marked.
+        assert_eq!(
+            job_row(&json!({"state": "failed", "runnerLost": true}))[1],
+            "failed"
+        );
+        assert!(show_text(&lost)
+            .lines()
+            .any(|l| l == "runner lost: yes (resume or dismiss it with lane)"));
+        assert!(
+            !show_text(&json!({"id": "wk-1", "state": "queued", "runnerLost": false}))
+                .contains("runner lost")
+        );
+        let head = |lost: u64| {
+            lead_header(
+                &json!({"lead": "a", "running": 1, "queued": 2, "ended": 3, "empty": 4, "lost": lost}),
+            )
+        };
+        assert_eq!(head(0), "a: 1 running, 2 queued, 3 ended, 4 empty");
+        assert_eq!(head(2), "a: 1 running, 2 queued, 3 ended, 4 empty, 2 lost");
+    }
+
+    #[test]
+    fn show_has_a_scope_line() {
+        let t = show_text(&json!({"id": "wk-1", "scope": "lucina-work-wk-1"}));
+        assert!(t
+            .lines()
+            .any(|l| l.starts_with("scope") && l.ends_with("lucina-work-wk-1")));
+        let t = show_text(&json!({"id": "wk-1", "scope": null}));
+        assert!(t
+            .lines()
+            .any(|l| l.starts_with("scope") && l.ends_with('-')));
+    }
+
+    #[test]
+    fn a_lost_runner_shows_in_the_state_the_header_and_show_ids() {
         let queued = json!({"id": "x", "state": "queued", "runnerLost": true});
         assert_eq!(job_row(&queued)[1], "queued(lost)");
         let running = json!({"state": "running", "runnerLost": true});

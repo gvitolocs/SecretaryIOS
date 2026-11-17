@@ -249,7 +249,11 @@ pub struct WorkJob {
     /// The chat that started the run.
     #[serde(default)]
     pub session: Option<String>,
-    /// `lane` says the process that runs it is gone (`runner_lost`): resume or dismiss it with `lane`.
+    /// The systemd scope (`lucina-work-<id>`) `lane run` was started in; none when it was
+    /// started without one.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// `lane status` says the run's runner process is gone (`runner_lost: true`).
     #[serde(default)]
     pub runner_lost: bool,
 }
@@ -402,6 +406,11 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
             None => job.note = Some(format!("unknown lane state: {raw}")),
         }
     }
+    // Absent or not a boolean counts as false: a later status without the field clears it.
+    job.runner_lost = status
+        .get("runner_lost")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     match status.get("queue_position") {
         Some(Value::Null) => job.queue_position = None,
         Some(v) => {
@@ -475,9 +484,6 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
         {
             job.note = Some(note.to_string());
         }
-    }
-    if let Some(lost) = status.get("runner_lost").and_then(Value::as_bool) {
-        job.runner_lost = lost;
     }
     // What `lane run` recorded of the ids it was given. A job agentd started keeps its own.
     let text = |key: &str| {
@@ -603,7 +609,7 @@ pub struct LeadSummary {
     pub queued: u64,
     pub ended: u64,
     pub empty: u64,
-    /// Unfinished jobs whose runner `lane` lost.
+    /// Unfinished jobs whose runner is gone.
     #[serde(default)]
     pub lost: u64,
     pub jobs: Vec<WorkJob>,
@@ -1520,5 +1526,55 @@ mod tests {
         assert_eq!(job.change, None);
         assert_eq!(job.session, None);
         assert!(!job.runner_lost);
+    }
+
+    #[test]
+    fn a_lost_runner_is_copied_and_cleared() {
+        let mut status: Value = serde_json::from_str(STATUS_QUEUED_LOST).unwrap();
+        // The sample is a complete status: the reader does not ask for `runner_lost`.
+        assert!(missing_status_fields(&status).is_empty());
+        let mut j = job(
+            "wk-1",
+            "l",
+            WorkState::Starting,
+            Priority::Normal,
+            "2026-11-17",
+        );
+        apply_status(&mut j, &status);
+        assert_eq!(j.state, WorkState::Queued);
+        assert!(j.runner_lost);
+        // A field that is not a boolean counts as false.
+        status["runner_lost"] = json!("yes");
+        apply_status(&mut j, &status);
+        assert!(!j.runner_lost);
+        status["runner_lost"] = json!(true);
+        apply_status(&mut j, &status);
+        assert!(j.runner_lost);
+        // A later status without the field clears it.
+        status.as_object_mut().unwrap().remove("runner_lost");
+        apply_status(&mut j, &status);
+        assert!(!j.runner_lost);
+        assert_eq!(j.state, WorkState::Queued);
+    }
+
+    #[test]
+    fn lost_runners_are_counted_per_lead_and_only_when_unfinished() {
+        let mut a = job("wk-1", "l", WorkState::Queued, Priority::Normal, "1");
+        a.runner_lost = true;
+        let mut b = job("wk-2", "l", WorkState::Running, Priority::Normal, "2");
+        b.runner_lost = true;
+        let mut c = job("wk-3", "l", WorkState::Failed, Priority::Normal, "3");
+        c.runner_lost = true;
+        let d = job("wk-4", "l", WorkState::Running, Priority::Normal, "4");
+        let out = summarize(vec![a, b, c, d]);
+        assert_eq!(out[0].lost, 2);
+        assert_eq!(out[0].running, 2);
+    }
+
+    #[test]
+    fn a_job_file_without_scope_or_runner_lost_still_loads() {
+        let j: WorkJob = serde_json::from_str(r#"{"id":"wk-1","lead":"l"}"#).unwrap();
+        assert_eq!(j.scope, None);
+        assert!(!j.runner_lost);
     }
 }
