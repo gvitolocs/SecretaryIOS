@@ -151,6 +151,9 @@ pub struct Spec {
     /// `LAGENT_COMMIT_LEDGER`; absent in jobs queued by older daemons (the default state dir is used).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger: Option<String>,
+    /// Merge: who requested it (`by` in the waivers file); absent in jobs queued by older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -561,6 +564,7 @@ mod tests {
             force: false,
             full: false,
             ledger: None,
+            requested_by: None,
         };
         for (i, id) in ["job_1", "job_2"].iter().enumerate() {
             let j = Job {
