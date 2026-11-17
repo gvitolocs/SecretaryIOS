@@ -96,6 +96,8 @@ pub enum WorkState {
     DirtyAfterQuota,
     EndedDirty,
     EndedJobsQueued,
+    /// The attempt ended ok but left nothing: no commit, no change, no expected file.
+    EndedEmpty,
     /// `lane` has no record of the run any more.
     Lost,
 }
@@ -114,6 +116,7 @@ impl WorkState {
             "all_exhausted" => WorkState::Exhausted,
             "dirty_after_quota" => WorkState::DirtyAfterQuota,
             "ended_dirty" => WorkState::EndedDirty,
+            "ended_empty" => WorkState::EndedEmpty,
             "ended_with_jobs_queued" => WorkState::EndedJobsQueued,
             _ => return None,
         })
@@ -131,6 +134,7 @@ impl WorkState {
             WorkState::Exhausted => "exhausted",
             WorkState::DirtyAfterQuota => "dirty_after_quota",
             WorkState::EndedDirty => "ended_dirty",
+            WorkState::EndedEmpty => "ended_empty",
             WorkState::EndedJobsQueued => "ended_jobs_queued",
             WorkState::Lost => "lost",
         }
@@ -153,6 +157,7 @@ impl WorkState {
             WorkState::Starting | WorkState::Queued | WorkState::Running => 5,
             WorkState::EndedJobsQueued => 6,
             WorkState::EndedDirty => 7,
+            WorkState::EndedEmpty => 8,
         }
     }
 }
@@ -228,6 +233,121 @@ pub struct WorkJob {
     /// A run that was started with `lane` directly and is only listed.
     #[serde(default)]
     pub direct: bool,
+    /// The `before_head` of the first attempt that has one: where `lane` started the run.
+    #[serde(default)]
+    pub lane_base_head: Option<String>,
+    /// Consecutive `lane status` answers that could not be read.
+    #[serde(default)]
+    pub status_errors: u32,
+}
+
+/// What [`parse_ls`] read from `lane ls --json`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LsRows {
+    pub rows: Vec<Value>,
+    /// Non-blank lines that were not one JSON object.
+    pub unparsed: usize,
+    /// `line <n>: <error>` of the first such line.
+    pub first_error: Option<String>,
+}
+
+/// `lane ls --json` prints JSON Lines: one object per line. Each non-blank line is read on
+/// its own; blank lines are skipped; a line that is not a JSON object is counted, and the
+/// error of the first one is kept with its 1-based line number.
+pub fn parse_ls(text: &str) -> LsRows {
+    let mut out = LsRows::default();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let error = match serde_json::from_str::<Value>(line) {
+            Ok(v @ Value::Object(_)) => {
+                out.rows.push(v);
+                continue;
+            }
+            Ok(_) => "not a JSON object".to_string(),
+            Err(e) => e.to_string(),
+        };
+        out.unparsed += 1;
+        if out.first_error.is_none() {
+            out.first_error = Some(format!("line {}: {error}", i + 1));
+        }
+    }
+    out
+}
+
+/// The names of the fields of a `lane status` answer that the reader relies on and that are
+/// absent as keys (a key with a null value is present).
+pub fn missing_status_fields(status: &Value) -> Vec<&'static str> {
+    const TOP: [&str; 12] = [
+        "id",
+        "state",
+        "owner",
+        "queue_position",
+        "workspace",
+        "final_lane",
+        "model",
+        "attempts",
+        "verify",
+        "dirty_files",
+        "note",
+        "updated",
+    ];
+    let mut out: Vec<&'static str> = TOP
+        .into_iter()
+        .filter(|k| status.get(*k).is_none())
+        .collect();
+    if let Some(list) = status.get("attempts").and_then(Value::as_array) {
+        const PER: [(&str, &str); 5] = [
+            ("lane", "attempts[].lane"),
+            ("outcome", "attempts[].outcome"),
+            ("reason", "attempts[].reason"),
+            ("before_head", "attempts[].before_head"),
+            ("after_head", "attempts[].after_head"),
+        ];
+        for (key, name) in PER {
+            if list.iter().any(|a| a.get(key).is_none()) {
+                out.push(name);
+            }
+        }
+    }
+    if let Some(v @ Value::Object(_)) = status.get("verify") {
+        for (key, name) in [("exit_code", "verify.exit_code"), ("head", "verify.head")] {
+            if v.get(key).is_none() {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// The names of the fields of a `lane ls --json` row that the reader relies on and that are absent.
+pub fn missing_ls_fields(row: &Value) -> Vec<&'static str> {
+    [
+        "id",
+        "state",
+        "owner",
+        "queue_position",
+        "category",
+        "final_lane",
+        "workspace",
+        "updated",
+    ]
+    .into_iter()
+    .filter(|k| row.get(*k).is_none())
+    .collect()
+}
+
+const UNREADABLE_NOTE: &str = "lane status could not be read:";
+
+/// Records a `lane status` answer that could not be read: a note and one more in
+/// `status_errors`. The state never changes. Returns true when the job changed.
+pub fn status_unreadable(job: &mut WorkJob, error: &str) -> bool {
+    let before = job.clone();
+    let cut: String = error.chars().take(160).collect();
+    job.note = Some(format!("{UNREADABLE_NOTE} {cut}"));
+    job.status_errors = job.status_errors.saturating_add(1);
+    *job != before
 }
 
 fn str_field(v: &Value, key: &str) -> Option<Option<String>> {
@@ -239,9 +359,19 @@ fn str_field(v: &Value, key: &str) -> Option<Option<String>> {
 }
 
 /// Copies what `lane status` says into `job`. Fields the status lacks are left as they
-/// are; unknown fields are ignored. Returns true when anything changed.
+/// are; unknown fields are ignored. `after_head` is the last attempt's non-empty
+/// `after_head` (`lane` has no top-level one). Returns true when anything changed.
 pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
     let before = job.clone();
+    // A readable answer ends a run of unreadable ones.
+    job.status_errors = 0;
+    if job
+        .note
+        .as_deref()
+        .is_some_and(|n| n.starts_with(UNREADABLE_NOTE))
+    {
+        job.note = None;
+    }
     if let Some(raw) = status.get("state").and_then(Value::as_str) {
         job.lane_state = Some(raw.to_string());
         match WorkState::from_lane(raw) {
@@ -274,8 +404,15 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
     if let Some(v) = str_field(status, "model") {
         job.model = v;
     }
-    if let Some(v) = str_field(status, "after_head") {
-        job.after_head = v;
+    if let Some(list) = status.get("attempts").and_then(Value::as_array) {
+        let head = |a: &Value, key: &str| {
+            a.get(key)
+                .and_then(Value::as_str)
+                .filter(|h| !h.is_empty())
+                .map(str::to_string)
+        };
+        job.after_head = list.iter().rev().find_map(|a| head(a, "after_head"));
+        job.lane_base_head = list.iter().find_map(|a| head(a, "before_head"));
     }
     match status.get("verify") {
         Some(Value::Null) => {
@@ -344,6 +481,34 @@ pub fn is_empty(
     }
     let moved = |h: Option<&str>| h.is_some_and(|h| !h.is_empty() && Some(h) != base_head);
     dirty_files == 0 && !moved(after_head) && !moved(verify_head)
+}
+
+/// [`is_empty`] with a third answer: `None` when there is no evidence either way, that is
+/// no expected file, nothing dirty and no head at all (a workspace that is not a git
+/// repository gives none).
+pub fn emptiness(
+    expect_present: Option<bool>,
+    base_head: Option<&str>,
+    after_head: Option<&str>,
+    verify_head: Option<&str>,
+    dirty_files: u64,
+) -> Option<bool> {
+    if let Some(present) = expect_present {
+        return Some(!present);
+    }
+    if dirty_files > 0 {
+        return Some(false);
+    }
+    if base_head.is_none() && after_head.is_none() && verify_head.is_none() {
+        return None;
+    }
+    Some(is_empty(
+        None,
+        base_head,
+        after_head,
+        verify_head,
+        dirty_files,
+    ))
 }
 
 /// A job for a `lane ls --json` row of a run agentd did not start.
@@ -454,7 +619,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const ALL: [WorkState; 12] = [
+    const ALL: [WorkState; 13] = [
         WorkState::Starting,
         WorkState::Queued,
         WorkState::Running,
@@ -466,6 +631,7 @@ mod tests {
         WorkState::DirtyAfterQuota,
         WorkState::EndedDirty,
         WorkState::EndedJobsQueued,
+        WorkState::EndedEmpty,
         WorkState::Lost,
     ];
 
@@ -493,6 +659,7 @@ mod tests {
             ("all_exhausted", WorkState::Exhausted),
             ("dirty_after_quota", WorkState::DirtyAfterQuota),
             ("ended_dirty", WorkState::EndedDirty),
+            ("ended_empty", WorkState::EndedEmpty),
             ("ended_with_jobs_queued", WorkState::EndedJobsQueued),
         ];
         for (raw, want) in pairs {
@@ -517,6 +684,7 @@ mod tests {
             (WorkState::DirtyAfterQuota, true, 4),
             (WorkState::EndedDirty, true, 7),
             (WorkState::EndedJobsQueued, true, 6),
+            (WorkState::EndedEmpty, true, 8),
             (WorkState::Lost, true, 1),
         ];
         assert_eq!(want.len(), ALL.len());
@@ -589,9 +757,9 @@ mod tests {
         let status = json!({
             "state": "verified", "owner": "me", "queue_position": null, "category": "deep",
             "workspace": "/w", "final_lane": "qoder", "model": "m1", "session_id": "s",
-            "after_head": "abc", "verify": {"exit_code": 0, "head": "def"},
+            "verify": {"exit_code": 0, "head": "def"},
             "dirty_files": ["a", "b"],
-            "attempts": [{"lane": "zen", "outcome": "quota", "reason": "limit"}, {"lane": "qoder", "outcome": "ok", "reason": null}],
+            "attempts": [{"lane": "zen", "outcome": "quota", "reason": "limit"}, {"lane": "qoder", "outcome": "ok", "reason": null, "after_head": "abc"}],
             "note": "fine", "updated": "2026-11-17T10:00:00Z", "extra": 1
         });
         assert!(apply_status(&mut j, &status));
@@ -669,6 +837,388 @@ mod tests {
         // Any other note stays.
         j.note = Some("mine".into());
         apply_status(&mut j, &json!({"state": "verified"}));
+        assert_eq!(j.note.as_deref(), Some("mine"));
+    }
+
+    const LS: &str = include_str!("../tests/fixtures/lane/ls.jsonl");
+    const STATUS_RUNNING: &str = include_str!("../tests/fixtures/lane/status-running.json");
+    const STATUS_QUEUED: &str = include_str!("../tests/fixtures/lane/status-queued.json");
+    const STATUS_DONE: &str = include_str!("../tests/fixtures/lane/status-reported_done.json");
+    const STATUS_VERIFIED: &str = include_str!("../tests/fixtures/lane/status-verified.json");
+    const STATUS_VERIFY_FAILED: &str =
+        include_str!("../tests/fixtures/lane/status-verify_failed.json");
+    const STATUS_FAILED: &str = include_str!("../tests/fixtures/lane/status-failed.json");
+    const STATUS_EXHAUSTED: &str = include_str!("../tests/fixtures/lane/status-all_exhausted.json");
+    const STATUS_DIRTY_QUOTA: &str =
+        include_str!("../tests/fixtures/lane/status-dirty_after_quota.json");
+    const STATUS_ENDED_DIRTY: &str = include_str!("../tests/fixtures/lane/status-ended_dirty.json");
+    const STATUS_JOBS_QUEUED: &str =
+        include_str!("../tests/fixtures/lane/status-ended_with_jobs_queued.json");
+
+    #[test]
+    fn ls_fixture_gives_ten_rows_and_maps_each_state() {
+        let ls = parse_ls(LS);
+        assert_eq!(ls.rows.len(), 10);
+        assert_eq!(ls.unparsed, 0);
+        assert_eq!(ls.first_error, None);
+        for row in &ls.rows {
+            let raw = row["state"].as_str().unwrap();
+            let j = from_direct(row).unwrap();
+            assert_eq!(Some(j.state), WorkState::from_lane(raw), "{raw}");
+            assert_eq!(j.lane_state.as_deref(), Some(raw));
+            assert!(j.direct);
+        }
+    }
+
+    #[test]
+    fn format_contract_holds_for_every_fixture() {
+        let statuses = [
+            ("status-running.json", STATUS_RUNNING),
+            ("status-queued.json", STATUS_QUEUED),
+            ("status-reported_done.json", STATUS_DONE),
+            ("status-verified.json", STATUS_VERIFIED),
+            ("status-verify_failed.json", STATUS_VERIFY_FAILED),
+            ("status-failed.json", STATUS_FAILED),
+            ("status-all_exhausted.json", STATUS_EXHAUSTED),
+            ("status-dirty_after_quota.json", STATUS_DIRTY_QUOTA),
+            ("status-ended_dirty.json", STATUS_ENDED_DIRTY),
+            ("status-ended_with_jobs_queued.json", STATUS_JOBS_QUEUED),
+        ];
+        for (name, text) in statuses {
+            let v: Value = serde_json::from_str(text).unwrap();
+            let missing = missing_status_fields(&v);
+            assert!(
+                missing.is_empty(),
+                "lane output lacks the field(s) {} in {name}: the reader in lucina-agents/src/work.rs must be updated and new samples captured",
+                missing.join(", ")
+            );
+        }
+        for (i, row) in parse_ls(LS).rows.iter().enumerate() {
+            let missing = missing_ls_fields(row);
+            assert!(
+                missing.is_empty(),
+                "lane output lacks the field(s) {} in ls.jsonl line {}: the reader in lucina-agents/src/work.rs must be updated and new samples captured",
+                missing.join(", "),
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_removed_field_is_reported() {
+        let mut v: Value = serde_json::from_str(STATUS_VERIFIED).unwrap();
+        v.as_object_mut().unwrap().remove("dirty_files");
+        assert_eq!(missing_status_fields(&v), ["dirty_files"]);
+        let mut v: Value = serde_json::from_str(STATUS_VERIFIED).unwrap();
+        v["attempts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("after_head");
+        v["verify"].as_object_mut().unwrap().remove("head");
+        assert_eq!(
+            missing_status_fields(&v),
+            ["attempts[].after_head", "verify.head"]
+        );
+        let mut row = parse_ls(LS).rows.remove(0);
+        row.as_object_mut().unwrap().remove("category");
+        assert_eq!(missing_ls_fields(&row), ["category"]);
+    }
+
+    #[test]
+    fn ls_of_an_array_is_one_unparsed_line() {
+        let ls = parse_ls("[{\"id\":\"a\"},{\"id\":\"b\"}]");
+        assert!(ls.rows.is_empty());
+        assert_eq!(ls.unparsed, 1);
+        assert_eq!(ls.first_error.as_deref(), Some("line 1: not a JSON object"));
+    }
+
+    #[test]
+    fn ls_with_a_broken_line_keeps_the_good_ones() {
+        let ls = parse_ls("{\"id\":\"a\"}\n\n{\"id\":\n   \n{\"id\":\"c\"}\nnope\n");
+        assert_eq!(ls.rows.len(), 2);
+        assert_eq!(ls.unparsed, 2);
+        let first = ls.first_error.unwrap();
+        assert!(first.starts_with("line 3: "), "{first}");
+    }
+
+    #[test]
+    fn ls_of_nothing() {
+        for text in ["", "\n", "  \n \n"] {
+            assert_eq!(parse_ls(text), LsRows::default());
+        }
+    }
+
+    #[test]
+    fn every_status_fixture_applies() {
+        struct Want {
+            text: &'static str,
+            state: WorkState,
+            final_lane: Option<&'static str>,
+            model: Option<&'static str>,
+            after: Option<&'static str>,
+            base: Option<&'static str>,
+            verify_exit: Option<i32>,
+            verify_head: Option<&'static str>,
+            dirty: u64,
+            attempts: usize,
+        }
+        let head_a = "4cc7be8ea2af6e21cab12289bd4859352a73b399";
+        let head_v = "4f2d631ea2edaf2305444ae262318217e749af8a";
+        let head_x = "8166366d041d94bb3b6b62e5380df62507894e9a";
+        let head_d = "f83c86dda64a899bdfe8f1bd6b6124203e1276f4";
+        let wants = [
+            Want {
+                text: STATUS_RUNNING,
+                state: WorkState::Running,
+                final_lane: None,
+                model: None,
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 0,
+            },
+            Want {
+                text: STATUS_QUEUED,
+                state: WorkState::Queued,
+                final_lane: None,
+                model: None,
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 0,
+            },
+            Want {
+                text: STATUS_DONE,
+                state: WorkState::Done,
+                final_lane: Some("zen-glm-flash"),
+                model: Some("glm-5.3-flash-free"),
+                after: Some(head_a),
+                base: Some(head_a),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_VERIFIED,
+                state: WorkState::Verified,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: None,
+                base: None,
+                verify_exit: Some(0),
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_VERIFY_FAILED,
+                state: WorkState::VerifyFailed,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: Some(head_v),
+                base: Some("a65030bfb78e8add4b65b78f94ee18a653e1e378"),
+                verify_exit: Some(1),
+                verify_head: Some(head_v),
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_FAILED,
+                state: WorkState::Failed,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_EXHAUSTED,
+                state: WorkState::Exhausted,
+                final_lane: None,
+                model: None,
+                after: Some(head_x),
+                base: Some(head_x),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_DIRTY_QUOTA,
+                state: WorkState::DirtyAfterQuota,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: Some("675f80f0a0e90a70b4173e67dd74ec4ddf4ac8ee"),
+                base: Some("825f1f98e980beba8314cc932a38fa3aa924f53c"),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 3,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_ENDED_DIRTY,
+                state: WorkState::EndedDirty,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: Some(head_d),
+                base: Some(head_d),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_JOBS_QUEUED,
+                state: WorkState::EndedJobsQueued,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+        ];
+        for w in wants {
+            let status: Value = serde_json::from_str(w.text).unwrap();
+            let id = status["id"].as_str().unwrap().to_string();
+            let mut j = job(&id, "chat", WorkState::Starting, Priority::Normal, "t");
+            apply_status(&mut j, &status);
+            assert_eq!(j.state, w.state, "{id}");
+            assert_eq!(j.final_lane.as_deref(), w.final_lane, "{id}");
+            assert_eq!(j.model.as_deref(), w.model, "{id}");
+            assert_eq!(j.after_head.as_deref(), w.after, "{id}");
+            assert_eq!(j.lane_base_head.as_deref(), w.base, "{id}");
+            assert_eq!(j.verify_exit, w.verify_exit, "{id}");
+            assert_eq!(j.verify_head.as_deref(), w.verify_head, "{id}");
+            assert_eq!(j.dirty_files, w.dirty, "{id}");
+            assert_eq!(j.attempts.len(), w.attempts, "{id}");
+            assert_eq!(j.status_errors, 0, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_last_attempt_with_an_after_head_counts() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        let status = json!({"state": "failed", "attempts": [
+            {"lane": "a", "outcome": "quota", "before_head": "b1", "after_head": "a1"},
+            {"lane": "b", "outcome": "failed", "before_head": null, "after_head": null},
+            {"lane": "c", "outcome": "failed", "before_head": "", "after_head": ""}
+        ], "after_head": "top-level-is-not-read"});
+        apply_status(&mut j, &status);
+        assert_eq!(j.after_head.as_deref(), Some("a1"));
+        assert_eq!(j.lane_base_head.as_deref(), Some("b1"));
+        // No attempts: nothing to read.
+        apply_status(&mut j, &json!({"attempts": []}));
+        assert_eq!(j.after_head, None);
+        assert_eq!(j.lane_base_head, None);
+    }
+
+    #[test]
+    fn empty_for_the_reported_done_fixture() {
+        let status: Value = serde_json::from_str(STATUS_DONE).unwrap();
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        let after = j.after_head.clone().unwrap();
+        let empty = |base: &str| {
+            is_empty(
+                None,
+                Some(base),
+                j.after_head.as_deref(),
+                j.verify_head.as_deref(),
+                j.dirty_files,
+            )
+        };
+        assert!(empty(&after));
+        assert!(!empty("0000000000000000000000000000000000000000"));
+    }
+
+    #[test]
+    fn an_ended_empty_status_ends_the_job_in_that_state() {
+        let mut status: Value = serde_json::from_str(STATUS_DONE).unwrap();
+        status["state"] = json!("ended_empty");
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        assert_eq!(j.state, WorkState::EndedEmpty);
+        assert_eq!(j.lane_state.as_deref(), Some("ended_empty"));
+        assert_eq!(j.note, None);
+        assert_eq!(serde_json::to_value(j.state).unwrap(), json!("ended_empty"));
+    }
+
+    #[test]
+    fn emptiness_branches() {
+        // An expected file decides alone.
+        assert_eq!(emptiness(Some(true), None, None, None, 0), Some(false));
+        assert_eq!(
+            emptiness(Some(false), Some("a"), Some("b"), None, 5),
+            Some(true)
+        );
+        // Dirty files: not empty.
+        assert_eq!(emptiness(None, None, None, None, 2), Some(false));
+        // No evidence at all: unknown.
+        assert_eq!(emptiness(None, None, None, None, 0), None);
+        // Any head makes it known.
+        assert_eq!(emptiness(None, Some("a"), None, None, 0), Some(true));
+        assert_eq!(emptiness(None, Some("a"), Some("a"), None, 0), Some(true));
+        assert_eq!(emptiness(None, Some("a"), Some("b"), None, 0), Some(false));
+        assert_eq!(emptiness(None, None, Some("b"), None, 0), Some(false));
+        assert_eq!(emptiness(None, None, None, Some("c"), 0), Some(false));
+    }
+
+    #[test]
+    fn a_fixture_without_heads_is_unknown_unless_a_file_decides() {
+        let status: Value = serde_json::from_str(STATUS_VERIFIED).unwrap();
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        let with = |expect: Option<bool>| {
+            emptiness(
+                expect,
+                j.base_head.as_deref().or(j.lane_base_head.as_deref()),
+                j.after_head.as_deref(),
+                j.verify_head.as_deref(),
+                j.dirty_files,
+            )
+        };
+        assert_eq!(with(None), None);
+        assert_eq!(with(Some(true)), Some(false));
+        assert_eq!(with(Some(false)), Some(true));
+    }
+
+    #[test]
+    fn an_unreadable_status_is_noted_and_a_readable_one_clears_it() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        assert!(status_unreadable(&mut j, "expected value at line 1"));
+        assert_eq!(j.state, WorkState::Running);
+        assert_eq!(j.status_errors, 1);
+        assert_eq!(
+            j.note.as_deref(),
+            Some("lane status could not be read: expected value at line 1")
+        );
+        assert!(status_unreadable(&mut j, &"x".repeat(500)));
+        assert_eq!(j.status_errors, 2);
+        let note = j.note.clone().unwrap();
+        assert_eq!(
+            note.chars().count(),
+            "lane status could not be read: ".len() + 160
+        );
+        assert!(apply_status(&mut j, &json!({"state": "running"})));
+        assert_eq!(j.status_errors, 0);
+        assert_eq!(j.note, None);
+        // Lane's own note replaces the unreadable one; another note of ours stays.
+        status_unreadable(&mut j, "e");
+        apply_status(&mut j, &json!({"state": "running", "note": "from lane"}));
+        assert_eq!(j.note.as_deref(), Some("from lane"));
+        j.note = Some("mine".into());
+        apply_status(&mut j, &json!({"state": "running"}));
         assert_eq!(j.note.as_deref(), Some("mine"));
     }
 

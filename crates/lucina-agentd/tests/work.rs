@@ -1,7 +1,9 @@
 //! `lagent work` end to end: a real daemon, a stand-in `lane` (a small `sh` script that keeps
 //! one file per run id in its directory) and a test lane config. `run` stores the arguments
 //! and stdin; `status <id>` prints `<id>.status` (the test rewrites it to move the run on) and
-//! exits 2 without one; `ls` prints `ls.json`.
+//! exits 2 without one; `ls` prints `ls.jsonl` (JSON Lines, like the real `lane ls --json`)
+//! and exits 1 when `ls-fail` exists. The status files have the real shape, built from a
+//! sample captured from the installed `lane`.
 
 mod common;
 
@@ -10,7 +12,32 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::{Daemon, Run};
-use serde_json::Value;
+use serde_json::{json, Value};
+
+/// `lane status` of a run that is running, as the real `lane` prints it.
+const STATUS_SAMPLE: &str =
+    include_str!("../../lucina-agents/tests/fixtures/lane/status-running.json");
+
+/// What `lane status <id>` prints: the sample with `id` and `state` set and the fields of
+/// `patch` (an object) laid over it.
+fn lane_status(id: &str, state: &str, patch: Value) -> String {
+    let mut v: Value = serde_json::from_str(STATUS_SAMPLE).unwrap();
+    v["id"] = json!(id);
+    v["state"] = json!(state);
+    v["workspace"] = json!("/w");
+    for (k, val) in patch.as_object().unwrap() {
+        v[k.as_str()] = val.clone();
+    }
+    serde_json::to_string_pretty(&v).unwrap()
+}
+
+/// One attempt, with the heads `lane` records per attempt.
+fn attempt(before: Option<&str>, after: Option<&str>) -> Value {
+    json!({
+        "lane": "qoder", "outcome": "ok", "reason": null, "model_used": null, "duration_s": 1.0,
+        "before_head": before, "after_head": after, "changed_files": [], "looks": []
+    })
+}
 
 const FAKE_LANE: &str = r#"#!/bin/sh
 D="$(dirname "$0")/data"
@@ -29,7 +56,7 @@ run)
     exit 1
   fi
   if [ -f "$D/run-fail-registered" ]; then
-    printf '{"state":"running"}' > "$D/$id.status"
+    cp "$D/registered.status" "$D/$id.status"
     echo "lane: late failure" >&2
     exit 1
   fi
@@ -41,7 +68,8 @@ status)
   if [ -f "$D/$1.status" ]; then cat "$D/$1.status"; else exit 2; fi
   ;;
 ls)
-  if [ -f "$D/ls.json" ]; then cat "$D/ls.json"; else echo '[]'; fi
+  if [ -f "$D/ls-fail" ]; then exit 1; fi
+  if [ -f "$D/ls.jsonl" ]; then cat "$D/ls.jsonl"; fi
   ;;
 *)
   exit 64
@@ -160,6 +188,15 @@ fn lagent_json(d: &Daemon, args: &[&str]) -> Value {
     serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("lagent {args:?}: {e}: {}", r.stdout))
 }
 
+/// Like [`lagent_json`] for a command that must exit with `code`.
+fn lagent_json_code(d: &Daemon, args: &[&str], code: i32) -> Value {
+    let mut a = args.to_vec();
+    a.push("--json");
+    let r = lagent(d, &a);
+    assert_eq!(r.code, code, "lagent {args:?}: {}", r.stderr);
+    serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("lagent {args:?}: {e}: {}", r.stdout))
+}
+
 fn start(d: &Daemon, f: &Fixture, lead: &str, ws: &str, extra: &[&str]) -> Value {
     let spec = f.spec();
     let mut args = vec![
@@ -245,6 +282,9 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
     assert!(has("--lane", "qoder"), "{args:?}");
     assert!(has("--workspace", &ws), "{args:?}");
     assert!(has("--verify", "true"), "{args:?}");
+    assert!(has("--owner", "chat-a"), "{args:?}");
+    assert!(has("--cost", "build"), "{args:?}");
+    assert!(!args.iter().any(|a| a == "--expect-file"), "{args:?}");
     assert_eq!(
         read(&f.data().join(format!("{id}.stdin"))),
         "Write the report.\n"
@@ -256,7 +296,7 @@ fn start_passes_the_spec_and_lists_the_run_under_its_lead() {
 
     f.status(
         &id,
-        r#"{"state":"running","final_lane":"qoder","model":"m"}"#,
+        &lane_status(&id, "running", json!({"final_lane": "qoder", "model": "m"})),
     );
     wait_state(&d, &id, "running");
     let list = lagent_json(&d, &["work", "ls"]);
@@ -284,7 +324,19 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
 
     let a = start(&d, &f, "chat-a", &ws, &["--verify", "true"]);
     let a = a["id"].as_str().unwrap().to_string();
-    f.status(&a, r#"{"state":"verified","verify":{"exit_code":0,"head":"deadbeef"},"after_head":null,"dirty_files":[]}"#);
+    f.status(
+        &a,
+        &lane_status(
+            &a,
+            "verified",
+            json!({
+                "verify": {"cmd": "true", "ran_cmd": null, "exit_code": 0, "head": "deadbeef",
+                           "ran": true, "timed_out": false, "note": null},
+                "attempts": [attempt(None, None)],
+                "dirty_files": []
+            }),
+        ),
+    );
     let done = wait_state(&d, &a, "verified");
     assert_eq!(done["empty"], false, "{done}");
     assert_eq!(done["verifyExit"], 0);
@@ -295,7 +347,7 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
 
     let b = start(&d, &f, "chat-a", &ws, &["--expect", "out/report.md"]);
     let b = b["id"].as_str().unwrap().to_string();
-    f.status(&b, r#"{"state":"reported_done"}"#);
+    f.status(&b, &lane_status(&b, "reported_done", json!({})));
     let done = wait_state(&d, &b, "done");
     assert_eq!(done["empty"], true, "{done}");
     assert!(done["endedAt"].is_string());
@@ -304,7 +356,7 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
     let c = c["id"].as_str().unwrap().to_string();
     std::fs::create_dir_all(Path::new(&ws).join("out")).unwrap();
     std::fs::write(Path::new(&ws).join("out/report.md"), "# report\n").unwrap();
-    f.status(&c, r#"{"state":"reported_done"}"#);
+    f.status(&c, &lane_status(&c, "reported_done", json!({})));
     let done = wait_state(&d, &c, "done");
     assert_eq!(done["empty"], false, "{done}");
 
@@ -315,6 +367,105 @@ fn finished_runs_get_an_end_time_and_an_empty_flag() {
         (Some(3), Some(1)),
         "{lead}"
     );
+}
+
+#[test]
+fn an_expected_file_is_handed_to_lane_as_expect_file() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let job = start(
+        &d,
+        &f,
+        "chat-a",
+        &ws,
+        &["--expect", "out/report.md", "--verify", "true"],
+    );
+    let id = job["id"].as_str().unwrap();
+    let args: Vec<String> = read(&f.data().join(format!("{id}.args")))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let at = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+    assert_eq!(args[at("--expect-file") + 1], "out/report.md", "{args:?}");
+    // After --workspace <ws>, before --verify.
+    assert!(at("--workspace") < at("--expect-file"), "{args:?}");
+    assert!(at("--expect-file") < at("--verify"), "{args:?}");
+}
+
+#[test]
+fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let job = start(
+        &d,
+        &f,
+        "chat-l",
+        &ws,
+        &["--cost", "light", "--expect", "out/r.md"],
+    );
+    let id = job["id"].as_str().unwrap();
+    let args: Vec<String> = read(&f.data().join(format!("{id}.args")))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let pos = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+    assert_eq!(args[pos("--cost") + 1], "light", "{args:?}");
+    assert_eq!(args[pos("--owner") + 1], "chat-l", "{args:?}");
+    // run --id <id> --lane L --workspace W --owner O --cost C --expect-file E
+    assert!(pos("--workspace") < pos("--owner"), "{args:?}");
+    assert!(pos("--owner") < pos("--cost"), "{args:?}");
+    assert!(pos("--cost") < pos("--expect-file"), "{args:?}");
+
+    let spec = f.spec();
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "chat-l",
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+            "--cost",
+            "light",
+        ],
+    );
+    assert_ne!(r.code, 0);
+    assert!(
+        r.stderr.contains(
+            "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
+        ),
+        "{}",
+        r.stderr
+    );
+}
+
+#[test]
+fn an_ended_empty_run_ends_in_that_state_and_waits_with_exit_8() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "chat-a", &ws, &[])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut v: Value = serde_json::from_str(include_str!(
+        "../../lucina-agents/tests/fixtures/lane/status-reported_done.json"
+    ))
+    .unwrap();
+    v["id"] = json!(id);
+    v["state"] = json!("ended_empty");
+    f.status(&id, &serde_json::to_string_pretty(&v).unwrap());
+    let job = wait_state(&d, &id, "ended_empty");
+    assert_eq!(job["empty"], true, "{job}");
+    assert!(job["endedAt"].is_string(), "{job}");
+    assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 8);
 }
 
 #[test]
@@ -530,7 +681,7 @@ fn a_restarted_daemon_keeps_following_its_runs() {
         .as_str()
         .unwrap()
         .to_string();
-    f.status(&id, r#"{"state":"running"}"#);
+    f.status(&id, &lane_status(&id, "running", json!({})));
     wait_state(&d, &id, "running");
 
     assert_eq!(
@@ -542,7 +693,10 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     let job = show(&d, &id);
     assert_eq!(job["lead"], "chat-a", "{job}");
 
-    f.status(&id, r#"{"state":"failed","note":"nothing left"}"#);
+    f.status(
+        &id,
+        &lane_status(&id, "failed", json!({"note": "nothing left"})),
+    );
     let job = wait_state(&d, &id, "failed");
     assert!(job["endedAt"].is_string());
     assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 1);
@@ -560,13 +714,12 @@ fn runs_started_with_lane_directly_are_listed_as_direct() {
     let now = chrono::Utc::now().to_rfc3339();
     let old = (chrono::Utc::now() - chrono::Duration::hours(48)).to_rfc3339();
     std::fs::write(
-        f.data().join("ls.json"),
+        f.data().join("ls.jsonl"),
         format!(
-            r#"[
-  {{"id":"zz-direct","state":"running","owner":"chat-x","category":"deep","final_lane":"qoder","queue_position":null,"workspace":"/w/direct","updated":"{now}"}},
-  {{"id":"{mine}","state":"running","owner":"chat-a","category":"deep","final_lane":"qoder","queue_position":null,"workspace":"{ws}","updated":"{now}"}},
-  {{"id":"zz-old","state":"verified","owner":"chat-x","category":"deep","final_lane":"qoder","queue_position":null,"workspace":"/w/old","updated":"{old}"}}
-]"#
+            r#"{{"id":"zz-direct","state":"running","owner":"chat-x","category":"deep","final_lane":"qoder","queue_position":null,"workspace":"/w/direct","updated":"{now}"}}
+{{"id":"{mine}","state":"running","owner":"chat-a","category":"deep","final_lane":"qoder","queue_position":null,"workspace":"{ws}","updated":"{now}"}}
+{{"id":"zz-old","state":"verified","owner":"chat-x","category":"deep","final_lane":"qoder","queue_position":null,"workspace":"/w/old","updated":"{old}"}}
+"#
         ),
     )
     .unwrap();
@@ -613,12 +766,43 @@ fn runs_started_with_lane_directly_are_listed_as_direct() {
 fn a_failing_lane_ls_is_a_warning_not_an_error() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
-    std::fs::write(f.data().join("ls.json"), "not json").unwrap();
+    std::fs::write(f.data().join("ls-fail"), "").unwrap();
     let r = lagent(&d, &["work", "ls", "--json"]);
-    assert_eq!(r.code, 0, "{}", r.stderr);
+    // A warning ends the listing with exit code 2 (it used to be 0).
+    assert_eq!(r.code, 2, "{}", r.stderr);
     let v: Value = serde_json::from_str(&r.stdout).unwrap();
     assert!(v["warning"].is_string(), "{v}");
     assert!(r.stderr.contains("warning"), "{}", r.stderr);
+}
+
+#[test]
+fn a_listing_with_one_broken_line_lists_the_good_rows() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = |id: &str| {
+        format!(
+            r#"{{"id":"{id}","state":"running","owner":"chat-x","category":"deep","final_lane":"qoder","queue_position":null,"workspace":"/w","updated":"{now}"}}"#
+        )
+    };
+    std::fs::write(
+        f.data().join("ls.jsonl"),
+        format!("{}\n{{\"id\": broken\n{}\n", row("zz-a"), row("zz-b")),
+    )
+    .unwrap();
+    let list = lagent_json_code(&d, &["work", "ls"], 2);
+    assert_eq!(list["jobs"].as_array().unwrap().len(), 2, "{list}");
+    assert_eq!(list["unparsed"], 1, "{list}");
+    let w = list["warning"].as_str().unwrap();
+    assert!(
+        w.starts_with("1 of 3 lane rows could not be read: line 2: "),
+        "{w}"
+    );
+    // The good rows alone give no warning and exit 0.
+    std::fs::write(f.data().join("ls.jsonl"), format!("{}\n", row("zz-a"))).unwrap();
+    let list = lagent_json(&d, &["work", "ls"]);
+    assert_eq!(list["unparsed"], 0, "{list}");
+    assert_eq!(list["warning"], Value::Null);
 }
 
 #[test]
@@ -741,6 +925,11 @@ fn a_dot_workspace_means_the_callers_directory() {
 fn a_lane_run_that_fails_after_lane_registered_the_run_is_not_failed() {
     let f = Fixture::new();
     std::fs::write(f.data().join("run-fail-registered"), "").unwrap();
+    std::fs::write(
+        f.data().join("registered.status"),
+        lane_status("wk-x", "running", json!({})),
+    )
+    .unwrap();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
     let job = start(&d, &f, "chat-a", &ws, &[]);
@@ -763,13 +952,18 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
         .unwrap()
         .to_string();
     wait_state(&d, &id, "lost");
-    f.status(&id, r#"{"state":"running"}"#);
+    f.status(&id, &lane_status(&id, "running", json!({})));
     let job = wait_state(&d, &id, "running");
     assert!(job["endedAt"].is_null(), "{job}");
     assert!(job["note"].is_null(), "{job}");
     f.status(
         &id,
-        r#"{"state":"verified","verify":{"exit_code":0,"head":"abc"}}"#,
+        &lane_status(
+            &id,
+            "verified",
+            json!({"verify": {"cmd": "true", "ran_cmd": null, "exit_code": 0, "head": "abc",
+                              "ran": true, "timed_out": false, "note": null}}),
+        ),
     );
     let job = wait_state(&d, &id, "verified");
     assert!(job["endedAt"].is_string(), "{job}");
@@ -784,7 +978,7 @@ fn a_lane_status_that_cannot_start_counts_as_a_miss() {
         .as_str()
         .unwrap()
         .to_string();
-    f.status(&id, r#"{"state":"running"}"#);
+    f.status(&id, &lane_status(&id, "running", json!({})));
     wait_state(&d, &id, "running");
     std::fs::remove_file(f.root.path().join("lane/lane")).unwrap();
     let job = wait_state(&d, &id, "lost");
@@ -801,10 +995,51 @@ fn a_status_that_is_not_json_changes_nothing_until_it_is_valid() {
         .unwrap()
         .to_string();
     f.status(&id, "this is not json");
-    std::thread::sleep(Duration::from_millis(3000));
-    assert_eq!(show(&d, &id)["state"], "starting");
-    f.status(&id, r#"{"state":"running"}"#);
-    wait_state(&d, &id, "running");
+    let job = wait_for(&d, &id, "waiting for the unreadable note", |j| {
+        j["note"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("lane status could not be read:"))
+    });
+    assert!(job["statusErrors"].as_u64().unwrap() > 0, "{job}");
+    assert_eq!(job["state"], "starting", "{job}");
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    let job = wait_state(&d, &id, "running");
+    assert!(job["note"].is_null(), "{job}");
+    assert_eq!(job["statusErrors"], 0, "{job}");
+}
+
+/// The base head of a run and a status that ends on `after` in its last attempt.
+fn done_with_after_head(
+    d: &Daemon,
+    f: &Fixture,
+    ws: &str,
+    after: impl Fn(&str) -> String,
+) -> Value {
+    let job = start(d, f, "chat-a", ws, &[]);
+    let id = job["id"].as_str().unwrap().to_string();
+    let base = job["baseHead"].as_str().unwrap().to_string();
+    let after = after(&base);
+    f.status(
+        &id,
+        &lane_status(
+            &id,
+            "reported_done",
+            json!({"attempts": [attempt(Some(&base), Some(&after))]}),
+        ),
+    );
+    wait_state(d, &id, "done")
+}
+
+#[test]
+fn a_run_that_ended_on_a_new_head_is_not_empty_and_one_on_the_base_is() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let moved = done_with_after_head(&d, &f, &ws, |_| "1".repeat(40));
+    assert_eq!(moved["empty"], false, "{moved}");
+    assert_eq!(moved["afterHead"], "1".repeat(40), "{moved}");
+    let same = done_with_after_head(&d, &f, &ws, |base| base.to_string());
+    assert_eq!(same["empty"], true, "{same}");
 }
 
 #[test]
@@ -816,7 +1051,7 @@ fn waiting_on_a_running_job_times_out_with_exit_5() {
         .as_str()
         .unwrap()
         .to_string();
-    f.status(&id, r#"{"state":"running"}"#);
+    f.status(&id, &lane_status(&id, "running", json!({})));
     wait_state(&d, &id, "running");
     let r = lagent(&d, &["work", "wait", &id, "--timeout", "1"]);
     assert_eq!(r.code, 5, "{}", r.stderr);

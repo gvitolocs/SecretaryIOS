@@ -11,12 +11,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use lucina_agents::work::{
-    apply_status, from_direct, is_empty, new_id, summarize, validate_target, CostClass,
-    LeadSummary, Priority, WorkJob, WorkState,
+    apply_status, emptiness, from_direct, missing_ls_fields, missing_status_fields, new_id,
+    parse_ls, status_unreadable, summarize, validate_target, CostClass, LeadSummary, LsRows,
+    Priority, WorkJob, WorkState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -340,6 +341,46 @@ pub struct WorkList {
     pub jobs: Vec<WorkJob>,
     pub leads: Vec<LeadSummary>,
     pub warning: Option<String>,
+    /// `lane ls` rows that could not be read.
+    pub unparsed: usize,
+}
+
+/// The note of a status that lacks fields the reader relies on.
+const LACKS_NOTE: &str = "lane status lacks the field(s):";
+
+/// Field sets of `lane` output already logged in this daemon run.
+fn warn_missing_once(names: &[&'static str]) {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let key = names.join(", ");
+    let fresh = SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key.clone());
+    if fresh {
+        tracing::warn!("lane output lacks the field(s) {key}");
+    }
+}
+
+/// [`apply_status`] for a status read from `lane`: a status that lacks fields the reader
+/// relies on is still applied, logged once per field set, and noted on the job unless the
+/// job already has another note. A stale lacks-note goes first.
+fn apply_read(job: &mut WorkJob, status: &Value) {
+    if job
+        .note
+        .as_deref()
+        .is_some_and(|n| n.starts_with(LACKS_NOTE))
+    {
+        job.note = None;
+    }
+    apply_status(job, status);
+    let missing = missing_status_fields(status);
+    if !missing.is_empty() {
+        warn_missing_once(&missing);
+        if job.note.is_none() {
+            job.note = Some(format!("{LACKS_NOTE} {}", missing.join(", ")));
+        }
+    }
 }
 
 fn nonblank(v: Option<String>) -> Option<String> {
@@ -349,18 +390,25 @@ fn nonblank(v: Option<String>) -> Option<String> {
 /// Sets the end of a job: when it ended and whether it produced nothing.
 fn finish(job: &mut WorkJob) {
     job.ended_at = Some(now_iso());
+    // `lane` itself found nothing: no need to ask the heads.
+    if job.state == WorkState::EndedEmpty {
+        job.empty = Some(true);
+        return;
+    }
     let expect_present = job.expect.as_ref().map(|e| {
         std::fs::metadata(Path::new(&job.workspace).join(e))
             .map(|m| m.is_file() && m.len() > 0)
             .unwrap_or(false)
     });
-    job.empty = Some(is_empty(
+    // Without a head from the start (not a git directory) lane's own start head is the base.
+    let base = job.base_head.as_deref().or(job.lane_base_head.as_deref());
+    job.empty = emptiness(
         expect_present,
-        job.base_head.as_deref(),
+        base,
         job.after_head.as_deref(),
         job.verify_head.as_deref(),
         job.dirty_files,
-    ));
+    );
 }
 
 impl Manager {
@@ -404,6 +452,12 @@ impl Manager {
         let expect = nonblank(req.expect);
         if let Some(e) = &expect {
             check_expect(e)?;
+        }
+        if req.cost == Some(CostClass::Light) && expect.is_none() {
+            return Err(ManagerError::Invalid(
+                "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
+                    .into(),
+            ));
         }
         let lanes = LaneConfig::load();
         let lucina = crate::workspaces::is_lucina_project(
@@ -498,7 +552,7 @@ impl Manager {
                 if let Some(note) = failure {
                     match status {
                         Some(st) => {
-                            apply_status(j, &st);
+                            apply_read(j, &st);
                             if j.note.is_none() {
                                 j.note = Some(note);
                             }
@@ -536,10 +590,26 @@ impl Manager {
             .filter(|j| include_old || recent(j.state, j.ended_at.as_deref()))
             .collect();
         let mut warning = None;
+        let mut unparsed = 0;
         if include_direct {
             match self.lane_ls().await {
-                Ok(rows) => {
-                    for row in &rows {
+                Ok(ls) => {
+                    if ls.unparsed > 0 {
+                        let total = ls.rows.len() + ls.unparsed;
+                        let first = ls.first_error.clone().unwrap_or_default();
+                        tracing::warn!(
+                            unparsed = ls.unparsed,
+                            total,
+                            error = %first,
+                            "some lane ls rows could not be read"
+                        );
+                        unparsed = ls.unparsed;
+                        warning = Some(format!(
+                            "{} of {total} lane rows could not be read: {first}",
+                            ls.unparsed
+                        ));
+                    }
+                    for row in &ls.rows {
                         let Some(job) = from_direct(row) else {
                             continue;
                         };
@@ -554,7 +624,10 @@ impl Manager {
                         }
                     }
                 }
-                Err(w) => warning = Some(w),
+                Err(w) => {
+                    tracing::warn!(error = %w, "lane ls failed");
+                    warning = Some(w);
+                }
             }
         }
         let leads = summarize(jobs);
@@ -563,11 +636,12 @@ impl Manager {
             jobs,
             leads,
             warning,
+            unparsed,
         }
     }
 
-    /// `lane ls --json --limit 200`, as rows; the text of the failure when it fails.
-    async fn lane_ls(&self) -> Result<Vec<Value>, String> {
+    /// `lane ls --json --limit 200` (JSON Lines), as rows; the text of the failure when it fails.
+    async fn lane_ls(&self) -> Result<LsRows, String> {
         let bin = self.work_lane().map_err(|e| e.to_string())?;
         let mut cmd = lane_command(bin);
         cmd.args(["ls", "--json", "--limit", "200"])
@@ -586,11 +660,14 @@ impl Manager {
                     .unwrap_or_else(|| "on a signal".into())
             ));
         }
-        match serde_json::from_slice::<Value>(&out.stdout) {
-            Ok(Value::Array(rows)) => Ok(rows),
-            Ok(_) => Err("lane ls did not print a list".into()),
-            Err(e) => Err(format!("lane ls printed bad JSON: {e}")),
+        let ls = parse_ls(&String::from_utf8_lossy(&out.stdout));
+        for row in &ls.rows {
+            let missing = missing_ls_fields(row);
+            if !missing.is_empty() {
+                warn_missing_once(&missing);
+            }
         }
+        Ok(ls)
     }
 
     pub fn work_get(&self, id: &str) -> Result<WorkJob, ManagerError> {
@@ -649,6 +726,10 @@ impl Manager {
         }
     }
 
+    /// One `lane status` read for one job. An answer that exits 0 but is not readable JSON is
+    /// not a miss: the job never becomes `lost` from it and its state does not change. It
+    /// goes through [`status_unreadable`] (a note and a count) and the job is saved when
+    /// that changed it.
     async fn poll_one(&self, bin: &Path, id: &str) {
         let reply = query_status(bin, id).await;
         let Some(mut job) = self.work().jobs().iter().find(|j| j.id == id).cloned() else {
@@ -671,10 +752,13 @@ impl Manager {
                     job.note = None;
                     job.empty = None;
                 }
-                apply_status(&mut job, &status);
+                apply_read(&mut job, &status);
             }
             StatusReply::BadJson(e) => {
-                return tracing::warn!(job = id, error = %e, "lane status printed bad JSON");
+                tracing::warn!(job = id, error = %e, "lane status printed bad JSON");
+                if !status_unreadable(&mut job, &e) {
+                    return;
+                }
             }
             StatusReply::Miss if job.state == WorkState::Lost => return,
             StatusReply::Miss => {
@@ -785,6 +869,11 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
         (None, None) => return Err("no lane or chain".into()),
     };
     cmd.arg("--workspace").arg(&job.workspace);
+    cmd.arg("--owner").arg(&job.lead);
+    cmd.arg("--cost").arg(job.cost.as_str());
+    if let Some(e) = &job.expect {
+        cmd.arg("--expect-file").arg(e);
+    }
     if let Some(v) = &job.verify {
         cmd.arg("--verify").arg(v);
     }
@@ -1012,6 +1101,58 @@ deep-codex = ["qoder", "codex-a"]
             .map(|(k, _)| k)
             .collect();
         assert_eq!(got, ["HOME", "PATH"]);
+    }
+
+    #[test]
+    fn a_status_that_lacks_fields_is_applied_and_noted() {
+        let mut full: Value = serde_json::from_str(include_str!(
+            "../../../lucina-agents/tests/fixtures/lane/status-running.json"
+        ))
+        .unwrap();
+        let mut job = WorkJob {
+            id: "wk-1".into(),
+            ..WorkJob::default()
+        };
+        apply_read(&mut job, &full);
+        assert_eq!(job.state, WorkState::Running);
+        assert_eq!(job.note, None);
+
+        full.as_object_mut().unwrap().remove("dirty_files");
+        apply_read(&mut job, &full);
+        assert_eq!(job.state, WorkState::Running);
+        assert_eq!(
+            job.note.as_deref(),
+            Some("lane status lacks the field(s): dirty_files")
+        );
+        // A complete status takes the note away again.
+        full["dirty_files"] = serde_json::json!([]);
+        apply_read(&mut job, &full);
+        assert_eq!(job.note, None);
+        // Another note stays.
+        job.note = Some("mine".into());
+        full.as_object_mut().unwrap().remove("dirty_files");
+        apply_read(&mut job, &full);
+        assert_eq!(job.note.as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn an_ended_empty_run_is_empty() {
+        let mut status: Value = serde_json::from_str(include_str!(
+            "../../../lucina-agents/tests/fixtures/lane/status-reported_done.json"
+        ))
+        .unwrap();
+        status["state"] = serde_json::json!("ended_empty");
+        let mut job = WorkJob {
+            id: "wk-1".into(),
+            // A head that differs from the fixture's would say "not empty" if it were asked.
+            base_head: Some("0".repeat(40)),
+            ..WorkJob::default()
+        };
+        apply_read(&mut job, &status);
+        assert_eq!(job.state, WorkState::EndedEmpty);
+        finish(&mut job);
+        assert_eq!(job.empty, Some(true));
+        assert!(job.ended_at.is_some());
     }
 
     #[test]

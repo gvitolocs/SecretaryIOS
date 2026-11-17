@@ -25,7 +25,9 @@ pub enum WorkCommand {
         /// The work id (`wk-…`)
         id: String,
     },
-    /// Wait for a run to end; the exit code says how it ended
+    /// Wait for a run to end; the exit code says how it ended: 0 done or verified, 1 failed
+    /// or lost, 3 all lanes exhausted, 4 dirty after quota, 5 still going at the timeout,
+    /// 6 ended with jobs queued, 7 ended dirty, 8 ended empty
     Wait(WaitArgs),
 }
 
@@ -37,7 +39,7 @@ pub struct StartArgs {
     /// Who runs first when the host is busy: owner, high, normal or backlog
     #[arg(long, default_value = "normal")]
     pub priority: String,
-    /// light when the worker runs no build on the host, build when it compiles or tests
+    /// light: the worker reads, reviews or measures and never builds (its cargo calls are refused by lane and it needs --expect); build: it compiles or tests
     #[arg(long, default_value = "build")]
     pub cost: String,
     /// The lane to run (one of --lane and --chain)
@@ -143,6 +145,14 @@ fn text(v: &Value) -> &str {
     v.as_str().unwrap_or_default()
 }
 
+/// A finished job that agentd started, whose `empty` could not be decided.
+fn emptiness_unknown(j: &Value) -> bool {
+    let finished = j["state"]
+        .as_str()
+        .is_some_and(|s| !matches!(s, "starting" | "queued" | "running"));
+    finished && j["empty"].is_null() && j["direct"] != true
+}
+
 fn job_row(j: &Value) -> Vec<String> {
     let lane = [&j["finalLane"], &j["lane"], &j["chain"]]
         .into_iter()
@@ -167,6 +177,8 @@ fn job_row(j: &Value) -> Vec<String> {
         age(text(&j["createdAt"])),
         if j["empty"] == true {
             "empty".to_string()
+        } else if emptiness_unknown(j) {
+            "?".to_string()
         } else {
             String::new()
         },
@@ -218,10 +230,14 @@ fn show_text(job: &Value) -> String {
     let width = map.keys().map(|k| k.len()).max().unwrap_or(0);
     map.iter()
         .map(|(k, v)| {
-            format!(
-                "{k:<width$}  {}",
-                if v.is_null() { "-".to_string() } else { s(v) }
-            )
+            let shown = if k == "empty" && emptiness_unknown(job) {
+                "unknown (no git heads and no expected file)".to_string()
+            } else if v.is_null() {
+                "-".to_string()
+            } else {
+                s(v)
+            };
+            format!("{k:<width$}  {shown}")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -328,14 +344,19 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
                 .get(&format!("/work?{}", q.join("&")))
                 .await
                 .map_err(api)?;
-            if let Some(w) = v["warning"].as_str() {
-                eprintln!("warning: {w}");
+            let (problems, code) = ls_problems(&v);
+            for p in &problems {
+                eprintln!("{p}");
             }
             let leads = v["leads"].as_array().cloned().unwrap_or_default();
-            Ok(Output {
+            let out = Output {
                 text: list_text(&leads),
                 json: Some(v),
-            })
+            };
+            match code {
+                0 => Ok(out),
+                code => print_and_exit(&out, json, code),
+            }
         }
         WorkCommand::Show { id } => Ok(show_output(
             client.get(&format!("/work/{id}")).await.map_err(api)?,
@@ -368,11 +389,38 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
     }
 }
 
-/// The `WORK` part of `lagent board`: one header line per lead. Empty when the daemon has no work route.
+/// What is wrong with a listing, as stderr lines, and the exit code of `lagent work ls`:
+/// 2 when the daemon sent a warning or a listed job's `lane status` could not be read.
+fn ls_problems(v: &Value) -> (Vec<String>, i32) {
+    let mut lines = Vec::new();
+    if let Some(w) = v["warning"].as_str() {
+        lines.push(format!("warning: {w}"));
+    }
+    let unreadable = v["jobs"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|j| j["statusErrors"].as_u64().unwrap_or(0) > 0)
+        .count();
+    if unreadable > 0 {
+        lines.push(format!(
+            "{unreadable} job(s) whose lane status could not be read"
+        ));
+    }
+    let code = if lines.is_empty() { 0 } else { 2 };
+    (lines, code)
+}
+
+/// The `WORK` part of `lagent board`: one header line per lead, and the daemon's warning when
+/// it has one. Empty when the daemon has no work route.
 pub async fn board_section(client: &Client) -> Option<String> {
     let v = client.get("/work").await.ok()?;
     let leads = v["leads"].as_array()?;
-    let lines: Vec<String> = leads.iter().map(lead_header).collect();
+    let mut lines: Vec<String> = leads.iter().map(lead_header).collect();
+    if let Some(w) = v["warning"].as_str() {
+        lines.push(format!("warning: {w}"));
+    }
     Some(format!(
         "WORK\n{}",
         if lines.is_empty() {
@@ -424,12 +472,49 @@ mod tests {
         assert_eq!(r[5], "2");
         assert_eq!(r[7], "");
         assert_eq!(job_row(&json!({"empty": true}))[7], "empty");
+        // A finished job whose emptiness is unknown shows `?`; a running or direct one stays blank.
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": null}))[7],
+            "?"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": false}))[7],
+            ""
+        );
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": null, "direct": true}))[7],
+            ""
+        );
+        let shown = show_text(&json!({"state": "done", "empty": null}));
+        assert!(
+            shown.contains("unknown (no git heads and no expected file)"),
+            "{shown}"
+        );
         assert_eq!(r[8], "repo");
         assert_eq!(r[9].len(), 60);
         assert!(r[6].ends_with('d'));
         let c = json!({"chain": "deep", "finalLane": "zen"});
         assert_eq!(job_row(&c)[4], "zen");
         assert_eq!(job_row(&json!({"chain": "deep"}))[4], "deep");
+    }
+
+    #[test]
+    fn a_warning_or_an_unreadable_status_exits_2() {
+        let clean = json!({"leads": [], "jobs": [{"statusErrors": 0}], "warning": null});
+        assert_eq!(ls_problems(&clean), (vec![], 0));
+        let warned =
+            json!({"jobs": [], "warning": "1 of 3 lane rows could not be read: line 2: x"});
+        let (lines, code) = ls_problems(&warned);
+        assert_eq!(code, 2);
+        assert_eq!(
+            lines,
+            ["warning: 1 of 3 lane rows could not be read: line 2: x"]
+        );
+        let stuck =
+            json!({"jobs": [{"statusErrors": 3}, {"statusErrors": 1}, {}], "warning": null});
+        let (lines, code) = ls_problems(&stuck);
+        assert_eq!(code, 2);
+        assert_eq!(lines, ["2 job(s) whose lane status could not be read"]);
     }
 
     #[test]

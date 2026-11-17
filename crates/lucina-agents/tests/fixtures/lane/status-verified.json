@@ -1,0 +1,52 @@
+{
+  "id": "qoder-il-lazycache",
+  "state": "verified",
+  "runner_lost": false,
+  "owner": "qoder-il-lazycache",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "qoder",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/scratch/lucinajs",
+  "repo": null,
+  "final_lane": "qoder",
+  "model": "auto-free",
+  "effort": null,
+  "session_id": "e1b29f3e-4dd6-4cc9-b744-3a5b18107764",
+  "live": null,
+  "attempts": [
+    {
+      "lane": "qoder",
+      "outcome": "ok",
+      "reason": "<text removed>",
+      "duration_s": 2667.3,
+      "changed_files": [],
+      "looks": [],
+      "model_used": null,
+      "before_head": null,
+      "after_head": null
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": "<text removed>",
+  "verify": {
+    "cmd": "test -s /home/nez/scratch/lucinajs/interleavings/lazycache.md",
+    "ran_cmd": null,
+    "exit_code": 0,
+    "timed_out": false,
+    "head": null,
+    "ran": true,
+    "note": null
+  },
+  "diffgate": {
+    "skipped": "<text removed>"
+  },
+  "dirty_files": [],
+  "dirty_check": "<text removed>",
+  "cooldowns": [],
+  "note": "<text removed>",
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/qoder-il-lazycache",
+  "updated": "2026-11-17T12:19:38Z"
+}

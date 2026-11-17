@@ -1,0 +1,42 @@
+{
+  "id": "qoder-ct-gcheap",
+  "state": "failed",
+  "runner_lost": false,
+  "owner": "qoder-ct-gcheap",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "qoder",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/scratch/lucinajs",
+  "repo": null,
+  "final_lane": "qoder",
+  "model": "auto-free",
+  "effort": null,
+  "session_id": "138f0575-55c8-4fc9-93c1-b75ab047aabe",
+  "live": null,
+  "attempts": [
+    {
+      "lane": "qoder",
+      "outcome": "failed",
+      "reason": "<text removed>",
+      "duration_s": 1033.6,
+      "changed_files": [],
+      "looks": [],
+      "model_used": null,
+      "before_head": null,
+      "after_head": null
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": "<text removed>",
+  "verify": null,
+  "diffgate": null,
+  "dirty_files": [],
+  "dirty_check": null,
+  "cooldowns": [],
+  "note": "<text removed>",
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/qoder-ct-gcheap",
+  "updated": "2026-11-17T12:11:23Z"
+}
