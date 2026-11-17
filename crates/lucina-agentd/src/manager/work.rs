@@ -8,6 +8,7 @@
 //! [`lucina_agents::work`].
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -59,6 +60,8 @@ pub struct WorkConfig {
     pub poll: Duration,
     /// `LUCINA_AGENTD_WORK_LOST_AFTER_SECS` (default 120): a job older than this that `lane` does not know is lost.
     pub lost_after: Duration,
+    /// `LUCINA_AGENTD_WORK_SCOPE` (`auto`, `on`, `off`; default `auto`).
+    pub scope: ScopeMode,
 }
 
 impl WorkConfig {
@@ -79,6 +82,7 @@ impl WorkConfig {
             lane,
             poll: Duration::from_secs(secs("LUCINA_AGENTD_WORK_POLL_SECS", 20).max(1)),
             lost_after: Duration::from_secs(secs("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", 120)),
+            scope: parse_scope_mode(std::env::var("LUCINA_AGENTD_WORK_SCOPE").ok().as_deref()),
         }
     }
 }
@@ -227,6 +231,126 @@ fn clean_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 
 fn lane_command(bin: &Path) -> Command {
     clean_command(bin)
+}
+
+/// `LUCINA_AGENTD_WORK_SCOPE`: whether `lane run` starts in its own transient systemd scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScopeMode {
+    /// Use the scope when `systemd-run` is found and `XDG_RUNTIME_DIR` is set (the default).
+    #[default]
+    Auto,
+    /// Require the scope: refuse the start when it cannot be had.
+    On,
+    /// Never: start `lane run` directly.
+    Off,
+}
+
+/// The mode a `LUCINA_AGENTD_WORK_SCOPE` value names; an unknown word is `auto`, with a warning.
+fn parse_scope_mode(value: Option<&str>) -> ScopeMode {
+    match value.map(str::trim) {
+        None | Some("") | Some("auto") => ScopeMode::Auto,
+        Some("on") => ScopeMode::On,
+        Some("off") => ScopeMode::Off,
+        Some(other) => {
+            tracing::warn!(
+                value = other,
+                "LUCINA_AGENTD_WORK_SCOPE is not auto, on or off: using auto"
+            );
+            ScopeMode::Auto
+        }
+    }
+}
+
+/// Whether a start uses the scope, from the mode and what the daemon's environment has: `Ok`
+/// carries the answer and a warning to log when the scope was skipped on a systemd host
+/// because `XDG_RUNTIME_DIR` is missing; `Err` is the reason a start is refused (mode `on`).
+fn scope_decision(
+    mode: ScopeMode,
+    systemd_run_found: bool,
+    xdg_runtime_dir: bool,
+) -> Result<(bool, Option<&'static str>), String> {
+    match mode {
+        ScopeMode::Off => Ok((false, None)),
+        ScopeMode::Auto if !systemd_run_found => Ok((false, None)),
+        ScopeMode::Auto if !xdg_runtime_dir => Ok((
+            false,
+            Some("XDG_RUNTIME_DIR is not set: work jobs start without their own systemd scope"),
+        )),
+        ScopeMode::Auto => Ok((true, None)),
+        ScopeMode::On if !systemd_run_found => Err(
+            "LUCINA_AGENTD_WORK_SCOPE=on needs systemd-run, which was not found on PATH".into(),
+        ),
+        ScopeMode::On if !xdg_runtime_dir => Err(
+            "LUCINA_AGENTD_WORK_SCOPE=on needs XDG_RUNTIME_DIR (the systemd user manager), which is not set"
+                .into(),
+        ),
+        ScopeMode::On => Ok((true, None)),
+    }
+}
+
+const SCOPE_PREFIX: &str = "lucina-work-";
+
+/// The transient unit name of a job: `lucina-work-<id>`. The id may hold lower-case letters,
+/// digits and `-` only; anything else is refused.
+fn scope_unit(id: &str) -> Result<String, String> {
+    let ok = !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if ok {
+        Ok(format!("{SCOPE_PREFIX}{id}"))
+    } else {
+        Err(format!(
+            "job id \"{id}\" cannot name a systemd unit (lower-case letters, digits and - only)"
+        ))
+    }
+}
+
+/// The `lane` arguments of a start, `run` first.
+fn lane_run_args(job: &WorkJob) -> Result<Vec<OsString>, String> {
+    let mut a: Vec<OsString> = vec!["run".into(), "--id".into(), (&job.id).into()];
+    match (&job.lane, &job.chain) {
+        (Some(l), _) => a.extend(["--lane".into(), l.into()]),
+        (None, Some(c)) => a.extend(["--category".into(), c.into()]),
+        (None, None) => return Err("no lane or chain".into()),
+    }
+    a.extend(["--workspace".into(), (&job.workspace).into()]);
+    a.extend(["--owner".into(), (&job.lead).into()]);
+    a.extend(["--cost".into(), job.cost.as_str().into()]);
+    if let Some(e) = &job.expect {
+        a.extend(["--expect-file".into(), e.into()]);
+    }
+    if let Some(v) = &job.verify {
+        a.extend(["--verify".into(), v.into()]);
+    }
+    Ok(a)
+}
+
+/// The program and arguments of the start. With a scope (`Some(unit)`) the list is
+/// `systemd-run --user --scope --quiet --collect --unit <unit> -- <lane> <run arguments>`: a
+/// scope, not a service, because `lane run` exits at once and the runner it leaves must live
+/// on in a control group outside the daemon's unit. Without one it is `<lane> <run arguments>`.
+/// No test here can show the control-group behaviour itself; it is proved live after deploy.
+fn run_argv(scope: Option<&str>, lane: &Path, run_args: &[OsString]) -> Vec<OsString> {
+    let mut v: Vec<OsString> = Vec::new();
+    if let Some(unit) = scope {
+        v.extend(
+            [
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--quiet",
+                "--collect",
+                "--unit",
+            ]
+            .map(OsString::from),
+        );
+        v.push(unit.into());
+        v.push("--".into());
+    }
+    v.push(lane.into());
+    v.extend(run_args.iter().cloned());
+    v
 }
 
 /// The last `n` characters.
@@ -428,6 +552,18 @@ impl Manager {
     /// Starts a work job: stores the spec, then `lane run` with it on stdin.
     pub async fn work_start(&self, req: StartWork) -> Result<WorkJob, ManagerError> {
         let lane_bin = self.work_lane()?.to_path_buf();
+        let (scoped, skipped) = scope_decision(
+            self.work().cfg.scope,
+            crate::process::resolve_program("systemd-run").is_some(),
+            std::env::var_os("XDG_RUNTIME_DIR").is_some(),
+        )
+        .map_err(ManagerError::Invalid)?;
+        if let Some(w) = skipped {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!("{w}");
+            }
+        }
         let lead = req.lead.trim().to_string();
         if lead.is_empty() {
             return Err(ManagerError::Invalid("lead is required".into()));
@@ -473,6 +609,11 @@ impl Manager {
                 break id;
             }
         };
+        let scope = if scoped {
+            Some(scope_unit(&id).map_err(ManagerError::Invalid)?)
+        } else {
+            None
+        };
         let run_dir = dir.join(&id);
         let spec_path = run_dir.join("spec.md");
         std::fs::create_dir_all(&run_dir)
@@ -496,6 +637,7 @@ impl Manager {
             created_at: now_iso(),
             base_head,
             state: WorkState::Starting,
+            scope,
             ..WorkJob::default()
         };
         self.work()
@@ -861,22 +1003,12 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
     let stdin =
         std::fs::File::open(&job.spec_path).map_err(|e| format!("cannot read the spec: {e}"))?;
     let err_path = run_dir.join("run.err");
-    let mut cmd = lane_command(bin);
-    cmd.arg("run").arg("--id").arg(&job.id);
-    match (&job.lane, &job.chain) {
-        (Some(l), _) => cmd.arg("--lane").arg(l),
-        (None, Some(c)) => cmd.arg("--category").arg(c),
-        (None, None) => return Err("no lane or chain".into()),
-    };
-    cmd.arg("--workspace").arg(&job.workspace);
-    cmd.arg("--owner").arg(&job.lead);
-    cmd.arg("--cost").arg(job.cost.as_str());
-    if let Some(e) = &job.expect {
-        cmd.arg("--expect-file").arg(e);
-    }
-    if let Some(v) = &job.verify {
-        cmd.arg("--verify").arg(v);
-    }
+    let argv = run_argv(job.scope.as_deref(), bin, &lane_run_args(job)?);
+    // The environment is today's allowlist either way: `systemd-run --user` finds the user
+    // manager through `XDG_RUNTIME_DIR`, which is on it.
+    let mut cmd = clean_command(&argv[0]);
+    cmd.args(&argv[1..]);
+    let scoped = job.scope.is_some();
     cmd.stdin(Stdio::from(stdin))
         .stdout(Stdio::from(open(run_dir.join("run.out"))?))
         .stderr(Stdio::from(open(err_path.clone())?));
@@ -886,12 +1018,18 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
             400,
         )
     };
-    let mut child = cmd.spawn().map_err(|e| format!("cannot start lane: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if scoped {
+            format!("cannot start systemd-run: {e}")
+        } else {
+            format!("cannot start lane: {e}")
+        }
+    })?;
     match tokio::time::timeout(RUN_LIMIT, child.wait()).await {
         Ok(Ok(status)) if status.success() => Ok(()),
         Ok(Ok(status)) => {
             let text = tail(&err_path);
-            Err(if text.is_empty() {
+            let text = if text.is_empty() {
                 format!(
                     "lane run exited {}",
                     status
@@ -899,6 +1037,13 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "on a signal".into())
                 )
+            } else {
+                text
+            };
+            // `systemd-run --scope` passes the command's exit code on; a run `lane` knows
+            // still counts (see `launch`), so this note is for a start nobody knows.
+            Err(if scoped {
+                format!("could not start the run in its own systemd scope: {text}")
             } else {
                 text
             })
@@ -1071,6 +1216,7 @@ deep-codex = ["qoder", "codex-a"]
             lane: None,
             poll: Duration::from_secs(1),
             lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
         };
         let work = Work::open(cfg);
         let job = WorkJob {
@@ -1153,6 +1299,112 @@ deep-codex = ["qoder", "codex-a"]
         finish(&mut job);
         assert_eq!(job.empty, Some(true));
         assert!(job.ended_at.is_some());
+    }
+
+    fn os(v: &[&str]) -> Vec<OsString> {
+        v.iter().map(OsString::from).collect()
+    }
+
+    fn sample_job() -> WorkJob {
+        WorkJob {
+            id: "wk-0123456789ab".into(),
+            lead: "chat-a".into(),
+            lane: Some("qoder".into()),
+            workspace: "/w".into(),
+            verify: Some("true".into()),
+            expect: Some("out.md".into()),
+            ..WorkJob::default()
+        }
+    }
+
+    #[test]
+    fn the_argument_list_with_and_without_the_scope() {
+        let args = lane_run_args(&sample_job()).unwrap();
+        assert_eq!(
+            args,
+            os(&[
+                "run",
+                "--id",
+                "wk-0123456789ab",
+                "--lane",
+                "qoder",
+                "--workspace",
+                "/w",
+                "--owner",
+                "chat-a",
+                "--cost",
+                "build",
+                "--expect-file",
+                "out.md",
+                "--verify",
+                "true"
+            ])
+        );
+        let lane = Path::new("/bin/lane");
+        let plain = run_argv(None, lane, &args);
+        assert_eq!(plain[0], OsString::from("/bin/lane"));
+        assert_eq!(plain[1..], args[..]);
+        let scoped = run_argv(Some("lucina-work-wk-0123456789ab"), lane, &args);
+        assert_eq!(
+            scoped[..8],
+            os(&[
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--quiet",
+                "--collect",
+                "--unit",
+                "lucina-work-wk-0123456789ab",
+                "--"
+            ])[..]
+        );
+        assert_eq!(scoped[8], OsString::from("/bin/lane"));
+        assert_eq!(scoped[9..], args[..]);
+        let mut chained = sample_job();
+        chained.lane = None;
+        assert!(lane_run_args(&chained).is_err());
+        chained.chain = Some("deep".into());
+        assert!(lane_run_args(&chained)
+            .unwrap()
+            .ends_with(&os(&["--verify", "true"])));
+    }
+
+    #[test]
+    fn the_unit_name_takes_only_lower_case_digits_and_dashes() {
+        assert_eq!(
+            scope_unit("wk-0123456789ab").as_deref(),
+            Ok("lucina-work-wk-0123456789ab")
+        );
+        for bad in ["", "WK-1", "wk_1", "wk 1", "wk-1.service", "wk-é", "wk/1"] {
+            assert!(scope_unit(bad).is_err(), "{bad:?}");
+        }
+        assert!(scope_unit(&new_id(u128::MAX)).is_ok());
+    }
+
+    #[test]
+    fn the_scope_mode_words() {
+        assert_eq!(parse_scope_mode(None), ScopeMode::Auto);
+        assert_eq!(parse_scope_mode(Some("auto")), ScopeMode::Auto);
+        assert_eq!(parse_scope_mode(Some("on")), ScopeMode::On);
+        assert_eq!(parse_scope_mode(Some("off")), ScopeMode::Off);
+        assert_eq!(parse_scope_mode(Some("maybe")), ScopeMode::Auto);
+    }
+
+    #[test]
+    fn the_scope_decision() {
+        use ScopeMode::*;
+        assert_eq!(scope_decision(Off, true, true), Ok((false, None)));
+        assert_eq!(scope_decision(Auto, false, true), Ok((false, None)));
+        assert_eq!(scope_decision(Auto, true, true), Ok((true, None)));
+        let (used, warning) = scope_decision(Auto, true, false).unwrap();
+        assert!(!used && warning.is_some_and(|w| w.contains("XDG_RUNTIME_DIR")));
+        assert_eq!(scope_decision(On, true, true), Ok((true, None)));
+        assert!(scope_decision(On, false, true)
+            .unwrap_err()
+            .contains("systemd-run"));
+        assert!(scope_decision(On, true, false)
+            .unwrap_err()
+            .contains("XDG_RUNTIME_DIR"));
     }
 
     #[test]
