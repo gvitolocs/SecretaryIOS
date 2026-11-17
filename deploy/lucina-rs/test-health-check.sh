@@ -79,25 +79,50 @@ esac
 STUB
 cat >"$tmp/bin/curl" <<'STUB'
 #!/bin/sh
+# curl answers per URL, because a tick now makes two unrelated probes and a test has to hold one up
+# while it fails the other: HEALTH_EXIT for the /health check, BROKER_EXIT for the broker upstream,
+# both 0 (answering) when unset. The broker URL is a .invalid host, so even a stub that stops
+# matching can never knock on the real infisical-brokerd.
 printf 'curl %s\n' "$*" >>"$fake_calls"
-exit "${CURL_EXIT:-0}"
+for a in "$@"; do
+    case $a in
+        http://* | https://*)
+            case $a in
+                "$fake_broker_url") exit "${BROKER_EXIT:-0}" ;;
+                */health) exit "${HEALTH_EXIT:-0}" ;;
+                *)
+                    printf 'fake curl: unsupported URL: %s\n' "$a" >&2
+                    exit 9
+                    ;;
+            esac
+            ;;
+    esac
+done
+exit 0
 STUB
 chmod 755 "$tmp/bin/systemctl" "$tmp/bin/curl"
 export PATH="$tmp/bin:$PATH"
 
 maint_dir=$XDG_STATE_HOME/lucina/maintenance
 counter=$XDG_RUNTIME_DIR/lucina-rs-health.failures
+episode_dir=$XDG_RUNTIME_DIR/lucina-watchdog
 rs=lucina-rs.service
 agentd=lucina-agentd.service
 fails=''
 
-# reset <rs-state> <agentd-state>: fresh call log, no markers, no /health counter. `-` leaves that unit
-# uninstalled on this host.
+# The watchdog asks this variable for the broker upstream; production uses the default (the real
+# infisical-brokerd on 127.0.0.1:8088), here it is a host that cannot resolve.
+fake_broker_url=http://broker.invalid/api/status
+export fake_broker_url
+export LUCINA_BROKER_UPSTREAM=$fake_broker_url
+
+# reset <rs-state> <agentd-state>: fresh call log, no markers, no /health counter, no episode file.
+# `-` leaves that unit uninstalled on this host.
 reset() {
     : >"$fake_calls"
-    rm -rf "$maint_dir"
+    rm -rf "$maint_dir" "$episode_dir"
     rm -f "$fake_units/$rs" "$fake_units/$agentd" "$counter"
-    unset CURL_EXIT
+    unset HEALTH_EXIT BROKER_EXIT
     [ "$1" = - ] || printf '%s\n' "$1" >"$fake_units/$rs"
     [ "$2" = - ] || printf '%s\n' "$2" >"$fake_units/$agentd"
 }
@@ -135,6 +160,7 @@ called_before() {
 }
 started() { calls_is "systemctl --user start $1"; }
 not_started() { ! calls_is "systemctl --user start $1"; }
+not_reset_failed() { ! calls_is "systemctl --user reset-failed $1"; }
 restarted() { calls_is "systemctl --user restart $1"; }
 not_restarted() { ! calls_is "systemctl --user restart $1"; }
 reported_inactive() { printf '%s\n' "$log" | grep -q "^$1: inactive with no maintenance marker, starting\$"; }
@@ -145,8 +171,42 @@ exited() { [ "$rc" = "$1" ]; }
 exited_nonzero() { [ "$rc" != 0 ]; }
 counter_holds() { [ -f "$counter" ] && [ "$(cat "$counter")" = "$1" ]; }
 no_counter() { [ ! -e "$counter" ]; }
-probe_once() {
+started_once() {
     call_count "systemctl --user start $rs" 1
+}
+# The episode file is the watchdog's own; a case that needs one to exist beforehand makes it first.
+mark_episode() {
+    mkdir -p "$episode_dir" && : >"$episode_dir/$1.reported"
+}
+episode_marked() { [ -f "$episode_dir/$1.reported" ]; }
+no_episode() { [ ! -e "$episode_dir/$1.reported" ]; }
+episode_dir_mode() { [ "$(stat -c '%a' "$episode_dir")" = 700 ]; }
+broker_probes() { call_count "curl -fsS -m 5 -o /dev/null $fake_broker_url" "$1"; }
+nothing_started() { ! grep -q '^systemctl --user start ' "$fake_calls"; }
+all_marked() {
+    for u in "$@"; do
+        episode_marked "$u" || return 1
+    done
+}
+# next_tick [rs-state] [agentd-state]: the run two minutes later. The call log is cleared first, so a
+# check about this tick cannot pass on the calls the tick before it made.
+next_tick() {
+    : >"$fake_calls"
+    if [ $# -ge 2 ]; then
+        [ "$1" = - ] || printf '%s\n' "$1" >"$fake_units/$rs"
+        [ "$2" = - ] || printf '%s\n' "$2" >"$fake_units/$agentd"
+    fi
+}
+# waits_for <unit...>: the tick said, on one line, that every unit named waits for the broker.
+waits_for() {
+    [ "$(printf '%s\n' "$log" | grep -c 'broker upstream is down' || true)" = 1 ] || return 1
+    line=$(printf '%s\n' "$log" | grep 'broker upstream is down')
+    for u in "$@"; do
+        case " $line " in
+            *" $u "* | *" $u:"*) ;;
+            *) return 1 ;;
+        esac
+    done
 }
 
 printf 'health-check: the inactive rule (incident:lucina-rs-earlyoom:20261117)\n'
@@ -155,7 +215,7 @@ printf 'health-check: the inactive rule (incident:lucina-rs-earlyoom:20261117)\n
 reset inactive active
 run_watch
 check 'inactive with no marker starts lucina-rs' started "$rs"
-check '... once, not twice' probe_once
+check '... once, not twice' started_once
 check '... and reports it by name' reported_inactive "$rs"
 check '... and exits non-zero, which is what notifies' exited_nonzero
 
@@ -191,7 +251,7 @@ check 'a marker with no until= still starts' started "$rs"
 reset failed active
 run_watch
 check 'a failed lucina-rs is reset' calls_is "systemctl --user reset-failed $rs"
-check '... and started, once' probe_once
+check '... and started, once' started_once
 check '... reset first, then started' called_before \
     "systemctl --user reset-failed $rs" "systemctl --user start $rs"
 check '... and reported by name' reported_failed "$rs"
@@ -253,8 +313,8 @@ printf 'health-check: the rules that were already there\n'
 
 # 9. /health failing once is only remembered.
 reset active active
-CURL_EXIT=22
-export CURL_EXIT
+HEALTH_EXIT=22
+export HEALTH_EXIT
 run_watch
 check 'one /health failure does not restart' not_restarted "$rs"
 check '... and counts' counter_holds 1
@@ -273,6 +333,95 @@ run_watch
 check 'a healthy run clears a strike the last tick left' no_counter
 check 'a healthy unit starts nothing' not_started "$rs"
 check '... and reports nothing' not_reported
+
+printf 'health-check: an episode, and the Infisical broker upstream\n'
+
+# 11. The 2026-11-07 shape: Infisical answered 502 for hours. Both units start through
+# `infisical-broker exec`, so every start failed and left the unit failed again, and the watchdog
+# reset-failed, started and notified on every 2-minute tick of it. With the broker down the unit is
+# not touched at all and the episode is told once.
+reset failed active
+BROKER_EXIT=22
+export BROKER_EXIT
+run_watch
+check 'a failed unit with the broker down is not reset-failed' not_reset_failed "$rs"
+check '... and not started' not_started "$rs"
+check '... but the broker upstream was probed, once' broker_probes 1
+check '... and the tick says the unit waits for it' waits_for "$rs"
+check '... and the new episode is reported once, by exiting non-zero' exited_nonzero
+check '... and the episode is marked' episode_marked "$rs"
+check '... in a directory only the owner can read' episode_dir_mode
+next_tick
+run_watch
+check 'the next tick still probes once' broker_probes 1
+check '... and still starts nothing' not_started "$rs"
+check '... and says so to the journal again' waits_for "$rs"
+check '... but does not notify: the episode is already told' exited 0
+next_tick
+run_watch
+check '... nor on the third tick' exited 0
+check '... with the episode still marked, so nothing re-notifies' episode_marked "$rs"
+
+# 12. The broker comes back: the recovery runs, and this tick is quiet because the episode has
+# already been told. Seeing the unit active again is what closes it.
+reset failed active
+mark_episode "$rs"
+run_watch
+check 'a failed unit with the broker up is reset and started' started "$rs"
+check '... reset before it is started' called_before \
+    "systemctl --user reset-failed $rs" "systemctl --user start $rs"
+check '... and the broker was probed first, since a start is on the table' broker_probes 1
+check '... and it is still said to the journal' reported_failed "$rs"
+check '... but an episode already told is not notified twice' exited 0
+next_tick
+run_watch
+check 'the tick that finds the unit active closes the episode' no_episode "$rs"
+check '... and starts nothing' not_started "$rs"
+
+# 13. A second episode reports again: the file is gone, so the next failure is news.
+next_tick failed active
+run_watch
+check 'a unit that comes down again after recovery is a new episode' exited_nonzero
+check '... and is recovered' started "$rs"
+check '... and marked again' episode_marked "$rs"
+
+# 14. Both units down with the broker down: one tick, one notification, one probe, two files.
+reset failed failed
+BROKER_EXIT=22
+export BROKER_EXIT
+run_watch
+check 'one outage tick with both units down reports once' exited_nonzero
+check '... and probes the broker once for the two of them' broker_probes 1
+check '... and starts neither' nothing_started
+check '... and marks both episodes' all_marked "$rs" "$agentd"
+check '... naming both on the one waiting line' waits_for "$rs" "$agentd"
+
+# 15. Broker up and the start does not stick (earlyoom keeps landing on it): the first tick tells the
+# owner, the ticks after it keep trying and keep quiet. The rule of 11, seen without the outage.
+reset inactive active
+run_watch
+check 'a new inactive episode with the broker up reports' exited_nonzero
+check '... and starts' started "$rs"
+check '... and marks the episode' episode_marked "$rs"
+next_tick inactive active
+run_watch
+check '... and the same episode two minutes later does not' exited 0
+check '... though it starts again' started "$rs"
+check '... and still says so to the journal' reported_inactive "$rs"
+check '... and probes the broker for it, once' broker_probes 1
+
+# 16. A unit stopped on purpose is not an episode, outage or not: there is nothing to start, so the
+# broker is not even asked.
+reset inactive active
+sh "$maint" stop "$rs" --reason 'riding out the Infisical outage' >/dev/null
+BROKER_EXIT=22
+export BROKER_EXIT
+run_watch
+check 'a valid marker with the broker down starts nothing' not_started "$rs"
+check '... and reports nothing' exited 0
+check '... and leaves no episode file' no_episode "$rs"
+check '... so the broker is not probed at all' broker_probes 0
+check '... and says nothing' not_reported
 
 if [ -n "$fails" ]; then
     printf 'health-check: FAILED%b\n' "$fails" >&2
