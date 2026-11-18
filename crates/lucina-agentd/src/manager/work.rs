@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lucina_agents::ids::{lane_run_id, run_state_for, IdRow, Kind};
 use lucina_agents::work::{
@@ -108,6 +108,9 @@ pub(super) struct Work {
     /// A call that does not answer in time says nothing of the run: it is neither an answer nor
     /// a miss.
     status_limit: Duration,
+    /// The age of a job's saved times as this daemon counts them: the instant it first looked
+    /// and what the clock said then, per key (not kept over a restart).
+    seen: Mutex<HashMap<String, (Instant, i64)>>,
 }
 
 impl Work {
@@ -123,6 +126,7 @@ impl Work {
             launching: Mutex::new(HashSet::new()),
             blocked: AtomicBool::new(blocked),
             status_limit: Duration::from_secs(status_secs.unwrap_or(QUERY_LIMIT.as_secs()).max(1)),
+            seen: Mutex::new(HashMap::new()),
         }
     }
 
@@ -135,6 +139,35 @@ impl Work {
 
     fn jobs(&self) -> std::sync::MutexGuard<'_, Vec<WorkJob>> {
         self.jobs.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The age of `stamp` in seconds as this daemon counts it: what the clock said the first
+    /// time it looked at this key, plus the monotonic time since. A window measured this way
+    /// neither closes early nor freezes when the wall clock steps, and a stamp from
+    /// `jobs.json` that lies in the future (a step back over it) starts at zero.
+    fn age_of(&self, key: &str, stamp: Option<&str>) -> Option<i64> {
+        let wall = age_secs(stamp?)?;
+        let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let e = seen
+            .entry(key.to_string())
+            .or_insert((Instant::now(), wall));
+        Some(e.1.saturating_add(u64::try_from(e.0.elapsed().as_secs()).unwrap_or(u64::MAX) as i64))
+    }
+
+    /// Whether the poller still asks `lane` about this job: [`pollable`], and for a run agentd
+    /// lost itself the day it is followed again counted as this daemon counts it. The wall
+    /// clock stays the upper bound of [`pollable`]: a job is never followed for more than a
+    /// day of wall time after it ended.
+    fn follows(&self, job: &WorkJob) -> bool {
+        if !pollable(job) {
+            return false;
+        }
+        match job.state {
+            WorkState::Lost => self
+                .age_of(&format!("{}#lost", job.id), job.ended_at.as_deref())
+                .is_some_and(|a| a < DAY),
+            _ => true,
+        }
     }
 
     /// Writes `jobs.json` through a temp file in the same directory and a rename. Err: why the
@@ -389,9 +422,16 @@ fn tail_chars(s: &str, n: usize) -> String {
     s.chars().skip(count.saturating_sub(n)).collect()
 }
 
+/// The seconds since the saved time. A clock that stands ahead of the stamp (a step back after
+/// the job was saved) gives zero: an age is never negative, which would otherwise hide a job
+/// from nothing and show it forever.
 fn age_secs(rfc3339: &str) -> Option<i64> {
     let then = chrono::DateTime::parse_from_rfc3339(rfc3339).ok()?;
-    Some((chrono::Utc::now() - then.with_timezone(&chrono::Utc)).num_seconds())
+    Some(
+        (chrono::Utc::now() - then.with_timezone(&chrono::Utc))
+            .num_seconds()
+            .max(0),
+    )
 }
 
 /// Whether a stored or direct job still belongs in the default list.
@@ -1028,7 +1068,7 @@ impl Manager {
             self.work()
                 .jobs()
                 .iter()
-                .filter(|j| pollable(j) && !launching.contains(&j.id))
+                .filter(|j| self.work().follows(j) && !launching.contains(&j.id))
                 .map(|j| j.id.clone())
                 .collect()
         };
@@ -1052,7 +1092,7 @@ impl Manager {
         let want: Vec<(String, String, &'static str)> = {
             let jobs = self.work().jobs();
             jobs.iter()
-                .filter(|j| !pollable(j) && !launching.contains(&j.id))
+                .filter(|j| !self.work().follows(j) && !launching.contains(&j.id))
                 .filter_map(|j| {
                     let state = run_state_for(j.state, j.empty)?;
                     Some((j.id.clone(), j.run_id.clone()?, state))
@@ -1089,7 +1129,7 @@ impl Manager {
         let Some(job) = self.stored_job(id) else {
             return;
         };
-        if !pollable(&job) {
+        if !self.work().follows(&job) {
             // A final job reaches here only when the store still owes it its end row: `lane`
             // is not asked again, only the store.
             if self.owed_end_row_state(&job).is_some() {
@@ -1101,7 +1141,7 @@ impl Manager {
         let Some(mut job) = self.stored_job(id) else {
             return;
         };
-        if !pollable(&job) {
+        if !self.work().follows(&job) {
             return;
         }
         let before = job.clone();
@@ -1146,7 +1186,11 @@ impl Manager {
                     *n += 1;
                     *n
                 };
-                let old_enough = age_secs(&job.created_at)
+                // How old the run is as this daemon counts it: a wall clock that steps back
+                // over `created_at` must not hold a live run in `starting` for the lost time.
+                let old_enough = self
+                    .work()
+                    .age_of(&format!("{id}#born"), Some(&job.created_at))
                     .is_some_and(|a| a >= self.work().cfg.lost_after.as_secs() as i64);
                 if misses >= LOST_MISSES && old_enough {
                     job.state = WorkState::Lost;
@@ -1679,6 +1723,66 @@ deep-codex = ["qoder", "codex-a"]
         work.persist(std::slice::from_ref(&job));
         work.persist(std::slice::from_ref(&job));
         assert!(!work.cfg.dir.join("jobs.json").exists());
+    }
+
+    /// A saved time the clock now stands ahead of: the age is zero, never negative.
+    #[test]
+    fn an_age_the_clock_stood_ahead_of_counts_as_zero() {
+        let later = (chrono::Utc::now() + chrono::Duration::hours(6)).to_rfc3339();
+        assert_eq!(age_secs(&later), Some(0), "a step back over the stamp");
+        // Such an age belongs to a job that is still shown and still followed.
+        assert!(recent(WorkState::Failed, Some(&later)));
+        let job = WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Lost,
+            ended_at: Some(later),
+            ..WorkJob::default()
+        };
+        assert!(pollable(&job), "a lost job the clock stands ahead of");
+    }
+
+    /// The `lost` window of a job this daemon has known is counted by the time it has lived,
+    /// not by a clock that can step; the day of wall time stays the outer bound.
+    #[test]
+    fn the_lost_window_counts_time_that_cannot_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |hours: i64| (chrono::Utc::now() + chrono::Duration::hours(hours)).to_rfc3339();
+        let lost_at = |ended: Option<String>| WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Lost,
+            ended_at: ended,
+            ..WorkJob::default()
+        };
+        // A day of wall time after the end is the end of following, whichever way the clock
+        // went afterwards.
+        assert!(
+            work.follows(&lost_at(Some(at(6)))),
+            "a step back does not close it"
+        );
+        assert!(
+            !work.follows(&lost_at(Some(at(-30)))),
+            "a day of wall time after the end is the most a run is followed"
+        );
+        // The same key keeps the age it was first given and only ever adds to it: what the
+        // clock says later, in either direction, does not reach the window.
+        assert_eq!(
+            work.age_of("wk-2#lost", Some(&at(6))).unwrap(),
+            0,
+            "the first look at a stamp the clock stands ahead of"
+        );
+        std::thread::sleep(Duration::from_millis(1100));
+        let grown = work.age_of("wk-2#lost", Some(&at(-30))).unwrap();
+        assert!(
+            grown >= 1 && grown < DAY,
+            "the age counts this daemon's time, not the clock's: {grown}"
+        );
     }
 
     #[test]
