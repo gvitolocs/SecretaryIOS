@@ -85,6 +85,10 @@ struct Exec {
     /// The names the deploy recipe declares (`env = [...]`); only the deploy job of that
     /// recipe passes them, and only to its own commands.
     deploy_env: Vec<String>,
+    /// The merge warm-up's cap in seconds. 20 minutes by default, well outside the timed gates;
+    /// a test may set it to a few seconds to watch the cap fire. It is given to `timeout` as
+    /// seconds and, without `--foreground`, the cap ends the warm-up and every process it forked.
+    warm_up_secs: u64,
 }
 
 struct Members {
@@ -114,6 +118,7 @@ impl Exec {
             waivers: None,
             source_env: std::env::vars_os().collect(),
             deploy_env: Vec::new(),
+            warm_up_secs: 20 * 60,
             spec,
             log,
             path,
@@ -228,6 +233,22 @@ impl Exec {
 
     /// `bash -c cmd` in `cwd` with output into the log, under `timeout`. Returns its success.
     fn sh(&mut self, cwd: &Path, cmd: &str, timeout_min: u64) -> bool {
+        self.sh_run(
+            cwd,
+            cmd,
+            &format!("{}m", timeout_min.max(1)),
+            &format!("timed out after {timeout_min} min"),
+        )
+        .is_none()
+    }
+
+    /// [`Exec::sh`]'s worker, with the limit given to `timeout` verbatim (`limit`, e.g. `45m` or
+    /// `20s`) and the phrase to report on a timeout (`timed_out`). Returns `None` when the command
+    /// succeeded, or the reason it did not: `timed_out` on a timeout, otherwise the exit code. The
+    /// gates run through [`Exec::sh`] and ignore the reason; the warm-up puts it in its own log
+    /// line, so a cap that fires can say so. The command, its clean environment and the log lines
+    /// are exactly as [`Exec::sh`] always had them.
+    fn sh_run(&mut self, cwd: &Path, cmd: &str, limit: &str, timed_out: &str) -> Option<String> {
         self.say(&format!("$ {cmd}"));
         // The command gets the built environment (the allowlist from the executor's own
         // environment, plus the deploy recipe's declared names), not what the executor
@@ -244,16 +265,13 @@ impl Exec {
             // as GATE_FAILED with a log that says nothing about it: a gate that could not be run
             // reads exactly like a gate that ran and was refused.
             self.say("cannot run: the job log could not be duplicated for the command's output");
-            return false;
+            return Some("cannot run: the job log could not be duplicated".to_string());
         };
+        // `timeout` without `--foreground`: it runs `bash` in its own process group and, when the
+        // limit is reached, signals the whole group, so a warm-up that hangs takes down every
+        // process it forked, not only the one `timeout` waits on.
         let status = Command::new("timeout")
-            .args([
-                "--kill-after=30s",
-                &format!("{}m", timeout_min.max(1)),
-                "bash",
-                "-c",
-                cmd,
-            ])
+            .args(["--kill-after=30s", limit, "bash", "-c", cmd])
             .current_dir(cwd)
             .env_clear()
             .envs(built)
@@ -282,10 +300,10 @@ impl Exec {
             .stderr(Stdio::from(err))
             .status();
         match status {
-            Ok(s) if s.success() => true,
+            Ok(s) if s.success() => None,
             Ok(s) => {
                 let why = if s.code() == Some(124) {
-                    format!("timed out after {timeout_min} min")
+                    timed_out.to_string()
                 } else {
                     format!(
                         "exit {}",
@@ -295,11 +313,11 @@ impl Exec {
                     )
                 };
                 self.say(&format!("failed: {why}"));
-                false
+                Some(why)
             }
             Err(e) => {
                 self.say(&format!("cannot run: {e}"));
-                false
+                Some(format!("cannot run: {e}"))
             }
         }
     }
@@ -507,8 +525,11 @@ impl Exec {
     /// gate: it is outside every timed step, its result is not recorded, and a failure or timeout
     /// is only logged before the merge goes on to `git merge` and the gates exactly as before. It
     /// is skipped when the repo runs no cargo gate (`cargo` is `off`/`none`) or the base has no
-    /// `Cargo.toml` to check. It runs through [`Exec::sh`] for the same clean environment, PATH and
-    /// `CARGO_TARGET_DIR`; `gate_env` is kept empty, so it gets none of the gate allow/waivers.
+    /// `Cargo.toml` to check. It runs through [`Exec::sh_run`] for the same clean environment, PATH
+    /// and `CARGO_TARGET_DIR`, under its own cap ([`Exec::warm_up_secs`], given to `timeout` as
+    /// seconds) and with `gate_env` kept empty, so it gets none of the gate allow/waivers. Without
+    /// `--foreground` the cap ends the check and every process it forked; the reason it returns
+    /// (a timeout in particular) goes into the `warm-up: failed` line.
     fn warm_up(&mut self, dir: &Path, base: &str, rules: &Rules) {
         if repo::cargo_mode(&rules.merge.cargo) == Some(repo::CargoMode::None) {
             return;
@@ -522,13 +543,19 @@ impl Exec {
             "warm-up: cargo check of the merge base {short} (not a gate)"
         ));
         let t = Instant::now();
-        if self.sh(dir, "cargo check --workspace --quiet", 20) {
-            self.say(&format!("warm-up: done in {}s", t.elapsed().as_secs()));
-        } else {
-            self.say(&format!(
-                "warm-up: failed after {}s (not a gate failure): the check of the merge base did not pass",
+        let cap = self.warm_up_secs;
+        let why = self.sh_run(
+            dir,
+            "cargo check --workspace --quiet",
+            &format!("{cap}s"),
+            &format!("timed out after {cap}s"),
+        );
+        match why {
+            None => self.say(&format!("warm-up: done in {}s", t.elapsed().as_secs())),
+            Some(reason) => self.say(&format!(
+                "warm-up: failed after {}s (not a gate failure): {reason}",
                 t.elapsed().as_secs()
-            ));
+            )),
         }
     }
 
@@ -2286,5 +2313,130 @@ mod tests {
             assert!(!log.contains("warm-up"), "{log}");
             assert!(!check_file.exists(), "cargo check ran for cargo = {cargo}");
         }
+    }
+
+    /// The pids of every process whose command line carries `marker` (the argv, never the
+    /// environment). This is how the cap test proves nothing it started survived — by reading
+    /// `/proc/*/cmdline`, not by `pgrep`/`pkill`.
+    fn procs_with_marker(marker: &str) -> Vec<u32> {
+        let mut hits = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return hits;
+        };
+        for e in entries.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            // A pid that vanished between readdir and read is simply skipped.
+            let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                continue;
+            };
+            if String::from_utf8_lossy(&cmdline)
+                .split('\0')
+                .any(|arg| arg.contains(marker))
+            {
+                hits.push(pid);
+            }
+        }
+        hits
+    }
+
+    /// A cleanup guard for one warm-up test: on drop, and so even when an assertion below it
+    /// fails, it signals SIGKILL to the processes carrying this run's own unique marker — and to
+    /// nothing else. The warm-up's cap should already have ended them (its own process group, no
+    /// `--foreground`), so on the passing path there is nothing to reap; this only stops a bug
+    /// from leaving a `sleep 300` alive after the test. It is the one kill these tests are
+    /// allowed, aimed only at this test's own marker pids (`#![forbid(unsafe_code)]` bars the
+    /// `kill` syscall here, so it goes through `/bin/kill` — never `pkill`, never a pattern).
+    struct MarkerReaper {
+        marker: String,
+    }
+
+    impl Drop for MarkerReaper {
+        fn drop(&mut self) {
+            for pid in procs_with_marker(&self.marker) {
+                let _ = Command::new("kill")
+                    .args(["-9", "--", &pid.to_string()])
+                    .status();
+            }
+        }
+    }
+
+    #[test]
+    fn a_warm_up_that_outlives_its_cap_leaves_no_process() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = format!("lucina-warmup-marker-{}", uuid::Uuid::new_v4().simple());
+        // Reap this run's marker processes on drop, whatever the assertions do next.
+        let _reaper = MarkerReaper {
+            marker: marker.clone(),
+        };
+
+        // A fake cargo that, on `check`, forks a background `sleep` named with the marker and then
+        // blocks in a foreground `sleep` — a warm-up that never ends on its own, so only the cap
+        // stops it. Every other subcommand (the workspace's `cargo metadata`) is a plain success.
+        let shadow = format!(
+            "#!/bin/bash\nif [ \"$1\" = check ]; then\n  exec -a {marker} sleep 300 &\n  sleep 300\nfi\nexit 0\n"
+        );
+        let (origin, repo) = main_with_cargo(root.path(), &warm_rules("check"));
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("cargo"), &shadow);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let dir = root.path().join("job-warmup-cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root.path(), &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        // A few seconds, not the default 20 minutes.
+        x.warm_up_secs = 2;
+
+        let t = Instant::now();
+        let out = x.merge();
+        let elapsed = t.elapsed();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+
+        // The merge still lands.
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        assert_eq!(
+            git(&origin, &["rev-parse", "main"]),
+            out.landed.unwrap(),
+            "{log}"
+        );
+        // The cap fired, and said so as a timeout that is not a gate failure.
+        assert!(log.contains("warm-up: failed after"), "{log}");
+        assert!(
+            log.contains("(not a gate failure): timed out after 2s"),
+            "{log}"
+        );
+        // Its gate results equal the no-warm-up case: only the declared gate, passing.
+        let names: Vec<&str> = out.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["trivial"], "{log}");
+        assert!(out.gates.iter().all(|g| g.ok), "{log}");
+        let root_off = tempfile::tempdir().unwrap();
+        let (_o, out_off, _l, _b) = warm_shadow_merge(root_off.path(), &warm_rules("off"), &shadow);
+        assert_eq!(
+            names,
+            out_off
+                .gates
+                .iter()
+                .map(|g| g.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            out.gates.iter().map(|g| g.ok).collect::<Vec<_>>(),
+            out_off.gates.iter().map(|g| g.ok).collect::<Vec<_>>()
+        );
+        // The cap stopped it far short of the 300 s it would otherwise have slept.
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "the merge took {elapsed:?}\n{log}"
+        );
+        // And it left nothing behind: no process carries this run's marker.
+        let leftover = procs_with_marker(&marker);
+        assert!(
+            leftover.is_empty(),
+            "the warm-up left marker processes {leftover:?}\nLOG:\n{log}"
+        );
     }
 }
