@@ -8,15 +8,18 @@
 //! [`lucina_agents::work`].
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use lucina_agents::ids::{lane_run_id, run_state_for, IdRow, Kind};
 use lucina_agents::work::{
-    apply_status, from_direct, is_empty, new_id, summarize, validate_target, CostClass,
-    LeadSummary, Priority, WorkJob, WorkState,
+    apply_status, emptiness, from_direct, missing_ls_fields, missing_status_fields, parse_ls,
+    status_unreadable, summarize, validate_target, CostClass, LeadSummary, LsRows, Priority,
+    WorkJob, WorkState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +61,8 @@ pub struct WorkConfig {
     pub poll: Duration,
     /// `LUCINA_AGENTD_WORK_LOST_AFTER_SECS` (default 120): a job older than this that `lane` does not know is lost.
     pub lost_after: Duration,
+    /// `LUCINA_AGENTD_WORK_SCOPE` (`auto`, `on`, `off`; default `auto`).
+    pub scope: ScopeMode,
 }
 
 impl WorkConfig {
@@ -78,6 +83,7 @@ impl WorkConfig {
             lane,
             poll: Duration::from_secs(secs("LUCINA_AGENTD_WORK_POLL_SECS", 20).max(1)),
             lost_after: Duration::from_secs(secs("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", 120)),
+            scope: parse_scope_mode(std::env::var("LUCINA_AGENTD_WORK_SCOPE").ok().as_deref()),
         }
     }
 }
@@ -216,7 +222,7 @@ fn utf8_vars(
 }
 
 /// A child with the cleared environment of [`lane_env`].
-fn clean_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(super) fn clean_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut c = Command::new(program);
     c.env_clear()
         .envs(lane_env(utf8_vars(std::env::vars_os())))
@@ -226,6 +232,137 @@ fn clean_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 
 fn lane_command(bin: &Path) -> Command {
     clean_command(bin)
+}
+
+/// `LUCINA_AGENTD_WORK_SCOPE`: whether `lane run` starts in its own transient systemd scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScopeMode {
+    /// Use the scope when `systemd-run` is found and `XDG_RUNTIME_DIR` is set (the default).
+    #[default]
+    Auto,
+    /// Require the scope: refuse the start when it cannot be had.
+    On,
+    /// Never: start `lane run` directly.
+    Off,
+}
+
+/// The mode a `LUCINA_AGENTD_WORK_SCOPE` value names; an unknown word is `auto`, with a warning.
+fn parse_scope_mode(value: Option<&str>) -> ScopeMode {
+    match value.map(str::trim) {
+        None | Some("") | Some("auto") => ScopeMode::Auto,
+        Some("on") => ScopeMode::On,
+        Some("off") => ScopeMode::Off,
+        Some(other) => {
+            tracing::warn!(
+                value = other,
+                "LUCINA_AGENTD_WORK_SCOPE is not auto, on or off: using auto"
+            );
+            ScopeMode::Auto
+        }
+    }
+}
+
+/// Whether a start uses the scope, from the mode and what the daemon's environment has: `Ok`
+/// carries the answer and a warning to log when the scope was skipped on a systemd host
+/// because `XDG_RUNTIME_DIR` is missing; `Err` is the reason a start is refused (mode `on`).
+fn scope_decision(
+    mode: ScopeMode,
+    systemd_run_found: bool,
+    xdg_runtime_dir: bool,
+) -> Result<(bool, Option<&'static str>), String> {
+    match mode {
+        ScopeMode::Off => Ok((false, None)),
+        ScopeMode::Auto if !systemd_run_found => Ok((false, None)),
+        ScopeMode::Auto if !xdg_runtime_dir => Ok((
+            false,
+            Some("XDG_RUNTIME_DIR is not set: work jobs start without their own systemd scope"),
+        )),
+        ScopeMode::Auto => Ok((true, None)),
+        ScopeMode::On if !systemd_run_found => Err(
+            "LUCINA_AGENTD_WORK_SCOPE=on needs systemd-run, which was not found on PATH".into(),
+        ),
+        ScopeMode::On if !xdg_runtime_dir => Err(
+            "LUCINA_AGENTD_WORK_SCOPE=on needs XDG_RUNTIME_DIR (the systemd user manager), which is not set"
+                .into(),
+        ),
+        ScopeMode::On => Ok((true, None)),
+    }
+}
+
+const SCOPE_PREFIX: &str = "lucina-work-";
+
+/// The transient unit name of a job: `lucina-work-<id>`. The id may hold lower-case letters,
+/// digits and `-` only; anything else is refused.
+fn scope_unit(id: &str) -> Result<String, String> {
+    let ok = !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if ok {
+        Ok(format!("{SCOPE_PREFIX}{id}"))
+    } else {
+        Err(format!(
+            "job id \"{id}\" cannot name a systemd unit (lower-case letters, digits and - only)"
+        ))
+    }
+}
+
+/// The `lane` arguments of a start, `run` first.
+fn lane_run_args(job: &WorkJob) -> Result<Vec<OsString>, String> {
+    let mut a: Vec<OsString> = vec!["run".into(), "--id".into(), (&job.id).into()];
+    match (&job.lane, &job.chain) {
+        (Some(l), _) => a.extend(["--lane".into(), l.into()]),
+        (None, Some(c)) => a.extend(["--category".into(), c.into()]),
+        (None, None) => return Err("no lane or chain".into()),
+    }
+    a.extend(["--workspace".into(), (&job.workspace).into()]);
+    a.extend(["--owner".into(), (&job.lead).into()]);
+    a.extend(["--cost".into(), job.cost.as_str().into()]);
+    // The ids as flags: they win over the environment `lane` may carry.
+    if let (Some(run), Some(change)) = (&job.run_id, &job.change) {
+        a.extend([
+            "--lead".into(),
+            (&job.lead).into(),
+            "--run-id".into(),
+            run.into(),
+            "--change".into(),
+            change.into(),
+        ]);
+    }
+    if let Some(e) = &job.expect {
+        a.extend(["--expect-file".into(), e.into()]);
+    }
+    if let Some(v) = &job.verify {
+        a.extend(["--verify".into(), v.into()]);
+    }
+    Ok(a)
+}
+
+/// The program and arguments of the start. With a scope (`Some(unit)`) the list is
+/// `systemd-run --user --scope --quiet --collect --unit <unit> -- <lane> <run arguments>`: a
+/// scope, not a service, because `lane run` exits at once and the runner it leaves must live
+/// on in a control group outside the daemon's unit. Without one it is `<lane> <run arguments>`.
+/// No test here can show the control-group behaviour itself; it is proved live after deploy.
+fn run_argv(scope: Option<&str>, lane: &Path, run_args: &[OsString]) -> Vec<OsString> {
+    let mut v: Vec<OsString> = Vec::new();
+    if let Some(unit) = scope {
+        v.extend(
+            [
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--quiet",
+                "--collect",
+                "--unit",
+            ]
+            .map(OsString::from),
+        );
+        v.push(unit.into());
+        v.push("--".into());
+    }
+    v.push(lane.into());
+    v.extend(run_args.iter().cloned());
+    v
 }
 
 /// The last `n` characters.
@@ -331,6 +468,15 @@ pub struct StartWork {
     pub title: Option<String>,
     #[serde(default)]
     pub spec: String,
+    /// The change (`LA-C004`) the run works for; it must exist and belong to the lead.
+    #[serde(default)]
+    pub change: String,
+    /// A short name for the run; it ends up in the lane run id (`la-r023-ids-writer`).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The chat that starts the run.
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 /// What `GET /work` answers.
@@ -340,6 +486,46 @@ pub struct WorkList {
     pub jobs: Vec<WorkJob>,
     pub leads: Vec<LeadSummary>,
     pub warning: Option<String>,
+    /// `lane ls` rows that could not be read.
+    pub unparsed: usize,
+}
+
+/// The note of a status that lacks fields the reader relies on.
+const LACKS_NOTE: &str = "lane status lacks the field(s):";
+
+/// Field sets of `lane` output already logged in this daemon run.
+fn warn_missing_once(names: &[&'static str]) {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let key = names.join(", ");
+    let fresh = SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key.clone());
+    if fresh {
+        tracing::warn!("lane output lacks the field(s) {key}");
+    }
+}
+
+/// [`apply_status`] for a status read from `lane`: a status that lacks fields the reader
+/// relies on is still applied, logged once per field set, and noted on the job unless the
+/// job already has another note. A stale lacks-note goes first.
+fn apply_read(job: &mut WorkJob, status: &Value) {
+    if job
+        .note
+        .as_deref()
+        .is_some_and(|n| n.starts_with(LACKS_NOTE))
+    {
+        job.note = None;
+    }
+    apply_status(job, status);
+    let missing = missing_status_fields(status);
+    if !missing.is_empty() {
+        warn_missing_once(&missing);
+        if job.note.is_none() {
+            job.note = Some(format!("{LACKS_NOTE} {}", missing.join(", ")));
+        }
+    }
 }
 
 fn nonblank(v: Option<String>) -> Option<String> {
@@ -349,18 +535,30 @@ fn nonblank(v: Option<String>) -> Option<String> {
 /// Sets the end of a job: when it ended and whether it produced nothing.
 fn finish(job: &mut WorkJob) {
     job.ended_at = Some(now_iso());
+    // `lane` itself found nothing: no need to ask the heads.
+    if job.state == WorkState::EndedEmpty {
+        job.empty = Some(true);
+        return;
+    }
+    // A lost run is not asked whether it produced something: a run whose runner vanished
+    // leaves no heads to compare, which is how agentd has always treated its own lost jobs.
+    if job.state == WorkState::Lost {
+        return;
+    }
     let expect_present = job.expect.as_ref().map(|e| {
         std::fs::metadata(Path::new(&job.workspace).join(e))
             .map(|m| m.is_file() && m.len() > 0)
             .unwrap_or(false)
     });
-    job.empty = Some(is_empty(
+    // Without a head from the start (not a git directory) lane's own start head is the base.
+    let base = job.base_head.as_deref().or(job.lane_base_head.as_deref());
+    job.empty = emptiness(
         expect_present,
-        job.base_head.as_deref(),
+        base,
         job.after_head.as_deref(),
         job.verify_head.as_deref(),
         job.dirty_files,
-    ));
+    );
 }
 
 impl Manager {
@@ -380,6 +578,18 @@ impl Manager {
     /// Starts a work job: stores the spec, then `lane run` with it on stdin.
     pub async fn work_start(&self, req: StartWork) -> Result<WorkJob, ManagerError> {
         let lane_bin = self.work_lane()?.to_path_buf();
+        let (scoped, skipped) = scope_decision(
+            self.work().cfg.scope,
+            crate::process::resolve_program("systemd-run").is_some(),
+            std::env::var_os("XDG_RUNTIME_DIR").is_some(),
+        )
+        .map_err(ManagerError::Invalid)?;
+        if let Some(w) = skipped {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!("{w}");
+            }
+        }
         let lead = req.lead.trim().to_string();
         if lead.is_empty() {
             return Err(ManagerError::Invalid("lead is required".into()));
@@ -405,43 +615,129 @@ impl Manager {
         if let Some(e) = &expect {
             check_expect(e)?;
         }
+        // No cost at all is a light run, the same as a plain `lane run` since lane LB-V010.
+        let cost = req.cost.unwrap_or(CostClass::Light);
+        if cost == CostClass::Light && expect.is_none() {
+            return Err(ManagerError::Invalid(
+                "a light job needs --expect <file>: a job that reads or reviews must name the file it leaves behind"
+                    .into(),
+            ));
+        }
         let lanes = LaneConfig::load();
         let lucina = crate::workspaces::is_lucina_project(
             &self.inner.options.workspaces,
             Path::new(&workspace),
         );
         check_target(&lanes, lane.as_deref(), chain.as_deref(), lucina)?;
+        let change = nonblank(Some(req.change)).ok_or_else(|| {
+            ManagerError::Invalid(
+                "change is required: the run works for a change (`lagent id new change --lead <code> --title <text>`)"
+                    .into(),
+            )
+        })?;
+        self.check_work_ids(&lead, &change)?;
+        let name = nonblank(req.name);
+        let session = nonblank(req.session);
+        let title = nonblank(req.title);
 
+        // The run's row is written BEFORE `lane run` starts, so the lead, the lane, the base
+        // commit and the workspace are on record before the worker can make a commit. A trailer
+        // in a commit is text the worker types; this row, written by the daemon, is what later
+        // checks trust. When the store cannot be written the start is refused.
+        let facts = git_facts(&workspace).await;
+        let run_title = title.clone().unwrap_or_else(|| first_line(&req.spec, 80));
+        let lane_model = lane
+            .as_deref()
+            .and_then(|l| lanes.lanes.get(l))
+            .and_then(|l| l.model.clone())
+            .filter(|m| !m.is_empty());
+        let by = match (&lane, &chain) {
+            (Some(l), _) => match &lane_model {
+                Some(m) => format!("{l} {m}"),
+                None => l.clone(),
+            },
+            (None, Some(c)) => format!("chain {c}"),
+            (None, None) => String::new(),
+        };
         let dir = self.work().cfg.dir.clone();
-        let id = loop {
-            let id = new_id(uuid::Uuid::new_v4().as_u128());
-            if !self.work().jobs().iter().any(|j| j.id == id) && !dir.join(&id).exists() {
-                break id;
-            }
+        let name_for_id = name.clone().unwrap_or_else(|| run_title.clone());
+        let mut chosen = String::new();
+        let run = self
+            .inner
+            .ids
+            .issue(Kind::Run, &lead, None, "daemon", |run_id| {
+                let base = lane_run_id(run_id, &name_for_id);
+                let mut id = base.clone();
+                let mut n = 2;
+                while self.work().jobs().iter().any(|j| j.id == id) || dir.join(&id).exists() {
+                    id = format!("{base}-{n}");
+                    n += 1;
+                }
+                let spec_path = dir.join(&id).join("spec.md").display().to_string();
+                chosen = id;
+                IdRow {
+                    state: "started".into(),
+                    title: run_title.clone(),
+                    by,
+                    spec: spec_path,
+                    where_: workspace.clone(),
+                    base: facts.head.clone().unwrap_or_default(),
+                    refs: vec![change.clone()],
+                    lane: lane.clone(),
+                    model: lane_model.clone(),
+                    chain: chain.clone(),
+                    repo: facts.repo.clone(),
+                    workspace: Some(workspace.clone()),
+                    branch: facts.branch.clone(),
+                    ..IdRow::default()
+                }
+            })?;
+        let id = chosen;
+        let run_id = run.id.clone();
+        let scope = if scoped {
+            Some(scope_unit(&id).map_err(ManagerError::Invalid)?)
+        } else {
+            None
         };
         let run_dir = dir.join(&id);
         let spec_path = run_dir.join("spec.md");
-        std::fs::create_dir_all(&run_dir)
-            .map_err(|e| ManagerError::Invalid(format!("cannot store the spec: {e}")))?;
-        std::fs::write(&spec_path, &req.spec)
-            .map_err(|e| ManagerError::Invalid(format!("cannot store the spec: {e}")))?;
+        let stored =
+            std::fs::create_dir_all(&run_dir).and_then(|_| std::fs::write(&spec_path, &req.spec));
+        if let Err(e) = stored {
+            let note = format!("cannot store the spec: {e}");
+            if let Err(id_err) = self.append_run_row(
+                &run_id,
+                IdRow {
+                    state: "failed".into(),
+                    result: note.clone(),
+                    ..IdRow::default()
+                },
+            ) {
+                tracing::error!(run = run_id, error = %id_err, "cannot write the run's id row");
+            }
+            return Err(ManagerError::Invalid(note));
+        }
 
-        let base_head = git_head(&workspace).await;
+        let base_head = facts.head.clone();
         let job = WorkJob {
             id: id.clone(),
             lead,
             priority: req.priority.unwrap_or_default(),
-            cost: req.cost.unwrap_or_default(),
+            cost,
             lane: lane.clone(),
             chain: chain.clone(),
             workspace: workspace.clone(),
             verify: nonblank(req.verify),
             expect,
-            title: nonblank(req.title),
+            title,
             spec_path: spec_path.display().to_string(),
             created_at: now_iso(),
             base_head,
             state: WorkState::Starting,
+            run_id: Some(run_id),
+            change: Some(change),
+            session,
+            scope,
             ..WorkJob::default()
         };
         self.work()
@@ -473,6 +769,7 @@ impl Manager {
                 self.work().persist(&jobs);
                 let out = jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job);
                 drop(jobs);
+                self.write_end_row(&out);
                 self.work().unlaunch(&id);
                 Ok(out)
             }
@@ -498,7 +795,7 @@ impl Manager {
                 if let Some(note) = failure {
                     match status {
                         Some(st) => {
-                            apply_status(j, &st);
+                            apply_read(j, &st);
                             if j.note.is_none() {
                                 j.note = Some(note);
                             }
@@ -517,6 +814,8 @@ impl Manager {
             self.work().persist(&jobs);
             jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job)
         };
+        // While the id is in `launching` the poller leaves the job alone: one end row.
+        self.write_end_row(&out);
         self.work().unlaunch(&id);
         out
     }
@@ -536,10 +835,26 @@ impl Manager {
             .filter(|j| include_old || recent(j.state, j.ended_at.as_deref()))
             .collect();
         let mut warning = None;
+        let mut unparsed = 0;
         if include_direct {
             match self.lane_ls().await {
-                Ok(rows) => {
-                    for row in &rows {
+                Ok(ls) => {
+                    if ls.unparsed > 0 {
+                        let total = ls.rows.len() + ls.unparsed;
+                        let first = ls.first_error.clone().unwrap_or_default();
+                        tracing::warn!(
+                            unparsed = ls.unparsed,
+                            total,
+                            error = %first,
+                            "some lane ls rows could not be read"
+                        );
+                        unparsed = ls.unparsed;
+                        warning = Some(format!(
+                            "{} of {total} lane rows could not be read: {first}",
+                            ls.unparsed
+                        ));
+                    }
+                    for row in &ls.rows {
                         let Some(job) = from_direct(row) else {
                             continue;
                         };
@@ -554,7 +869,10 @@ impl Manager {
                         }
                     }
                 }
-                Err(w) => warning = Some(w),
+                Err(w) => {
+                    tracing::warn!(error = %w, "lane ls failed");
+                    warning = Some(w);
+                }
             }
         }
         let leads = summarize(jobs);
@@ -563,11 +881,12 @@ impl Manager {
             jobs,
             leads,
             warning,
+            unparsed,
         }
     }
 
-    /// `lane ls --json --limit 200`, as rows; the text of the failure when it fails.
-    async fn lane_ls(&self) -> Result<Vec<Value>, String> {
+    /// `lane ls --json --limit 200` (JSON Lines), as rows; the text of the failure when it fails.
+    async fn lane_ls(&self) -> Result<LsRows, String> {
         let bin = self.work_lane().map_err(|e| e.to_string())?;
         let mut cmd = lane_command(bin);
         cmd.args(["ls", "--json", "--limit", "200"])
@@ -586,11 +905,14 @@ impl Manager {
                     .unwrap_or_else(|| "on a signal".into())
             ));
         }
-        match serde_json::from_slice::<Value>(&out.stdout) {
-            Ok(Value::Array(rows)) => Ok(rows),
-            Ok(_) => Err("lane ls did not print a list".into()),
-            Err(e) => Err(format!("lane ls printed bad JSON: {e}")),
+        let ls = parse_ls(&String::from_utf8_lossy(&out.stdout));
+        for row in &ls.rows {
+            let missing = missing_ls_fields(row);
+            if !missing.is_empty() {
+                warn_missing_once(&missing);
+            }
         }
+        Ok(ls)
     }
 
     pub fn work_get(&self, id: &str) -> Result<WorkJob, ManagerError> {
@@ -644,14 +966,72 @@ impl Manager {
                 .map(|j| j.id.clone())
                 .collect()
         };
-        for id in open {
+        // A final job the store has no end row for is followed too: `lane` has nothing more to
+        // say about it, the id store has the whole row owed.
+        let owed = self.end_rows_owed();
+        for id in open.into_iter().chain(owed) {
             self.poll_one(&bin, &id).await;
         }
     }
 
+    /// The ids of the final jobs whose end row is not in the store. The id store is only asked
+    /// once the jobs lock is gone: `issue` takes the store's lock and then the jobs one.
+    fn end_rows_owed(&self) -> Vec<String> {
+        let launching: HashSet<String> = self
+            .work()
+            .launching
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let want: Vec<(String, String, &'static str)> = {
+            let jobs = self.work().jobs();
+            jobs.iter()
+                .filter(|j| !pollable(j) && !launching.contains(&j.id))
+                .filter_map(|j| {
+                    let state = run_state_for(j.state, j.empty)?;
+                    Some((j.id.clone(), j.run_id.clone()?, state))
+                })
+                .collect()
+        };
+        want.into_iter()
+            .filter(|(_, run_id, state)| {
+                self.inner.ids.latest_state(run_id).as_deref() != Some(*state)
+            })
+            .map(|(id, _, _)| id)
+            .collect()
+    }
+
+    /// The run state the store still owes this final job: what [`run_state_for`] gives when the
+    /// run's latest row is not it. `None` for an unfinished job, for a state that writes no
+    /// row, and for a row that is already there.
+    fn owed_end_row_state(&self, job: &WorkJob) -> Option<&'static str> {
+        if !job.state.is_terminal() {
+            return None;
+        }
+        let state = run_state_for(job.state, job.empty)?;
+        let run_id = job.run_id.as_deref()?;
+        (self.inner.ids.latest_state(run_id).as_deref() != Some(state)).then_some(state)
+    }
+
+    /// One `lane status` read for one job. An answer that exits 0 but is not readable JSON is
+    /// not a miss: the job never becomes `lost` from it and its state does not change. It
+    /// goes through [`status_unreadable`] (a note and a count) and the job is saved when
+    /// that changed it. A final job that is followed only owes its end row: the store is
+    /// asked again and `lane` is left alone.
     async fn poll_one(&self, bin: &Path, id: &str) {
+        let Some(job) = self.stored_job(id) else {
+            return;
+        };
+        if !pollable(&job) {
+            // A final job reaches here only when the store still owes it its end row: `lane`
+            // is not asked again, only the store.
+            if self.owed_end_row_state(&job).is_some() {
+                self.write_end_row(&job);
+            }
+            return;
+        }
         let reply = query_status(bin, id).await;
-        let Some(mut job) = self.work().jobs().iter().find(|j| j.id == id).cloned() else {
+        let Some(mut job) = self.stored_job(id) else {
             return;
         };
         if !pollable(&job) {
@@ -671,10 +1051,13 @@ impl Manager {
                     job.note = None;
                     job.empty = None;
                 }
-                apply_status(&mut job, &status);
+                apply_read(&mut job, &status);
             }
             StatusReply::BadJson(e) => {
-                return tracing::warn!(job = id, error = %e, "lane status printed bad JSON");
+                tracing::warn!(job = id, error = %e, "lane status printed bad JSON");
+                if !status_unreadable(&mut job, &e) {
+                    return;
+                }
             }
             StatusReply::Miss if job.state == WorkState::Lost => return,
             StatusReply::Miss => {
@@ -696,15 +1079,192 @@ impl Manager {
         if job.state.is_terminal() && job.ended_at.is_none() {
             finish(&mut job);
         }
+        self.record_final_lane(&job);
         if job == before {
             return;
         }
-        let mut jobs = self.work().jobs();
-        // A start that failed in the meantime wins: only an unfinished (or lost) job takes the update.
-        if let Some(stored) = jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
-            *stored = job;
-            self.work().persist(&jobs);
+        let ended_now = job.state.is_terminal() && job.state != before.state;
+        let stored = {
+            let mut jobs = self.work().jobs();
+            // A start that failed in the meantime wins: only an unfinished (or lost) job takes the update.
+            match jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
+                Some(stored) => {
+                    *stored = job.clone();
+                    self.work().persist(&jobs);
+                    true
+                }
+                None => false,
+            }
+        };
+        if stored && ended_now {
+            self.write_end_row(&job);
         }
+    }
+
+    /// The stored job whose run id is `run_id`.
+    pub(super) fn work_job_of_run(&self, run_id: &str) -> Option<WorkJob> {
+        self.work()
+            .jobs()
+            .iter()
+            .find(|j| j.run_id.as_deref() == Some(run_id))
+            .cloned()
+    }
+
+    /// The stored job with this id.
+    fn stored_job(&self, id: &str) -> Option<WorkJob> {
+        self.work().jobs().iter().find(|j| j.id == id).cloned()
+    }
+
+    /// Appends a row of a run the daemon declares; the store's refusal is the caller's to keep.
+    fn append_run_row(&self, run_id: &str, row: IdRow) -> Result<(), ManagerError> {
+        self.inner.ids.append(run_id, row, "daemon").map(|_| ())
+    }
+
+    /// The job's end row. A store that refuses it is written into the job's note, and the
+    /// poller keeps the job until the row is in the store.
+    fn write_end_row(&self, job: &WorkJob) {
+        if let Err(e) = self.record_end(job) {
+            self.note_refused_end_row(&job.id, &e.to_string());
+        }
+    }
+
+    /// The note of an end row the store would not take, saved with the job.
+    fn note_refused_end_row(&self, id: &str, error: &str) {
+        let note = format!("the id store refused the end row: {error}");
+        let mut jobs = self.work().jobs();
+        if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
+            if j.note.as_deref() != Some(note.as_str()) {
+                j.note = Some(note);
+                self.work().persist(&jobs);
+            }
+        }
+    }
+
+    /// For a chain: the first time `lane status` names the lane that is writing, one `started`
+    /// row says which lane and model it is, so they are on record while the work is going on.
+    /// The next poll asks again while the row is missing, so a refusal needs no note.
+    fn record_final_lane(&self, job: &WorkJob) {
+        let (Some(run_id), Some(lane)) = (&job.run_id, &job.final_lane) else {
+            return;
+        };
+        if job.chain.is_none()
+            || job.state.is_terminal()
+            || self.inner.ids.has_lane_row(run_id, lane)
+        {
+            return;
+        }
+        if let Err(e) = self.append_run_row(
+            run_id,
+            IdRow {
+                state: "started".into(),
+                by: lane_by(lane, job.model.as_deref()),
+                lane: Some(lane.clone()),
+                model: job.model.clone().filter(|m| !m.is_empty()),
+                ..IdRow::default()
+            },
+        ) {
+            tracing::error!(run = run_id, error = %e, "cannot write the run's id row");
+        }
+    }
+
+    /// When a job reaches a final state: one run row from [`run_state_for`] (nothing when it
+    /// gives none, and nothing when the run's latest row already has that state for this very
+    /// ending). The store's refusal is the caller's.
+    fn record_end(&self, job: &WorkJob) -> Result<(), ManagerError> {
+        let Some(run_id) = &job.run_id else {
+            return Ok(());
+        };
+        let Some(state) = run_state_for(job.state, job.empty) else {
+            return Ok(());
+        };
+        if let Some((row_state, row_utc)) = self.inner.ids.latest_row(run_id) {
+            if row_state == state && ending_is_recorded(&row_utc, job.ended_at.as_deref()) {
+                return Ok(());
+            }
+        }
+        let mut result = job
+            .lane_state
+            .clone()
+            .unwrap_or_else(|| job.state.as_str().to_string());
+        if let Some(head) = job.after_head.as_ref().or(job.verify_head.as_ref()) {
+            result.push_str(&format!(" head {head}"));
+        }
+        if job.empty == Some(true) {
+            result.push_str(" empty");
+        }
+        let mut row = IdRow {
+            state: state.into(),
+            result,
+            ..IdRow::default()
+        };
+        if let Some(lane) = &job.final_lane {
+            row.by = lane_by(lane, job.model.as_deref());
+            row.lane = Some(lane.clone());
+            row.model = job.model.clone().filter(|m| !m.is_empty());
+        }
+        self.append_run_row(run_id, row)
+    }
+}
+
+/// `<lane> <model>` (the lane alone when it has no model).
+fn lane_by(lane: &str, model: Option<&str>) -> String {
+    match model.filter(|m| !m.is_empty()) {
+        Some(m) => format!("{lane} {m}"),
+        None => lane.to_string(),
+    }
+}
+
+/// The store's row of this state already tells of the job's current ending: it was written at
+/// or after the job ended. A lost run that came back and ended again has a later `ended_at`
+/// than the row of its first ending, so its second row is written.
+fn ending_is_recorded(row_utc: &str, ended_at: Option<&str>) -> bool {
+    match (utc_time(row_utc), ended_at.and_then(utc_time)) {
+        (Some(row), Some(ended)) => row >= ended,
+        // Nothing to compare the row's time with: the row says this state.
+        _ => true,
+    }
+}
+
+fn utc_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&chrono::Utc))
+}
+
+/// The first non-blank line of `text`, cut to `max` characters.
+fn first_line(text: &str, max: usize) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(max)
+        .collect()
+}
+
+/// What `git` says about a workspace at the start of a run.
+#[derive(Debug, Default)]
+struct GitFacts {
+    /// `git rev-parse HEAD`, the full 40 characters.
+    head: Option<String>,
+    /// The directory that holds the repository's common git directory.
+    repo: Option<String>,
+    /// The branch, absent on a detached head.
+    branch: Option<String>,
+}
+
+async fn git_facts(workspace: &str) -> GitFacts {
+    let head = git_output(workspace, &["rev-parse", "HEAD"]).await;
+    let common = git_output(
+        workspace,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await;
+    let branch = git_output(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+    GitFacts {
+        head,
+        repo: common.map(|c| c.strip_suffix("/.git").unwrap_or(&c).to_string()),
+        branch: branch.filter(|b| b != "HEAD"),
     }
 }
 
@@ -738,23 +1298,28 @@ async fn query_status(bin: &Path, id: &str) -> StatusReply {
 }
 
 /// Whether the poller follows a job: it is unfinished, or it was lost less than a day ago.
+/// A run `lane` called `lost` itself is not followed at all: that is the tool's own end, and
+/// only the runs agentd marked lost on its misses are asked again, in case it shows up.
 fn pollable(job: &WorkJob) -> bool {
     match job.state {
-        WorkState::Lost => job
-            .ended_at
-            .as_deref()
-            .and_then(age_secs)
-            .is_some_and(|a| a < DAY),
+        WorkState::Lost => {
+            !job.lane_lost
+                && job
+                    .ended_at
+                    .as_deref()
+                    .and_then(age_secs)
+                    .is_some_and(|a| a < DAY)
+        }
         s => !s.is_terminal(),
     }
 }
 
-/// `git rev-parse HEAD` in the workspace, `None` when it fails.
-async fn git_head(workspace: &str) -> Option<String> {
+/// A `git` call in the workspace: its trimmed output, `None` when it fails or prints nothing.
+async fn git_output(workspace: &str, args: &[&str]) -> Option<String> {
     let mut cmd = clean_command("git");
     cmd.arg("-C")
         .arg(workspace)
-        .args(["rev-parse", "HEAD"])
+        .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     let out = tokio::time::timeout(QUERY_LIMIT, cmd.output())
@@ -777,17 +1342,18 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
     let stdin =
         std::fs::File::open(&job.spec_path).map_err(|e| format!("cannot read the spec: {e}"))?;
     let err_path = run_dir.join("run.err");
-    let mut cmd = lane_command(bin);
-    cmd.arg("run").arg("--id").arg(&job.id);
-    match (&job.lane, &job.chain) {
-        (Some(l), _) => cmd.arg("--lane").arg(l),
-        (None, Some(c)) => cmd.arg("--category").arg(c),
-        (None, None) => return Err("no lane or chain".into()),
-    };
-    cmd.arg("--workspace").arg(&job.workspace);
-    if let Some(v) = &job.verify {
-        cmd.arg("--verify").arg(v);
+    let argv = run_argv(job.scope.as_deref(), bin, &lane_run_args(job)?);
+    // The environment is today's allowlist either way: `systemd-run --user` finds the user
+    // manager through `XDG_RUNTIME_DIR`, which is on it.
+    let mut cmd = clean_command(&argv[0]);
+    cmd.args(&argv[1..]);
+    // The ids as variables for the worker; as flags they are in `lane_run_args`.
+    if let (Some(run), Some(change)) = (&job.run_id, &job.change) {
+        cmd.env("LUCINA_RUN_ID", run)
+            .env("LUCINA_LEAD", &job.lead)
+            .env("LUCINA_CHANGE", change);
     }
+    let scoped = job.scope.is_some();
     cmd.stdin(Stdio::from(stdin))
         .stdout(Stdio::from(open(run_dir.join("run.out"))?))
         .stderr(Stdio::from(open(err_path.clone())?));
@@ -797,12 +1363,18 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
             400,
         )
     };
-    let mut child = cmd.spawn().map_err(|e| format!("cannot start lane: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if scoped {
+            format!("cannot start systemd-run: {e}")
+        } else {
+            format!("cannot start lane: {e}")
+        }
+    })?;
     match tokio::time::timeout(RUN_LIMIT, child.wait()).await {
         Ok(Ok(status)) if status.success() => Ok(()),
         Ok(Ok(status)) => {
             let text = tail(&err_path);
-            Err(if text.is_empty() {
+            let text = if text.is_empty() {
                 format!(
                     "lane run exited {}",
                     status
@@ -810,6 +1382,13 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "on a signal".into())
                 )
+            } else {
+                text
+            };
+            // `systemd-run --scope` passes the command's exit code on; a run `lane` knows
+            // still counts (see `launch`), so this note is for a start nobody knows.
+            Err(if scoped {
+                format!("could not start the run in its own systemd scope: {text}")
             } else {
                 text
             })
@@ -830,6 +1409,8 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the scope test below needs it: a job's own id now comes from the ids store.
+    use lucina_agents::work::new_id;
 
     const CONFIG: &str = r#"
 [lanes.qoder]
@@ -982,6 +1563,7 @@ deep-codex = ["qoder", "codex-a"]
             lane: None,
             poll: Duration::from_secs(1),
             lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
         };
         let work = Work::open(cfg);
         let job = WorkJob {
@@ -1015,6 +1597,164 @@ deep-codex = ["qoder", "codex-a"]
     }
 
     #[test]
+    fn a_status_that_lacks_fields_is_applied_and_noted() {
+        let mut full: Value = serde_json::from_str(include_str!(
+            "../../../lucina-agents/tests/fixtures/lane/status-running.json"
+        ))
+        .unwrap();
+        let mut job = WorkJob {
+            id: "wk-1".into(),
+            ..WorkJob::default()
+        };
+        apply_read(&mut job, &full);
+        assert_eq!(job.state, WorkState::Running);
+        assert_eq!(job.note, None);
+
+        full.as_object_mut().unwrap().remove("dirty_files");
+        apply_read(&mut job, &full);
+        assert_eq!(job.state, WorkState::Running);
+        assert_eq!(
+            job.note.as_deref(),
+            Some("lane status lacks the field(s): dirty_files")
+        );
+        // A complete status takes the note away again.
+        full["dirty_files"] = serde_json::json!([]);
+        apply_read(&mut job, &full);
+        assert_eq!(job.note, None);
+        // Another note stays.
+        job.note = Some("mine".into());
+        full.as_object_mut().unwrap().remove("dirty_files");
+        apply_read(&mut job, &full);
+        assert_eq!(job.note.as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn an_ended_empty_run_is_empty() {
+        let mut status: Value = serde_json::from_str(include_str!(
+            "../../../lucina-agents/tests/fixtures/lane/status-reported_done.json"
+        ))
+        .unwrap();
+        status["state"] = serde_json::json!("ended_empty");
+        let mut job = WorkJob {
+            id: "wk-1".into(),
+            // A head that differs from the fixture's would say "not empty" if it were asked.
+            base_head: Some("0".repeat(40)),
+            ..WorkJob::default()
+        };
+        apply_read(&mut job, &status);
+        assert_eq!(job.state, WorkState::EndedEmpty);
+        finish(&mut job);
+        assert_eq!(job.empty, Some(true));
+        assert!(job.ended_at.is_some());
+    }
+
+    fn os(v: &[&str]) -> Vec<OsString> {
+        v.iter().map(OsString::from).collect()
+    }
+
+    fn sample_job() -> WorkJob {
+        WorkJob {
+            id: "wk-0123456789ab".into(),
+            lead: "chat-a".into(),
+            lane: Some("qoder".into()),
+            workspace: "/w".into(),
+            verify: Some("true".into()),
+            expect: Some("out.md".into()),
+            ..WorkJob::default()
+        }
+    }
+
+    #[test]
+    fn the_argument_list_with_and_without_the_scope() {
+        let args = lane_run_args(&sample_job()).unwrap();
+        assert_eq!(
+            args,
+            os(&[
+                "run",
+                "--id",
+                "wk-0123456789ab",
+                "--lane",
+                "qoder",
+                "--workspace",
+                "/w",
+                "--owner",
+                "chat-a",
+                "--cost",
+                "build",
+                "--expect-file",
+                "out.md",
+                "--verify",
+                "true"
+            ])
+        );
+        let lane = Path::new("/bin/lane");
+        let plain = run_argv(None, lane, &args);
+        assert_eq!(plain[0], OsString::from("/bin/lane"));
+        assert_eq!(plain[1..], args[..]);
+        let scoped = run_argv(Some("lucina-work-wk-0123456789ab"), lane, &args);
+        assert_eq!(
+            scoped[..8],
+            os(&[
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--quiet",
+                "--collect",
+                "--unit",
+                "lucina-work-wk-0123456789ab",
+                "--"
+            ])[..]
+        );
+        assert_eq!(scoped[8], OsString::from("/bin/lane"));
+        assert_eq!(scoped[9..], args[..]);
+        let mut chained = sample_job();
+        chained.lane = None;
+        assert!(lane_run_args(&chained).is_err());
+        chained.chain = Some("deep".into());
+        assert!(lane_run_args(&chained)
+            .unwrap()
+            .ends_with(&os(&["--verify", "true"])));
+    }
+
+    #[test]
+    fn the_unit_name_takes_only_lower_case_digits_and_dashes() {
+        assert_eq!(
+            scope_unit("wk-0123456789ab").as_deref(),
+            Ok("lucina-work-wk-0123456789ab")
+        );
+        for bad in ["", "WK-1", "wk_1", "wk 1", "wk-1.service", "wk-é", "wk/1"] {
+            assert!(scope_unit(bad).is_err(), "{bad:?}");
+        }
+        assert!(scope_unit(&new_id(u128::MAX)).is_ok());
+    }
+
+    #[test]
+    fn the_scope_mode_words() {
+        assert_eq!(parse_scope_mode(None), ScopeMode::Auto);
+        assert_eq!(parse_scope_mode(Some("auto")), ScopeMode::Auto);
+        assert_eq!(parse_scope_mode(Some("on")), ScopeMode::On);
+        assert_eq!(parse_scope_mode(Some("off")), ScopeMode::Off);
+        assert_eq!(parse_scope_mode(Some("maybe")), ScopeMode::Auto);
+    }
+
+    #[test]
+    fn the_scope_decision() {
+        use ScopeMode::*;
+        assert_eq!(scope_decision(Off, true, true), Ok((false, None)));
+        assert_eq!(scope_decision(Auto, false, true), Ok((false, None)));
+        assert_eq!(scope_decision(Auto, true, true), Ok((true, None)));
+        let (used, warning) = scope_decision(Auto, true, false).unwrap();
+        assert!(!used && warning.is_some_and(|w| w.contains("XDG_RUNTIME_DIR")));
+        assert_eq!(scope_decision(On, true, true), Ok((true, None)));
+        assert!(scope_decision(On, false, true)
+            .unwrap_err()
+            .contains("systemd-run"));
+        assert!(scope_decision(On, true, false)
+            .unwrap_err()
+            .contains("XDG_RUNTIME_DIR"));
+    }
+
+    #[test]
     fn old_finished_jobs_are_hidden() {
         let old = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
         let fresh = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
@@ -1022,5 +1762,41 @@ deep-codex = ["qoder", "codex-a"]
         assert!(!recent(WorkState::Verified, Some(&old)));
         assert!(recent(WorkState::Verified, Some(&fresh)));
         assert!(recent(WorkState::Verified, None));
+    }
+
+    #[test]
+    fn the_two_kinds_of_lost_are_polled_differently() {
+        let fresh = chrono::Utc::now().to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
+        let lost = |lane_lost: bool, ended_at: Option<String>| WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Lost,
+            lane_lost,
+            ended_at,
+            ..WorkJob::default()
+        };
+        // What agentd concluded from its misses is asked again for a day, then dropped.
+        assert!(pollable(&lost(false, Some(fresh.clone()))));
+        assert!(!pollable(&lost(false, Some(old))));
+        // Lane's own word is final from the answer that gave it.
+        assert!(!pollable(&lost(true, Some(fresh))));
+        assert!(!pollable(&lost(true, None)));
+    }
+
+    #[test]
+    fn a_lost_run_is_not_asked_whether_it_produced_anything() {
+        // A head to start from and nothing since would say `empty` if the heads were asked.
+        for lane_lost in [true, false] {
+            let mut job = WorkJob {
+                id: "wk-1".into(),
+                state: WorkState::Lost,
+                lane_lost,
+                base_head: Some("a".repeat(40)),
+                ..WorkJob::default()
+            };
+            finish(&mut job);
+            assert!(job.ended_at.is_some(), "{lane_lost}");
+            assert_eq!(job.empty, None, "{lane_lost}");
+        }
     }
 }

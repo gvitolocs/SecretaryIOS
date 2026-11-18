@@ -36,6 +36,13 @@ pub struct Task {
     pub branch: String,
     /// The branch it merges into (`main`).
     pub trunk: String,
+    /// The commit its worktree was made from, when `lagent task start --base` named one instead
+    /// of the trunk tip: the full id it resolved to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// What the caller typed for it (`--base`): a tag, a branch, an abbreviation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
     /// Who asked for it (`owner`, a session's name, an agent id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
@@ -151,6 +158,9 @@ pub struct Spec {
     /// `LAGENT_COMMIT_LEDGER`; absent in jobs queued by older daemons (the default state dir is used).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger: Option<String>,
+    /// Merge: who requested it (`by` in the waivers file); absent in jobs queued by older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -561,6 +571,7 @@ mod tests {
             force: false,
             full: false,
             ledger: None,
+            requested_by: None,
         };
         for (i, id) in ["job_1", "job_2"].iter().enumerate() {
             let j = Job {

@@ -96,7 +96,9 @@ pub enum WorkState {
     DirtyAfterQuota,
     EndedDirty,
     EndedJobsQueued,
-    /// `lane` has no record of the run any more.
+    /// The attempt ended ok but left nothing: no commit, no change, no expected file.
+    EndedEmpty,
+    /// The run is gone: `lane` ended it as `lost`, or it stopped answering for a run old enough.
     Lost,
 }
 
@@ -114,7 +116,9 @@ impl WorkState {
             "all_exhausted" => WorkState::Exhausted,
             "dirty_after_quota" => WorkState::DirtyAfterQuota,
             "ended_dirty" => WorkState::EndedDirty,
+            "ended_empty" => WorkState::EndedEmpty,
             "ended_with_jobs_queued" => WorkState::EndedJobsQueued,
+            "lost" => WorkState::Lost,
             _ => return None,
         })
     }
@@ -131,6 +135,7 @@ impl WorkState {
             WorkState::Exhausted => "exhausted",
             WorkState::DirtyAfterQuota => "dirty_after_quota",
             WorkState::EndedDirty => "ended_dirty",
+            WorkState::EndedEmpty => "ended_empty",
             WorkState::EndedJobsQueued => "ended_jobs_queued",
             WorkState::Lost => "lost",
         }
@@ -147,12 +152,15 @@ impl WorkState {
     pub fn wait_exit_code(self) -> i32 {
         match self {
             WorkState::Done | WorkState::Verified => 0,
-            WorkState::Failed | WorkState::VerifyFailed | WorkState::Lost => 1,
+            WorkState::Failed | WorkState::VerifyFailed => 1,
             WorkState::Exhausted => 3,
             WorkState::DirtyAfterQuota => 4,
             WorkState::Starting | WorkState::Queued | WorkState::Running => 5,
             WorkState::EndedJobsQueued => 6,
             WorkState::EndedDirty => 7,
+            WorkState::EndedEmpty => 8,
+            // 9 is what `lane wait` itself gives for a lost run.
+            WorkState::Lost => 9,
         }
     }
 }
@@ -228,6 +236,142 @@ pub struct WorkJob {
     /// A run that was started with `lane` directly and is only listed.
     #[serde(default)]
     pub direct: bool,
+    /// The `before_head` of the first attempt that has one: where `lane` started the run.
+    #[serde(default)]
+    pub lane_base_head: Option<String>,
+    /// Consecutive `lane status` answers that could not be read.
+    #[serde(default)]
+    pub status_errors: u32,
+    /// The run id (`LA-R023`) agentd issued before it started the run; for a run started
+    /// with `lane` directly, the one `lane` recorded.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// The change (`LA-C004`) the run works for.
+    #[serde(default)]
+    pub change: Option<String>,
+    /// The chat that started the run.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// The systemd scope (`lucina-work-<id>`) `lane run` was started in; none when it was
+    /// started without one.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// `lane status` says the run's runner process is gone (`runner_lost: true`).
+    #[serde(default)]
+    pub runner_lost: bool,
+    /// `lane` itself called the run `lost`: that is its own end, and nothing asks it again. A
+    /// run agentd marked `lost` after repeated misses keeps this false and is followed for a day.
+    #[serde(default)]
+    pub lane_lost: bool,
+}
+
+/// What [`parse_ls`] read from `lane ls --json`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LsRows {
+    pub rows: Vec<Value>,
+    /// Non-blank lines that were not one JSON object.
+    pub unparsed: usize,
+    /// `line <n>: <error>` of the first such line.
+    pub first_error: Option<String>,
+}
+
+/// `lane ls --json` prints JSON Lines: one object per line. Each non-blank line is read on
+/// its own; blank lines are skipped; a line that is not a JSON object is counted, and the
+/// error of the first one is kept with its 1-based line number.
+pub fn parse_ls(text: &str) -> LsRows {
+    let mut out = LsRows::default();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let error = match serde_json::from_str::<Value>(line) {
+            Ok(v @ Value::Object(_)) => {
+                out.rows.push(v);
+                continue;
+            }
+            Ok(_) => "not a JSON object".to_string(),
+            Err(e) => e.to_string(),
+        };
+        out.unparsed += 1;
+        if out.first_error.is_none() {
+            out.first_error = Some(format!("line {}: {error}", i + 1));
+        }
+    }
+    out
+}
+
+/// The names of the fields of a `lane status` answer that the reader relies on and that are
+/// absent as keys (a key with a null value is present).
+pub fn missing_status_fields(status: &Value) -> Vec<&'static str> {
+    const TOP: [&str; 12] = [
+        "id",
+        "state",
+        "owner",
+        "queue_position",
+        "workspace",
+        "final_lane",
+        "model",
+        "attempts",
+        "verify",
+        "dirty_files",
+        "note",
+        "updated",
+    ];
+    let mut out: Vec<&'static str> = TOP
+        .into_iter()
+        .filter(|k| status.get(*k).is_none())
+        .collect();
+    if let Some(list) = status.get("attempts").and_then(Value::as_array) {
+        const PER: [(&str, &str); 5] = [
+            ("lane", "attempts[].lane"),
+            ("outcome", "attempts[].outcome"),
+            ("reason", "attempts[].reason"),
+            ("before_head", "attempts[].before_head"),
+            ("after_head", "attempts[].after_head"),
+        ];
+        for (key, name) in PER {
+            if list.iter().any(|a| a.get(key).is_none()) {
+                out.push(name);
+            }
+        }
+    }
+    if let Some(v @ Value::Object(_)) = status.get("verify") {
+        for (key, name) in [("exit_code", "verify.exit_code"), ("head", "verify.head")] {
+            if v.get(key).is_none() {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// The names of the fields of a `lane ls --json` row that the reader relies on and that are absent.
+pub fn missing_ls_fields(row: &Value) -> Vec<&'static str> {
+    [
+        "id",
+        "state",
+        "owner",
+        "queue_position",
+        "category",
+        "final_lane",
+        "workspace",
+        "updated",
+    ]
+    .into_iter()
+    .filter(|k| row.get(*k).is_none())
+    .collect()
+}
+
+const UNREADABLE_NOTE: &str = "lane status could not be read:";
+
+/// Records a `lane status` answer that could not be read: a note and one more in
+/// `status_errors`. The state never changes. Returns true when the job changed.
+pub fn status_unreadable(job: &mut WorkJob, error: &str) -> bool {
+    let before = job.clone();
+    let cut: String = error.chars().take(160).collect();
+    job.note = Some(format!("{UNREADABLE_NOTE} {cut}"));
+    job.status_errors = job.status_errors.saturating_add(1);
+    *job != before
 }
 
 fn str_field(v: &Value, key: &str) -> Option<Option<String>> {
@@ -239,14 +383,26 @@ fn str_field(v: &Value, key: &str) -> Option<Option<String>> {
 }
 
 /// Copies what `lane status` says into `job`. Fields the status lacks are left as they
-/// are; unknown fields are ignored. Returns true when anything changed.
+/// are; unknown fields are ignored. `after_head` is the last attempt's non-empty
+/// `after_head` (`lane` has no top-level one). Returns true when anything changed.
 pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
     let before = job.clone();
+    // A readable answer ends a run of unreadable ones.
+    job.status_errors = 0;
+    if job
+        .note
+        .as_deref()
+        .is_some_and(|n| n.starts_with(UNREADABLE_NOTE))
+    {
+        job.note = None;
+    }
     if let Some(raw) = status.get("state").and_then(Value::as_str) {
         job.lane_state = Some(raw.to_string());
         match WorkState::from_lane(raw) {
             Some(s) => {
                 job.state = s;
+                // Only an answer that says `lost` itself ends the run for good.
+                job.lane_lost = s == WorkState::Lost;
                 // An earlier unknown-state note no longer holds.
                 if job
                     .note
@@ -259,6 +415,11 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
             None => job.note = Some(format!("unknown lane state: {raw}")),
         }
     }
+    // Absent or not a boolean counts as false: a later status without the field clears it.
+    job.runner_lost = status
+        .get("runner_lost")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     match status.get("queue_position") {
         Some(Value::Null) => job.queue_position = None,
         Some(v) => {
@@ -274,8 +435,15 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
     if let Some(v) = str_field(status, "model") {
         job.model = v;
     }
-    if let Some(v) = str_field(status, "after_head") {
-        job.after_head = v;
+    if let Some(list) = status.get("attempts").and_then(Value::as_array) {
+        let head = |a: &Value, key: &str| {
+            a.get(key)
+                .and_then(Value::as_str)
+                .filter(|h| !h.is_empty())
+                .map(str::to_string)
+        };
+        job.after_head = list.iter().rev().find_map(|a| head(a, "after_head"));
+        job.lane_base_head = list.iter().find_map(|a| head(a, "before_head"));
     }
     match status.get("verify") {
         Some(Value::Null) => {
@@ -326,6 +494,31 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
             job.note = Some(note.to_string());
         }
     }
+    // What `lane run` recorded of the ids it was given. A job agentd started keeps its own.
+    let text = |key: &str| {
+        status
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    if job.lead.is_empty() {
+        if let Some(lead) = text("lead") {
+            job.lead = lead;
+        }
+    }
+    if job.change.is_none() {
+        job.change = text("change");
+    }
+    if let Some(run) = text("run") {
+        match &job.run_id {
+            None => job.run_id = Some(run),
+            Some(own) if *own != run => {
+                job.note = Some(format!("lane recorded run {run}, agentd issued {own}"));
+            }
+            Some(_) => {}
+        }
+    }
     *job != before
 }
 
@@ -346,6 +539,34 @@ pub fn is_empty(
     dirty_files == 0 && !moved(after_head) && !moved(verify_head)
 }
 
+/// [`is_empty`] with a third answer: `None` when there is no evidence either way, that is
+/// no expected file, nothing dirty and no head at all (a workspace that is not a git
+/// repository gives none).
+pub fn emptiness(
+    expect_present: Option<bool>,
+    base_head: Option<&str>,
+    after_head: Option<&str>,
+    verify_head: Option<&str>,
+    dirty_files: u64,
+) -> Option<bool> {
+    if let Some(present) = expect_present {
+        return Some(!present);
+    }
+    if dirty_files > 0 {
+        return Some(false);
+    }
+    if base_head.is_none() && after_head.is_none() && verify_head.is_none() {
+        return None;
+    }
+    Some(is_empty(
+        None,
+        base_head,
+        after_head,
+        verify_head,
+        dirty_files,
+    ))
+}
+
 /// A job for a `lane ls --json` row of a run agentd did not start.
 pub fn from_direct(row: &Value) -> Option<WorkJob> {
     let id = row
@@ -356,9 +577,17 @@ pub fn from_direct(row: &Value) -> Option<WorkJob> {
     let text = |k: &str| row.get(k).and_then(Value::as_str).map(str::to_string);
     let owner = text("owner").unwrap_or_default();
     let updated = text("updated").unwrap_or_default();
+    // A newer `lane` records the lead, run and change it was given.
+    let given = |k: &str| text(k).filter(|s| !s.is_empty());
     let mut job = WorkJob {
         id,
-        lead: format!("direct:{owner}"),
+        lead: given("lead").unwrap_or_else(|| format!("direct:{owner}")),
+        run_id: given("run"),
+        change: given("change"),
+        runner_lost: row
+            .get("runner_lost")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         workspace: text("workspace").unwrap_or_default(),
         lane: text("final_lane"),
         chain: text("category"),
@@ -389,6 +618,9 @@ pub struct LeadSummary {
     pub queued: u64,
     pub ended: u64,
     pub empty: u64,
+    /// Unfinished jobs whose runner is gone.
+    #[serde(default)]
+    pub lost: u64,
     pub jobs: Vec<WorkJob>,
 }
 
@@ -408,6 +640,9 @@ pub fn summarize(jobs: Vec<WorkJob>) -> Vec<LeadSummary> {
             }
         };
         let l = &mut leads[at];
+        if job.runner_lost && !job.state.is_terminal() {
+            l.lost += 1;
+        }
         match job.state {
             WorkState::Running => l.running += 1,
             WorkState::Starting | WorkState::Queued => l.queued += 1,
@@ -454,7 +689,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const ALL: [WorkState; 12] = [
+    const ALL: [WorkState; 13] = [
         WorkState::Starting,
         WorkState::Queued,
         WorkState::Running,
@@ -466,6 +701,7 @@ mod tests {
         WorkState::DirtyAfterQuota,
         WorkState::EndedDirty,
         WorkState::EndedJobsQueued,
+        WorkState::EndedEmpty,
         WorkState::Lost,
     ];
 
@@ -493,6 +729,7 @@ mod tests {
             ("all_exhausted", WorkState::Exhausted),
             ("dirty_after_quota", WorkState::DirtyAfterQuota),
             ("ended_dirty", WorkState::EndedDirty),
+            ("ended_empty", WorkState::EndedEmpty),
             ("ended_with_jobs_queued", WorkState::EndedJobsQueued),
         ];
         for (raw, want) in pairs {
@@ -500,7 +737,7 @@ mod tests {
         }
         assert_eq!(WorkState::from_lane("sleeping"), None);
         assert_eq!(WorkState::from_lane(""), None);
-        assert_eq!(WorkState::from_lane("lost"), None);
+        assert_eq!(WorkState::from_lane("lost"), Some(WorkState::Lost));
     }
 
     #[test]
@@ -517,7 +754,8 @@ mod tests {
             (WorkState::DirtyAfterQuota, true, 4),
             (WorkState::EndedDirty, true, 7),
             (WorkState::EndedJobsQueued, true, 6),
-            (WorkState::Lost, true, 1),
+            (WorkState::EndedEmpty, true, 8),
+            (WorkState::Lost, true, 9),
         ];
         assert_eq!(want.len(), ALL.len());
         for (state, terminal, code) in want {
@@ -589,9 +827,9 @@ mod tests {
         let status = json!({
             "state": "verified", "owner": "me", "queue_position": null, "category": "deep",
             "workspace": "/w", "final_lane": "qoder", "model": "m1", "session_id": "s",
-            "after_head": "abc", "verify": {"exit_code": 0, "head": "def"},
+            "verify": {"exit_code": 0, "head": "def"},
             "dirty_files": ["a", "b"],
-            "attempts": [{"lane": "zen", "outcome": "quota", "reason": "limit"}, {"lane": "qoder", "outcome": "ok", "reason": null}],
+            "attempts": [{"lane": "zen", "outcome": "quota", "reason": "limit"}, {"lane": "qoder", "outcome": "ok", "reason": null, "after_head": "abc"}],
             "note": "fine", "updated": "2026-11-17T10:00:00Z", "extra": 1
         });
         assert!(apply_status(&mut j, &status));
@@ -669,6 +907,388 @@ mod tests {
         // Any other note stays.
         j.note = Some("mine".into());
         apply_status(&mut j, &json!({"state": "verified"}));
+        assert_eq!(j.note.as_deref(), Some("mine"));
+    }
+
+    const LS: &str = include_str!("../tests/fixtures/lane/ls.jsonl");
+    const STATUS_RUNNING: &str = include_str!("../tests/fixtures/lane/status-running.json");
+    const STATUS_QUEUED: &str = include_str!("../tests/fixtures/lane/status-queued.json");
+    const STATUS_DONE: &str = include_str!("../tests/fixtures/lane/status-reported_done.json");
+    const STATUS_VERIFIED: &str = include_str!("../tests/fixtures/lane/status-verified.json");
+    const STATUS_VERIFY_FAILED: &str =
+        include_str!("../tests/fixtures/lane/status-verify_failed.json");
+    const STATUS_FAILED: &str = include_str!("../tests/fixtures/lane/status-failed.json");
+    const STATUS_EXHAUSTED: &str = include_str!("../tests/fixtures/lane/status-all_exhausted.json");
+    const STATUS_DIRTY_QUOTA: &str =
+        include_str!("../tests/fixtures/lane/status-dirty_after_quota.json");
+    const STATUS_ENDED_DIRTY: &str = include_str!("../tests/fixtures/lane/status-ended_dirty.json");
+    const STATUS_JOBS_QUEUED: &str =
+        include_str!("../tests/fixtures/lane/status-ended_with_jobs_queued.json");
+
+    #[test]
+    fn ls_fixture_gives_ten_rows_and_maps_each_state() {
+        let ls = parse_ls(LS);
+        assert_eq!(ls.rows.len(), 10);
+        assert_eq!(ls.unparsed, 0);
+        assert_eq!(ls.first_error, None);
+        for row in &ls.rows {
+            let raw = row["state"].as_str().unwrap();
+            let j = from_direct(row).unwrap();
+            assert_eq!(Some(j.state), WorkState::from_lane(raw), "{raw}");
+            assert_eq!(j.lane_state.as_deref(), Some(raw));
+            assert!(j.direct);
+        }
+    }
+
+    #[test]
+    fn format_contract_holds_for_every_fixture() {
+        let statuses = [
+            ("status-running.json", STATUS_RUNNING),
+            ("status-queued.json", STATUS_QUEUED),
+            ("status-reported_done.json", STATUS_DONE),
+            ("status-verified.json", STATUS_VERIFIED),
+            ("status-verify_failed.json", STATUS_VERIFY_FAILED),
+            ("status-failed.json", STATUS_FAILED),
+            ("status-all_exhausted.json", STATUS_EXHAUSTED),
+            ("status-dirty_after_quota.json", STATUS_DIRTY_QUOTA),
+            ("status-ended_dirty.json", STATUS_ENDED_DIRTY),
+            ("status-ended_with_jobs_queued.json", STATUS_JOBS_QUEUED),
+        ];
+        for (name, text) in statuses {
+            let v: Value = serde_json::from_str(text).unwrap();
+            let missing = missing_status_fields(&v);
+            assert!(
+                missing.is_empty(),
+                "lane output lacks the field(s) {} in {name}: the reader in lucina-agents/src/work.rs must be updated and new samples captured",
+                missing.join(", ")
+            );
+        }
+        for (i, row) in parse_ls(LS).rows.iter().enumerate() {
+            let missing = missing_ls_fields(row);
+            assert!(
+                missing.is_empty(),
+                "lane output lacks the field(s) {} in ls.jsonl line {}: the reader in lucina-agents/src/work.rs must be updated and new samples captured",
+                missing.join(", "),
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_removed_field_is_reported() {
+        let mut v: Value = serde_json::from_str(STATUS_VERIFIED).unwrap();
+        v.as_object_mut().unwrap().remove("dirty_files");
+        assert_eq!(missing_status_fields(&v), ["dirty_files"]);
+        let mut v: Value = serde_json::from_str(STATUS_VERIFIED).unwrap();
+        v["attempts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("after_head");
+        v["verify"].as_object_mut().unwrap().remove("head");
+        assert_eq!(
+            missing_status_fields(&v),
+            ["attempts[].after_head", "verify.head"]
+        );
+        let mut row = parse_ls(LS).rows.remove(0);
+        row.as_object_mut().unwrap().remove("category");
+        assert_eq!(missing_ls_fields(&row), ["category"]);
+    }
+
+    #[test]
+    fn ls_of_an_array_is_one_unparsed_line() {
+        let ls = parse_ls("[{\"id\":\"a\"},{\"id\":\"b\"}]");
+        assert!(ls.rows.is_empty());
+        assert_eq!(ls.unparsed, 1);
+        assert_eq!(ls.first_error.as_deref(), Some("line 1: not a JSON object"));
+    }
+
+    #[test]
+    fn ls_with_a_broken_line_keeps_the_good_ones() {
+        let ls = parse_ls("{\"id\":\"a\"}\n\n{\"id\":\n   \n{\"id\":\"c\"}\nnope\n");
+        assert_eq!(ls.rows.len(), 2);
+        assert_eq!(ls.unparsed, 2);
+        let first = ls.first_error.unwrap();
+        assert!(first.starts_with("line 3: "), "{first}");
+    }
+
+    #[test]
+    fn ls_of_nothing() {
+        for text in ["", "\n", "  \n \n"] {
+            assert_eq!(parse_ls(text), LsRows::default());
+        }
+    }
+
+    #[test]
+    fn every_status_fixture_applies() {
+        struct Want {
+            text: &'static str,
+            state: WorkState,
+            final_lane: Option<&'static str>,
+            model: Option<&'static str>,
+            after: Option<&'static str>,
+            base: Option<&'static str>,
+            verify_exit: Option<i32>,
+            verify_head: Option<&'static str>,
+            dirty: u64,
+            attempts: usize,
+        }
+        let head_a = "4cc7be8ea2af6e21cab12289bd4859352a73b399";
+        let head_v = "4f2d631ea2edaf2305444ae262318217e749af8a";
+        let head_x = "8166366d041d94bb3b6b62e5380df62507894e9a";
+        let head_d = "f83c86dda64a899bdfe8f1bd6b6124203e1276f4";
+        let wants = [
+            Want {
+                text: STATUS_RUNNING,
+                state: WorkState::Running,
+                final_lane: None,
+                model: None,
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 0,
+            },
+            Want {
+                text: STATUS_QUEUED,
+                state: WorkState::Queued,
+                final_lane: None,
+                model: None,
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 0,
+            },
+            Want {
+                text: STATUS_DONE,
+                state: WorkState::Done,
+                final_lane: Some("zen-glm-flash"),
+                model: Some("glm-5.3-flash-free"),
+                after: Some(head_a),
+                base: Some(head_a),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_VERIFIED,
+                state: WorkState::Verified,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: None,
+                base: None,
+                verify_exit: Some(0),
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_VERIFY_FAILED,
+                state: WorkState::VerifyFailed,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: Some(head_v),
+                base: Some("a65030bfb78e8add4b65b78f94ee18a653e1e378"),
+                verify_exit: Some(1),
+                verify_head: Some(head_v),
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_FAILED,
+                state: WorkState::Failed,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_EXHAUSTED,
+                state: WorkState::Exhausted,
+                final_lane: None,
+                model: None,
+                after: Some(head_x),
+                base: Some(head_x),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_DIRTY_QUOTA,
+                state: WorkState::DirtyAfterQuota,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: Some("675f80f0a0e90a70b4173e67dd74ec4ddf4ac8ee"),
+                base: Some("825f1f98e980beba8314cc932a38fa3aa924f53c"),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 3,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_ENDED_DIRTY,
+                state: WorkState::EndedDirty,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: Some(head_d),
+                base: Some(head_d),
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+            Want {
+                text: STATUS_JOBS_QUEUED,
+                state: WorkState::EndedJobsQueued,
+                final_lane: Some("qoder"),
+                model: Some("auto-free"),
+                after: None,
+                base: None,
+                verify_exit: None,
+                verify_head: None,
+                dirty: 0,
+                attempts: 1,
+            },
+        ];
+        for w in wants {
+            let status: Value = serde_json::from_str(w.text).unwrap();
+            let id = status["id"].as_str().unwrap().to_string();
+            let mut j = job(&id, "chat", WorkState::Starting, Priority::Normal, "t");
+            apply_status(&mut j, &status);
+            assert_eq!(j.state, w.state, "{id}");
+            assert_eq!(j.final_lane.as_deref(), w.final_lane, "{id}");
+            assert_eq!(j.model.as_deref(), w.model, "{id}");
+            assert_eq!(j.after_head.as_deref(), w.after, "{id}");
+            assert_eq!(j.lane_base_head.as_deref(), w.base, "{id}");
+            assert_eq!(j.verify_exit, w.verify_exit, "{id}");
+            assert_eq!(j.verify_head.as_deref(), w.verify_head, "{id}");
+            assert_eq!(j.dirty_files, w.dirty, "{id}");
+            assert_eq!(j.attempts.len(), w.attempts, "{id}");
+            assert_eq!(j.status_errors, 0, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_last_attempt_with_an_after_head_counts() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        let status = json!({"state": "failed", "attempts": [
+            {"lane": "a", "outcome": "quota", "before_head": "b1", "after_head": "a1"},
+            {"lane": "b", "outcome": "failed", "before_head": null, "after_head": null},
+            {"lane": "c", "outcome": "failed", "before_head": "", "after_head": ""}
+        ], "after_head": "top-level-is-not-read"});
+        apply_status(&mut j, &status);
+        assert_eq!(j.after_head.as_deref(), Some("a1"));
+        assert_eq!(j.lane_base_head.as_deref(), Some("b1"));
+        // No attempts: nothing to read.
+        apply_status(&mut j, &json!({"attempts": []}));
+        assert_eq!(j.after_head, None);
+        assert_eq!(j.lane_base_head, None);
+    }
+
+    #[test]
+    fn empty_for_the_reported_done_fixture() {
+        let status: Value = serde_json::from_str(STATUS_DONE).unwrap();
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        let after = j.after_head.clone().unwrap();
+        let empty = |base: &str| {
+            is_empty(
+                None,
+                Some(base),
+                j.after_head.as_deref(),
+                j.verify_head.as_deref(),
+                j.dirty_files,
+            )
+        };
+        assert!(empty(&after));
+        assert!(!empty("0000000000000000000000000000000000000000"));
+    }
+
+    #[test]
+    fn an_ended_empty_status_ends_the_job_in_that_state() {
+        let mut status: Value = serde_json::from_str(STATUS_DONE).unwrap();
+        status["state"] = json!("ended_empty");
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        assert_eq!(j.state, WorkState::EndedEmpty);
+        assert_eq!(j.lane_state.as_deref(), Some("ended_empty"));
+        assert_eq!(j.note, None);
+        assert_eq!(serde_json::to_value(j.state).unwrap(), json!("ended_empty"));
+    }
+
+    #[test]
+    fn emptiness_branches() {
+        // An expected file decides alone.
+        assert_eq!(emptiness(Some(true), None, None, None, 0), Some(false));
+        assert_eq!(
+            emptiness(Some(false), Some("a"), Some("b"), None, 5),
+            Some(true)
+        );
+        // Dirty files: not empty.
+        assert_eq!(emptiness(None, None, None, None, 2), Some(false));
+        // No evidence at all: unknown.
+        assert_eq!(emptiness(None, None, None, None, 0), None);
+        // Any head makes it known.
+        assert_eq!(emptiness(None, Some("a"), None, None, 0), Some(true));
+        assert_eq!(emptiness(None, Some("a"), Some("a"), None, 0), Some(true));
+        assert_eq!(emptiness(None, Some("a"), Some("b"), None, 0), Some(false));
+        assert_eq!(emptiness(None, None, Some("b"), None, 0), Some(false));
+        assert_eq!(emptiness(None, None, None, Some("c"), 0), Some(false));
+    }
+
+    #[test]
+    fn a_fixture_without_heads_is_unknown_unless_a_file_decides() {
+        let status: Value = serde_json::from_str(STATUS_VERIFIED).unwrap();
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &status);
+        let with = |expect: Option<bool>| {
+            emptiness(
+                expect,
+                j.base_head.as_deref().or(j.lane_base_head.as_deref()),
+                j.after_head.as_deref(),
+                j.verify_head.as_deref(),
+                j.dirty_files,
+            )
+        };
+        assert_eq!(with(None), None);
+        assert_eq!(with(Some(true)), Some(false));
+        assert_eq!(with(Some(false)), Some(true));
+    }
+
+    #[test]
+    fn an_unreadable_status_is_noted_and_a_readable_one_clears_it() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        assert!(status_unreadable(&mut j, "expected value at line 1"));
+        assert_eq!(j.state, WorkState::Running);
+        assert_eq!(j.status_errors, 1);
+        assert_eq!(
+            j.note.as_deref(),
+            Some("lane status could not be read: expected value at line 1")
+        );
+        assert!(status_unreadable(&mut j, &"x".repeat(500)));
+        assert_eq!(j.status_errors, 2);
+        let note = j.note.clone().unwrap();
+        assert_eq!(
+            note.chars().count(),
+            "lane status could not be read: ".len() + 160
+        );
+        assert!(apply_status(&mut j, &json!({"state": "running"})));
+        assert_eq!(j.status_errors, 0);
+        assert_eq!(j.note, None);
+        // Lane's own note replaces the unreadable one; another note of ours stays.
+        status_unreadable(&mut j, "e");
+        apply_status(&mut j, &json!({"state": "running", "note": "from lane"}));
+        assert_eq!(j.note.as_deref(), Some("from lane"));
+        j.note = Some("mine".into());
+        apply_status(&mut j, &json!({"state": "running"}));
         assert_eq!(j.note.as_deref(), Some("mine"));
     }
 
@@ -795,5 +1415,273 @@ mod tests {
         assert_eq!(new_id(0xABCDEF), "wk-000000abcdef");
         assert_eq!(new_id(u128::MAX), "wk-ffffffffffff");
         assert_eq!(new_id(7).len(), 15);
+    }
+
+    const STATUS_QUEUED_LOST: &str = include_str!("../tests/fixtures/lane/status-queued_lost.json");
+    const LS_WITH_IDS: &str = include_str!("../tests/fixtures/lane/ls-with-ids.jsonl");
+
+    #[test]
+    fn a_queued_run_whose_runner_is_gone_is_marked_lost_and_takes_lanes_ids() {
+        let status: Value = serde_json::from_str(STATUS_QUEUED_LOST).unwrap();
+        // Older runs lack these fields: the reader does not need them.
+        assert!(missing_status_fields(&status).is_empty());
+        let mut older = status.clone();
+        for k in ["runner_lost", "lead", "run", "change"] {
+            older.as_object_mut().unwrap().remove(k);
+        }
+        assert!(missing_status_fields(&older).is_empty());
+
+        // A job without ids of its own takes lane's.
+        let mut j = WorkJob {
+            id: "pk-r018-pre-push".into(),
+            ..WorkJob::default()
+        };
+        assert!(apply_status(&mut j, &status));
+        assert_eq!(j.state, WorkState::Queued);
+        assert!(j.runner_lost);
+        assert_eq!(j.lead, "PK");
+        assert_eq!(j.run_id.as_deref(), Some("PK-R018"));
+        assert_eq!(j.change.as_deref(), Some("PK-C008"));
+        assert_eq!(j.note, None);
+        // The same status again changes nothing.
+        assert!(!apply_status(&mut j, &status));
+
+        // A job agentd started keeps its own ids; a run that differs is noted, the job's wins.
+        let mut own = WorkJob {
+            id: "la-r001-x".into(),
+            lead: "LA".into(),
+            run_id: Some("LA-R001".into()),
+            change: Some("LA-C001".into()),
+            ..WorkJob::default()
+        };
+        assert!(apply_status(&mut own, &status));
+        assert_eq!(own.lead, "LA");
+        assert_eq!(own.run_id.as_deref(), Some("LA-R001"));
+        assert_eq!(own.change.as_deref(), Some("LA-C001"));
+        assert_eq!(
+            own.note.as_deref(),
+            Some("lane recorded run PK-R018, agentd issued LA-R001")
+        );
+        assert!(own.runner_lost);
+        assert!(!apply_status(&mut own, &status));
+        // The same run: no note.
+        let mut same = WorkJob {
+            id: "pk-r018-pre-push".into(),
+            lead: "PK".into(),
+            run_id: Some("PK-R018".into()),
+            ..WorkJob::default()
+        };
+        apply_status(&mut same, &status);
+        assert_eq!(same.note, None);
+        assert_eq!(same.change.as_deref(), Some("PK-C008"));
+        // A status that no longer says the runner is lost clears it.
+        let mut back = status.clone();
+        back["runner_lost"] = json!(false);
+        assert!(apply_status(&mut j, &back));
+        assert!(!j.runner_lost);
+        // A status without the fields leaves a job's ids alone.
+        apply_status(&mut j, &older);
+        assert_eq!(j.run_id.as_deref(), Some("PK-R018"));
+    }
+
+    #[test]
+    fn listing_rows_with_ids_give_the_lead_instead_of_direct() {
+        let ls = parse_ls(LS_WITH_IDS);
+        assert_eq!(ls.rows.len(), 2);
+        let a = from_direct(&ls.rows[0]).unwrap();
+        assert!(a.direct);
+        assert_eq!(a.lead, "PK");
+        assert_eq!(a.run_id.as_deref(), Some("PK-R018"));
+        assert_eq!(a.change.as_deref(), Some("PK-C008"));
+        assert_eq!(a.state, WorkState::Queued);
+        let b = from_direct(&ls.rows[1]).unwrap();
+        assert_eq!(b.lead, "PK");
+        assert_eq!(b.run_id.as_deref(), Some("PK-R021"));
+        assert_eq!(b.change.as_deref(), Some("PK-C002"));
+        assert_eq!(b.state, WorkState::Running);
+        // Rows without the fields behave as before.
+        for row in &parse_ls(LS).rows {
+            let j = from_direct(row).unwrap();
+            assert!(j.lead.starts_with("direct:"), "{}", j.lead);
+            assert_eq!((j.run_id, j.change), (None, None));
+        }
+        let lost =
+            from_direct(&json!({"id": "r", "state": "queued", "owner": "o", "runner_lost": true}))
+                .unwrap();
+        assert!(lost.runner_lost);
+        assert_eq!(lost.lead, "direct:o");
+    }
+
+    #[test]
+    fn lost_runners_are_counted_per_lead() {
+        let mut a = job("1", "PK", WorkState::Queued, Priority::Normal, "t");
+        a.runner_lost = true;
+        let mut b = job("2", "PK", WorkState::Running, Priority::Normal, "t");
+        b.runner_lost = true;
+        let c = job("3", "PK", WorkState::Running, Priority::Normal, "t");
+        // A finished job is not counted even when the flag is still set.
+        let mut d = job("4", "PK", WorkState::Failed, Priority::Normal, "t");
+        d.runner_lost = true;
+        let out = summarize(vec![a, b, c, d]);
+        assert_eq!(out[0].lost, 2);
+        assert_eq!((out[0].running, out[0].queued, out[0].ended), (2, 1, 1));
+    }
+
+    #[test]
+    fn stored_jobs_without_the_new_fields_still_load() {
+        let old = r#"{"id":"wk-1","lead":"chat","state":"running"}"#;
+        let job: WorkJob = serde_json::from_str(old).unwrap();
+        assert_eq!(job.run_id, None);
+        assert_eq!(job.change, None);
+        assert_eq!(job.session, None);
+        assert!(!job.runner_lost);
+    }
+
+    #[test]
+    fn a_lost_runner_is_copied_and_cleared() {
+        let mut status: Value = serde_json::from_str(STATUS_QUEUED_LOST).unwrap();
+        // The sample is a complete status: the reader does not ask for `runner_lost`.
+        assert!(missing_status_fields(&status).is_empty());
+        let mut j = job(
+            "wk-1",
+            "l",
+            WorkState::Starting,
+            Priority::Normal,
+            "2026-11-17",
+        );
+        apply_status(&mut j, &status);
+        assert_eq!(j.state, WorkState::Queued);
+        assert!(j.runner_lost);
+        // A field that is not a boolean counts as false.
+        status["runner_lost"] = json!("yes");
+        apply_status(&mut j, &status);
+        assert!(!j.runner_lost);
+        status["runner_lost"] = json!(true);
+        apply_status(&mut j, &status);
+        assert!(j.runner_lost);
+        // A later status without the field clears it.
+        status.as_object_mut().unwrap().remove("runner_lost");
+        apply_status(&mut j, &status);
+        assert!(!j.runner_lost);
+        assert_eq!(j.state, WorkState::Queued);
+    }
+
+    #[test]
+    fn lost_runners_are_counted_per_lead_and_only_when_unfinished() {
+        let mut a = job("wk-1", "l", WorkState::Queued, Priority::Normal, "1");
+        a.runner_lost = true;
+        let mut b = job("wk-2", "l", WorkState::Running, Priority::Normal, "2");
+        b.runner_lost = true;
+        let mut c = job("wk-3", "l", WorkState::Failed, Priority::Normal, "3");
+        c.runner_lost = true;
+        let d = job("wk-4", "l", WorkState::Running, Priority::Normal, "4");
+        let out = summarize(vec![a, b, c, d]);
+        assert_eq!(out[0].lost, 2);
+        assert_eq!(out[0].running, 2);
+    }
+
+    #[test]
+    fn a_job_file_without_scope_or_runner_lost_still_loads() {
+        let j: WorkJob = serde_json::from_str(r#"{"id":"wk-1","lead":"l"}"#).unwrap();
+        assert_eq!(j.scope, None);
+        assert!(!j.runner_lost);
+    }
+
+    const STATUS_LOST: &str = include_str!("../tests/fixtures/lane/status-lost.json");
+    const LS_LOST: &str = include_str!("../tests/fixtures/lane/ls-lost.jsonl");
+
+    #[test]
+    fn lane_now_has_a_state_of_its_own_called_lost() {
+        assert_eq!(WorkState::from_lane("lost"), Some(WorkState::Lost));
+        assert!(WorkState::Lost.is_terminal());
+        assert_eq!(WorkState::Lost.as_str(), "lost");
+        assert_eq!(WorkState::Lost.wait_exit_code(), 9);
+    }
+
+    #[test]
+    fn a_status_that_says_lost_ends_the_job_in_lost() {
+        let status: Value = serde_json::from_str(STATUS_LOST).unwrap();
+        assert!(
+            missing_status_fields(&status).is_empty(),
+            "{:?}",
+            missing_status_fields(&status)
+        );
+        let mut j = job(
+            "wk-227b78845239",
+            "LA",
+            WorkState::Queued,
+            Priority::Normal,
+            "2026-11-17",
+        );
+        j.queue_position = Some(2);
+        assert!(apply_status(&mut j, &status));
+        assert_eq!(j.state, WorkState::Lost);
+        assert_eq!(j.state.wait_exit_code(), 9);
+        assert_eq!(j.lane_state.as_deref(), Some("lost"));
+        assert!(j.lane_lost, "lane said it itself: that is final");
+        // The note is the one lane wrote, not an unknown state of ours.
+        assert_eq!(j.note.as_deref(), Some("<text removed>"));
+        assert!(!j
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("unknown lane state:"));
+        assert_eq!(j.queue_position, None);
+        assert!(!j.runner_lost);
+        assert!(!j.direct);
+        // What ends the run is agentd's doing, and it does not ask whether a lost run is empty.
+        assert_eq!(j.ended_at, None);
+        assert_eq!(j.empty, None);
+        assert_eq!(j.status_errors, 0);
+        assert!(!apply_status(&mut j, &status), "the same answer is no news");
+    }
+
+    #[test]
+    fn an_ls_row_that_says_lost_is_an_ended_direct_run() {
+        let ls = parse_ls(LS_LOST);
+        assert_eq!(ls.rows.len(), 1);
+        assert_eq!(ls.unparsed, 0);
+        let row = &ls.rows[0];
+        assert!(
+            missing_ls_fields(row).is_empty(),
+            "{:?}",
+            missing_ls_fields(row)
+        );
+        let j = from_direct(row).unwrap();
+        assert_eq!(j.id, "wk-227b78845239");
+        assert_eq!(j.state, WorkState::Lost);
+        assert!(j.state.is_terminal());
+        assert_eq!(j.state.wait_exit_code(), 9);
+        assert_eq!(j.lane_state.as_deref(), Some("lost"));
+        assert_eq!(j.ended_at.as_deref(), Some("2026-11-17T16:59:11Z"));
+        assert!(j.direct);
+        assert_eq!(j.note, None);
+    }
+
+    #[test]
+    fn only_lane_saying_lost_marks_the_run_as_final() {
+        let mut j = job(
+            "wk-1",
+            "l",
+            WorkState::Running,
+            Priority::Normal,
+            "2026-11-17",
+        );
+        // The verdict agentd reaches on its own, from repeated misses, is not lane's word.
+        j.state = WorkState::Lost;
+        assert!(!j.lane_lost);
+        assert!(apply_status(&mut j, &json!({"state": "running"})));
+        assert!(!j.lane_lost);
+        assert!(apply_status(&mut j, &json!({"state": "lost"})));
+        assert!(j.lane_lost);
+        // An answer that does not speak of the state leaves lane's word standing.
+        assert!(apply_status(&mut j, &json!({"note": "gone for good"})));
+        assert!(j.lane_lost);
+        assert_eq!(j.note.as_deref(), Some("gone for good"));
+        // A job file from before the field still loads, and is not final.
+        let old: WorkJob =
+            serde_json::from_str(r#"{"id":"wk-1","lead":"l","state":"lost"}"#).unwrap();
+        assert_eq!(old.state, WorkState::Lost);
+        assert!(!old.lane_lost);
     }
 }

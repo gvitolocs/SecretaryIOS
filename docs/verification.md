@@ -273,7 +273,7 @@ Invariants:
 | `OperatorCutover`, `ScriptStep` | `cutover.sh`: preflight; chown + `cutover.env` + restart `lucina-rs`; p1 `SECRETARY_LUCINA_URL` + restart |
 | `OperatorRollback` | `rollback.sh`: p1 first, then `shadow.env` + restart |
 | `ScriptFails` | `set -euo pipefail` (an ssh step fails) |
-| `RustCrashRestart` | `Restart=on-failure`, `lucina-rs-health.timer` |
+| `RustCrashRestart` | `Restart=always`, `lucina-rs-health.timer` (either Lucina unit: started when inactive with no `lucina-maint` marker, reset and started when failed) |
 | `AppStartJob` | job actions: Node `insertJob` (`secretary-api.js`), Rust `JobStore::insert` |
 | `RuntimeFinish` | Node `updateJob`, Rust `JobStore::update` + `finish` |
 | `AppPoll` | `GET …/jobs/:id`: Node `findJob`, Rust `JobStore::find` (marks a running job it is not working on as `interrupted`) |
@@ -283,6 +283,9 @@ Invariants:
 | `TickRead`, `TickSend`, `TickWrite` | Node `processDueReminders`, Rust `ReminderStore::process_due` / `scheduler::tick` (send all, write at the end) |
 | `Crash` | SIGTERM/SIGKILL mid-tick (Node `shutdown()` exits without waiting for the tick) |
 | Channels `Operator`, `Kill`, `LockExpires`, `Acquire` | PORT_PLAN §5 phases 3/4; gateway-lock record (heartbeat 30 s, live 90 s); `releaseGatewayLocks` on SIGTERM |
+
+A planned stop of `lucina-rs` or `lucina-agentd` goes through `lucina-maint stop <unit> --reason "…" --for <min>`;
+a plain `systemctl --user stop` is undone by the watchdog within 2 minutes.
 
 ### 3. Shopping v2 ops + outbox
 

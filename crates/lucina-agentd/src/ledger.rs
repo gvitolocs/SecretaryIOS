@@ -303,75 +303,16 @@ pub struct RepoCtx {
     pub dir: PathBuf,
     /// The repo's name as lagent knows it: the main checkout's directory name.
     pub name: String,
-    /// `origin/<trunk>` when the repo has an origin, else the local trunk branch.
+    /// `origin/<trunk>` when the remote has the trunk, else the local trunk branch.
     pub trunk_ref: String,
 }
 
 /// Find the repo around `dir`: its name (from the main checkout, also for a worktree) and its
-/// trunk ref, decided like the daemon does (origin's HEAD, else main/master; the trunk's
-/// `.lucina/pipeline.toml` may name another trunk).
+/// trunk ref, as [`crate::trunks`] resolves it for every trunk question.
 pub fn repo_ctx(dir: &Path) -> Result<RepoCtx, String> {
-    let common = git(
-        dir,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .map_err(|e| format!("not a git repository: {} ({e})", dir.display()))?;
-    let common = PathBuf::from(common);
-    let root = if common.file_name().is_some_and(|n| n == ".git") {
-        common
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or(common.clone())
-    } else {
-        common.clone()
-    };
-    let name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().trim_end_matches(".git").to_string())
-        .unwrap_or_default();
-    let remote = git(dir, &["remote", "get-url", "origin"])
-        .ok()
-        .map(|_| "origin");
-    let branch_exists = |b: &str| {
-        git(
-            dir,
-            &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")],
-        )
-        .is_ok()
-    };
-    let default = remote
-        .and_then(|r| {
-            git(
-                dir,
-                &[
-                    "symbolic-ref",
-                    "--quiet",
-                    "--short",
-                    &format!("refs/remotes/{r}/HEAD"),
-                ],
-            )
-            .ok()
-            .map(|s| s.trim_start_matches(&format!("{r}/")).to_string())
-        })
-        .unwrap_or_else(|| {
-            if branch_exists("main") {
-                "main".into()
-            } else if branch_exists("master") {
-                "master".into()
-            } else {
-                "main".into()
-            }
-        });
-    let at = |t: &str| match remote {
-        Some(r) => format!("{r}/{t}"),
-        None => t.to_string(),
-    };
-    let trunk = git(dir, &["show", &format!("{}:{PIPELINE_FILE}", at(&default))])
-        .ok()
-        .and_then(|t| Rules::parse(&t).ok())
-        .and_then(|r| r.trunk)
-        .unwrap_or(default);
-    let trunk_ref = at(&trunk);
+    let trunk = crate::trunks::resolve(dir)
+        .ok_or_else(|| format!("not a git repository: {}", dir.display()))?;
+    let trunk_ref = trunk.base_ref();
     git(
         dir,
         &[
@@ -384,7 +325,7 @@ pub fn repo_ctx(dir: &Path) -> Result<RepoCtx, String> {
     .map_err(|_| format!("the trunk {trunk_ref} does not exist in {}", dir.display()))?;
     Ok(RepoCtx {
         dir: dir.to_path_buf(),
-        name,
+        name: trunk.name,
         trunk_ref,
     })
 }

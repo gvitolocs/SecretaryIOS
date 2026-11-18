@@ -4,6 +4,9 @@ Documentation=file:///home/nez/Projects/.worktrees/SecretaryIOS/lucina/docs/luci
 After=network-online.target
 Wants=network-online.target
 # Binding the Tailscale address fails until tailscale0 is up: retry, but not forever.
+# 10 starts in 10 min rides that out, and is few enough that a service which dies on its own stops
+# spinning in under 2 min. Tripping the limit leaves the unit failed, which is a pause and not a
+# dead end: `systemctl reset-failed` clears this counter, and the watchdog calls it (see [Service]).
 StartLimitIntervalSec=600
 StartLimitBurst=10
 
@@ -19,10 +22,28 @@ Environment=RUST_LOG=info
 ExecStart=%h/.local/bin/lucina-rs serve
 # Health gate: the unit is only "started" once /health answers.
 ExecStartPost=/bin/sh -c 'for i in $(seq 1 40); do curl -fsS -m 3 -o /dev/null http://127.0.0.1:8790/health && exit 0; sleep 0.5; done; echo "lucina-rs: /health did not answer" >&2; exit 1'
-Restart=on-failure
+# always: earlyoom ends this service with SIGTERM and it exits cleanly, which on-failure never
+# restarted: 23 min down on 2026-11-17 (incident:lucina-rs-earlyoom:20261117), the same loss lucina-media
+# took on 2026-11-05. A stop that was asked for still wins: systemd applies Restart= only to a start job
+# it queued itself, never to a stop job (systemd.service(5), Restart=), so `systemctl stop` stays stopped
+# and `systemctl restart` is that same suppressed stop plus a start job in one transaction. That is what
+# deploy/lucina-rs/install.sh runs, so a deploy ends with exactly one new main process and does not fight
+# this key. Keep the unit down for real with `lucina-maint stop <unit> --reason "..."`: while it stays
+# stopped Restart= queues nothing, and the marker tells the watchdog (deploy/lucina-rs/health-check.sh,
+# every 2 min) that this inactive unit is on purpose.
+Restart=always
 RestartSec=10
 KillSignal=SIGTERM
-TimeoutStopSec=15
+# From the installed ~/.config/systemd/user/lucina-rs.service.d/90-stop.conf, folded into the repo so the
+# repo is the truth (2026-11-17): every deploy restart hit the 15 s stop timeout and was SIGKILLed
+# (Result=timeout). mixed: SIGTERM to the main process so it can drain, SIGKILL to the cgroup after.
+TimeoutStopSec=10s
+KillMode=mixed
+# 100 is the lowest an unprivileged user unit may ask for: the user manager runs at 100 and a unit cannot
+# go below its manager. nezopt gives every user unit DefaultOOMScoreAdjust=200, which puts this service in
+# the same band as a 511 MiB rustc when earlyoom ranks by adj. Builds go up, not services down (bq,
+# separate change).
+OOMScoreAdjust=100
 UMask=0077
 MemoryHigh=384M
 MemoryMax=768M

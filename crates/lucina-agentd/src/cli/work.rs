@@ -25,20 +25,33 @@ pub enum WorkCommand {
         /// The work id (`wk-…`)
         id: String,
     },
-    /// Wait for a run to end; the exit code says how it ended
+    /// Wait for a run to end; the exit code says how it ended: 0 done or verified, 1 failed,
+    /// 3 all lanes exhausted, 4 dirty after quota, 5 still going at the timeout, 6 ended with
+    /// jobs queued, 7 ended dirty, 8 ended empty, 9 lost
     Wait(WaitArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct StartArgs {
-    /// The chat that owns the run (default: $LAGENT_SESSION, $CLAUDE_CODE_HOST_SESSION_ID, $CLAUDE_CODE_SESSION_ID)
+    /// The lead code of the chat that owns the run (two capital letters, registered with `lagent id lead add`)
     #[arg(long)]
-    pub lead: Option<String>,
+    pub lead: String,
+    /// The change the run works for (`LA-C004`; `lagent id new change`); it belongs to the lead
+    #[arg(long)]
+    pub change: String,
+    /// A short name for the run; it ends up in the run's lane id (`la-r023-ids-writer`)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The chat that starts the run (default: $LAGENT_SESSION, $CLAUDE_CODE_HOST_SESSION_ID, $CLAUDE_CODE_SESSION_ID; may be absent)
+    #[arg(long)]
+    pub session: Option<String>,
     /// Who runs first when the host is busy: owner, high, normal or backlog
     #[arg(long, default_value = "normal")]
     pub priority: String,
-    /// light when the worker runs no build on the host, build when it compiles or tests
-    #[arg(long, default_value = "build")]
+    /// light: the worker reads, reviews or measures and never builds (its cargo calls are refused
+    /// by lane and it needs --expect); build: it compiles or tests. The default is light, the same
+    /// as a plain `lane run`: a worker that builds passes --cost build.
+    #[arg(long, default_value = "light")]
     pub cost: String,
     /// The lane to run (one of --lane and --chain)
     #[arg(long, conflicts_with = "chain")]
@@ -85,8 +98,8 @@ pub struct WaitArgs {
     pub timeout: u64,
 }
 
-/// The lead: the first of the session variables that is set.
-fn session_lead() -> Option<String> {
+/// The session: the first of the session variables that is set.
+fn session_from_env() -> Option<String> {
     [
         "LAGENT_SESSION",
         "CLAUDE_CODE_HOST_SESSION_ID",
@@ -110,17 +123,29 @@ fn api(e: ClientError) -> CmdError {
     e.into()
 }
 
-/// `<lead>: N running, N queued, N ended, N empty`.
+/// `<lead>: N running, N queued, N ended, N empty`, then `, N lost` when N > 0.
 pub(super) fn lead_header(l: &Value) -> String {
     let n = |k: &str| l[k].as_u64().unwrap_or(0);
+    let lost = match n("lost") {
+        0 => String::new(),
+        c => format!(", {c} lost"),
+    };
     format!(
-        "{}: {} running, {} queued, {} ended, {} empty",
+        "{}: {} running, {} queued, {} ended, {} empty{lost}",
         s(&l["lead"]),
         n("running"),
         n("queued"),
         n("ended"),
         n("empty")
     )
+}
+
+/// An unfinished job whose runner is gone.
+fn runner_lost(j: &Value) -> bool {
+    j["runnerLost"] == true
+        && j["state"]
+            .as_str()
+            .is_some_and(|s| matches!(s, "starting" | "queued" | "running"))
 }
 
 /// A short age, `5m`, `3h`, `2d`, for an RFC 3339 time.
@@ -143,6 +168,14 @@ fn text(v: &Value) -> &str {
     v.as_str().unwrap_or_default()
 }
 
+/// A finished job that agentd started, whose `empty` could not be decided.
+fn emptiness_unknown(j: &Value) -> bool {
+    let finished = j["state"]
+        .as_str()
+        .is_some_and(|s| !matches!(s, "starting" | "queued" | "running"));
+    finished && j["empty"].is_null() && j["direct"] != true
+}
+
 fn job_row(j: &Value) -> Vec<String> {
     let lane = [&j["finalLane"], &j["lane"], &j["chain"]]
         .into_iter()
@@ -156,7 +189,11 @@ fn job_row(j: &Value) -> Vec<String> {
         .to_string();
     vec![
         s(&j["id"]),
-        s(&j["state"]),
+        if runner_lost(j) {
+            format!("{}(lost)", s(&j["state"]))
+        } else {
+            s(&j["state"])
+        },
         s(&j["priority"]),
         s(&j["cost"]),
         lane.to_string(),
@@ -167,12 +204,22 @@ fn job_row(j: &Value) -> Vec<String> {
         age(text(&j["createdAt"])),
         if j["empty"] == true {
             "empty".to_string()
+        } else if emptiness_unknown(j) {
+            "?".to_string()
         } else {
             String::new()
         },
         workspace,
         text(&j["note"]).chars().take(60).collect(),
     ]
+}
+
+/// An id as listed; a job without one (a run `lane` has no ids for) shows `-`.
+fn ident(v: &Value) -> String {
+    v.as_str()
+        .filter(|x| !x.is_empty())
+        .unwrap_or("-")
+        .to_string()
 }
 
 fn list_text(leads: &[Value]) -> String {
@@ -187,10 +234,17 @@ fn list_text(leads: &[Value]) -> String {
                 .map(Vec::as_slice)
                 .unwrap_or_default()
                 .iter()
-                .map(job_row)
+                .map(|j| {
+                    // The run and the change come first; the rest is the old row.
+                    let mut row = vec![ident(&j["runId"]), ident(&j["change"])];
+                    row.extend(job_row(j));
+                    row
+                })
                 .collect();
             let t = table(
                 &[
+                    "RUN",
+                    "CHANGE",
                     "ID",
                     "STATE",
                     "PRI",
@@ -216,13 +270,20 @@ fn show_text(job: &Value) -> String {
         return s(job);
     };
     let width = map.keys().map(|k| k.len()).max().unwrap_or(0);
+    let lost =
+        runner_lost(job).then(|| "runner lost: yes (resume or dismiss it with lane)".to_string());
     map.iter()
         .map(|(k, v)| {
-            format!(
-                "{k:<width$}  {}",
-                if v.is_null() { "-".to_string() } else { s(v) }
-            )
+            let shown = if k == "empty" && emptiness_unknown(job) {
+                "unknown (no git heads and no expected file)".to_string()
+            } else if v.is_null() {
+                "-".to_string()
+            } else {
+                s(v)
+            };
+            format!("{k:<width$}  {shown}")
         })
+        .chain(lost)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -289,9 +350,11 @@ fn print_and_exit(out: &Output, json: bool, code: i32) -> ! {
 pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Output, CmdError> {
     match cmd {
         WorkCommand::Start(a) => {
-            let lead = a.lead.clone().filter(|l| !l.trim().is_empty()).or_else(session_lead).ok_or_else(|| {
-                invalid("no lead: pass --lead <chat> (or set LAGENT_SESSION, CLAUDE_CODE_HOST_SESSION_ID or CLAUDE_CODE_SESSION_ID)")
-            })?;
+            let session = a
+                .session
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(session_from_env);
             if a.lane.is_none() && a.chain.is_none() {
                 return Err(invalid("give --lane <name> or --chain <name>"));
             }
@@ -303,7 +366,8 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
                 .display()
                 .to_string();
             let body = json!({
-                "lead": lead, "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
+                "lead": a.lead, "change": a.change, "name": a.name, "session": session,
+                "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
                 "workspace": pipe::host_path(&workspace), "verify": a.verify, "expect": a.expect,
                 "title": a.title, "spec": spec,
             });
@@ -328,14 +392,19 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
                 .get(&format!("/work?{}", q.join("&")))
                 .await
                 .map_err(api)?;
-            if let Some(w) = v["warning"].as_str() {
-                eprintln!("warning: {w}");
+            let (problems, code) = ls_problems(&v);
+            for p in &problems {
+                eprintln!("{p}");
             }
             let leads = v["leads"].as_array().cloned().unwrap_or_default();
-            Ok(Output {
+            let out = Output {
                 text: list_text(&leads),
                 json: Some(v),
-            })
+            };
+            match code {
+                0 => Ok(out),
+                code => print_and_exit(&out, json, code),
+            }
         }
         WorkCommand::Show { id } => Ok(show_output(
             client.get(&format!("/work/{id}")).await.map_err(api)?,
@@ -368,11 +437,38 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
     }
 }
 
-/// The `WORK` part of `lagent board`: one header line per lead. Empty when the daemon has no work route.
+/// What is wrong with a listing, as stderr lines, and the exit code of `lagent work ls`:
+/// 2 when the daemon sent a warning or a listed job's `lane status` could not be read.
+fn ls_problems(v: &Value) -> (Vec<String>, i32) {
+    let mut lines = Vec::new();
+    if let Some(w) = v["warning"].as_str() {
+        lines.push(format!("warning: {w}"));
+    }
+    let unreadable = v["jobs"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|j| j["statusErrors"].as_u64().unwrap_or(0) > 0)
+        .count();
+    if unreadable > 0 {
+        lines.push(format!(
+            "{unreadable} job(s) whose lane status could not be read"
+        ));
+    }
+    let code = if lines.is_empty() { 0 } else { 2 };
+    (lines, code)
+}
+
+/// The `WORK` part of `lagent board`: one header line per lead, and the daemon's warning when
+/// it has one. Empty when the daemon has no work route.
 pub async fn board_section(client: &Client) -> Option<String> {
     let v = client.get("/work").await.ok()?;
     let leads = v["leads"].as_array()?;
-    let lines: Vec<String> = leads.iter().map(lead_header).collect();
+    let mut lines: Vec<String> = leads.iter().map(lead_header).collect();
+    if let Some(w) = v["warning"].as_str() {
+        lines.push(format!("warning: {w}"));
+    }
     Some(format!(
         "WORK\n{}",
         if lines.is_empty() {
@@ -424,12 +520,49 @@ mod tests {
         assert_eq!(r[5], "2");
         assert_eq!(r[7], "");
         assert_eq!(job_row(&json!({"empty": true}))[7], "empty");
+        // A finished job whose emptiness is unknown shows `?`; a running or direct one stays blank.
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": null}))[7],
+            "?"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": false}))[7],
+            ""
+        );
+        assert_eq!(
+            job_row(&json!({"state": "verified", "empty": null, "direct": true}))[7],
+            ""
+        );
+        let shown = show_text(&json!({"state": "done", "empty": null}));
+        assert!(
+            shown.contains("unknown (no git heads and no expected file)"),
+            "{shown}"
+        );
         assert_eq!(r[8], "repo");
         assert_eq!(r[9].len(), 60);
         assert!(r[6].ends_with('d'));
         let c = json!({"chain": "deep", "finalLane": "zen"});
         assert_eq!(job_row(&c)[4], "zen");
         assert_eq!(job_row(&json!({"chain": "deep"}))[4], "deep");
+    }
+
+    #[test]
+    fn a_warning_or_an_unreadable_status_exits_2() {
+        let clean = json!({"leads": [], "jobs": [{"statusErrors": 0}], "warning": null});
+        assert_eq!(ls_problems(&clean), (vec![], 0));
+        let warned =
+            json!({"jobs": [], "warning": "1 of 3 lane rows could not be read: line 2: x"});
+        let (lines, code) = ls_problems(&warned);
+        assert_eq!(code, 2);
+        assert_eq!(
+            lines,
+            ["warning: 1 of 3 lane rows could not be read: line 2: x"]
+        );
+        let stuck =
+            json!({"jobs": [{"statusErrors": 3}, {"statusErrors": 1}, {}], "warning": null});
+        let (lines, code) = ls_problems(&stuck);
+        assert_eq!(code, 2);
+        assert_eq!(lines, ["2 job(s) whose lane status could not be read"]);
     }
 
     #[test]
@@ -444,5 +577,110 @@ mod tests {
         assert!(t.contains("id") && t.contains("wk-1"));
         assert!(t.lines().any(|l| l.starts_with("note") && l.ends_with('-')));
         assert_eq!(t.lines().count(), 3);
+    }
+
+    #[test]
+    fn a_lost_runner_shows_in_the_state_the_header_and_show() {
+        let lost = json!({"id": "wk-1", "state": "queued", "runnerLost": true});
+        assert_eq!(job_row(&lost)[1], "queued(lost)");
+        assert_eq!(
+            job_row(&json!({"state": "running", "runnerLost": true}))[1],
+            "running(lost)"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "starting", "runnerLost": true}))[1],
+            "starting(lost)"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "queued", "runnerLost": false}))[1],
+            "queued"
+        );
+        // A finished job is not marked.
+        assert_eq!(
+            job_row(&json!({"state": "failed", "runnerLost": true}))[1],
+            "failed"
+        );
+        assert!(show_text(&lost)
+            .lines()
+            .any(|l| l == "runner lost: yes (resume or dismiss it with lane)"));
+        assert!(
+            !show_text(&json!({"id": "wk-1", "state": "queued", "runnerLost": false}))
+                .contains("runner lost")
+        );
+        let head = |lost: u64| {
+            lead_header(
+                &json!({"lead": "a", "running": 1, "queued": 2, "ended": 3, "empty": 4, "lost": lost}),
+            )
+        };
+        assert_eq!(head(0), "a: 1 running, 2 queued, 3 ended, 4 empty");
+        assert_eq!(head(2), "a: 1 running, 2 queued, 3 ended, 4 empty, 2 lost");
+    }
+
+    #[test]
+    fn show_has_a_scope_line() {
+        let t = show_text(&json!({"id": "wk-1", "scope": "lucina-work-wk-1"}));
+        assert!(t
+            .lines()
+            .any(|l| l.starts_with("scope") && l.ends_with("lucina-work-wk-1")));
+        let t = show_text(&json!({"id": "wk-1", "scope": null}));
+        assert!(t
+            .lines()
+            .any(|l| l.starts_with("scope") && l.ends_with('-')));
+    }
+
+    #[test]
+    fn a_lost_runner_shows_in_the_state_the_header_and_show_ids() {
+        let queued = json!({"id": "x", "state": "queued", "runnerLost": true});
+        assert_eq!(job_row(&queued)[1], "queued(lost)");
+        let running = json!({"state": "running", "runnerLost": true});
+        assert_eq!(job_row(&running)[1], "running(lost)");
+        // A finished run, or one whose runner is fine, shows its plain state.
+        assert_eq!(
+            job_row(&json!({"state": "failed", "runnerLost": true}))[1],
+            "failed"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "queued", "runnerLost": false}))[1],
+            "queued"
+        );
+        let l = json!({"lead": "PK", "running": 1, "queued": 1, "ended": 0, "empty": 0, "lost": 2});
+        assert_eq!(
+            lead_header(&l),
+            "PK: 1 running, 1 queued, 0 ended, 0 empty, 2 lost"
+        );
+        let shown = show_text(&queued);
+        assert!(
+            shown.ends_with("runner lost: yes (resume or dismiss it with lane)"),
+            "{shown}"
+        );
+        assert!(!show_text(&json!({"state": "queued"})).contains("runner lost"));
+    }
+
+    #[test]
+    fn the_list_has_the_run_and_the_change_first() {
+        let leads = vec![json!({
+            "lead": "LA", "running": 0, "queued": 1, "ended": 0, "empty": 0,
+            "jobs": [
+                {"id": "la-r001-x", "runId": "LA-R001", "change": "LA-C001", "state": "queued", "runnerLost": true},
+                {"id": "zz-direct", "state": "running"}
+            ]
+        })];
+        let t = list_text(&leads);
+        let mut lines = t.lines();
+        assert_eq!(
+            lines.next(),
+            Some("LA: 0 running, 1 queued, 0 ended, 0 empty")
+        );
+        let head = lines.next().unwrap();
+        assert!(head.starts_with("RUN"), "{head}");
+        assert!(head.contains("CHANGE") && head.contains("ID"), "{head}");
+        let first = lines.next().unwrap();
+        assert!(first.starts_with("LA-R001"), "{first}");
+        assert!(
+            first.contains("LA-C001") && first.contains("queued(lost)"),
+            "{first}"
+        );
+        let second = lines.next().unwrap();
+        assert!(second.starts_with("-"), "{second}");
     }
 }

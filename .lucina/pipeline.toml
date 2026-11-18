@@ -38,6 +38,15 @@ paths = []
 run = "bash scripts/check-fast --base HEAD^1 --merge-gate"
 timeout_min = 12
 
+# The deploy scripts' own tests (deploy/**/test-*.sh): a stub systemctl and curl, nothing installed,
+# started or stopped. check-fast shellchecks those files but runs no test, so without this a watchdog
+# rule that no longer watches anything merges green. The launcher refuses when it finds no test at all.
+[[gate]]
+name = "deploy shell tests"
+paths = ["deploy/", "scripts/check-deploy-sh.sh"]
+run = "sh scripts/check-deploy-sh.sh"
+timeout_min = 5
+
 # `lagent deploy <runtime>`: from main's tip, inside the merge lock, between deploy-guard check and record.
 # Runtimes without a recipe still deploy by hand (docs/repo-workflow.md, "Deploying").
 [deploy.lucina-agentd]

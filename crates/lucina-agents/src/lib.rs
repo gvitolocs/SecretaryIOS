@@ -64,6 +64,7 @@ pub mod events;
 pub mod external;
 pub mod fork_context;
 pub mod handoff;
+pub mod ids;
 pub mod jsstr;
 pub mod lifecycle;
 pub mod notification;

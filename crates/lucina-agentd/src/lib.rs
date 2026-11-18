@@ -28,6 +28,8 @@
 //!   message them, set heartbeats and search.
 //! - [`pipeline`]: tasks, the merge and deploy queue, and device leases (every coding
 //!   session's way to main, production and the owner's devices).
+//! - [`trunks`]: which branch is a repo's trunk, and the table that overrides it where the
+//!   remote does not carry it.
 
 #![forbid(unsafe_code)]
 
@@ -37,6 +39,9 @@ pub mod cli;
 pub mod client;
 pub mod config;
 pub mod devices;
+/// The built environment ([`env`]) every gate command, deploy step, agent and terminal
+/// starts with, instead of whatever the daemon's own environment holds.
+pub mod env;
 pub mod external;
 pub mod journal;
 pub mod jsonrpc;
@@ -55,6 +60,7 @@ pub mod providers;
 pub mod schedules;
 pub mod store;
 pub mod terminals;
+pub mod trunks;
 pub mod workspaces;
 
 /// Tests that write a file they go on to execute; see the module for why that needs care.

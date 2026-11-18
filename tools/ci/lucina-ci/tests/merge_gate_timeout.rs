@@ -11,20 +11,32 @@ use std::process::Command;
 /// machine's RAM, so they ask for a cap every runner holds (`runner::budget`).
 const MEM_CAP_GIB: &str = "1";
 
+/// The names a lane's git config comes in with, of which `bq` takes `GIT_CONFIG_KEY_0` out of a job's environment because
+/// its name holds KEY and leaves `GIT_CONFIG_COUNT` behind — which no git can read, not the one a test runs to build its
+/// repository and not the one the spawned `check-fast` calls. Everything here runs with the trio gone.
+const LANE_GIT_CONFIG: [&str; 3] = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"];
+
+fn drop_lane_git_config(c: &mut Command) {
+    for n in LANE_GIT_CONFIG {
+        c.env_remove(n);
+    }
+}
+
+/// git, with no inherited config.
 fn git(d: &Path, args: &[&str]) {
-    let o = Command::new("git")
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .current_dir(d)
-        .output()
-        .unwrap();
+    let mut c = Command::new("git");
+    c.args([
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+    ])
+    .args(args)
+    .current_dir(d);
+    drop_lane_git_config(&mut c);
+    let o = c.output().unwrap();
     assert!(
         o.status.success(),
         "git {args:?}: {}",
@@ -61,21 +73,24 @@ fn run(repo: &Path, bin: &Path, cap: &str) -> (i32, String) {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let o = Command::new(env!("CARGO_BIN_EXE_lucina-ci"))
-        .args([
-            "check-fast",
-            "--base",
-            "main",
-            "--merge-gate",
-            "--no-build",
-            "--mem-cap-gib",
-            MEM_CAP_GIB,
-        ])
-        .current_dir(repo)
-        .env("PATH", path)
-        .env("LUCINA_CHECK_FAST_MERGE_CAP_S", cap)
-        .output()
-        .unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_lucina-ci"));
+    c.args([
+        "check-fast",
+        "--base",
+        "main",
+        "--merge-gate",
+        "--no-build",
+        "--mem-cap-gib",
+        MEM_CAP_GIB,
+    ])
+    .current_dir(repo)
+    .env("PATH", path)
+    .env("LUCINA_CHECK_FAST_MERGE_CAP_S", cap)
+    // A step timed out is what this test measures: nothing inherited may keep diffgate from running at all.
+    .env_remove("LAGENT_ALLOW")
+    .env_remove("LAGENT_WAIVERS_FILE");
+    drop_lane_git_config(&mut c);
+    let o = c.output().unwrap();
     (
         o.status.code().unwrap_or(-1),
         format!(
@@ -121,20 +136,22 @@ fn a_step_past_its_limit_outside_the_merge_gate_is_the_plain_failure_it_was() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let o = Command::new(env!("CARGO_BIN_EXE_lucina-ci"))
-        .args([
-            "check-fast",
-            "--base",
-            "main",
-            "--no-build",
-            "--mem-cap-gib",
-            MEM_CAP_GIB,
-        ])
-        .current_dir(&repo)
-        .env("PATH", path)
-        .env("LUCINA_CHECK_FAST_MERGE_CAP_S", "1")
-        .output()
-        .unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_lucina-ci"));
+    c.args([
+        "check-fast",
+        "--base",
+        "main",
+        "--no-build",
+        "--mem-cap-gib",
+        MEM_CAP_GIB,
+    ])
+    .current_dir(&repo)
+    .env("PATH", path)
+    .env("LUCINA_CHECK_FAST_MERGE_CAP_S", "1")
+    .env_remove("LAGENT_ALLOW")
+    .env_remove("LAGENT_WAIVERS_FILE");
+    drop_lane_git_config(&mut c);
+    let o = c.output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
     // the cap is a merge-gate rule: a developer's own run is not cut at 1 s, the 5 s stub finishes
     assert!(out.lines().any(|l| l.starts_with("ok   diffgate")), "{out}");

@@ -1,0 +1,359 @@
+{
+  "id": "cardgts-merge-main",
+  "state": "verify_failed",
+  "runner_lost": false,
+  "owner": "cardgts-seek-offer",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "deep",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/Projects/.worktrees/pokoin-web/cardgts-seek-offer",
+  "repo": "/home/nez/mnt/mybook/Projects/pokoin-web/.git",
+  "final_lane": "qoder",
+  "model": "auto-free",
+  "effort": null,
+  "session_id": "d43ff3f4-f659-43f7-affe-c22a45dfbd3a",
+  "live": null,
+  "attempts": [
+    {
+      "lane": "qoder",
+      "outcome": "ok",
+      "reason": "<text removed>",
+      "duration_s": 703.9,
+      "changed_files": [
+        "docs/GAMES.md",
+        "docs/NEW_SET_IMPORT.md",
+        "market/public/data/site-map-images.json",
+        "market/public/data/site-map.json",
+        "market/src/api.js",
+        "market/src/desk.css",
+        "market/src/portfolio-history.js",
+        "market/src/portfolio-history.test.js",
+        "market/src/portfolio-movers-cache.js",
+        "market/src/portfolio-movers-cache.test.js",
+        "market/src/portfolio-movers.js",
+        "market/src/portfolio-movers.test.js",
+        "market/src/sell-spreadsheet.css",
+        "market/src/seller-home.css",
+        "pokoin-rust/crates/accounts/src/domain/portfolio_history.rs",
+        "pokoin-rust/crates/accounts/src/handlers/portfolio.rs",
+        "pokoin-rust/crates/accounts/src/lib.rs",
+        "scripts/check-new-set.py",
+        "scripts/check-new-set.test.py",
+        "scripts/ingest-missing-product-images.py",
+        "scripts/ingest-missing-product-images.test.py",
+        "scripts/lowres-upgrade-driver.sh",
+        "solid/src/App.jsx",
+        "solid/src/components/Carousel.jsx",
+        "solid/src/components/ChatDock.jsx",
+        "solid/src/components/Chrome.jsx",
+        "solid/src/components/SearchToolbar.jsx",
+        "solid/src/components/SeoHead.jsx",
+        "solid/src/components/StockNav.jsx",
+        "solid/src/components/ThumbZoom.jsx",
+        "solid/src/components/ZeroPack.jsx",
+        "solid/src/components/dashboard/CollectionHistoryPanel.jsx",
+        "solid/src/components/dashboard/SellerDashboardView.jsx",
+        "solid/src/components/dashboard/TopMoversPanel.jsx",
+        "solid/src/components/inventory/CollectionHoldings.jsx",
+        "solid/src/components/inventory/CollectionHoldings.test.js",
+        "solid/src/components/inventory/InventoryBoard.jsx",
+        "solid/src/components/inventory/LocationBoard.jsx",
+        "solid/src/components/inventory/LocationBoard.test.js",
+        "solid/src/components/inventory/PricerDefaults.jsx",
+        "solid/src/components/inventory/collection-batch.js",
+        "solid/src/components/inventory/collection-batch.test.js",
+        "solid/src/components/pricer/StrategiesPanel.jsx",
+        "solid/src/components/pricer/pricer-ui.js",
+        "solid/src/components/pricer/pricer-ui.test.js",
+        "solid/src/components/pricer/pricing-store.js",
+        "solid/src/lib/buy-book.js",
+        "solid/src/lib/derived-cache.js",
+        "solid/src/lib/derived-cache.test.js",
+        "solid/src/lib/effects-shape.test.js",
+        "solid/src/lib/tab-cache.js",
+        "solid/src/lib/tab-cache.test.js",
+        "solid/src/pages/Bought.jsx",
+        "solid/src/pages/BuySell.jsx",
+        "solid/src/pages/CardTraderZero.jsx",
+        "solid/src/pages/Inventory.jsx",
+        "solid/src/pages/Portfolio.jsx",
+        "solid/src/pages/Profile.jsx",
+        "solid/src/pages/Sales.jsx",
+        "solid/src/pages/SellerHome.jsx",
+        "solid/src/pages/SellerHome.test.js",
+        "solid/src/pages/SyncReview.jsx",
+        "solid/src/pages/ZeroPicked.jsx",
+        "solid/src/pages/ZeroPicked.test.js",
+        "solid/src/pages/buysell-preview-fixture.js",
+        "solid/src/pages/mypokoin-preview-fixture.js",
+        "solid/src/pages/mypokoin-preview-fixture.test.js",
+        "solid/src/pages/mypokoin-preview-rules.js",
+        "solid/src/pages/mypokoin-preview.js",
+        "solid/src/pages/scan-desk/preview-fixture.js",
+        "solid/src/pages/scan-desk/preview-fixture.test.js",
+        "solid/src/pages/scan-desk/watch.js",
+        "solid/src/routes/account.js",
+        "solid/src/routes/commerce.js",
+        "solid/src/stores/cart.js"
+      ],
+      "looks": [],
+      "model_used": null,
+      "before_head": "a65030bfb78e8add4b65b78f94ee18a653e1e378",
+      "after_head": "4f2d631ea2edaf2305444ae262318217e749af8a"
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": "<text removed>",
+  "verify": {
+    "cmd": "cd solid && npm test && cd ../market && npm test",
+    "ran_cmd": null,
+    "exit_code": 1,
+    "timed_out": false,
+    "head": "4f2d631ea2edaf2305444ae262318217e749af8a",
+    "ran": true,
+    "note": null
+  },
+  "diffgate": {
+    "exit_code": 1,
+    "refused": true,
+    "base": "<text removed>",
+    "report": {
+      "ok": false,
+      "refusals": [
+        {
+          "file": "<text removed>",
+          "line": 108,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 109,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 110,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 143,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 144,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 145,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 146,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 149,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 150,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 154,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 160,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 161,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 163,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 202,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 205,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 207,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 208,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 210,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 211,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 212,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 213,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 224,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 40,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        },
+        {
+          "file": "<text removed>",
+          "line": 116,
+          "rule": "<text removed>",
+          "side": "<text removed>",
+          "snippet": "<text removed>",
+          "why": "<text removed>"
+        }
+      ],
+      "schema": "<text removed>",
+      "stats": {
+        "added": 4119,
+        "files": 73,
+        "removed": 772,
+        "rules": {
+          "assertion-removed": 22,
+          "code-stub": 0,
+          "evidence-placeholder": 0,
+          "guard-deleted": 0,
+          "oracle-changed": 0,
+          "placeholder-comment": 0,
+          "skipped-test": 0,
+          "test-removed": 2,
+          "tmp-write": 0,
+          "tree-wide-reformat": 0
+        }
+      },
+      "waived": []
+    }
+  },
+  "dirty_files": [],
+  "dirty_check": "<text removed>",
+  "cooldowns": [
+    {
+      "lane": "zcode",
+      "until": "manual",
+      "reason": "<text removed>"
+    }
+  ],
+  "note": null,
+  "accepted": {
+    "commit": "4f2d631ea2edaf2305444ae262318217e749af8a",
+    "at": "2026-11-16T16:39:43Z",
+    "by": "ci-fix-chat",
+    "check_cmd": "<text removed>",
+    "check_exit_code": 0,
+    "note": null
+  },
+  "dir": "/home/nez/scratch/offload/lane/cardgts-merge-main",
+  "updated": "2026-11-16T16:39:43Z"
+}

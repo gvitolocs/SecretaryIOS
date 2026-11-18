@@ -28,20 +28,42 @@ pub fn read_config(root: &Path) -> Value {
 pub fn commands(v: &Value) -> Vec<String> {
     match v {
         Value::String(s) if !s.trim().is_empty() => vec![s.clone()],
-        Value::Array(a) => a.iter().filter_map(|c| c.as_str()).filter(|c| !c.trim().is_empty()).map(str::to_string).collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|c| c.as_str())
+            .filter(|c| !c.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     }
 }
 
 /// The environment setup and teardown see (Paseo's names, plus Lucina aliases).
-pub fn env(source: &Path, worktree: &Path, branch: &str, port: Option<u16>) -> Vec<(String, String)> {
+pub fn env(
+    source: &Path,
+    worktree: &Path,
+    branch: &str,
+    port: Option<u16>,
+) -> Vec<(String, String)> {
     let mut e = vec![
-        ("PASEO_SOURCE_CHECKOUT_PATH".to_string(), source.display().to_string()),
+        (
+            "PASEO_SOURCE_CHECKOUT_PATH".to_string(),
+            source.display().to_string(),
+        ),
         ("PASEO_ROOT_PATH".to_string(), source.display().to_string()),
-        ("PASEO_WORKTREE_PATH".to_string(), worktree.display().to_string()),
+        (
+            "PASEO_WORKTREE_PATH".to_string(),
+            worktree.display().to_string(),
+        ),
         ("PASEO_BRANCH_NAME".to_string(), branch.to_string()),
-        ("LUCINA_SOURCE_CHECKOUT_PATH".to_string(), source.display().to_string()),
-        ("LUCINA_WORKTREE_PATH".to_string(), worktree.display().to_string()),
+        (
+            "LUCINA_SOURCE_CHECKOUT_PATH".to_string(),
+            source.display().to_string(),
+        ),
+        (
+            "LUCINA_WORKTREE_PATH".to_string(),
+            worktree.display().to_string(),
+        ),
         ("LUCINA_BRANCH_NAME".to_string(), branch.to_string()),
     ];
     if let Some(p) = port {
@@ -51,11 +73,25 @@ pub fn env(source: &Path, worktree: &Path, branch: &str, port: Option<u16>) -> V
     e
 }
 
-/// Run one shell command in `dir`; returns (exit code, log).
+/// Run one shell command in `dir`; returns (exit code, log). The shell gets the built
+/// environment ([`crate::env`], from this process's own), and `env` on top of it.
 pub async fn run_command(cmd: &str, dir: &Path, env: &[(String, String)]) -> (Option<i32>, String) {
+    run_command_from(cmd, dir, env, std::env::vars_os().collect()).await
+}
+
+/// [`run_command`], built from `source` instead of this process's environment — a
+/// parameter, so tests pass a stand-in in instead of mutating the process environment.
+async fn run_command_from(
+    cmd: &str,
+    dir: &Path,
+    env: &[(String, String)],
+    source: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> (Option<i32>, String) {
     let child = Command::new("/bin/sh")
         .args(["-c", cmd])
         .current_dir(dir)
+        .env_clear()
+        .envs(crate::env::scrubbed_env_from(source, &[]).0)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .env_remove(crate::notify::TOKEN_ENV)
         .stdin(Stdio::null())
@@ -97,29 +133,49 @@ pub async fn run_command(cmd: &str, dir: &Path, env: &[(String, String)]) -> (Op
             log.push_str(&String::from_utf8_lossy(&b));
             if log.len() > LOG_LIMIT {
                 let cut = log.len() - LOG_LIMIT;
-                let start = (cut..log.len()).find(|i| log.is_char_boundary(*i)).unwrap_or(cut);
+                let start = (cut..log.len())
+                    .find(|i| log.is_char_boundary(*i))
+                    .unwrap_or(cut);
                 log = format!("…{}", &log[start..]);
             }
             (status.ok().and_then(|s| s.code()), log)
         }
         Err(_) => {
             if let Some(pid) = pid {
-                let _ = std::process::Command::new("kill").args(["-s", "KILL", "--", &format!("-{pid}")]).status();
+                let _ = std::process::Command::new("kill")
+                    .args(["-s", "KILL", "--", &format!("-{pid}")])
+                    .status();
             }
-            (None, format!("timed out after {} s", COMMAND_TIMEOUT.as_secs()))
+            (
+                None,
+                format!("timed out after {} s", COMMAND_TIMEOUT.as_secs()),
+            )
         }
     }
 }
 
 /// Run setup commands, reporting each step through `progress`.
-pub async fn run_setup(cmds: &[String], dir: &Path, env: &[(String, String)], mut progress: impl FnMut(&SetupSnapshot)) -> SetupSnapshot {
+pub async fn run_setup(
+    cmds: &[String],
+    dir: &Path,
+    env: &[(String, String)],
+    mut progress: impl FnMut(&SetupSnapshot),
+) -> SetupSnapshot {
     let cwd = dir.display().to_string();
     let mut snap = SetupSnapshot {
         status: "running".into(),
         commands: cmds
             .iter()
             .enumerate()
-            .map(|(index, command)| SetupCommand { index, command: command.clone(), cwd: cwd.clone(), log: String::new(), status: "pending".into(), exit_code: None, duration_ms: None })
+            .map(|(index, command)| SetupCommand {
+                index,
+                command: command.clone(),
+                cwd: cwd.clone(),
+                log: String::new(),
+                status: "pending".into(),
+                exit_code: None,
+                duration_ms: None,
+            })
             .collect(),
         error: None,
     };
@@ -157,7 +213,11 @@ mod tests {
     #[tokio::test]
     async fn setup_stops_at_the_first_failure() {
         let dir = tempfile::tempdir().unwrap();
-        let cmds = commands(&serde_json::json!(["echo one $PASEO_BRANCH_NAME", "false", "echo never"]));
+        let cmds = commands(&serde_json::json!([
+            "echo one $PASEO_BRANCH_NAME",
+            "false",
+            "echo never"
+        ]));
         let env = env(dir.path(), dir.path(), "feat/x", Some(4100));
         let mut steps = 0;
         let snap = run_setup(&cmds, dir.path(), &env, |_| steps += 1).await;
@@ -168,5 +228,40 @@ mod tests {
         assert!(steps >= 3);
         assert_eq!(commands(&serde_json::json!("echo x")), vec!["echo x"]);
         assert!(commands(&serde_json::json!({"a": 1})).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_setup_command_gets_the_allowlisted_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let names_path = dir.path().join("env-names.txt");
+        let source = crate::testutil::env_source(&[
+            ("PATH", "/usr/bin:/bin"),
+            ("HOME", "/home/fake"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/ssh.sock"),
+            ("LAGENT_WAIVERS_FILE", "/run/fake/waivers.jsonl"),
+            ("FAKE_API_TOKEN", "fake-token"),
+            ("CLOUDFLARE_FAKE_ID", "fake-id"),
+        ]);
+        let env = env(dir.path(), dir.path(), "feat/x", Some(4100));
+        let (code, log) = run_command_from(
+            &format!("env | cut -d= -f1 > {}", names_path.display()),
+            dir.path(),
+            &env,
+            source,
+        )
+        .await;
+        assert_eq!(code, Some(0), "{log}");
+        let names = std::fs::read_to_string(&names_path).unwrap();
+        for n in [
+            "FAKE_API_TOKEN",
+            "CLOUDFLARE_FAKE_ID",
+            "SSH_AUTH_SOCK",
+            "LAGENT_WAIVERS_FILE",
+        ] {
+            assert!(!names.lines().any(|l| l == n), "{names}");
+        }
+        for n in ["PATH", "HOME", "PASEO_BRANCH_NAME", "LUCINA_BRANCH_NAME"] {
+            assert!(names.lines().any(|l| l == n), "{names}");
+        }
     }
 }

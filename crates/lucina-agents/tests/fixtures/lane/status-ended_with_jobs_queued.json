@@ -1,0 +1,50 @@
+{
+  "id": "qoder-il-gc",
+  "state": "ended_with_jobs_queued",
+  "runner_lost": false,
+  "owner": "qoder-il-gc",
+  "queued_at": null,
+  "queue_position": null,
+  "category": "qoder",
+  "category_source": null,
+  "category_probabilities": null,
+  "workspace": "/home/nez/scratch/lucinajs",
+  "repo": null,
+  "final_lane": "qoder",
+  "model": "auto-free",
+  "effort": null,
+  "session_id": "6bbbb4d1-8637-414a-8a46-b4bd1dc25ff4",
+  "live": null,
+  "attempts": [
+    {
+      "lane": "qoder",
+      "outcome": "ok",
+      "reason": "<text removed>",
+      "duration_s": 1653.0,
+      "changed_files": [],
+      "looks": [],
+      "model_used": null,
+      "before_head": null,
+      "after_head": null
+    }
+  ],
+  "running_looks": [],
+  "result_excerpt": "<text removed>",
+  "verify": {
+    "cmd": "test -s /home/nez/scratch/lucinajs/interleavings/gc.md",
+    "ran_cmd": null,
+    "exit_code": null,
+    "timed_out": false,
+    "head": null,
+    "ran": false,
+    "note": "<text removed>"
+  },
+  "diffgate": null,
+  "dirty_files": [],
+  "dirty_check": "<text removed>",
+  "cooldowns": [],
+  "note": "<text removed>",
+  "accepted": null,
+  "dir": "/home/nez/scratch/offload/lane/qoder-il-gc",
+  "updated": "2026-11-17T11:57:37Z"
+}

@@ -44,6 +44,7 @@
 //! Tasks, the merge and deploy queue, device leases and the board: [`pipeline`].
 //! Installs on leased devices (the iPhone) and test-run grants: [`devices`].
 //! Work jobs that run through `lane`: [`work`].
+//! Identifiers of runs, changes, versions and findings: [`ids`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
 //! makes a subagent (depth-limited, supervised), its `send` is a queued agent message,
@@ -82,6 +83,7 @@ use crate::workspaces::WsError;
 
 mod catalog;
 mod devices;
+mod ids;
 mod orch;
 mod pipeline;
 mod rewind;
@@ -128,7 +130,7 @@ impl From<ManagerError> for ApiError {
             ManagerError::ForkBoundary(_) | ManagerError::Busy(_) => StatusCode::CONFLICT,
             ManagerError::CodexNotAllowed(_) => StatusCode::FORBIDDEN,
             ManagerError::JunoToolRefused(_) => StatusCode::FORBIDDEN,
-            ManagerError::WorkNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::WorkNotFound(_) | ManagerError::IdNotFound(_) => StatusCode::NOT_FOUND,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -197,6 +199,7 @@ pub fn router(manager: Manager) -> Router {
         .merge(pipeline::routes())
         .merge(devices::routes())
         .merge(work::routes())
+        .merge(ids::routes())
         // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
         .layer(axum::middleware::from_fn_with_state(
             manager.clone(),
