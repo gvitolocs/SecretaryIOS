@@ -43,8 +43,21 @@ const FAKE_LANE: &str = r#"#!/bin/sh
 D="$(dirname "$0")/data"
 cmd="$1"
 shift
+# A `lane status` that never answers, for the poller's own timeout. exec leaves no child behind.
+if [ "$cmd" = status ] && [ -f "$D/$1.hang" ]; then exec sleep 30; fi
+# A `lane status` that counts its own calls: exit 2, but the third call prints garbage and
+# exits 0. The number in the file is how many calls the run has had.
+if [ "$cmd" = status ] && [ -f "$D/$1.seq" ]; then
+  n=$(cat "$D/$1.seq")
+  n=$((n + 1))
+  echo "$n" > "$D/$1.seq"
+  if [ "$n" -eq 3 ]; then echo "this is not json"; exit 0; fi
+  exit 2
+fi
 case "$cmd" in
 run)
+  # A `lane run` that takes its time to detach, so a test can stop the daemon while it is up.
+  if [ -f "$D/run-slow" ]; then sleep 5; fi
   id=""
   prev=""
   for a in "$@"; do
@@ -355,6 +368,29 @@ fn wait_state(d: &Daemon, id: &str, state: &str) -> Value {
     })
 }
 
+/// [`wait_state`] with a budget of its own. A run becomes `lost` only after three misses, so
+/// three poll intervals are the least it takes, and a loaded host spends those slowly: the 20
+/// seconds of `wait_for` are not enough for it.
+fn wait_state_within(d: &Daemon, id: &str, state: &str, limit: Duration) -> Value {
+    let deadline = Instant::now() + limit;
+    loop {
+        let job = show(d, id);
+        if job["state"] == state {
+            return job;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waiting for {state}: still {job}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// How long a run is given to be found `lost`.
+fn lost_budget() -> Duration {
+    Duration::from_secs(90)
+}
+
 fn lead_of<'a>(list: &'a Value, lead: &str) -> Option<&'a Value> {
     list["leads"]
         .as_array()
@@ -509,6 +545,139 @@ fn an_expected_file_is_handed_to_lane_as_expect_file() {
     // After --workspace <ws>, before --verify.
     assert!(at("--workspace") < at("--expect-file"), "{args:?}");
     assert!(at("--expect-file") < at("--verify"), "{args:?}");
+}
+
+#[test]
+fn an_expect_reached_through_a_symlink_is_not_the_file_the_run_left_behind() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let out = Path::new(&ws).join("out");
+    // The control: the expected file is where the job said it is.
+    std::fs::create_dir(&out).unwrap();
+    std::fs::write(out.join("report.md"), "here\n").unwrap();
+    let good = start(
+        &d,
+        &f,
+        "LA",
+        &ws,
+        &["--cost", "build", "--expect", "out/report.md"],
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&good, &lane_status(&good, "verified", json!({})));
+    let job = wait_state(&d, &good, "verified");
+    assert_eq!(job["empty"], false, "the file is there: {job}");
+
+    // The same job with `out` a link to a directory outside the workspace, where a file of
+    // that name is not empty either: what the worker left is not in the workspace.
+    std::fs::remove_dir_all(&out).unwrap();
+    let outside = f.root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("report.md"), "elsewhere\n").unwrap();
+    std::os::unix::fs::symlink(&outside, &out).unwrap();
+    let bad = start(
+        &d,
+        &f,
+        "LA",
+        &ws,
+        &["--cost", "build", "--expect", "out/report.md"],
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&bad, &lane_status(&bad, "verified", json!({})));
+    let job = wait_state(&d, &bad, "verified");
+    assert_eq!(job["empty"], true, "a link is not the file: {job}");
+}
+
+/// `./report.md` names the file the run left in the workspace: a leading `.` is the directory
+/// the walk starts in, not a step out of it.
+#[test]
+fn an_expect_named_with_a_leading_dot_is_the_file_in_the_workspace() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    std::fs::write(Path::new(&ws).join("report.md"), "# report\n").unwrap();
+    let id = start(
+        &d,
+        &f,
+        "LA",
+        &ws,
+        &["--cost", "build", "--expect", "./report.md"],
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, &lane_status(&id, "verified", json!({})));
+    let job = wait_state(&d, &id, "verified");
+    assert_eq!(job["empty"], false, "the file is there, dot or not: {job}");
+
+    // The workspace itself, on the other hand, is not a file a run left behind.
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build", "--expect", "."])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, &lane_status(&id, "verified", json!({})));
+    let job = wait_state(&d, &id, "verified");
+    assert_eq!(job["empty"], true, "a directory is not the file: {job}");
+}
+
+/// The job must be on disk before `lane run` begins.
+#[test]
+fn a_job_that_cannot_be_saved_does_not_start_the_run() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    // What the job file's own temp name should be is a directory: the write cannot land.
+    let work = d.state().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let tmp = format!("jobs.json.tmp-{}", d.guard.pid());
+    std::fs::create_dir(work.join(&tmp)).unwrap();
+    let change = change_for(&d, "LA");
+    let spec = f.spec();
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "LA",
+            "--change",
+            &change,
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+            "--cost",
+            "build",
+        ],
+    );
+    assert_eq!(r.code, 1, "stdout {} | stderr {}", r.stdout, r.stderr);
+    assert!(
+        r.stderr.contains("cannot write the job file"),
+        "{}",
+        r.stderr
+    );
+    // `lane run` was not called: no run left its arguments behind.
+    assert!(
+        !std::fs::read_dir(f.data())
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with(".args")),
+        "the run started although its job is not saved"
+    );
+    // The spec directory the start made is gone with it.
+    let left: Vec<String> = std::fs::read_dir(&work)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n != &tmp && n != "jobs.json")
+        .collect();
+    assert!(left.is_empty(), "the failed start left {left:?}");
 }
 
 #[test]
@@ -907,6 +1076,77 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 1);
 }
 
+/// `lane run` is detached from the daemon's process group and its handle does not kill it: a
+/// stop between saving the job and `lane` registering the run leaves the run to itself.
+#[test]
+fn a_run_that_is_still_starting_outlives_the_daemon_that_started_it() {
+    let f = Fixture::new();
+    let mut d = f.daemon(&[]);
+    // The stand-in `lane` sleeps five seconds before it registers the run: the stop below
+    // lands inside that window.
+    std::fs::write(f.data().join("run-slow"), "").unwrap();
+    let ws = f.repo("ws");
+    let spec = f.spec();
+    let change = change_for(&d, "LA");
+    // The start waits for `lane run` to finish, so it goes on in a thread of its own while the
+    // daemon is stopped.
+    let socket = d.socket();
+    let started = std::thread::spawn(move || {
+        common::run(
+            Command::new(common::LAGENT)
+                .args([
+                    "work",
+                    "start",
+                    "--lead",
+                    "LA",
+                    "--change",
+                    &change,
+                    "--lane",
+                    "qoder",
+                    "--workspace",
+                    &ws,
+                    "--spec",
+                    &spec,
+                    "--cost",
+                    "build",
+                ])
+                .env("LUCINA_AGENTD_SOCKET", socket),
+        )
+    });
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(
+        d.guard.terminate(Duration::from_secs(5)),
+        Some(0),
+        "clean exit on SIGTERM"
+    );
+    let jobs: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.state().join("work/jobs.json")).unwrap())
+            .unwrap();
+    let id = jobs[0]["id"].as_str().unwrap().to_string();
+    assert!(
+        !f.data().join(format!("{id}.args")).exists(),
+        "the stop came after lane had registered the run"
+    );
+    // The job is on disk, and the run it started carries on by itself: `lane` registers it and
+    // leaves its runner behind a few seconds later.
+    let runner = f.data().join(format!("{id}.runner"));
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !runner.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(runner.exists(), "lane run did not outlive the daemon");
+    assert!(
+        f.data().join(format!("{id}.args")).exists(),
+        "the run was registered without its arguments"
+    );
+    let _ = started.join();
+    // The daemon that starts again follows the run like any other.
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    d.guard = common::spawn_daemon_env(d.dir.path(), &f.env(&[]));
+    let job = wait_state(&d, &id, "running");
+    assert_eq!(job["id"], id, "{job}");
+}
+
 #[test]
 fn a_runner_that_is_gone_shows_as_lost_and_the_state_stays() {
     let f = Fixture::new();
@@ -1154,7 +1394,7 @@ fn a_run_lane_does_not_know_is_lost() {
         .unwrap()
         .to_string();
     // No status file: `lane status` exits 2.
-    let job = wait_state(&d, &id, "lost");
+    let job = wait_state_within(&d, &id, "lost", lost_budget());
     assert_eq!(job["note"], "lane has no record of this run");
     assert!(job["endedAt"].is_string());
     assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 9);
@@ -1163,6 +1403,7 @@ fn a_run_lane_does_not_know_is_lost() {
 #[test]
 fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
     let f = Fixture::new();
+    common::write_exec(&f.root.path().join("lane/lane"), &counting_stand_in());
     std::fs::write(f.data().join("run-fail"), "").unwrap();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
@@ -1201,8 +1442,19 @@ fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
     );
     assert!(job["endedAt"].is_string());
     let id = job["id"].as_str().unwrap();
-    // It stays failed: no later poll turns it into anything else.
-    std::thread::sleep(Duration::from_millis(2500));
+    // It stays failed: no later poll turns it into anything else. A failed run is never asked
+    // about, so the proof that a poll pass has gone by is a second job of the same daemon:
+    // `run-fail` goes, the second run starts, and its first `lane status` is counted.
+    let _ = std::fs::remove_file(f.data().join("run-fail"));
+    let second = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&second, &lane_status(&second, "running", json!({})));
+    let calls = f.data().join(format!("{second}.status-calls"));
+    wait_for(&d, id, "waiting for a poll pass", |_| {
+        std::fs::metadata(&calls).is_ok_and(|m| m.len() > 0)
+    });
     assert_eq!(show(&d, id)["state"], "failed");
 }
 
@@ -1300,7 +1552,7 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
         .as_str()
         .unwrap()
         .to_string();
-    wait_state(&d, &id, "lost");
+    wait_state_within(&d, &id, "lost", lost_budget());
     f.status(&id, &lane_status(&id, "running", json!({})));
     let job = wait_state(&d, &id, "running");
     assert!(job["endedAt"].is_null(), "{job}");
@@ -1319,7 +1571,7 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
 }
 
 #[test]
-fn a_lane_status_that_cannot_start_counts_as_a_miss() {
+fn a_lane_status_that_cannot_start_is_not_a_miss() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
@@ -1330,8 +1582,58 @@ fn a_lane_status_that_cannot_start_counts_as_a_miss() {
     f.status(&id, &lane_status(&id, "running", json!({})));
     wait_state(&d, &id, "running");
     std::fs::remove_file(f.root.path().join("lane/lane")).unwrap();
-    let job = wait_state(&d, &id, "lost");
-    assert_eq!(job["note"], "lane has no record of this run");
+    // The daemon says so, and the job is none the worse for it.
+    let log = d.dir.path().join("agentd.log");
+    let failed_spawns = || read(&log).matches("lane status did not start").count() as u64;
+    // Not one line, but three of them: a job this old is lost on three misses in a row, and
+    // the assert below says nothing until a host that would lose it has had its three passes.
+    wait_for(
+        &d,
+        &id,
+        "waiting for three statuses that cannot start",
+        |j| failed_spawns() >= 3 && j["state"] == "running",
+    );
+    let job = show(&d, &id);
+    assert_eq!(job["state"], "running", "{job}");
+    assert!(job["note"].is_null(), "{job}");
+    // `lane` is back: its next answer moves the run on, as nothing had been counted.
+    common::write_exec(&f.root.path().join("lane/lane"), FAKE_LANE);
+    f.status(&id, &lane_status(&id, "verified", json!({})));
+    let job = wait_state(&d, &id, "verified");
+    assert!(job["endedAt"].is_string(), "{job}");
+}
+
+#[test]
+fn a_lane_status_that_never_answers_is_dropped_and_is_not_a_miss() {
+    let f = Fixture::new();
+    let d = f.daemon(&[
+        ("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string()),
+        ("LUCINA_AGENTD_WORK_STATUS_SECS", "2".to_string()),
+    ]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    wait_state(&d, &id, "running");
+    // From now on `lane status` hangs: the poller drops it after two seconds.
+    std::fs::write(f.data().join(format!("{id}.hang")), "").unwrap();
+    let log = d.dir.path().join("agentd.log");
+    wait_for(&d, &id, "waiting for a status that was dropped", |_| {
+        read(&log).contains("lane status timed out")
+    });
+    // Three of those in a row would have been lost before; a call that never answers says
+    // nothing of the run, so the job keeps waiting for one that does.
+    std::thread::sleep(Duration::from_secs(6));
+    let job = show(&d, &id);
+    assert_eq!(job["state"], "running", "{job}");
+    assert!(job["note"].is_null(), "{job}");
+    // The hang ends: the answer is applied.
+    std::fs::remove_file(f.data().join(format!("{id}.hang"))).unwrap();
+    f.status(&id, &lane_status(&id, "reported_done", json!({})));
+    let job = wait_state(&d, &id, "done");
+    assert!(job["endedAt"].is_string(), "{job}");
 }
 
 #[test]
@@ -1355,6 +1657,132 @@ fn a_status_that_is_not_json_changes_nothing_until_it_is_valid() {
     let job = wait_state(&d, &id, "running");
     assert!(job["note"].is_null(), "{job}");
     assert_eq!(job["statusErrors"], 0, "{job}");
+}
+
+#[test]
+fn a_status_that_is_json_but_not_an_object_is_unreadable() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The stand-in writes its `runner_lost` line into the status of a run it has a runner
+    // record for, the way `lane` carries the field inside the object it prints: with the record
+    // gone the answer reaches the daemon as it is. The runner is stopped before its record goes,
+    // so nothing of this fixture is left behind.
+    std::fs::write(f.data().join(format!("{id}.stop")), "").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    std::fs::remove_file(f.data().join(format!("{id}.runner"))).unwrap();
+    // An array is valid JSON and no status: it is unreadable like a line of text.
+    f.status(&id, "[1,2,3]");
+    let job = wait_for(&d, &id, "waiting for the unreadable note", |j| {
+        j["note"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("lane status could not be read:"))
+    });
+    assert!(job["note"].as_str().unwrap().contains("an array"), "{job}");
+    assert_eq!(job["state"], "starting", "{job}");
+    assert!(job["statusErrors"].as_u64().unwrap() > 0, "{job}");
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    let job = wait_state(&d, &id, "running");
+    assert!(job["note"].is_null(), "{job}");
+}
+
+#[test]
+fn an_unreadable_status_breaks_the_streak_of_misses() {
+    let f = Fixture::new();
+    let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The stand-in exits 2 on every call but its third, which prints garbage and exits 0.
+    let seq = f.data().join(format!("{id}.seq"));
+    std::fs::write(&seq, "0\n").unwrap();
+    let asked = || read(&seq).trim().parse::<u64>().unwrap_or(0);
+    // The call counter is what the asserts are read against, and read before the run is lost:
+    // a lost job is asked about too, and by the time `lost` is on the job the calls that broke
+    // the streak are long gone among those that counted towards it.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while asked() < 4 {
+        assert!(Instant::now() < deadline, "the fourth status never came");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The pass that read the garbage is over by now, and two misses do not make three.
+    std::thread::sleep(Duration::from_millis(300));
+    let job = show(&d, &id);
+    assert_ne!(job["state"], "lost", "lost on the fourth call: {job}");
+    // Three misses in a row are needed; the readable exit 0 in the middle broke the streak, so
+    // the lost came no earlier than the sixth call.
+    let job = wait_state_within(&d, &id, "lost", lost_budget());
+    let called = asked();
+    assert!(
+        called >= 6,
+        "lost after {called} polls, of which three were misses in a row"
+    );
+    assert_eq!(job["note"], "lane has no record of this run", "{job}");
+}
+
+#[test]
+fn a_status_with_no_note_of_its_own_clears_the_note_lane_gave() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(
+        &id,
+        &lane_status(&id, "running", json!({"note": "thinking hard"})),
+    );
+    let job = wait_for(&d, &id, "waiting for lane's note", |j| {
+        j["note"] == "thinking hard"
+    });
+    assert_eq!(job["state"], "running", "{job}");
+    // The next status says it has no note: the note was lane's own, and lane withdrew it.
+    f.status(&id, &lane_status(&id, "verified", json!({"note": null})));
+    let job = wait_state(&d, &id, "verified");
+    assert!(job["note"].is_null(), "{job}");
+}
+
+/// The note came from `lane` before the daemon went down; the job that comes back from
+/// `jobs.json` still knows that, and a status that says it has no note takes the note away.
+#[test]
+fn a_note_lane_gave_is_cleared_after_a_restart_too() {
+    let f = Fixture::new();
+    let mut d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(
+        &id,
+        &lane_status(&id, "running", json!({"note": "thinking hard"})),
+    );
+    let job = wait_for(&d, &id, "waiting for lane's note", |j| {
+        j["note"] == "thinking hard"
+    });
+    assert_eq!(job["state"], "running", "{job}");
+
+    assert_eq!(
+        d.guard.terminate(Duration::from_secs(5)),
+        Some(0),
+        "clean exit on SIGTERM"
+    );
+    d.guard = common::spawn_daemon_env(d.dir.path(), &f.env(&[]));
+    // The note came over the restart, and with it the word that it is lane's own.
+    let job = show(&d, &id);
+    assert_eq!(job["note"], "thinking hard", "{job}");
+
+    // A status that says it has no note: what lane gave before the restart it takes back after.
+    f.status(&id, &lane_status(&id, "verified", json!({"note": null})));
+    let job = wait_state(&d, &id, "verified");
+    assert!(job["note"].is_null(), "{job}");
 }
 
 /// The base head of a run and a status that ends on `after` in its last attempt.
@@ -1423,6 +1851,107 @@ fn board_shows_the_work_section() {
     );
 }
 
+/// The work section is an addition to the board, and a daemon that will not answer `/work`
+/// costs that addition only: the board is printed as it is and keeps its exit code.
+#[test]
+fn a_board_that_cannot_read_the_work_jobs_is_still_the_board() {
+    use std::io::{Read, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // A daemon of one answer each: the pipeline board is served, `/work` refuses.
+    let answering = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let request = String::from_utf8_lossy(&head).to_string();
+            let path = request.split(' ').nth(1).unwrap_or("/").to_string();
+            let (status, body) = if path.starts_with("/work") {
+                (
+                    "500 Internal Server Error",
+                    r#"{"error":{"code":"ERROR","message":"the work jobs could not be read"}}"#,
+                )
+            } else {
+                (
+                    "200 OK",
+                    r#"{"workspaces":[{"state":"active","project":"SecretaryIOS","branch":"main","workspaceId":"ws-1"}],"mainCheckouts":[],"unmanaged":[]}"#,
+                )
+            };
+            let text = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(text.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    let r = common::run(
+        Command::new(common::LAGENT)
+            .args(["board"])
+            .env("LUCINA_AGENTD_SOCKET", &socket),
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains("SecretaryIOS"), "{}", r.stdout);
+    assert!(r.stdout.contains("ws-1"), "{}", r.stdout);
+    assert!(!r.stdout.contains("\nWORK\n"), "{}", r.stdout);
+    drop(answering);
+}
+
+/// `lagent` speaks the paths of the machine the owner is on: a workspace named under
+/// `LAGENT_MAC_PREFIX` is the same directory on this host, and that is what the daemon is told
+/// and what `lane run` gets.
+#[test]
+fn a_workspace_under_the_mac_prefix_reaches_the_run_as_the_host_path() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    // The host home as the Mac sees it, one prefix over this fixture's own tree.
+    let home = f.root.path().display().to_string();
+    let prefix = format!("{home}/mnt");
+    let mac_ws = format!("{prefix}/ws");
+    let spec = f.spec();
+    let change = change_for(&d, "LA");
+    let started = common::run(
+        Command::new(common::LAGENT)
+            .args([
+                "work",
+                "start",
+                "--json",
+                "--lead",
+                "LA",
+                "--change",
+                &change,
+                "--lane",
+                "qoder",
+                "--workspace",
+                &mac_ws,
+                "--cost",
+                "build",
+                "--spec",
+                &spec,
+            ])
+            .env("LUCINA_AGENTD_SOCKET", d.socket())
+            .env("HOME", &home)
+            .env("LAGENT_MAC_PREFIX", &prefix)
+            .env_remove("LAGENT_SESSION"),
+    );
+    assert_eq!(started.code, 0, "{}", started.stderr);
+    let job: Value = serde_json::from_str(&started.stdout).unwrap();
+    let id = job["id"].as_str().unwrap().to_string();
+    assert_eq!(job["workspace"], ws, "{job}");
+    // The run itself was started in the host directory, not in the Mac's mount of it.
+    let args = read(&f.data().join(format!("{id}.args")));
+    assert!(args.lines().any(|l| l == ws), "{args}");
+    assert!(!args.contains(&mac_ws), "{args}");
+}
+
 /// [`FAKE_LANE`] with one addition: every `lane status <id>` call, however it ends, appends a
 /// byte to `<id>.status-calls`. Counting those tells a test whether the poller still asks.
 fn counting_stand_in() -> String {
@@ -1460,7 +1989,7 @@ fn a_run_lane_calls_lost_is_final_and_is_never_asked_again() {
             json!({"attempts": [], "dirty_files": [], "note": "the runner is gone"}),
         ),
     );
-    let job = wait_state(&d, &id, "lost");
+    let job = wait_state_within(&d, &id, "lost", lost_budget());
     assert_eq!(job["laneState"], "lost", "{job}");
     // Lane's own note, not the `unknown lane state` of a word it did not know.
     assert_eq!(job["note"], "the runner is gone", "{job}");

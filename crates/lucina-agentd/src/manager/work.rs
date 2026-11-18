@@ -9,11 +9,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lucina_agents::ids::{lane_run_id, run_state_for, IdRow, Kind};
 use lucina_agents::work::{
@@ -104,17 +104,29 @@ pub(super) struct Work {
     launching: Mutex<HashSet<String>>,
     /// An unreadable `jobs.json` could not be moved aside: nothing is written over it.
     blocked: AtomicBool,
+    /// How long one `lane status` call may take. `LUCINA_AGENTD_WORK_STATUS_SECS` (default 20).
+    /// A call that does not answer in time says nothing of the run: it is neither an answer nor
+    /// a miss.
+    status_limit: Duration,
+    /// The age of a job's saved times as this daemon counts them: the instant it first looked
+    /// and what the clock said then, per key (not kept over a restart).
+    seen: Mutex<HashMap<String, (Instant, i64)>>,
 }
 
 impl Work {
     pub(super) fn open(cfg: WorkConfig) -> Self {
         let (jobs, blocked) = load_checked(&cfg.dir);
+        let status_secs = std::env::var("LUCINA_AGENTD_WORK_STATUS_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok());
         Work {
             cfg,
             jobs: Mutex::new(jobs),
             misses: Mutex::new(HashMap::new()),
             launching: Mutex::new(HashSet::new()),
             blocked: AtomicBool::new(blocked),
+            status_limit: Duration::from_secs(status_secs.unwrap_or(QUERY_LIMIT.as_secs()).max(1)),
+            seen: Mutex::new(HashMap::new()),
         }
     }
 
@@ -129,15 +141,92 @@ impl Work {
         self.jobs.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Writes `jobs.json` through a temp file in the same directory and a rename.
-    fn persist(&self, jobs: &[WorkJob]) {
+    /// The age of `stamp` in seconds as this daemon counts it: what the clock said the first
+    /// time it looked at this key, plus the monotonic time since. A window measured this way
+    /// neither closes early nor freezes when the wall clock steps, and a stamp from
+    /// `jobs.json` that lies in the future (a step back over it) starts at zero.
+    fn age_of(&self, key: &str, stamp: Option<&str>) -> Option<i64> {
+        let wall = age_secs(stamp?)?;
+        let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let e = seen
+            .entry(key.to_string())
+            .or_insert((Instant::now(), wall));
+        Some(e.1.saturating_add(i64::try_from(e.0.elapsed().as_secs()).unwrap_or(i64::MAX)))
+    }
+
+    /// Lets go of one counted age: the window it measures is over and its key will not come
+    /// again, so it should not stay in the clock's memory.
+    fn forget(&self, key: &str) {
+        self.seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
+    }
+
+    /// The key of the lost follow-window: the window belongs to this ending, not to the job.
+    /// A run `lane` showed again and is lost a second time has a new `ended_at` and counts from
+    /// that; one key for the job would spend the first episode's day on the second and leave
+    /// a run that is alive out of the poll list for good.
+    fn lost_key(job: &WorkJob) -> String {
+        format!(
+            "{}#lost#{}",
+            job.id,
+            job.ended_at.as_deref().unwrap_or_default()
+        )
+    }
+
+    /// The age of a saved time as this daemon counts it, or the wall clock's own when the time
+    /// cannot be read: [`age_of`] needs a stamp it can parse, and a stamp it cannot is one the
+    /// plain clock never answered either.
+    fn age_of_secs(&self, key: &str, stamp: Option<&str>) -> Option<i64> {
+        self.age_of(key, stamp).or_else(|| stamp.and_then(age_secs))
+    }
+
+    /// Whether this job belongs in the listing nobody asked a length for: the day after a run
+    /// ended is counted as this daemon counts it, the way the lost window and the lost time are.
+    /// A clock that steps forward by more than a day after the first look at a finished run
+    /// would otherwise drop runs that only just ended, and a job saved with a stamp this daemon
+    /// has never looked at is measured by the wall once and by its own time from then on.
+    fn shown(&self, job: &WorkJob) -> bool {
+        let age = self.age_of_secs(&format!("{}#ended", job.id), job.ended_at.as_deref());
+        recent_at(job.state, age)
+    }
+
+    /// Whether the poller still asks `lane` about this job: [`pollable`], and for a run agentd
+    /// lost itself the day it is followed again counted as this daemon counts it, from the
+    /// ending this lost episode has. The wall clock stays the upper bound of [`pollable`]: a
+    /// job is never followed for more than a day of wall time after it ended.
+    fn follows(&self, job: &WorkJob) -> bool {
+        if !pollable(job) {
+            return false;
+        }
+        match job.state {
+            WorkState::Lost => self
+                .age_of(&Self::lost_key(job), job.ended_at.as_deref())
+                .is_some_and(|a| a < DAY),
+            _ => true,
+        }
+    }
+
+    /// Writes `jobs.json` through a temp file in the same directory and a rename. Err: why the
+    /// file is not there, including an unreadable one that could not be moved aside.
+    fn persist_saved(&self, jobs: &[WorkJob]) -> Result<(), String> {
         if self.blocked.load(Ordering::Relaxed) {
-            tracing::error!(dir = %self.cfg.dir.display(), "work jobs are not saved: the unreadable jobs.json could not be moved aside");
-            return;
+            let why = "the unreadable jobs.json could not be moved aside";
+            tracing::error!(dir = %self.cfg.dir.display(), "work jobs are not saved: {why}");
+            return Err(why.into());
         }
         if let Err(e) = write_jobs(&self.cfg.dir, jobs) {
+            let why = format!("cannot write the job file: {e}");
             tracing::error!(error = %e, dir = %self.cfg.dir.display(), "cannot write work jobs");
+            return Err(why);
         }
+        Ok(())
+    }
+
+    /// The same, for the paths where nothing turns on the file being written.
+    fn persist(&self, jobs: &[WorkJob]) {
+        let _ = self.persist_saved(jobs);
     }
 }
 
@@ -371,14 +460,33 @@ fn tail_chars(s: &str, n: usize) -> String {
     s.chars().skip(count.saturating_sub(n)).collect()
 }
 
+/// The seconds since the saved time. A clock that stands ahead of the stamp (a step back after
+/// the job was saved) gives zero: an age is never negative, which would otherwise hide a job
+/// from nothing and show it forever.
 fn age_secs(rfc3339: &str) -> Option<i64> {
     let then = chrono::DateTime::parse_from_rfc3339(rfc3339).ok()?;
-    Some((chrono::Utc::now() - then.with_timezone(&chrono::Utc)).num_seconds())
+    Some(
+        (chrono::Utc::now() - then.with_timezone(&chrono::Utc))
+            .num_seconds()
+            .max(0),
+    )
 }
 
-/// Whether a stored or direct job still belongs in the default list.
+/// The note of an end row the store would not take: the job keeps it until the row is in.
+fn refused_end_row_note(error: &str) -> String {
+    format!("the id store refused the end row: {error}")
+}
+
+/// Whether a stored or direct job still belongs in the default list. The wall clock's own
+/// answer, for a row that comes straight from `lane ls`; a stored job is measured by
+/// [`Work::shown`], which counts the day as this daemon counts it.
 fn recent(state: WorkState, stamp: Option<&str>) -> bool {
-    !state.is_terminal() || stamp.and_then(age_secs).is_none_or(|a| a <= DAY)
+    recent_at(state, stamp.and_then(age_secs))
+}
+
+/// The same rule, with the age of the ending already measured by the caller.
+fn recent_at(state: WorkState, age: Option<i64>) -> bool {
+    !state.is_terminal() || age.is_none_or(|a| a <= DAY)
 }
 
 fn lane_not_found(kind: &str, name: &str) -> ManagerError {
@@ -532,6 +640,34 @@ fn nonblank(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// Whether `workspace/expect` is a regular file with something in it, seen without following a
+/// symlink anywhere on the way: the file the run had to leave behind is inside the workspace,
+/// and a link that steps out of it is not that file. The length is the no-follow one too, so a
+/// link is neither a file nor an empty one. A leading `.` is the workspace the walk already
+/// starts in, so it is passed over; anything else that is not a plain name is a refusal.
+fn expect_written(workspace: &str, expect: &str) -> bool {
+    let mut path = PathBuf::from(workspace);
+    let mut last = None;
+    for part in Path::new(expect).components() {
+        // `check_expect` refused an absolute path and a `..`; a prefix, and anything else that
+        // is not a plain name or the current directory, is refused here too.
+        let name = match part {
+            Component::CurDir => continue,
+            Component::Normal(name) => name,
+            _ => return false,
+        };
+        path.push(name);
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            return false;
+        };
+        if meta.file_type().is_symlink() {
+            return false;
+        }
+        last = Some(meta);
+    }
+    last.is_some_and(|m| m.is_file() && m.len() > 0)
+}
+
 /// Sets the end of a job: when it ended and whether it produced nothing.
 fn finish(job: &mut WorkJob) {
     job.ended_at = Some(now_iso());
@@ -545,11 +681,10 @@ fn finish(job: &mut WorkJob) {
     if job.state == WorkState::Lost {
         return;
     }
-    let expect_present = job.expect.as_ref().map(|e| {
-        std::fs::metadata(Path::new(&job.workspace).join(e))
-            .map(|m| m.is_file() && m.len() > 0)
-            .unwrap_or(false)
-    });
+    let expect_present = job
+        .expect
+        .as_ref()
+        .map(|e| expect_written(&job.workspace, e));
     // Without a head from the start (not a git directory) lane's own start head is the base.
     let base = job.base_head.as_deref().or(job.lane_base_head.as_deref());
     job.empty = emptiness(
@@ -629,12 +764,8 @@ impl Manager {
             Path::new(&workspace),
         );
         check_target(&lanes, lane.as_deref(), chain.as_deref(), lucina)?;
-        let change = nonblank(Some(req.change)).ok_or_else(|| {
-            ManagerError::Invalid(
-                "change is required: the run works for a change (`lagent id new change --lead <code> --title <text>`)"
-                    .into(),
-            )
-        })?;
+        let change = nonblank(Some(req.change))
+            .ok_or_else(|| ManagerError::Invalid(super::ids::change_hint(&lead)))?;
         self.check_work_ids(&lead, &change)?;
         let name = nonblank(req.name);
         let session = nonblank(req.session);
@@ -734,7 +865,7 @@ impl Manager {
             created_at: now_iso(),
             base_head,
             state: WorkState::Starting,
-            run_id: Some(run_id),
+            run_id: Some(run_id.clone()),
             change: Some(change),
             session,
             scope,
@@ -745,10 +876,20 @@ impl Manager {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id.clone());
-        {
+        let saved = {
             let mut jobs = self.work().jobs();
             jobs.push(job.clone());
-            self.work().persist(&jobs);
+            self.work().persist_saved(&jobs)
+        };
+        if let Err(e) = saved {
+            // Nothing on disk follows this run, so the run must not begin: a start that only
+            // lived in memory would leave a `direct:` row and a job nobody knows.
+            let _ = std::fs::remove_dir_all(&run_dir);
+            self.work().unlaunch(&id);
+            // The store is asked for the run's `failed` row before the job leaves memory: a
+            // start that could not be saved and whose row was refused too is still a job.
+            self.end_a_start_that_was_not_saved(job, &e);
+            return Err(ManagerError::Invalid(e));
         }
 
         // The launch runs to its end even when the caller goes away.
@@ -783,7 +924,7 @@ impl Manager {
         let id = job.id.clone();
         let failure = run_lane(&lane_bin, &job, &run_dir).await.err();
         let status = match &failure {
-            Some(_) => match query_status(&lane_bin, &id).await {
+            Some(_) => match query_status(&lane_bin, &id, self.work().status_limit).await {
                 StatusReply::Status(v) => Some(v),
                 _ => None,
             },
@@ -797,7 +938,9 @@ impl Manager {
                         Some(st) => {
                             apply_read(j, &st);
                             if j.note.is_none() {
+                                // What `lane run` printed is lane's own word.
                                 j.note = Some(note);
+                                j.note_from_lane = true;
                             }
                             if j.state.is_terminal() && j.ended_at.is_none() {
                                 finish(j);
@@ -806,6 +949,7 @@ impl Manager {
                         None => {
                             j.state = WorkState::Failed;
                             j.note = Some(note);
+                            j.note_from_lane = true;
                             j.ended_at = Some(now_iso());
                         }
                     }
@@ -832,7 +976,7 @@ impl Manager {
         let mut jobs: Vec<WorkJob> = stored
             .into_iter()
             .filter(|j| lead.as_deref().is_none_or(|l| j.lead == l))
-            .filter(|j| include_old || recent(j.state, j.ended_at.as_deref()))
+            .filter(|j| include_old || self.work().shown(j))
             .collect();
         let mut warning = None;
         let mut unparsed = 0;
@@ -962,7 +1106,7 @@ impl Manager {
             self.work()
                 .jobs()
                 .iter()
-                .filter(|j| pollable(j) && !launching.contains(&j.id))
+                .filter(|j| self.work().follows(j) && !launching.contains(&j.id))
                 .map(|j| j.id.clone())
                 .collect()
         };
@@ -986,7 +1130,7 @@ impl Manager {
         let want: Vec<(String, String, &'static str)> = {
             let jobs = self.work().jobs();
             jobs.iter()
-                .filter(|j| !pollable(j) && !launching.contains(&j.id))
+                .filter(|j| !self.work().follows(j) && !launching.contains(&j.id))
                 .filter_map(|j| {
                     let state = run_state_for(j.state, j.empty)?;
                     Some((j.id.clone(), j.run_id.clone()?, state))
@@ -1016,13 +1160,16 @@ impl Manager {
     /// One `lane status` read for one job. An answer that exits 0 but is not readable JSON is
     /// not a miss: the job never becomes `lost` from it and its state does not change. It
     /// goes through [`status_unreadable`] (a note and a count) and the job is saved when
-    /// that changed it. A final job that is followed only owes its end row: the store is
-    /// asked again and `lane` is left alone.
+    /// that changed it. A call that never answers (it did not start, or it timed out) is not a
+    /// miss either: state and miss count stay as they are. A final job that is followed only
+    /// owes its end row: the store is asked again and `lane` is left alone. A window that closes
+    /// while a call is out takes the answer that says the run is going and writes the row the
+    /// store owes for every other one; none of them is dropped in silence.
     async fn poll_one(&self, bin: &Path, id: &str) {
         let Some(job) = self.stored_job(id) else {
             return;
         };
-        if !pollable(&job) {
+        if !self.work().follows(&job) {
             // A final job reaches here only when the store still owes it its end row: `lane`
             // is not asked again, only the store.
             if self.owed_end_row_state(&job).is_some() {
@@ -1030,12 +1177,25 @@ impl Manager {
             }
             return;
         }
-        let reply = query_status(bin, id).await;
+        let reply = query_status(bin, id, self.work().status_limit).await;
         let Some(mut job) = self.stored_job(id) else {
             return;
         };
-        if !pollable(&job) {
-            return;
+        if !self.work().follows(&job) {
+            // The window closed while the call was out, and the answer is not thrown away. A
+            // lost run that is past its window is the one job `lane` can still contradict: a
+            // status is `lane`'s own word, and one that shows the run going takes it back from
+            // under the closed window, with an ending of its own to count from. Anything else,
+            // and any job that ended in the meantime, leaves the answer aside and gives the
+            // store the row it owes, exactly as the check before the call does.
+            let contradictable =
+                matches!(reply, StatusReply::Status(_)) && job.state == WorkState::Lost;
+            if !contradictable {
+                if self.owed_end_row_state(&job).is_some() {
+                    self.write_end_row(&job);
+                }
+                return;
+            }
         }
         let before = job.clone();
         match reply {
@@ -1046,18 +1206,33 @@ impl Manager {
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(id);
                 if job.state == WorkState::Lost {
-                    // `lane` knows the run after all: it is not lost.
+                    // `lane` knows the run after all: it is not lost. The window of the ending
+                    // that made it lost is spent with it and goes, so a second episode starts
+                    // its own.
+                    self.work().forget(&Work::lost_key(&job));
                     job.ended_at = None;
                     job.note = None;
+                    job.note_from_lane = false;
                     job.empty = None;
                 }
                 apply_read(&mut job, &status);
             }
             StatusReply::BadJson(e) => {
                 tracing::warn!(job = id, error = %e, "lane status printed bad JSON");
+                // The streak of non-zero exits is broken: an exit 0 of any kind says something.
+                self.work()
+                    .misses
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(id);
                 if !status_unreadable(&mut job, &e) {
                     return;
                 }
+            }
+            StatusReply::Stalled => {
+                // The call said nothing of the run; only the wall clock is at fault. State and
+                // miss count stay as they are and the same status is asked again next tick.
+                return;
             }
             StatusReply::Miss if job.state == WorkState::Lost => return,
             StatusReply::Miss => {
@@ -1067,7 +1242,11 @@ impl Manager {
                     *n += 1;
                     *n
                 };
-                let old_enough = age_secs(&job.created_at)
+                // How old the run is as this daemon counts it: a wall clock that steps back
+                // over `created_at` must not hold a live run in `starting` for the lost time.
+                let old_enough = self
+                    .work()
+                    .age_of(&format!("{id}#born"), Some(&job.created_at))
                     .is_some_and(|a| a >= self.work().cfg.lost_after.as_secs() as i64);
                 if misses >= LOST_MISSES && old_enough {
                     job.state = WorkState::Lost;
@@ -1086,8 +1265,13 @@ impl Manager {
         let ended_now = job.state.is_terminal() && job.state != before.state;
         let stored = {
             let mut jobs = self.work().jobs();
-            // A start that failed in the meantime wins: only an unfinished (or lost) job takes the update.
-            match jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
+            // A start that failed in the meantime wins: only an unfinished (or lost) job takes
+            // the update. A lost job past its window takes one that shows the run going: that
+            // is `lane`'s answer after the window shut, and the run is not over.
+            match jobs.iter_mut().find(|j| {
+                j.id == id
+                    && (pollable(j) || (j.state == WorkState::Lost && !job.state.is_terminal()))
+            }) {
                 Some(stored) => {
                     *stored = job.clone();
                     self.work().persist(&jobs);
@@ -1128,9 +1312,48 @@ impl Manager {
         }
     }
 
+    /// The end of a start whose job never reached `jobs.json`: the store is asked for the run's
+    /// `failed` row first, and only a store that took it lets the job out of memory. A store
+    /// that refuses keeps the job, `failed` with the refusal as its note, which is what the
+    /// poller's owed-end path looks for and asks again with.
+    fn end_a_start_that_was_not_saved(&self, job: WorkJob, why: &str) {
+        let mut failed = WorkJob {
+            state: WorkState::Failed,
+            ended_at: Some(now_iso()),
+            note: Some(why.to_string()),
+            ..job
+        };
+        let refused = match &failed.run_id {
+            Some(run_id) => self
+                .append_run_row(
+                    run_id,
+                    IdRow {
+                        state: "failed".into(),
+                        result: why.to_string(),
+                        ..IdRow::default()
+                    },
+                )
+                .err()
+                .map(|e| e.to_string()),
+            // A job with no run id has no row to owe.
+            None => None,
+        };
+        let mut jobs = self.work().jobs();
+        jobs.retain(|j| j.id != failed.id);
+        match refused {
+            None => {}
+            Some(error) => {
+                tracing::error!(job = %failed.id, error = %error, "cannot write the run's id row");
+                failed.note = Some(refused_end_row_note(&error));
+                jobs.push(failed);
+                self.work().persist(&jobs);
+            }
+        }
+    }
+
     /// The note of an end row the store would not take, saved with the job.
     fn note_refused_end_row(&self, id: &str, error: &str) {
-        let note = format!("the id store refused the end row: {error}");
+        let note = refused_end_row_note(error);
         let mut jobs = self.work().jobs();
         if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
             if j.note.as_deref() != Some(note.as_str()) {
@@ -1268,32 +1491,50 @@ async fn git_facts(workspace: &str) -> GitFacts {
     }
 }
 
-/// What `lane status <id>` gave. A start failure, a timeout and a non-zero exit all count as a miss.
+/// What `lane status <id>` gave. Only a non-zero exit is a miss: a call that did not start or
+/// did not answer in time says nothing of the run, and is [`StatusReply::Stalled`].
 enum StatusReply {
     Status(Value),
     BadJson(String),
+    Stalled,
     Miss,
 }
 
-async fn query_status(bin: &Path, id: &str) -> StatusReply {
+async fn query_status(bin: &Path, id: &str, limit: Duration) -> StatusReply {
     let mut cmd = lane_command(bin);
     cmd.args(["status", id])
         .stdin(Stdio::null())
         .stderr(Stdio::null());
-    match tokio::time::timeout(QUERY_LIMIT, cmd.output()).await {
+    match tokio::time::timeout(limit, cmd.output()).await {
         Ok(Ok(o)) if o.status.success() => match serde_json::from_slice::<Value>(&o.stdout) {
-            Ok(v) => StatusReply::Status(v),
+            Ok(v @ Value::Object(_)) => StatusReply::Status(v),
+            Ok(v) => StatusReply::BadJson(format!(
+                "the answer is {}, not a status object",
+                json_kind(&v)
+            )),
             Err(e) => StatusReply::BadJson(e.to_string()),
         },
         Ok(Ok(_)) => StatusReply::Miss,
         Ok(Err(e)) => {
             tracing::warn!(job = id, error = %e, "lane status did not start");
-            StatusReply::Miss
+            StatusReply::Stalled
         }
         Err(_) => {
             tracing::warn!(job = id, "lane status timed out");
-            StatusReply::Miss
+            StatusReply::Stalled
         }
+    }
+}
+
+/// What a JSON value is, in the note of a status that is not an object.
+fn json_kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "a null",
+        Value::Bool(_) => "a true or false",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 
@@ -1347,6 +1588,11 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
     // manager through `XDG_RUNTIME_DIR`, which is on it.
     let mut cmd = clean_command(&argv[0]);
     cmd.args(&argv[1..]);
+    // `lane run` detaches the run it starts, so a stop of the daemon may not reach it: the
+    // child is not killed when its handle is dropped, and it is started in a process group of
+    // its own, out of the way of a signal to the daemon's. The explicit kill on the 60 s
+    // window is the only one this child gets.
+    cmd.kill_on_drop(false).process_group(0);
     // The ids as variables for the worker; as flags they are in `lane_run_args`.
     if let (Some(run), Some(change)) = (&job.run_id, &job.change) {
         cmd.env("LUCINA_RUN_ID", run)
@@ -1577,6 +1823,283 @@ deep-codex = ["qoder", "codex-a"]
         work.persist(std::slice::from_ref(&job));
         work.persist(std::slice::from_ref(&job));
         assert!(!work.cfg.dir.join("jobs.json").exists());
+    }
+
+    /// A note that came from `lane` is saved with the word that says so: a job reloaded from
+    /// `jobs.json` still loses that note to a status that says it has none.
+    #[test]
+    fn a_note_lane_gave_is_still_lane_s_after_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = || WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        };
+        let first = Work::open(cfg());
+        let job = WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Running,
+            note: Some("thinking hard".into()),
+            note_from_lane: true,
+            ..WorkJob::default()
+        };
+        first.persist(std::slice::from_ref(&job));
+        let second = Work::open(cfg());
+        let mut job = second.jobs()[0].clone();
+        assert!(
+            job.note_from_lane,
+            "jobs.json does not say the note was lane's own word"
+        );
+        assert_eq!(job.note.as_deref(), Some("thinking hard"));
+        apply_status(
+            &mut job,
+            &serde_json::json!({"state": "verified", "note": null}),
+        );
+        assert_eq!(job.state, WorkState::Verified);
+        assert_eq!(job.note, None, "a note lane took back survived the reload");
+    }
+
+    /// A saved time the clock now stands ahead of: the age is zero, never negative.
+    #[test]
+    fn an_age_the_clock_stood_ahead_of_counts_as_zero() {
+        let later = (chrono::Utc::now() + chrono::Duration::hours(6)).to_rfc3339();
+        assert_eq!(age_secs(&later), Some(0), "a step back over the stamp");
+        // Such an age belongs to a job that is still shown and still followed.
+        assert!(recent(WorkState::Failed, Some(&later)));
+        let job = WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Lost,
+            ended_at: Some(later),
+            ..WorkJob::default()
+        };
+        assert!(pollable(&job), "a lost job the clock stands ahead of");
+    }
+
+    /// The `lost` window of a job this daemon has known is counted by the time it has lived,
+    /// not by a clock that can step; the day of wall time stays the outer bound.
+    #[test]
+    fn the_lost_window_counts_time_that_cannot_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |hours: i64| (chrono::Utc::now() + chrono::Duration::hours(hours)).to_rfc3339();
+        let lost_at = |ended: Option<String>| WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Lost,
+            ended_at: ended,
+            ..WorkJob::default()
+        };
+        // A day of wall time after the end is the end of following, whichever way the clock
+        // went afterwards.
+        assert!(
+            work.follows(&lost_at(Some(at(6)))),
+            "a step back does not close it"
+        );
+        assert!(
+            !work.follows(&lost_at(Some(at(-30)))),
+            "a day of wall time after the end is the most a run is followed"
+        );
+        // The same key keeps the age it was first given and only ever adds to it: what the
+        // clock says later, in either direction, does not reach the window.
+        assert_eq!(
+            work.age_of("wk-2#lost", Some(&at(6))).unwrap(),
+            0,
+            "the first look at a stamp the clock stands ahead of"
+        );
+        std::thread::sleep(Duration::from_millis(1100));
+        let grown = work.age_of("wk-2#lost", Some(&at(-30))).unwrap();
+        assert!(
+            (1..DAY).contains(&grown),
+            "the age counts this daemon's time, not the clock's: {grown}"
+        );
+    }
+
+    /// The lost window belongs to an ending, not to a job: a run that is lost, shows itself
+    /// again and is lost a second time has the whole window before it a second time.
+    #[test]
+    fn a_second_lost_episode_has_its_own_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |secs: i64| (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339();
+        let mut job = WorkJob {
+            id: "wk-7".into(),
+            ..WorkJob::default()
+        };
+        // The first episode, one second short of its day, and the daemon watches that second go
+        // by: the window is spent and the run is left alone.
+        job.state = WorkState::Lost;
+        job.ended_at = Some(at(-(DAY - 1)));
+        assert!(work.follows(&job), "the first episode is followed");
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !work.follows(&job),
+            "a day of this daemon's time is over: the first episode is spent"
+        );
+        // `lane` shows the run again, and later it is lost a second time, with a new ending.
+        job.state = WorkState::Running;
+        job.ended_at = None;
+        job.state = WorkState::Lost;
+        job.ended_at = Some(at(0));
+        assert!(
+            work.follows(&job),
+            "the second episode inherits the day the first one spent"
+        );
+    }
+
+    /// The day a finished run stays in the listing nobody asked a length for is counted as this
+    /// daemon counts it: a clock that steps forward over the ending does not drop the run.
+    #[test]
+    fn the_listing_day_counts_time_that_cannot_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |hours: i64| (chrono::Utc::now() + chrono::Duration::hours(hours)).to_rfc3339();
+        let failed = |stamp: String| WorkJob {
+            id: "wk-3".into(),
+            state: WorkState::Failed,
+            ended_at: Some(stamp),
+            ..WorkJob::default()
+        };
+        // The clock stands ahead of the ending: the first look at it gives an age of zero.
+        assert!(
+            work.shown(&failed(at(6))),
+            "a run the clock ran ahead of is shown"
+        );
+        // Thirty hours later the wall clock has left the day behind, and a listing measured by
+        // it would have dropped a run that ended under its day by this daemon's count.
+        assert!(
+            !recent(WorkState::Failed, Some(&at(-30))),
+            "the wall clock is not how the listing counts it"
+        );
+        assert!(
+            work.shown(&failed(at(-30))),
+            "a step forward drops a run that is a day old only to the clock"
+        );
+    }
+
+    /// A start that never reached `jobs.json` is not a start that never was: its run's `failed`
+    /// row is in the id store before the job leaves memory, and a store that will not take the
+    /// row keeps the job — `failed`, listed, and owed its row until it takes it.
+    #[tokio::test]
+    async fn a_start_that_was_not_saved_is_kept_until_the_store_has_its_row() {
+        use crate::manager::Options;
+        use crate::store::Store;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let work_dir = state.join("work");
+        let ids_path = state.join("ids").join(super::super::ids::FILE);
+        let options = Options {
+            work: WorkConfig {
+                dir: work_dir.clone(),
+                lane: Some(PathBuf::from("/bin/false")),
+                poll: Duration::from_secs(1),
+                lost_after: Duration::from_secs(1),
+                scope: ScopeMode::Off,
+            },
+            pipeline: crate::pipeline::Config::from_env(&state.join("pipeline")),
+            ..Options::default()
+        };
+        let m = Manager::open_with(
+            Store::open(&state).unwrap(),
+            Vec::new(),
+            LaneConfig::default(),
+            options,
+        )
+        .unwrap();
+        // The run is on record before the save is tried, the way `work start` has it.
+        m.inner
+            .ids
+            .issue(Kind::Lead, "LA", None, "test", |_| IdRow {
+                title: "the lead".into(),
+                ..IdRow::default()
+            })
+            .unwrap();
+        let run = m
+            .inner
+            .ids
+            .issue(Kind::Run, "LA", None, "test", |_| IdRow {
+                state: "started".into(),
+                title: "a run that could not be saved".into(),
+                ..IdRow::default()
+            })
+            .unwrap();
+        let job = WorkJob {
+            id: "wk-1".into(),
+            lead: "LA".into(),
+            state: WorkState::Starting,
+            run_id: Some(run.id.clone()),
+            ..WorkJob::default()
+        };
+        // Neither file takes a word: a directory stands where jobs.json is renamed in, and the
+        // id store is closed for writing.
+        std::fs::create_dir_all(&work_dir).unwrap();
+        std::fs::create_dir_all(work_dir.join("jobs.json")).unwrap();
+        std::fs::set_permissions(&ids_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let why = {
+            let mut jobs = m.work().jobs();
+            jobs.push(job.clone());
+            m.work()
+                .persist_saved(&jobs)
+                .expect_err("a directory is no jobs file")
+        };
+        assert!(why.contains("cannot write the job file"), "{why}");
+        m.end_a_start_that_was_not_saved(job.clone(), &why);
+        let kept = m
+            .work_get("wk-1")
+            .expect("the start that could not be saved is gone from memory");
+        assert_eq!(kept.state, WorkState::Failed);
+        let note = kept.note.clone().unwrap_or_default();
+        assert!(
+            note.starts_with("the id store refused the end row: "),
+            "{note}"
+        );
+        assert!(note.contains("cannot write the id store"), "{note}");
+        assert_eq!(
+            m.work_list(None, false, false)
+                .await
+                .jobs
+                .iter()
+                .map(|j| j.id.as_str())
+                .collect::<Vec<_>>(),
+            ["wk-1"],
+            "a start whose row was refused too is not listed"
+        );
+        assert!(
+            m.end_rows_owed().iter().any(|id| id == "wk-1"),
+            "the poller is not left to ask the store again"
+        );
+        // The store takes writing again: the row it owed arrives, and it is not owed twice.
+        std::fs::set_permissions(&ids_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(m.owed_end_row_state(&kept), Some("failed"));
+        m.write_end_row(&kept);
+        assert_eq!(
+            m.inner.ids.latest_state(&run.id).as_deref(),
+            Some("failed"),
+            "the row the store owed never arrived"
+        );
+        assert!(
+            m.end_rows_owed().is_empty(),
+            "a row that is in is owed a second time"
+        );
     }
 
     #[test]

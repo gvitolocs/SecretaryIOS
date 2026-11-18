@@ -4,7 +4,7 @@
 //! |---|---|---|---|
 //! | POST | `/ids` | `{kind, lead \| area \| code, title, by?, spec?, where?, base?, result?, refs?, state?, lane?, model?, chain?, repo?, workspace?, branch?, agent?}` | the row (owner only) |
 //! | POST | `/ids/{id}/state` | `{state, result?, refs?, title?, by?, spec?, where?, base?, …}` | the new row (owner only) |
-//! | POST | `/ids/import` | `{tsv, areas?}` | `{imported, skipped}` (owner only) |
+//! | POST | `/ids/import` | `{tsv, areas?, file?, dryRun?}` | `{imported, annotations, titleEdits, skipped}` (owner only) |
 //! | GET | `/ids` | `?lead=&kind=&state=&q=` | `{ids, chainBrokenAt, readOnly}` |
 //! | GET | `/ids/{id}` | | `{view, rows}` |
 //! | GET | `/ids/{id}/trace` | | the chain from the id |

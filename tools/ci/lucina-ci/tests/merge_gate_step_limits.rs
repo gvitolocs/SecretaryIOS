@@ -4,8 +4,9 @@
 //! built and no test sleeps a real 180 s.
 //!
 //! The repository holds two kinds of crate, because that is what names the steps: a root workspace member, whose fast steps are
-//! the plain `fmt`/`clippy`/`unit-tests` the table in `main.rs` raises to 240 s, and a standalone crate under `tools/`, whose
-//! steps are named after it (`clippy-tools-ci-fake`) and are in no table row, so they sit at the 180 default.
+//! the plain `fmt`/`clippy`/`unit-tests-build`/`unit-tests` the table in `main.rs` raises to 240 s for `clippy`, to the 1200 s
+//! of GATE-08 for the build of the tests and leaves at 240 s for their run, now timed alone, and a standalone crate under
+//! `tools/`, whose steps are named after it (`clippy-tools-ci-fake`) and are in no table row, so they sit at the 180 default.
 //!
 //! Two ways a step gets its limit, and both are exercised here: the table with the override absent, and
 //! `LUCINA_CHECK_FAST_MERGE_CAP_S` with a `step=SECONDS` entry — the only way to see one step pass at a limit the default would
@@ -174,13 +175,16 @@ fn step_line(out: &str, name: &str) -> String {
         .to_string()
 }
 
-/// The steps this fixture runs: three for the workspace member, three for the standalone crate, then `diffgate` and `secrets`.
-const STEPS: [&str; 8] = [
+/// The steps this fixture runs: four for the workspace member (the tests built, then run, since GATE-08), four for the
+/// standalone crate, then `diffgate` and `secrets`.
+const STEPS: [&str; 10] = [
     "fmt",
     "clippy",
+    "unit-tests-build",
     "unit-tests",
     "fmt-tools-ci-fake",
     "clippy-tools-ci-fake",
+    "unit-tests-build-tools-ci-fake",
     "unit-tests-tools-ci-fake",
     "diffgate",
     "secrets",
@@ -192,18 +196,35 @@ const STEPS: [&str; 8] = [
 fn merge_gate_prints_each_step_s_own_limit_and_keeps_180_for_the_rest() {
     let (repo, bin) = setup("limits", "0.2", "0.2", "0.2");
     let (_code, out) = run(&repo, &bin, None);
-    for name in ["clippy", "unit-tests"] {
+    for (name, limit, own) in [
+        ("clippy", "/ 240s", "cut from its own 300"),
+        (
+            "unit-tests-build",
+            "/ 1200s",
+            "its own 1200, the cap of its row",
+        ),
+        (
+            "unit-tests",
+            "/ 240s",
+            "the run alone, cut from its own 300",
+        ),
+    ] {
         let line = step_line(&out, name);
         assert!(
             line.starts_with("ok  "),
-            "{name} passed under the table's 240: {line}"
+            "{name} passed under the table's {limit}: {line}"
         );
         assert!(
-            line.contains("/ 240s"),
-            "{name} is at the table's 240, cut from its own 300: {line}"
+            line.contains(limit),
+            "{name} is at the table's {limit}, {own}: {line}"
         );
     }
-    for name in ["clippy-tools-ci-fake", "unit-tests-tools-ci-fake"] {
+    for name in [
+        "clippy-tools-ci-fake",
+        // A per-crate build is named by no row of the table, so the split does not lift it to the 1200 s of the plain one.
+        "unit-tests-build-tools-ci-fake",
+        "unit-tests-tools-ci-fake",
+    ] {
         let line = step_line(&out, name);
         assert!(
             line.contains("/ 180s"),

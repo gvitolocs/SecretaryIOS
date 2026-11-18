@@ -69,6 +69,26 @@ fn fail(code: &str, message: impl Into<String>) -> Outcome {
     }
 }
 
+/// SIGKILL every process in the group led by `pgid`. [`Exec::sh_run`] uses this for the warm-up
+/// only: its `timeout` runs without `--foreground`, so it calls `setpgid(0, 0)` on itself and the
+/// limit's pid is that group's id. uutils `timeout` signals the group with SIGTERM when the cap
+/// fires, but its `--kill-after` SIGKILL reaches only the process it waits on — a grandchild that
+/// ignores SIGTERM lives on and keeps the shared target dir, holding the next gate off its own
+/// limit (finding LA-R056, point 2). Once `timeout` returns we end the whole group ourselves, so
+/// nothing the warm-up forked outlives it. `kill -s KILL -- -<pgid>` is the same form the crate
+/// already uses to stop a PTY session; `#![forbid(unsafe_code)]` bars the `kill`(2) syscall, so it
+/// goes out through the `kill` program. A group that has already emptied answers ESRCH, which is
+/// not an error here: the point is that it is empty now, so the program's own noise stays off the
+/// job log.
+fn reap_process_group(pgid: u32) {
+    let _ = Command::new("kill")
+        .args(["-s", "KILL", "--", &format!("-{pgid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 struct Exec {
     spec: Spec,
     log: File,
@@ -85,6 +105,12 @@ struct Exec {
     /// The names the deploy recipe declares (`env = [...]`); only the deploy job of that
     /// recipe passes them, and only to its own commands.
     deploy_env: Vec<String>,
+    /// The merge warm-up's cap in seconds. 20 minutes by default, well outside the timed gates;
+    /// a test may set it to a few seconds to watch the cap fire. It is given to `timeout` as
+    /// seconds; without `--foreground` `timeout` leads its own process group, and the warm-up then
+    /// SIGKILLs that whole group once `timeout` returns, so the cap ends the warm-up and every
+    /// process it forked (see [`reap_process_group`]).
+    warm_up_secs: u64,
 }
 
 struct Members {
@@ -114,6 +140,7 @@ impl Exec {
             waivers: None,
             source_env: std::env::vars_os().collect(),
             deploy_env: Vec::new(),
+            warm_up_secs: 20 * 60,
             spec,
             log,
             path,
@@ -228,6 +255,32 @@ impl Exec {
 
     /// `bash -c cmd` in `cwd` with output into the log, under `timeout`. Returns its success.
     fn sh(&mut self, cwd: &Path, cmd: &str, timeout_min: u64) -> bool {
+        self.sh_run(
+            cwd,
+            cmd,
+            &format!("{}m", timeout_min.max(1)),
+            &format!("timed out after {timeout_min} min"),
+            false,
+        )
+        .is_none()
+    }
+
+    /// [`Exec::sh`]'s worker, with the limit given to `timeout` verbatim (`limit`, e.g. `45m` or
+    /// `20s`), the phrase to report on a timeout (`timed_out`) and whether to end `timeout`'s whole
+    /// process group once it returns (`reap_group`). Returns `None` when the command succeeded, or
+    /// the reason it did not: `timed_out` on a timeout, otherwise the exit code. The gates run
+    /// through [`Exec::sh`] with `reap_group` off and ignore the reason; the warm-up turns it on and
+    /// puts the reason in its own log line, so a cap that fires can say so. The command, its clean
+    /// environment and the log lines are exactly as [`Exec::sh`] always had them; `reap_group` off
+    /// is the same `.status()` call, so a gate's `timeout` argv is unchanged.
+    fn sh_run(
+        &mut self,
+        cwd: &Path,
+        cmd: &str,
+        limit: &str,
+        timed_out: &str,
+        reap_group: bool,
+    ) -> Option<String> {
         self.say(&format!("$ {cmd}"));
         // The command gets the built environment (the allowlist from the executor's own
         // environment, plus the deploy recipe's declared names), not what the executor
@@ -244,16 +297,15 @@ impl Exec {
             // as GATE_FAILED with a log that says nothing about it: a gate that could not be run
             // reads exactly like a gate that ran and was refused.
             self.say("cannot run: the job log could not be duplicated for the command's output");
-            return false;
+            return Some("cannot run: the job log could not be duplicated".to_string());
         };
-        let status = Command::new("timeout")
-            .args([
-                "--kill-after=30s",
-                &format!("{}m", timeout_min.max(1)),
-                "bash",
-                "-c",
-                cmd,
-            ])
+        // `timeout` without `--foreground`: it calls `setpgid(0, 0)` on itself, so it leads a new
+        // process group and the limit's SIGTERM goes to the whole group, not just the process it
+        // waits on. That alone does not end every process a warm-up forked (see the `reap_group`
+        // branch below and [`reap_process_group`]).
+        let mut command = Command::new("timeout");
+        command
+            .args(["--kill-after=30s", limit, "bash", "-c", cmd])
             .current_dir(cwd)
             .env_clear()
             .envs(built)
@@ -279,13 +331,30 @@ impl Exec {
             .envs(self.gate_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
-            .stderr(Stdio::from(err))
-            .status();
+            .stderr(Stdio::from(err));
+        // `reap_group` off (every gate): the plain `.status()` wait, unchanged. On (the warm-up):
+        // `timeout` is the leader of the group it made, so its pid is the group id — remember it,
+        // wait for `timeout` however it ends, then end the whole group. Its own kill-after only
+        // reaches the direct child, so without this a grandchild that ignores SIGTERM would outlive
+        // the warm-up (finding LA-R056, point 2). The exit status is the same `.status()` gave.
+        let status = if reap_group {
+            match command.spawn() {
+                Ok(mut child) => {
+                    let pgid = child.id();
+                    let status = child.wait();
+                    reap_process_group(pgid);
+                    status
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            command.status()
+        };
         match status {
-            Ok(s) if s.success() => true,
+            Ok(s) if s.success() => None,
             Ok(s) => {
                 let why = if s.code() == Some(124) {
-                    format!("timed out after {timeout_min} min")
+                    timed_out.to_string()
                 } else {
                     format!(
                         "exit {}",
@@ -295,11 +364,11 @@ impl Exec {
                     )
                 };
                 self.say(&format!("failed: {why}"));
-                false
+                Some(why)
             }
             Err(e) => {
                 self.say(&format!("cannot run: {e}"));
-                false
+                Some(format!("cannot run: {e}"))
             }
         }
     }
@@ -500,6 +569,50 @@ impl Exec {
         (results, None)
     }
 
+    /// Warm the shared `CARGO_TARGET_DIR` with one `cargo check` of the merge base, run in the
+    /// landing worktree while it is still at `base` and before the merge's timed gates. A cold
+    /// target otherwise makes the first timed step (a workspace check) pay a full build, which
+    /// under load can cross its per-step limit and kill the gate (finding GATE-04). This is not a
+    /// gate: it is outside every timed step, its result is not recorded, and a failure or timeout
+    /// is only logged before the merge goes on to `git merge` and the gates exactly as before. It
+    /// is skipped when the repo runs no cargo gate (`cargo` is `off`/`none`) or the base has no
+    /// `Cargo.toml` to check. It runs through [`Exec::sh_run`] for the same clean environment, PATH
+    /// and `CARGO_TARGET_DIR`, under its own cap ([`Exec::warm_up_secs`], given to `timeout` as
+    /// seconds) and with `gate_env` kept empty, so it gets none of the gate allow/waivers. It runs
+    /// with `reap_group` on: the cap ends the check and, because uutils `timeout`'s own kill-after
+    /// reaches only the direct child, the whole group `timeout` led is then SIGKILLed, so nothing it
+    /// forked survives the warm-up (finding LA-R056, point 2). The reason it returns (a timeout in
+    /// particular) goes into the `warm-up: failed` line.
+    fn warm_up(&mut self, dir: &Path, base: &str, rules: &Rules) {
+        if repo::cargo_mode(&rules.merge.cargo) == Some(repo::CargoMode::None) {
+            return;
+        }
+        if !dir.join("Cargo.toml").is_file() {
+            return;
+        }
+        self.gate_env = Vec::new();
+        let short = &base[..base.len().min(7)];
+        self.say(&format!(
+            "warm-up: cargo check of the merge base {short} (not a gate)"
+        ));
+        let t = Instant::now();
+        let cap = self.warm_up_secs;
+        let why = self.sh_run(
+            dir,
+            "cargo check --workspace --quiet",
+            &format!("{cap}s"),
+            &format!("timed out after {cap}s"),
+            true,
+        );
+        match why {
+            None => self.say(&format!("warm-up: done in {}s", t.elapsed().as_secs())),
+            Some(reason) => self.say(&format!(
+                "warm-up: failed after {}s (not a gate failure): {reason}",
+                t.elapsed().as_secs()
+            )),
+        }
+    }
+
     pub fn merge(&mut self) -> Outcome {
         let (Some(branch), Some(head)) = (self.spec.branch.clone(), self.spec.head.clone()) else {
             return fail("INVALID", "a merge job needs a branch and a commit");
@@ -538,6 +651,23 @@ impl Exec {
                 Ok(d) => d,
                 Err(e) => return fail("LANDING_FAILED", e),
             };
+            // Warm the shared target at the base, outside every timed gate step, so the first
+            // timed check does not pay a cold build (finding GATE-04). Its outcome changes nothing.
+            self.warm_up(&dir, &base, &rules);
+            // The warm-up ran `cargo check`, which can leave files in the worktree that are not in
+            // the base — an untracked `Cargo.lock`, when the base had none and cargo wrote one. The
+            // `checkout -f` below puts the *tracked* files back but leaves that untracked one, and a
+            // branch that adds the same path then makes `git merge` refuse it ("untracked working
+            // tree files would be overwritten"): the job returns CONFLICT with no gates run at all,
+            // a warm-up skipping the merge it was never meant to gate (finding LA-R056, point 2).
+            // Put the worktree back exactly at the base the same way a fresh one is made, and never
+            // fall through into the merge if that cannot be done.
+            if let Err(e) = self.git(&dir, &["reset", "-q", "--hard", &base]) {
+                return fail("LANDING_FAILED", e);
+            }
+            if let Err(e) = self.git(&dir, &["clean", "-q", "-fd"]) {
+                return fail("LANDING_FAILED", e);
+            }
             // Always a merge commit (the owner, 2026-11-07: "merge for everyone"; merge, don't
             // rebase): the branch's commits land as they were made, the merge names the branch.
             let method = "merge";
@@ -2127,5 +2257,472 @@ mod tests {
                 "the log does not repeat the socket path"
             );
         }
+    }
+
+    /// A trunk whose tip has a root `Cargo.toml`, so the merge base is warmable. The manifest
+    /// declares no `[package]`: `crate_of` gives no crate, so a change that touches no crate adds
+    /// no cargo gate and the merge's only gate is the one declared in `rules`. The rules are
+    /// committed to `main`, so they are the trunk rules the warm-up reads at the base.
+    fn main_with_cargo(root: &Path, rules: &str) -> (PathBuf, PathBuf) {
+        let (origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        std::fs::write(repo.join(".lucina/pipeline.toml"), rules).unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "cargo on main"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        (origin, repo)
+    }
+
+    /// The rules for a warmable repo: one always-passing declared gate, cargo on.
+    fn warm_rules(cargo: &str) -> String {
+        format!("[merge]\ndiffgate = false\ncargo = \"{cargo}\"\n[[gate]]\nname = \"trivial\"\nrun = \"exit 0\"\n")
+    }
+
+    /// A trunk with a base `Cargo.toml`, a topic that changes one non-crate file, `shadow` dropped
+    /// on the job's PATH as `cargo`, and the merge run over it. Returns the landing origin, the
+    /// outcome, the job log, and the base commit.
+    fn warm_shadow_merge(
+        root: &Path,
+        rules: &str,
+        shadow: &str,
+    ) -> (PathBuf, Outcome, String, String) {
+        let (origin, repo) = main_with_cargo(root, rules);
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("cargo"), shadow);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let base = git(&origin, &["rev-parse", "main"]);
+        let dir = root.join("job-warm");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        (origin, out, log, base)
+    }
+
+    #[test]
+    fn a_warm_up_that_fails_does_not_fail_the_merge() {
+        // The shadow cargo fails any `cargo check`, so the warm-up at the base fails; the declared
+        // gate runs `exit 0` and never reaches cargo. The merge still lands, and the warm-up is not
+        // in the report's gates.
+        let shadow = "#!/bin/sh\nif [ \"$1\" = check ]; then exit 1; fi\nexit 0\n";
+        let root_a = tempfile::tempdir().unwrap();
+        let (origin, out, log, _base) =
+            warm_shadow_merge(root_a.path(), &warm_rules("check"), shadow);
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+        assert!(
+            log.contains("warm-up: cargo check of the merge base"),
+            "{log}"
+        );
+        assert!(log.contains("warm-up: failed after"), "{log}");
+        assert!(log.contains("(not a gate failure)"), "{log}");
+        let names: Vec<&str> = out.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["trivial"], "{log}");
+        assert!(out.gates.iter().all(|g| g.ok), "{log}");
+
+        // The same merge with cargo = "off" skips the warm-up and reports the same gate results.
+        let root_b = tempfile::tempdir().unwrap();
+        let (_o, out_b, log_b, _b) = warm_shadow_merge(root_b.path(), &warm_rules("off"), shadow);
+        assert!(!log_b.contains("warm-up"), "{log_b}");
+        let names_b: Vec<&str> = out_b.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, names_b);
+        assert_eq!(
+            out.gates.iter().map(|g| g.ok).collect::<Vec<_>>(),
+            out_b.gates.iter().map(|g| g.ok).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_warm_up_checks_the_merge_base_before_the_first_gate() {
+        let root = tempfile::tempdir().unwrap();
+        let head_file = root.path().join("cargo-check-head");
+        // A warm-up that succeeds, recording the HEAD it ran under the way the env tests write names.txt.
+        let shadow = format!(
+            "#!/bin/sh\nif [ \"$1\" = check ]; then git -C . rev-parse HEAD >> {}; fi\nexit 0\n",
+            head_file.display()
+        );
+        let (_origin, out, log, base) =
+            warm_shadow_merge(root.path(), &warm_rules("check"), &shadow);
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        // It ran at the base commit, not the merge candidate.
+        let recorded = std::fs::read_to_string(&head_file).unwrap();
+        assert_eq!(recorded.trim(), base, "{recorded}\n{log}");
+        assert_ne!(recorded.trim(), out.landed.unwrap());
+        // Logged before the first gate, and it finished.
+        let w = log
+            .find("warm-up: cargo check of the merge base")
+            .expect("warm-up line");
+        let g = log.find("gate: trivial").expect("gate line");
+        assert!(
+            w < g,
+            "the warm-up must be logged before the first gate:\n{log}"
+        );
+        assert!(log.contains("warm-up: done in"), "{log}");
+    }
+
+    #[test]
+    fn a_repo_that_runs_no_cargo_skips_the_warm_up() {
+        for cargo in ["off", "none"] {
+            let root = tempfile::tempdir().unwrap();
+            let check_file = root.path().join("saw-check");
+            // The shadow records every `cargo check`; with cargo = off/none the warm-up must not run it.
+            let shadow = format!(
+                "#!/bin/sh\nif [ \"$1\" = check ]; then echo check >> {}; fi\nexit 0\n",
+                check_file.display()
+            );
+            let (_origin, out, log, _base) =
+                warm_shadow_merge(root.path(), &warm_rules(cargo), &shadow);
+            assert_eq!(out.code, "MERGED", "{out:?}\nLOG:\n{log}");
+            assert!(!log.contains("warm-up"), "{log}");
+            assert!(!check_file.exists(), "cargo check ran for cargo = {cargo}");
+        }
+    }
+
+    /// The `comm` field of a `/proc/<pid>/stat`: the program name the kernel recorded, between the
+    /// first `(` and the last `)`. A killed-but-not-yet-reaped process (a zombie) has an empty
+    /// `cmdline`, so this — a run-unique name the survivor is actually `exec`'d from — is the only
+    /// way to still see it.
+    fn comm_of(stat: &[u8]) -> Option<String> {
+        let s = String::from_utf8_lossy(stat);
+        let open = s.find('(')?;
+        let close = s.rfind(')')?;
+        if close <= open {
+            return None;
+        }
+        Some(s[open + 1..close].to_string())
+    }
+
+    /// The pids of every process the cap test started: those whose command line carries `marker`
+    /// (the argv, never the environment) and those whose `/proc` `comm` equals `comm_tag`. The
+    /// second catches a zombie whose `cmdline` has emptied, so this cannot be fooled into "nothing
+    /// left" by reading `/proc/*/cmdline` alone. It is `pgrep`/`pkill` never used: the list comes
+    /// straight from `/proc`. A pid that vanishes between the listing and the read is skipped. If
+    /// `/proc` itself cannot be read this is an error, not an empty list — a scan that silently saw
+    /// nothing would make the cap test pass for the wrong reason.
+    fn find_marker(marker: &str, comm_tag: &str) -> Result<Vec<u32>, std::io::Error> {
+        let mut hits = Vec::new();
+        let entries = std::fs::read_dir("/proc")?;
+        for e in entries.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            let mut hit = false;
+            if let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+                hit = String::from_utf8_lossy(&cmdline)
+                    .split('\0')
+                    .any(|arg| arg.contains(marker));
+            }
+            if !hit {
+                if let Ok(stat) = std::fs::read(format!("/proc/{pid}/stat")) {
+                    hit = matches!(comm_of(&stat), Some(c) if c == comm_tag);
+                }
+            }
+            if hit {
+                hits.push(pid);
+            }
+        }
+        hits.sort_unstable();
+        hits.dedup();
+        Ok(hits)
+    }
+
+    /// The process state letter from `/proc/<pid>/stat` — the single character right after the
+    /// `comm` field — or `None` when it cannot be read (the pid has gone, or raced away between the
+    /// listing and the read). `Z` marks a zombie: killed, its exit not yet reaped by a parent.
+    fn proc_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+        let s = String::from_utf8_lossy(&stat);
+        let close = s.rfind(')')?;
+        s[close + 1..].trim_start().chars().next()
+    }
+
+    /// The pid a proof file holds. Each warm-up child writes its own pid there the instant it starts,
+    /// so a missing file or an unparsable one means the child never ran — and a cap test that never
+    /// saw its own child alive would prove nothing. Panics with the reason if the proof is absent.
+    fn read_recorded_pid(path: &Path) -> u32 {
+        let raw = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!(
+                "proof file {} was never written: the warm-up child did not start ({e})",
+                path.display()
+            )
+        });
+        raw.trim().parse::<u32>().unwrap_or_else(|e| {
+            panic!(
+                "proof file {} holds no pid (read {raw:?}): {e}",
+                path.display()
+            )
+        })
+    }
+
+    /// Whether the cap has ended this run's recorded `pid`: gone from `/proc`, or present only as a
+    /// zombie still carrying this run's marker (by `comm`, or by argv before a zombie's command line
+    /// empties). A process still running and carrying the marker is the survivor the cap failed to
+    /// reap; one running that carries neither is a recycled pid, so our own child has already ended.
+    fn pid_ended_by_cap(pid: u32, marker: &str, comm_tag: &str) -> bool {
+        if !Path::new(&format!("/proc/{pid}")).exists() {
+            return true;
+        }
+        let by_argv = match std::fs::read(format!("/proc/{pid}/cmdline")) {
+            Ok(c) => String::from_utf8_lossy(&c)
+                .split('\0')
+                .any(|a| a.contains(marker)),
+            Err(_) => false,
+        };
+        let by_comm = matches!(
+            std::fs::read(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|st| comm_of(&st)),
+            Some(c) if c == comm_tag
+        );
+        let carries = by_argv || by_comm;
+        if proc_state(pid) == Some('Z') {
+            return carries;
+        }
+        !carries
+    }
+
+    /// A cleanup guard for one warm-up test: on drop, and so even when an assertion below it fails,
+    /// it signals SIGKILL to the processes carrying this run's own unique marker or comm tag — and to
+    /// nothing else. The warm-up's cap and its group reap should already have ended them, so on the
+    /// passing path there is nothing to reap; this only stops a bug from leaving a survivor alive
+    /// after the test. It is the one kill these tests are allowed, aimed only at this test's own
+    /// marker/comm pids (`#![forbid(unsafe_code)]` bars the `kill` syscall here, so it goes through
+    /// the `kill` program — never `pkill`, never a pattern, never a group).
+    struct MarkerReaper {
+        marker: String,
+        comm_tag: String,
+    }
+
+    impl Drop for MarkerReaper {
+        fn drop(&mut self) {
+            if let Ok(pids) = find_marker(&self.marker, &self.comm_tag) {
+                for pid in pids {
+                    let _ = Command::new("kill")
+                        .args(["-9", "--", &pid.to_string()])
+                        .status();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_warm_up_that_outlives_its_cap_leaves_no_process() {
+        let root = tempfile::tempdir().unwrap();
+        // `tag` is short enough to survive the kernel's 15-character `comm` limit, so it names the
+        // process even as a zombie; `marker` is the longer string put in its command line.
+        let uid = uuid::Uuid::new_v4().simple().to_string();
+        let tag = format!("lw{}", &uid[..8]);
+        let marker = format!("lucina-warmup-marker-{tag}");
+        // Reap this run's processes on drop, whatever the assertions do next.
+        let _reaper = MarkerReaper {
+            marker: marker.clone(),
+            comm_tag: tag.clone(),
+        };
+
+        // A second copy of bash under a run-unique name: `exec`'d, its `comm` is that name, and it
+        // accepts any argv[0] (`exec -a`) — unlike a renamed uutils `sleep`, which dispatches on its
+        // own file and refuses to run. It lives outside the worktree, so it is not an untracked file.
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let bash = ["/bin/bash", "/usr/bin/bash"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+            .expect("a bash to copy");
+        let survivor = bin.join(&tag);
+        std::fs::copy(&bash, &survivor).unwrap();
+        // Proof files outside the worktree, one per child: each writes its own pid the instant it
+        // starts. So the test first shows the SIGTERM-ignoring child really existed — a cap test that
+        // never saw its own child alive would prove nothing — then that the cap ended it.
+        let surv_proof = root.path().join("cap-survivor-pid");
+        let fg_proof = root.path().join("cap-foreground-pid");
+
+        // A fake cargo that, on `check`, forks the survivor in the background — it IGNORES SIGTERM
+        // (`trap '' TERM`), which is exactly the process uutils `timeout`'s group SIGTERM cannot end
+        // and its `--kill-after` SIGKILL does not reach (it only signals the direct child) — and then
+        // blocks in a foreground `sleep` that also carries the marker. Each records its own pid in its
+        // proof file before it blocks, so the test can prove the child started before demanding the
+        // cap ended it. So only a warm-up that ends its whole process group stops the survivor. Every
+        // other subcommand (the workspace's `cargo metadata`) is a plain success.
+        let shadow = format!(
+            "#!/bin/bash\nif [ \"$1\" = check ]; then\n  ( exec -a {marker} '{surv}' -c 'trap \"\" TERM; echo $$ > {survp}; while :; do sleep 300; done' ) &\n  echo $$ > {fgp}\n  exec -a {marker} sleep 300\nfi\nexit 0\n",
+            surv = survivor.display(),
+            survp = surv_proof.display(),
+            fgp = fg_proof.display()
+        );
+        let (origin, repo) = main_with_cargo(root.path(), &warm_rules("check"));
+        write_exec(&bin.join("cargo"), &shadow);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let dir = root.path().join("job-warmup-cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root.path(), &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        // A few seconds, not the default 20 minutes.
+        x.warm_up_secs = 2;
+
+        let t = Instant::now();
+        let out = x.merge();
+        let elapsed = t.elapsed();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+
+        // The merge still lands.
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        assert_eq!(
+            git(&origin, &["rev-parse", "main"]),
+            out.landed.unwrap(),
+            "{log}"
+        );
+        // The cap fired, and said so as a timeout that is not a gate failure.
+        assert!(log.contains("warm-up: failed after"), "{log}");
+        assert!(
+            log.contains("(not a gate failure): timed out after 2s"),
+            "{log}"
+        );
+        // Its gate results equal the no-warm-up case: only the declared gate, passing.
+        let names: Vec<&str> = out.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["trivial"], "{log}");
+        assert!(out.gates.iter().all(|g| g.ok), "{log}");
+        let root_off = tempfile::tempdir().unwrap();
+        let (_o, out_off, _l, _b) = warm_shadow_merge(root_off.path(), &warm_rules("off"), &shadow);
+        assert_eq!(
+            names,
+            out_off
+                .gates
+                .iter()
+                .map(|g| g.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            out.gates.iter().map(|g| g.ok).collect::<Vec<_>>(),
+            out_off.gates.iter().map(|g| g.ok).collect::<Vec<_>>()
+        );
+        // The cap stopped it far short of the 300 s it would otherwise have slept.
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "the merge took {elapsed:?}\n{log}"
+        );
+        // Each child proved itself alive by writing its own pid before the cap fired; the cap must
+        // then have ended both — the foreground sleep and, crucially, the SIGTERM-ignoring survivor
+        // that a group SIGTERM alone cannot stop. "Ended" means the pid is gone, or a zombie still
+        // carrying this run's marker; a killed child lingers a moment before it is reaped, so wait.
+        // Without the group reap the survivor is still running here, and this is the assertion that
+        // fails — the point the previous form of this test could not make.
+        for (what, proof) in [("survivor", &surv_proof), ("foreground", &fg_proof)] {
+            let pid = read_recorded_pid(proof);
+            let until = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < until && !pid_ended_by_cap(pid, &marker, &tag) {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert!(
+                pid_ended_by_cap(pid, &marker, &tag),
+                "the warm-up cap left its {what} child (pid {pid}) alive\nLOG:\n{log}"
+            );
+        }
+        // And it left nothing behind: no process — running, or killed-but-not-yet-reaped (a zombie,
+        // whose empty cmdline a `/proc/*/cmdline` scan would miss) — carries this run's marker or
+        // comm tag. A SIGTERM-ignoring grandchild is exactly what the group reap must clear; if the
+        // cap only reached the direct child, it is still running here and this fails. A correctly
+        // killed one lingers only as a brief zombie, so wait a moment for it to be reaped first.
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let leftover = loop {
+            let hits = find_marker(&marker, &tag)
+                .expect("/proc could not be read: the cap test cannot prove anything");
+            if hits.is_empty() || Instant::now() >= deadline {
+                break hits;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(
+            leftover.is_empty(),
+            "the warm-up left marker/tag processes {leftover:?}\nLOG:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_file_the_warm_up_leaves_behind_does_not_skip_the_gates() {
+        let root = tempfile::tempdir().unwrap();
+        // A fake cargo that, on `check`, writes an untracked `Cargo.lock` into its working directory
+        // (the landing worktree at the base) — the thing `cargo check` really does when the base has
+        // no lock — and then records, in a proof file outside the worktree, the exact path it wrote.
+        // So the test can show the leftover was really produced: without it the merge would have
+        // nothing to trip over and would land with or without the reset/clean. Every other subcommand
+        // is a plain success.
+        let proof = root.path().join("warmup-wrote-lock");
+        let shadow = format!(
+            "#!/bin/sh\nif [ \"$1\" = check ]; then\n  printf 'left by the warm-up\\n' > Cargo.lock\n  printf '%s\\n' \"$(pwd)/Cargo.lock\" > {proof_path}\nfi\nexit 0\n",
+            proof_path = proof.display()
+        );
+        // The base (main) has a root Cargo.toml and NO Cargo.lock; the branch ADDS a tracked one.
+        let (origin, repo) = main_with_cargo(root.path(), &warm_rules("check"));
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("cargo"), &shadow);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "Cargo.lock", "the branch's lock\n", "add lock");
+        // The base the merge runs on has no Cargo.lock (main_with_cargo writes only a Cargo.toml);
+        // it is the branch that adds one, so the warm-up's untracked lock is the one that must go.
+        let base = git(&origin, &["rev-parse", "main"]);
+        let base_has_lock = Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["cat-file", "-e", &format!("{base}:Cargo.lock")])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(!base_has_lock, "the base must have no Cargo.lock");
+        let dir = root.path().join("job-warmup-leftover");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root.path(), &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+
+        // First the setup the whole test depends on: the warm-up really did write the untracked lock,
+        // and wrote it inside the landing worktree. Had it not, `git merge` would have had no leftover
+        // to refuse and the test would pass whether or not the reset/clean fix is present.
+        let written = std::fs::read_to_string(&proof).unwrap_or_else(|e| {
+            panic!(
+                "the warm-up never wrote the proof file {}: {e}",
+                proof.display()
+            )
+        });
+        let written = written.trim();
+        assert!(
+            written.ends_with("/wt/.landing/Cargo.lock"),
+            "the warm-up wrote {written:?}, not a Cargo.lock inside the landing worktree"
+        );
+        // The warm-up ran, and its leftover did not stop the merge or skip the gates: the branch's
+        // lock landed and the declared gate ran. (Without the reset/clean before `git merge`, the
+        // untracked Cargo.lock makes the merge abort with CONFLICT and no gates.)
+        assert!(
+            log.contains("warm-up: cargo check of the merge base"),
+            "{log}"
+        );
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{out:?}\nLOG:\n{log}");
+        // The gates ran. The branch touches `Cargo.lock`, so `plan_with` adds a workspace check next
+        // to the declared `trivial` gate; what matters is that the list is not empty (before the fix
+        // the merge aborts with CONFLICT and no gates at all) and every gate passed.
+        assert!(!out.gates.is_empty(), "the gates were skipped: {log}");
+        assert!(
+            out.gates.iter().any(|g| g.name == "trivial" && g.ok),
+            "{log}"
+        );
+        assert!(out.gates.iter().all(|g| g.ok), "{log}");
+        let landed = out.landed.unwrap();
+        assert_eq!(git(&origin, &["rev-parse", "main"]), landed, "{log}");
+        // What landed is the branch's Cargo.lock, not the warm-up's leftover.
+        assert_eq!(
+            git(&origin, &["show", &format!("{landed}:Cargo.lock")]),
+            "the branch's lock",
+            "{log}"
+        );
     }
 }
