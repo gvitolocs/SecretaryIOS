@@ -911,7 +911,6 @@ fn a_work_start_issues_the_run_and_follows_it_to_its_end() {
     wait_until("the job is done", || {
         lagent_json(&d, &["work", "show", "la-r004-fourth"])["state"] == "done"
     });
-    std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(rows(&d, "LA-R004").len(), 1);
     assert_eq!(view(&d, "LA-R004")["state"], "started");
 
@@ -969,7 +968,6 @@ fn a_chain_run_shows_no_lane_until_the_final_lane_is_known() {
     assert_eq!(v["modelRaw"], "Auto.Free");
     assert_eq!(v["chain"], "deep", "the chain is kept");
     assert_eq!(v["by"], "qoder Auto.Free");
-    std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(
         rows(&d, "LA-R001").len(),
         2,
@@ -1460,7 +1458,7 @@ fn a_lost_run_that_ends_failed_again_gets_a_second_failed_row() {
     let rs = wait_rows(&d, "LA-R001", 3);
     let states: Vec<&str> = rs.iter().map(|r| r["state"].as_str().unwrap()).collect();
     assert_eq!(states, ["started", "failed", "failed"], "{rs:?}");
-    assert_eq!(rs[2]["declaredBy"], "daemon", "{rs[2]}");
+    assert_eq!(rs[2]["declaredBy"], "daemon", "{}", rs[2]);
     assert!(
         rs[2]["result"]
             .as_str()
