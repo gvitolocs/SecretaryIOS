@@ -1389,6 +1389,11 @@ async fn run_lane(bin: &Path, job: &WorkJob, run_dir: &Path) -> Result<(), Strin
     // manager through `XDG_RUNTIME_DIR`, which is on it.
     let mut cmd = clean_command(&argv[0]);
     cmd.args(&argv[1..]);
+    // `lane run` detaches the run it starts, so a stop of the daemon may not reach it: the
+    // child is not killed when its handle is dropped, and it is started in a process group of
+    // its own, out of the way of a signal to the daemon's. The explicit kill on the 60 s
+    // window is the only one this child gets.
+    cmd.kill_on_drop(false).process_group(0);
     // The ids as variables for the worker; as flags they are in `lane_run_args`.
     if let (Some(run), Some(change)) = (&job.run_id, &job.change) {
         cmd.env("LUCINA_RUN_ID", run)

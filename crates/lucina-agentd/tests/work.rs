@@ -56,6 +56,8 @@ if [ "$cmd" = status ] && [ -f "$D/$1.seq" ]; then
 fi
 case "$cmd" in
 run)
+  # A `lane run` that takes its time to detach, so a test can stop the daemon while it is up.
+  if [ -f "$D/run-slow" ]; then sleep 5; fi
   id=""
   prev=""
   for a in "$@"; do
@@ -916,6 +918,77 @@ fn a_restarted_daemon_keeps_following_its_runs() {
     let job = wait_state(&d, &id, "failed");
     assert!(job["endedAt"].is_string());
     assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 1);
+}
+
+/// `lane run` is detached from the daemon's process group and its handle does not kill it: a
+/// stop between saving the job and `lane` registering the run leaves the run to itself.
+#[test]
+fn a_run_that_is_still_starting_outlives_the_daemon_that_started_it() {
+    let f = Fixture::new();
+    let mut d = f.daemon(&[]);
+    // The stand-in `lane` sleeps five seconds before it registers the run: the stop below
+    // lands inside that window.
+    std::fs::write(f.data().join("run-slow"), "").unwrap();
+    let ws = f.repo("ws");
+    let spec = f.spec();
+    let change = change_for(&d, "LA");
+    // The start waits for `lane run` to finish, so it goes on in a thread of its own while the
+    // daemon is stopped.
+    let socket = d.socket();
+    let started = std::thread::spawn(move || {
+        common::run(
+            Command::new(common::LAGENT)
+                .args([
+                    "work",
+                    "start",
+                    "--lead",
+                    "LA",
+                    "--change",
+                    &change,
+                    "--lane",
+                    "qoder",
+                    "--workspace",
+                    &ws,
+                    "--spec",
+                    &spec,
+                    "--cost",
+                    "build",
+                ])
+                .env("LUCINA_AGENTD_SOCKET", socket),
+        )
+    });
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(
+        d.guard.terminate(Duration::from_secs(5)),
+        Some(0),
+        "clean exit on SIGTERM"
+    );
+    let jobs: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.state().join("work/jobs.json")).unwrap())
+            .unwrap();
+    let id = jobs[0]["id"].as_str().unwrap().to_string();
+    assert!(
+        !f.data().join(format!("{id}.args")).exists(),
+        "the stop came after lane had registered the run"
+    );
+    // The job is on disk, and the run it started carries on by itself: `lane` registers it and
+    // leaves its runner behind a few seconds later.
+    let runner = f.data().join(format!("{id}.runner"));
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !runner.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(runner.exists(), "lane run did not outlive the daemon");
+    assert!(
+        f.data().join(format!("{id}.args")).exists(),
+        "the run was registered without its arguments"
+    );
+    let _ = started.join();
+    // The daemon that starts again follows the run like any other.
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    d.guard = common::spawn_daemon_env(d.dir.path(), &f.env(&[]));
+    let job = wait_state(&d, &id, "running");
+    assert_eq!(job["id"], id, "{job}");
 }
 
 #[test]
