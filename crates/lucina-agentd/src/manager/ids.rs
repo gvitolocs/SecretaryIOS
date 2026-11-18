@@ -361,22 +361,24 @@ impl Ids {
         self.lock().rows.iter().find(|r| r.id == id).map(|r| r.kind)
     }
 
+    /// The state of the id's latest row that is a row of its own. An annotation keeps a ledger
+    /// line, it says nothing about the state, and `current` passes it by too.
     pub(super) fn latest_state(&self, id: &str) -> Option<String> {
         self.lock()
             .rows
             .iter()
             .rev()
-            .find(|r| r.id == id)
+            .find(|r| r.id == id && !r.is_annotation())
             .map(|r| r.state.clone())
     }
 
-    /// The state and the time of the id's latest row.
+    /// The state and the time of the id's latest row that is a row of its own.
     pub(super) fn latest_row(&self, id: &str) -> Option<(String, String)> {
         self.lock()
             .rows
             .iter()
             .rev()
-            .find(|r| r.id == id)
+            .find(|r| r.id == id && !r.is_annotation())
             .map(|r| (r.state.clone(), r.utc.clone()))
     }
 
