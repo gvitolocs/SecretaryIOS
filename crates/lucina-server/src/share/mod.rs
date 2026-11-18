@@ -9,6 +9,7 @@ pub mod library;
 pub mod memory;
 pub mod router;
 mod structured;
+pub(crate) mod timing;
 pub mod tools;
 pub(crate) mod vision;
 pub use vision::stop_orphans;
@@ -17,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Request, State};
@@ -36,6 +37,7 @@ use tokio::sync::{Mutex, Semaphore};
 use crate::AppState;
 pub use guidance::SHARE_SYSTEM;
 use handlers::Extracted;
+pub(crate) use timing::{Outcome, ShareTiming, Sizes};
 
 pub const MAX_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const MAX_PARTS: usize = 32;
@@ -329,6 +331,10 @@ struct Job {
     lucina_item_id: Option<String>,
     reply: Option<String>,
     error: Option<String>,
+    /// The phases of this share, from the request that carried it to the turn it was handed to. Never
+    /// written to `status.json`: a job read back after a restart collects its own phases under its id.
+    #[serde(skip, default)]
+    timing: ShareTiming,
 }
 impl Job {
     fn public(&self, duplicate: bool) -> Value {
@@ -375,7 +381,8 @@ async fn find(root: &Path, id: &str) -> Option<(PathBuf, Job)> {
     while let Ok(Some(month)) = months.next_entry().await {
         let dir = month.path().join(id);
         if let Ok(bytes) = tokio::fs::read(dir.join("status.json")).await {
-            if let Ok(job) = serde_json::from_slice(&bytes) {
+            if let Ok(job) = serde_json::from_slice::<Job>(&bytes) {
+                job.timing.tie(&job.share_id);
                 return Some((dir, job));
             }
         }
@@ -470,6 +477,9 @@ fn host_of(url: &str) -> String {
 }
 
 async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, Error> {
+    // The phase names of a share are fixed words from the code, written as each ends. The body of the
+    // request is read before its `shareId` field arrives, so its line waits for the id.
+    let received_at = Instant::now();
     authenticate(&st, req.headers()).await?;
     // From the gateway (Caddy copies them from secretary-server's device check): who asked, and
     // whether that device is a test client. `authenticate` proved the request came through it.
@@ -653,6 +663,14 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     if !valid_id(&id) {
         return Err(bad("invalid shareId"));
     }
+    let timing = ShareTiming::new(&id);
+    timing.record(
+        "receive",
+        received_at,
+        Instant::now(),
+        Outcome::Ok,
+        Sizes::bytes(total as u64),
+    );
     let action = field("intent", "ask");
     if !intent(&action) {
         return Err(bad("invalid intent"));
@@ -710,8 +728,22 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             return Err(bad(format!("{key} is too long")));
         }
     }
+    // One request at a time reads the manifest of every share: a wait here looks like a slow disk
+    // until the line that says the wait began is in the log.
+    let ingest_wait = timing.begin("ingest_lock", true);
     let _lock = st.share.ingest.lock().await;
-    if let Some((dir, job)) = find(root, &id).await {
+    ingest_wait.finish(Outcome::Ok, Sizes::NONE);
+    let dedupe = timing.begin("dedupe", false);
+    let earlier = find(root, &id).await;
+    dedupe.finish(
+        if earlier.is_some() {
+            Outcome::Skipped
+        } else {
+            Outcome::Ok
+        },
+        Sizes::NONE,
+    );
+    if let Some((dir, job)) = earlier {
         let response = job.public(true);
         // A share accepted earlier whose worker is gone (an error or panic
         // after status.json): the retry restarts it (Stateright SH6).
@@ -726,8 +758,10 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     if dir.exists() {
         tokio::fs::remove_dir_all(&dir).await?;
     }
+    let store = timing.begin("store", false);
     tokio::fs::rename(staging.path(), &dir).await?;
     std::fs::File::open(&month)?.sync_all()?;
+    store.finish(Outcome::Ok, Sizes::bytes(total as u64));
     let note = field("note", "");
     let source = field("source", "share")
         .chars()
@@ -759,9 +793,11 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 .file_index
                 .and_then(|fi| meta.files.iter().find(|f| f.index == fi))
                 .is_some_and(|f| f.voice);
+            let route = timing.begin("route", false);
             let routed = tokio::task::spawn_blocking(move || router::route_for(&p, &n, &m, voice))
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?;
+            route.finish(Outcome::Ok, Sizes::NONE);
             part.attachment.kind = router::timeline_kind(routed).into();
             part.handler = Some(routed.into());
             if let Some(fm) = part
@@ -789,7 +825,10 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 .file_index
                 .and_then(|fi| meta.files.iter().find(|f| f.index == fi))
                 .and_then(|f| f.taken_at.clone());
+            let bytes = part.attachment.bytes.unwrap_or_default();
+            let library = timing.begin("library", false);
             store_in_library(&st, &id, i, &source, &note, part, taken_at).await;
+            library.finish(Outcome::Ok, Sizes::bytes(bytes));
         } else if part.attachment.kind == "link" {
             let host = host_of(part.attachment.url.as_deref().unwrap_or(""));
             part.attachment.name = Some(if title.trim().is_empty() {
@@ -870,8 +909,16 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         lucina_item_id: None,
         reply: None,
         error: None,
+        timing: timing.clone(),
     };
-    save(&dir, &job).await?;
+    let manifest = timing.begin("manifest", false);
+    let saved = save(&dir, &job).await;
+    manifest.finish(Outcome::of(&saved), Sizes::NONE);
+    if saved.is_err() {
+        // The share fails here, with no worker to say so: its summary line is what is left.
+        timing.log_total(Outcome::Error);
+    }
+    saved?;
     // status.json says processing now: the share must be processed even if
     // the append fails here (`process` appends it again). Returning an error
     // without spawning left it stuck until a restart (Stateright SH6).
@@ -1032,6 +1079,7 @@ async fn store_unstored(st: &AppState) -> usize {
             let Ok(mut job) = serde_json::from_slice::<Job>(&bytes) else {
                 continue;
             };
+            job.timing.tie(&job.share_id);
             // A share still being read stores its own files; this only picks up finished ones.
             if job.status == "processing"
                 || is_live(st, &job.share_id)
@@ -1191,6 +1239,7 @@ pub(crate) fn recover(st: AppState) {
             while let Ok(Some(entry)) = dirs.next_entry().await {
                 if let Ok(bytes) = tokio::fs::read(entry.path().join("status.json")).await {
                     if let Ok(job) = serde_json::from_slice::<Job>(&bytes) {
+                        job.timing.tie(&job.share_id);
                         if job.status == "processing" {
                             spawn(st.clone(), entry.path(), job);
                         }
@@ -1230,12 +1279,17 @@ fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
     }
     tokio::spawn(async move {
         let _live = LiveGuard(st.clone(), job.share_id.clone());
+        let timing = job.timing.clone();
+        // One share is read at a time. A share that waits behind another one's picture is idle here,
+        // and looks like a slow read until the line that says the wait began is in the log.
+        let slot = timing.begin("worker_slot", true);
         let _permit = st
             .share
             .worker
             .acquire()
             .await
             .expect("share semaphore stays open");
+        slot.finish(Outcome::Ok, Sizes::NONE);
         let result = process(&st, &dir, &mut job).await;
         if let Err(e) = result {
             job.status = "error".into();
@@ -1257,6 +1311,12 @@ fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
             job.lucina_item_id = item.map(|i| i.id);
             job.reply = Some(reply);
         }
+        // The share's own reply is written, or its failure: one line with the whole of it.
+        timing.log_total(if job.status == "error" {
+            Outcome::Error
+        } else {
+            Outcome::Ok
+        });
         if let Ok(file) = std::fs::File::open(&st.cfg.timeline_path) {
             if let Err(e) = file.sync_all() {
                 tracing::error!(error = %e, "cannot sync share timeline");
@@ -1368,7 +1428,17 @@ pub(crate) async fn read_local_file(
     };
     let x = match tokio::time::timeout(
         Duration::from_secs(seconds),
-        extract::read(st, dir, &mut part, true, None, "", true),
+        // A photo from Telegram belongs to no share: no timing lines.
+        extract::read(
+            st,
+            dir,
+            &mut part,
+            true,
+            None,
+            "",
+            true,
+            &ShareTiming::silent(),
+        ),
     )
     .await
     {
@@ -1407,6 +1477,7 @@ pub(crate) fn turn_message(note: &str, _device_lang: &str, content: &str) -> Str
 }
 
 async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()> {
+    let timing = job.timing.clone();
     ensure_user(st, job)?;
     if let Some((id, text)) = existing_reply(st, &job.session, &job.user_item.id) {
         job.status = "done".into();
@@ -1416,7 +1487,9 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         return Ok(());
     }
     job.stage = "reading".into();
+    let manifest = timing.begin("manifest", false);
     save(dir, job).await?;
+    manifest.finish(Outcome::Ok, Sizes::NONE);
     let mut content = String::new();
     let mut voice_transcripts = Vec::new();
     // A voice note whose recording was silent (peak under -60 dBFS): it gets its own reply, not "I couldn't hear you".
@@ -1438,6 +1511,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             };
         job.parts[i].state = "reading".into();
         save(dir, job).await?;
+        let read = timing.begin("read", false);
         let original = job.parts[i].path.clone();
         if let Some(p) = &original {
             job.parts[i].path = Some(work_path(dir, i, p).await?);
@@ -1455,6 +1529,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 on_device.as_deref(),
                 &lang,
                 true,
+                &timing,
             ),
         )
         .await;
@@ -1463,24 +1538,25 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             job.parts[i].path = original;
         }
         let part = &mut job.parts[i];
-        let x = match result {
+        let (x, read_outcome) = match result {
             Ok(Ok(x)) => {
                 part.state = "read".into();
-                x
+                (x, Outcome::Ok)
             }
             Ok(Err(e)) => {
                 part.state = "failed".into();
                 let mut x = Extracted::new("other");
                 x.warnings.push(e.to_string());
-                x
+                (x, Outcome::Error)
             }
             Err(_) => {
                 part.state = "failed".into();
                 let mut x = Extracted::new("other");
                 x.warnings.push("reading it took too long".into());
-                x
+                (x, Outcome::Timeout)
             }
         };
+        read.finish(read_outcome, Sizes::chars(x.text.chars().count()));
         if part.attachment.kind == "voice" {
             part.attachment.transcript = (!x.text.trim().is_empty()
                 && x.subtype.as_deref() == Some("voice"))
@@ -1519,7 +1595,16 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 structured: x.structured.clone(),
             };
             let memory = st.share.memory.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || memory.put(&record)).await? {
+            let memory_phase = timing.begin("memory", false);
+            let written = tokio::task::spawn_blocking(move || memory.put(&record)).await;
+            memory_phase.finish(
+                match &written {
+                    Ok(Ok(())) => Outcome::Ok,
+                    Ok(Err(_)) | Err(_) => Outcome::Error,
+                },
+                Sizes::chars(x.text.chars().count()),
+            );
+            if let Err(e) = written? {
                 tracing::warn!(share_id = %job.share_id, error = %e, "attachment memory write failed");
             }
         }
@@ -1527,7 +1612,9 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         save(dir, job).await?;
     }
     job.stage = "thinking".into();
+    let manifest = timing.begin("manifest", false);
     save(dir, job).await?;
+    manifest.finish(Outcome::Ok, Sizes::NONE);
     let voice_meta = Meta {
         transcript: has_voice
             .then(|| {
@@ -1582,11 +1669,30 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             let ctx =
                 lucina_tools::Ctx::new(st.tool_env.clone(), &job.user_item.channel, &job.session)
                     .with_origin(lucina_tools::Origin::Owner);
-            tokio::time::timeout(Duration::from_secs(30), lucina_tools::tools::notes::NotesTool.call(json!({
-                "action":"create", "slug":format!("share-{}", job.share_id.to_ascii_lowercase()),
-                "title":job.parts[0].attachment.name.as_deref().unwrap_or("Shared"),
-                "content":clip(&format!("{}\n{}", job.note, content), 19_000)
-            }), &ctx)).await.context("saving shared note timed out")?.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let note_phase = timing.begin("note", false);
+            let saved = tokio::time::timeout(
+                Duration::from_secs(30),
+                lucina_tools::tools::notes::NotesTool.call(
+                    json!({
+                        "action":"create", "slug":format!("share-{}", job.share_id.to_ascii_lowercase()),
+                        "title":job.parts[0].attachment.name.as_deref().unwrap_or("Shared"),
+                        "content":clip(&format!("{}\n{}", job.note, content), 19_000)
+                    }),
+                    &ctx,
+                ),
+            )
+            .await;
+            note_phase.finish(
+                match &saved {
+                    Ok(Ok(_)) => Outcome::Ok,
+                    Ok(Err(_)) => Outcome::Error,
+                    Err(_) => Outcome::Timeout,
+                },
+                Sizes::chars(content.chars().count()),
+            );
+            saved
+                .context("saving shared note timed out")?
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
         let reply = match owner_language(st, &job.session, &job.note).reply().code() {
             "da" => "Gemt i samlingen Shared.",
@@ -1642,6 +1748,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 voice_only,
                 reply_meta: voice_meta,
                 owner_text,
+                timing: timing.clone(),
             },
         )
         .await
