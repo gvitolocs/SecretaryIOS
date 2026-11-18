@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::jev_route::{deterministic_intent, jev_beats_rule, JEV_FIRST_MIN};
+use crate::jev_route::{deterministic_intent, jev_beats_rule_from, JEV_FIRST_MIN};
 
 /// Confidence buckets, `[lo, hi)`; the last one includes 1.0.
 pub const BUCKETS: [(f64, f64); 5] = [(0.0, 0.5), (0.5, 0.6), (0.6, 0.75), (0.75, 0.9), (0.9, 1.0)];
@@ -512,6 +512,28 @@ pub fn right(labels: &[String], intent: &str) -> bool {
 /// threshold (Jev's answer when sure and not `unknown`, unless a deterministic rule matched and
 /// Jev's answer did not beat it — the same precedence [`crate::jev_route::jev_first`] uses).
 pub fn score(rows: &[Routed]) -> Replay {
+    score_from(
+        rows,
+        std::env::var("LUCINA_JEV_FIRST_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN")
+            .ok()
+            .as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE").ok().as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE_MIN")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// [`score`] with the four `LUCINA_JEV_*` values as arguments, like
+/// [`crate::jev_route::jev_first_from`]: a test names them instead of inheriting the environment.
+pub fn score_from(
+    rows: &[Routed],
+    first_min: Option<&str>,
+    first_intent_min: Option<&str>,
+    over_rule: Option<&str>,
+    over_rule_min: Option<&str>,
+) -> Replay {
     let mut r = Replay {
         turns: rows.len(),
         policy: POLICY_THRESHOLDS
@@ -535,11 +557,24 @@ pub fn score(rows: &[Routed]) -> Replay {
             None => r.jev_missing += 1,
         }
         let rule_keeps = x.tier0.as_deref().is_some_and(|t| {
-            deterministic_intent(t) && !jev.map_or(true, |(j, c)| jev_beats_rule(j, c, t))
+            deterministic_intent(t)
+                && !jev.map_or(true, |(j, c)| {
+                    jev_beats_rule_from(
+                        j,
+                        c,
+                        t,
+                        over_rule,
+                        over_rule_min,
+                        first_min,
+                        first_intent_min,
+                    )
+                })
         });
+        // The replay does not model the MCP side-effect guard (`classify` returns plain chat there),
+        // so on MCP samples the report can name Jev's intent where the server answered chat.
         for (th, t) in &mut r.policy {
             // The live rule: a sure, known intent, unless a deterministic route keeps the turn
-            // (which a sure answer of Jev's own intents takes over).
+            // (which only a sure question of Jev's own intents takes over, never one that acts).
             let pick = jev
                 .filter(|&(j, c)| c >= *th && !j.is_empty() && j != "unknown" && !rule_keeps)
                 .map_or(x.routed.as_str(), |(j, _)| j);
@@ -1017,6 +1052,12 @@ mod tests {
         }
     }
 
+    /// `score_from` with every `LUCINA_JEV_*` value at its default: no replay test reads the
+    /// process environment.
+    fn scored(rows: &[Routed]) -> Replay {
+        score_from(rows, None, None, None, None)
+    }
+
     #[test]
     fn jev_parses_used_and_fallback_lines() {
         let t = parse_log_line(USED).expect("used line");
@@ -1148,7 +1189,7 @@ mod tests {
             ),
             routed("chat", None, "chat", None),
         ];
-        let r = score(&rows);
+        let r = scored(&rows);
         assert_eq!(r.turns, 6);
         assert_eq!(r.jev_missing, 1);
         assert_eq!(r.jev, Tally { n: 5, right: 2 });
@@ -1168,7 +1209,7 @@ mod tests {
 
     #[test]
     fn jev_policy_keeps_the_router_for_an_empty_intent() {
-        let r = score(&[routed("chat", Some(("", 0.99)), "chat", None)]);
+        let r = scored(&[routed("chat", Some(("", 0.99)), "chat", None)]);
         assert_eq!(r.policy[0], (0.6, Tally { n: 1, right: 1 }));
     }
 
@@ -1182,7 +1223,7 @@ mod tests {
             "grocery.expense.query",
             Some("grocery.expense.query"),
         );
-        let r = score(&[over]);
+        let r = scored(&[over]);
         for (th, t) in r.policy {
             assert_eq!((th, t), (th, Tally { n: 1, right: 1 }), "{th}");
         }
@@ -1192,7 +1233,7 @@ mod tests {
             "grocery.expense.query",
             Some("grocery.expense.query"),
         );
-        let r = score(&[kept]);
+        let r = scored(&[kept]);
         for (th, t) in r.policy {
             assert_eq!((th, t), (th, Tally { n: 1, right: 0 }), "{th}");
         }

@@ -14,12 +14,12 @@
 //!   hint for the model. It never removes tools: a wrong guess costs nothing.
 //! - **JEV-first** (`LUCINA_JEV_FIRST`): from [`JEV_FIRST_MIN`] up (per intent,
 //!   `LUCINA_JEV_FIRST_INTENT_MIN`) Jev routes the turn before the tier-0 rules. A deterministic
-//!   route ([`deterministic_intent`]) keeps the turn only against an answer Jev is not sure of or
-//!   has no option for; a sure one of Jev's own intents wins over it from [`JEV_OVER_RULE_MIN`] up
-//!   (`LUCINA_JEV_OVER_RULE`, `LUCINA_JEV_OVER_RULE_MIN`). Each decision is one
-//!   `event="jev_first"` log line. `POST /api/secretary/jev/route` replays a text through the same
-//!   path. The weekly check is `lucina-rs jev drift-report` (`docs/lucina-rust/JEV-ROUTING.md`);
-//!   it only suggests new thresholds.
+//!   route ([`deterministic_intent`]) keeps the turn against an answer Jev is not sure of, has no
+//!   option for, or that would start something ([`acts`]); a sure question of Jev's own intents wins
+//!   over it from [`JEV_OVER_RULE_MIN`] up (`LUCINA_JEV_OVER_RULE`, `LUCINA_JEV_OVER_RULE_MIN`).
+//!   Each decision is one `event="jev_first"` log line. `POST /api/secretary/jev/route` replays a
+//!   text through the same path. The weekly check is `lucina-rs jev drift-report`
+//!   (`docs/lucina-rust/JEV-ROUTING.md`); it only suggests new thresholds.
 
 use std::sync::Arc;
 
@@ -236,7 +236,8 @@ pub fn doubts(
     side_effect || chat_but_action
 }
 
-/// Tier-0 intents that start work in the world (jobs, posts, reminders, writes).
+/// Tier-0 intents that start work in the world (jobs, posts, reminders, writes). Not the whole
+/// answer to "does this intent act?": the grocery writes join it in [`acts`].
 pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "cursor_task",
     "agent_message",
@@ -257,6 +258,22 @@ pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "graph_task",
     "web_crawl",
 ];
+
+/// Does running `intent` change something in the world, rather than answer a question? A sure Jev
+/// answer that acts never takes the turn from a deterministic rule ([`jev_beats_rule_from`]): some
+/// tier-0 routes run their handler straight off the intent string, before any planner or guard
+/// could weigh a wrong answer.
+pub fn acts(intent: &str) -> bool {
+    SIDE_EFFECT_INTENTS.contains(&intent)
+        || matches!(
+            intent,
+            "grocery.purchase"
+                | "grocery.consume"
+                | "grocery.finished"
+                | "grocery.shopping_list.add"
+                | "grocery.shopping_list.remove"
+        )
+}
 
 /// On an MCP turn (an agent's prose, not the owner's words), a side-effect tier-0 rule that Jev
 /// reads as anything else, at any confidence, gives way to plain chat: the cost of a wrong reply is a
@@ -349,16 +366,15 @@ pub fn jev_first_min_from(intent: &str, global: Option<&str>, per_intent: Option
 }
 
 /// Tier-0 routes that parse their own arguments (her computer, groceries, the log inspector, study
-/// focus). They keep the turn against an answer Jev is unsure of or has no option for; a sure
-/// answer of one of Jev's own intents wins over them ([`jev_beats_rule_from`]).
+/// focus). They keep the turn against an answer Jev is unsure of, has no option for, or that acts;
+/// a sure question of one of Jev's own intents wins over them ([`jev_beats_rule_from`]).
 pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
     deterministic_intent(&c.intent)
 }
 
 /// A turn Jev was not sure of, or could not answer, with JEV-first on: only a deterministic route
 /// still runs. No other regex rule and no model call picks an intent, so with none the turn is
-/// either the planner with her tools or plain chat, whichever way
-/// [`crate::context::unsure_tools`] falls out.
+/// either the JSON planner or plain chat, whichever way [`crate::context::unsure_plan`] falls out.
 pub fn rule_when_jev_unsure(
     rule: Option<lucina_intent::tier0::Classification>,
 ) -> Option<lucina_intent::tier0::Classification> {
@@ -381,8 +397,8 @@ pub const JEV_OVER_RULE_MIN: f64 = 0.90;
 
 /// Does Jev's answer `intent` at `confidence` route the turn over the deterministic rule
 /// `rule_intent`? It must be an intent Jev itself offers ([`INTENT_OPTIONS`]), neither `chat` nor
-/// the rule's own, and sure past both [`jev_first_min`] for it and [`JEV_OVER_RULE_MIN`] —
-/// `LUCINA_JEV_OVER_RULE` off restores the rule's precedence.
+/// the rule's own, one that only answers ([`acts`]), and sure past both [`jev_first_min`] for it
+/// and [`JEV_OVER_RULE_MIN`] — `LUCINA_JEV_OVER_RULE` off restores the rule's precedence.
 /// Pure: the environment values are the caller's, like [`jev_first_min_from`].
 pub fn jev_beats_rule_from(
     intent: &str,
@@ -398,24 +414,11 @@ pub fn jev_beats_rule_from(
         && intent != "unknown"
         && intent != "chat"
         && intent != rule_intent
+        && !acts(intent)
         && INTENT_OPTIONS.iter().any(|(n, _)| *n == intent)
         && confidence
             >= jev_first_min_from(intent, first_min, first_intent_min)
                 .max(threshold(over_rule_min, JEV_OVER_RULE_MIN))
-}
-
-/// [`jev_beats_rule_from`] with the environment's values. [`crate::jev_drift`]'s replay of which
-/// side routes a turn uses it, so the report describes the routing the server actually does.
-pub fn jev_beats_rule(intent: &str, confidence: f64, rule_intent: &str) -> bool {
-    jev_beats_rule_from(
-        intent,
-        confidence,
-        rule_intent,
-        std::env::var("LUCINA_JEV_OVER_RULE").ok().as_deref(),
-        std::env::var("LUCINA_JEV_OVER_RULE_MIN").ok().as_deref(),
-        std::env::var("LUCINA_JEV_FIRST_MIN").ok().as_deref(),
-        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN").ok().as_deref(),
-    )
 }
 
 /// Does JEV-first route this turn? `Err` names why not (for the drift log).
@@ -756,6 +759,15 @@ mod tests {
         );
     }
 
+    /// JEV-first's decision with every environment value at its default: no test of the precedence
+    /// reads the process environment.
+    fn first(
+        jev: Option<(&str, f64)>,
+        rule: Option<&lucina_intent::tier0::Classification>,
+    ) -> Result<(), &'static str> {
+        jev_first_from(jev, rule, None, None, None, None)
+    }
+
     /// TURN-01: a sure answer of one of Jev's own intents routes the turn over a deterministic
     /// keyword rule that disagrees with it; anything else leaves the rule in charge.
     #[test]
@@ -771,7 +783,7 @@ mod tests {
         };
         // The live case: the shopping list asked about, the grocery spending rule matched.
         assert_eq!(
-            jev_first(
+            first(
                 Some(("grocery.shopping_list.query", 0.99)),
                 Some(&rule("grocery.expense.query"))
             ),
@@ -779,14 +791,14 @@ mod tests {
         );
         // Below JEV_OVER_RULE_MIN the rule keeps the turn.
         assert_eq!(
-            jev_first(
+            first(
                 Some(("grocery.shopping_list.query", 0.89)),
                 Some(&rule("grocery.expense.query"))
             ),
             Err("deterministic_rule")
         );
         assert_eq!(
-            jev_first(
+            first(
                 Some(("unknown", 0.99)),
                 Some(&rule("grocery.expense.query"))
             ),
@@ -797,7 +809,7 @@ mod tests {
             .iter()
             .all(|(n, _)| *n != "lucina_log_inspect"));
         assert_eq!(
-            jev_first(
+            first(
                 Some(("lucina_log_inspect", 0.99)),
                 Some(&rule("computer_task"))
             ),
@@ -806,7 +818,7 @@ mod tests {
         // The same intent on both sides: unchanged, the rule keeps the turn and runs its own
         // classification, the one that parses the message's arguments.
         assert_eq!(
-            jev_first(
+            first(
                 Some(("grocery.expense.query", 0.99)),
                 Some(&rule("grocery.expense.query"))
             ),
@@ -817,6 +829,78 @@ mod tests {
                 .map(|c| c.intent)
                 .as_deref(),
             Some("grocery.expense.query")
+        );
+    }
+
+    /// TURN-01: only a question wins over a deterministic rule. An intent that starts something runs
+    /// the rule's own parsing of the message, as it did before the override existed: a few tier-0
+    /// routes act on the intent string alone, so a wrong-but-sure Jev answer would act.
+    #[test]
+    fn an_acting_jev_answer_never_beats_a_deterministic_rule() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rule = |intent: &str| {
+            lucina_intent::tier0::from_model_json(
+                &json!({"intent": intent, "confidence": 1.0}),
+                "x",
+                "",
+                &s,
+            )
+        };
+        for name in SIDE_EFFECT_INTENTS {
+            assert!(acts(name), "{name} acts and does not say so");
+        }
+        for intent in [
+            "agent_task",
+            "agent_message",
+            "flaw_report",
+            "parcel_track",
+            "computer_task",
+            "schedule_reminder",
+            "calendar_event",
+        ] {
+            assert!(acts(intent), "{intent} is not known to act");
+            // Sure, an option of Jev's own, and not the rule's intent: `acts` alone keeps the rule.
+            assert!(
+                INTENT_OPTIONS.iter().any(|(n, _)| *n == intent),
+                "{intent} is not Jev's own option: the case would pass on the table alone"
+            );
+            assert_eq!(
+                first(
+                    Some((intent, 0.99)),
+                    Some(&rule("grocery.shopping_list.add"))
+                ),
+                Err("deterministic_rule"),
+                "{intent}"
+            );
+        }
+        // The grocery writes act without being in `SIDE_EFFECT_INTENTS`; the fifth one,
+        // `grocery.shopping_list.add`, is the rule of the cases above and keeps its own turn there.
+        for intent in [
+            "grocery.purchase",
+            "grocery.consume",
+            "grocery.finished",
+            "grocery.shopping_list.remove",
+        ] {
+            assert!(acts(intent), "{intent} is not known to act");
+            assert!(!SIDE_EFFECT_INTENTS.contains(&intent), "{intent}");
+        }
+        // The list's own write against the rule of a question about spending: the write keeps it,
+        // and a question about the list still wins (`a_sure_jev_answer_beats_a_deterministic_rule`).
+        assert_eq!(
+            first(
+                Some(("grocery.shopping_list.add", 0.99)),
+                Some(&rule("grocery.expense.query"))
+            ),
+            Err("deterministic_rule")
+        );
+        // A question about the same thing wins: `list_reminders` reads, it starts nothing.
+        assert!(!acts("list_reminders"));
+        assert_eq!(
+            first(
+                Some(("list_reminders", 0.95)),
+                Some(&rule("study_focus_reminders"))
+            ),
+            Ok(())
         );
     }
 
