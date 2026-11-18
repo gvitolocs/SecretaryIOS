@@ -21,6 +21,11 @@ const PASTED: &str = "ghp_SyntheticPastedToken0123456789ab";
 /// Saved through the relay, so the process-wide redactor learns it: its own value, or the test of
 /// a pasted token depends on which test runs first.
 const RELAYED: &str = "ghp_SyntheticRelayedToken123456789ab";
+/// The request flow's own saved value, relayed under FIRST_KEY. The process-wide redactor keeps the
+/// first name it saw for a value, so this test must not save the shared `VALUE`: it would learn it
+/// as `FIRST_KEY` and the relay test's own assertion (that `VALUE` redacts to `POKO_API_KEY`) would
+/// then depend on which test runs first.
+const REQUESTED: &str = "ghp_SyntheticRequestedToken123456789ab";
 
 /// Raw log capture (no redacting writer): the value must never be logged at all.
 fn logs() -> &'static Arc<Mutex<Vec<u8>>> {
@@ -50,7 +55,7 @@ fn logs() -> &'static Arc<Mutex<Vec<u8>>> {
 }
 
 fn assert_clean(what: &str, text: &str) {
-    for v in [VALUE, PASTED, RELAYED] {
+    for v in [VALUE, PASTED, RELAYED, REQUESTED] {
         assert!(!text.contains(v), "{what} holds a value: {text}");
     }
 }
@@ -431,16 +436,17 @@ async fn requests_come_one_card_at_a_time_and_the_value_goes_nowhere() {
     assert_eq!(action["payload"]["request"], a["data"]["requestId"]);
     assert_eq!(action["payload"]["target"], "lucinaos/prod");
 
-    // OK on the card: the relay passes the value to the broker, the next card follows.
+    // OK on the card: the relay passes the value to the broker, the next card follows. This flow
+    // saves `REQUESTED`, its own value, so learning it under FIRST_KEY cannot move the shared VALUE.
     *env.broker.answer.lock().unwrap() = saved_answer("FIRST_KEY");
     let (s, saved) = env
         .h
-        .post("/secrets/grant", json!({"grant": "g1.p.s", "value": VALUE, "request": a["data"]["requestId"]}))
+        .post("/secrets/grant", json!({"grant": "g1.p.s", "value": REQUESTED, "request": a["data"]["requestId"]}))
         .await;
     assert_eq!(s, 200, "{saved}");
     assert_eq!(saved["data"]["fingerprint"], "ab12cd34");
     assert!(saved["data"]["nextItemId"].is_string());
-    assert_eq!(env.broker.seen.lock().unwrap().last().unwrap()["value"], VALUE);
+    assert_eq!(env.broker.seen.lock().unwrap().last().unwrap()["value"], REQUESTED);
     assert_eq!(env.request_cards().len(), 2);
 
     let q = env.queue().await;
