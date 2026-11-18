@@ -211,15 +211,15 @@ pub async fn classify(
                     .is_some_and(|r| crate::jev_route::deterministic_rule(r));
                 // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
                 let confidence = s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN);
-                if unsure_tools(mcp, deterministic) {
-                    // The words Jev could not place may still ask for something done. The turn takes
-                    // the planner's path, with her whole tool set and the guards and confirmations
-                    // of any other planner turn; nothing here starts a side effect by itself.
-                    tracing::info!(target: "lucina_jev::route", event = "unsure_tools", reason,
+                if unsure_plan(mcp, deterministic, owner_turn) {
+                    // The words Jev could not place may still ask for something done, so the turn goes
+                    // to the JSON planner (`plan_response`): one plan, then that plan's action, under
+                    // the guards and confirmations of any other planner turn. It does not get the tool
+                    // registry, and nothing here starts a side effect by itself.
+                    tracing::info!(target: "lucina_jev::route", event = "unsure_plan", reason,
                         jev = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1));
                     let mut c = chat(confidence);
                     c.reply_mode = "full_plan".into();
-                    c.needs_tools = true;
                     return c;
                 }
                 return crate::jev_route::rule_when_jev_unsure(rule)
@@ -282,19 +282,25 @@ pub async fn classify(
     }
 }
 
-/// `LUCINA_UNSURE_TOOLS` (on unless off): a turn Jev was unsure of. Only an owner turn with no
-/// deterministic route to run goes to the planner with her tools; an MCP turn and a turn a
-/// deterministic rule keeps are answered as before. Pure: [`unsure_tools`] reads the environment.
-pub fn unsure_tools_from(mcp: bool, deterministic: bool, switch: Option<&str>) -> bool {
-    !mcp && !deterministic && !crate::jev_route::switch_off(switch)
+/// `LUCINA_UNSURE_PLAN` (on unless off): a turn Jev was unsure of. Only the owner's own turn with no
+/// deterministic route to run and no agent behind it goes to the JSON planner; every other is
+/// answered as before. Pure: [`unsure_plan`] reads the environment.
+pub fn unsure_plan_from(
+    mcp: bool,
+    deterministic: bool,
+    owner_turn: bool,
+    switch: Option<&str>,
+) -> bool {
+    !mcp && !deterministic && owner_turn && !crate::jev_route::switch_off(switch)
 }
 
-/// [`unsure_tools_from`] with `LUCINA_UNSURE_TOOLS`.
-pub fn unsure_tools(mcp: bool, deterministic: bool) -> bool {
-    unsure_tools_from(
+/// [`unsure_plan_from`] with `LUCINA_UNSURE_PLAN`.
+pub fn unsure_plan(mcp: bool, deterministic: bool, owner_turn: bool) -> bool {
+    unsure_plan_from(
         mcp,
         deterministic,
-        std::env::var("LUCINA_UNSURE_TOOLS").ok().as_deref(),
+        owner_turn,
+        std::env::var("LUCINA_UNSURE_PLAN").ok().as_deref(),
     )
 }
 
@@ -686,29 +692,40 @@ pub async fn prepare_keyed(
 mod tests {
     use super::*;
 
-    /// TURN-02: only an owner turn with nothing deterministic to run goes to the planner's tools.
-    /// The switch's off words restore today's plain chat; anything else is on.
+    /// TURN-02: of the sixteen turns Jev was unsure of, exactly one goes to the planner: the owner's
+    /// own, with no deterministic rule to run. The switch's off words leave none.
     #[test]
-    fn unsure_turns_go_to_the_tools_only_for_the_owner_without_a_deterministic_rule() {
-        for switch in ["0", "false", "off", "no", "OFF", " No "] {
-            for (mcp, deterministic) in [(false, false), (false, true), (true, false), (true, true)]
-            {
-                assert!(
-                    !unsure_tools_from(mcp, deterministic, Some(switch)),
-                    "{switch} {mcp}/{deterministic}"
+    fn only_the_owners_own_unsure_turn_goes_to_the_planner() {
+        // (an MCP turn, a deterministic rule, the owner's own surface) → the planner?
+        let rows = [
+            ((false, false, false), false),
+            ((false, false, true), true),
+            ((false, true, false), false),
+            ((false, true, true), false),
+            ((true, false, false), false),
+            ((true, false, true), false),
+            ((true, true, false), false),
+            ((true, true, true), false),
+        ];
+        for switch in ["1", "true", "on", "yes", "", "x", " ON "] {
+            for ((mcp, deterministic, owner_turn), plan) in rows {
+                assert_eq!(
+                    unsure_plan_from(mcp, deterministic, owner_turn, Some(switch)),
+                    plan,
+                    "{switch} mcp={mcp} rule={deterministic} owner={owner_turn}"
                 );
             }
         }
-        for switch in ["1", "true", "on", "yes", "", "x"] {
-            // No deterministic rule, the owner's own words: the tools.
-            assert!(unsure_tools_from(false, false, Some(switch)));
-            // A deterministic rule runs its own parsing; an MCP turn never acts as the owner.
-            assert!(!unsure_tools_from(false, true, Some(switch)));
-            assert!(!unsure_tools_from(true, false, Some(switch)));
-            assert!(!unsure_tools_from(true, true, Some(switch)));
+        for switch in ["0", "false", "off", "no", "OFF", " No "] {
+            for ((mcp, deterministic, owner_turn), _) in rows {
+                assert!(
+                    !unsure_plan_from(mcp, deterministic, owner_turn, Some(switch)),
+                    "{switch} mcp={mcp} rule={deterministic} owner={owner_turn}"
+                );
+            }
         }
         // Unset is on.
-        assert!(unsure_tools_from(false, false, None));
-        assert!(unsure_tools(false, false));
+        assert!(unsure_plan_from(false, false, true, None));
+        assert!(!unsure_plan_from(false, false, false, None));
     }
 }
