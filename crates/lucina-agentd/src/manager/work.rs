@@ -251,14 +251,14 @@ impl Work {
     /// ending this lost episode has. The wall clock stays the upper bound of [`pollable`]: a
     /// job is never followed for more than a day of wall time after it ended.
     fn follows(&self, job: &WorkJob) -> bool {
-        if !pollable(job) {
-            return false;
-        }
         match job.state {
-            WorkState::Lost => self
-                .age_of(&Self::lost_key(job), job.ended_at.as_deref())
-                .is_some_and(|a| a < DAY),
-            _ => true,
+            WorkState::Lost => {
+                pollable(job)
+                    && self
+                        .age_of(&Self::lost_key(job), job.ended_at.as_deref())
+                        .is_some_and(|a| a < DAY)
+            }
+            _ => pollable(job),
         }
     }
 
@@ -1322,12 +1322,11 @@ impl Manager {
         let stored = {
             let mut jobs = self.work().jobs();
             // A start that failed in the meantime wins: only an unfinished (or lost) job takes
-            // the update. A lost job past its window takes one that shows the run going: that
-            // is `lane`'s answer after the window shut, and the run is not over.
-            match jobs.iter_mut().find(|j| {
-                j.id == id
-                    && (pollable(j) || (j.state == WorkState::Lost && !job.state.is_terminal()))
-            }) {
+            // the update. A lost job takes one that shows the run going as well as one that
+            // ends it: the day `lane` is followed for is counted by this daemon, and the wall
+            // clock that trips underneath it does not unmake `lane`'s own answer, which is the
+            // only word this pass has on how the run ended.
+            match jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
                 Some(stored) => {
                     *stored = job.clone();
                     self.work().persist(&jobs);
@@ -1369,9 +1368,11 @@ impl Manager {
     }
 
     /// The end of a start whose job never reached `jobs.json`: the store is asked for the run's
-    /// `failed` row first, and only a store that took it lets the job out of memory. A store
-    /// that refuses keeps the job, `failed` with the refusal as its note, which is what the
-    /// poller's owed-end path looks for and asks again with.
+    /// `failed` row, and only a store that took it lets the job out of memory. A store that
+    /// refuses keeps the job, `failed` with the refusal as its note, which is what the poller's
+    /// owed-end path looks for and asks again with. The job is out of the way before that
+    /// answer is waited for: a run that never began has nothing for `lane status` to say, and
+    /// a poll pass on another thread must not find the job `starting` while the store is asked.
     fn end_a_start_that_was_not_saved(&self, job: WorkJob, why: &str) {
         let mut failed = WorkJob {
             state: WorkState::Failed,
@@ -1379,6 +1380,7 @@ impl Manager {
             note: Some(why.to_string()),
             ..job
         };
+        self.work().jobs().retain(|j| j.id != failed.id);
         let refused = match &failed.run_id {
             Some(run_id) => self
                 .append_run_row(
@@ -1394,17 +1396,13 @@ impl Manager {
             // A job with no run id has no row to owe.
             None => None,
         };
-        let mut jobs = self.work().jobs();
-        jobs.retain(|j| j.id != failed.id);
-        match refused {
-            None => {}
-            Some(error) => {
-                tracing::error!(job = %failed.id, error = %error, "cannot write the run's id row");
-                failed.note = Some(refused_end_row_note(&error));
-                jobs.push(failed);
-                self.work().persist(&jobs);
-            }
+        if let Some(error) = refused {
+            tracing::error!(job = %failed.id, error = %error, "cannot write the run's id row");
+            failed.note = Some(refused_end_row_note(&error));
         }
+        let mut jobs = self.work().jobs();
+        jobs.push(failed);
+        self.work().persist(&jobs);
     }
 
     /// The note of an end row the store would not take, saved with the job.
@@ -2195,6 +2193,129 @@ deep-codex = ["qoder", "codex-a"]
         assert!(
             work.shown(&failed(at(0))),
             "the second ending inherits the day the first one spent"
+        );
+    }
+
+    /// A manager of its own, for the paths that end a run without ever starting one: `lane`
+    /// stands at `bin`, the ids store is open for writing, and the state is the caller's own
+    /// temporary directory. `lost_after` is the age a run must have before its misses can call
+    /// it lost.
+    fn manager_at(dir: &Path, bin: &Path, lost_after: Duration) -> Manager {
+        use crate::manager::Options;
+        use crate::store::Store;
+        let state = dir.join("state");
+        let options = Options {
+            work: WorkConfig {
+                dir: state.join("work"),
+                lane: Some(bin.to_path_buf()),
+                poll: Duration::from_secs(1),
+                lost_after,
+                scope: ScopeMode::Off,
+            },
+            pipeline: crate::pipeline::Config::from_env(&state.join("pipeline")),
+            ..Options::default()
+        };
+        Manager::open_with(
+            Store::open(&state).unwrap(),
+            Vec::new(),
+            LaneConfig::default(),
+            options,
+        )
+        .unwrap()
+    }
+
+    /// The lead and the `started` row of a run, the way `work start` has them on record before
+    /// it tries the save. The run's row.
+    fn issued_run(m: &Manager) -> IdRow {
+        m.inner
+            .ids
+            .issue(Kind::Lead, "LA", None, "test", |_| IdRow {
+                title: "the lead".into(),
+                ..IdRow::default()
+            })
+            .unwrap();
+        m.inner
+            .ids
+            .issue(Kind::Run, "LA", None, "test", |_| IdRow {
+                state: "started".into(),
+                title: "a run of a start that was never saved".into(),
+                ..IdRow::default()
+            })
+            .unwrap()
+    }
+
+    /// The end of a start that was never saved asks the store with the job already out of the
+    /// way: a poll pass that runs while that answer is waited for has no `starting` job to ask
+    /// `lane status` about. `lane` here is a program that only fails, so every call it does get
+    /// leaves a miss counted for the job — the witness that the call was made.
+    #[tokio::test]
+    async fn a_poll_while_an_unsaved_start_waits_for_its_row_never_asks_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        // Old misses are what call a run lost; none of these polls may do that, because a job
+        // that changed state here is a job whose own end would wait on the held store.
+        let m = manager_at(
+            dir.path(),
+            Path::new("/bin/false"),
+            Duration::from_secs(3600),
+        );
+        let run = issued_run(&m);
+        let job = WorkJob {
+            id: "wk-1".into(),
+            lead: "LA".into(),
+            state: WorkState::Starting,
+            run_id: Some(run.id.clone()),
+            ..WorkJob::default()
+        };
+        // Where `work start` leaves the job when `persist_saved` failed: in the vec as
+        // `starting`, out of `launching`, with the store asked for its `failed` row next.
+        m.work().jobs().push(job.clone());
+        m.work().unlaunch("wk-1");
+        // The store is held for the whole poll phase, so the end row cannot be answered until
+        // the last look is over: the job is provably still inside its own end.
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let m = m.clone();
+            std::thread::spawn(move || {
+                m.inner.ids.issue(Kind::Lead, "HOLDER", None, "test", |_| {
+                    let _ = locked_tx.send(());
+                    let _ = done_rx.recv();
+                    IdRow {
+                        title: "holds the store".into(),
+                        ..IdRow::default()
+                    }
+                })
+            })
+        };
+        locked_rx.recv().expect("the store was never held");
+        let ending = {
+            let m = m.clone();
+            let why = "cannot write the job file".to_string();
+            std::thread::spawn(move || m.end_a_start_that_was_not_saved(job, &why))
+        };
+        // The end had the store held from it before its first look, and has it still.
+        std::thread::sleep(Duration::from_millis(100));
+        for _ in 0..8 {
+            m.work_poll().await;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = done_tx.send(());
+        ending.join().unwrap();
+        drop(holder.join());
+        let misses = m
+            .work()
+            .misses
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert!(
+            !misses.contains_key("wk-1"),
+            "`lane status` was asked for a run that never began: {misses:?}"
+        );
+        assert_eq!(
+            m.inner.ids.latest_state(&run.id).as_deref(),
+            Some("failed"),
+            "the row the end owed the store"
         );
     }
 
