@@ -293,6 +293,8 @@ impl LucinaMcp {
             "task_add" => t.task_add(args).await,
             "task_complete" => t.task_complete(args).await,
             name if name.starts_with("ops_") => t.ops(name, args).await,
+            // Lucina's flaw tracker (crate::flaws).
+            name if name.starts_with("flaw_") => t.flaws(name, args).await,
             "lucina_inbox" | "lucina_reply" => t.reach(name, args).await,
             name if name.starts_with("diagnostics_") => t.diagnostics(name, args).await,
             "debug_events" => t.debug_events(args).await,

@@ -828,14 +828,21 @@ fn tool_exists(t: &str) -> bool {
 /// §3, §5, §6): `clippy` p95 151.6 s on 27 completed runs, slowest clean run 162.2 s, 3 kills at the fatal column and 3 at the
 /// skipped one; `unit-tests` p95 154.5 s on 23 completed runs, slowest 179.9 s, 4 and 5 kills. Every kill is recorded at
 /// 180.5-180.7 s, which is the wall and says nothing about what lies past it, while all 50 completed runs of the two steps are
-/// under 240 s. So 240 is 1.58x / 1.55x the measured p95, 1.48x / 1.33x the slowest clean run, and still 60 s below the step's
-/// own timeout: the merge limit fires before the step's own timeout does.
-/// A limit never lifts a step above its own timeout (the `t` of its `step(...)` call): it only ever cuts. `clippy` and
-/// `unit-tests` are built with 300 s (`fast::cargo_steps`), so the 240 is a real cut and takes effect; a step of its own 60 s,
-/// `fmt` or `diffgate`, keeps printing 60 whatever the table or the override says.
+/// under 240 s. So 240 is 1.58x / 1.55x the measured p95, 1.48x / 1.33x the slowest clean run, and 60 s below the step's own
+/// timeout: the merge limit fires before the step's own timeout does.
+/// A limit never lifts a step above its own timeout (the `t` of its `step(...)` call): it only ever cuts. `clippy` is built with
+/// 300 s (`fast::cargo_steps`), so its 240 is a real cut and takes effect; a step of its own 60 s, `fmt` or `diffgate`, keeps
+/// printing 60 whatever the table or the override says.
+/// `unit-tests` at 480 s is TEMPORARY and steps outside both rules above: it is not `ceil(p95 x 1.5)` of a measured week, and the
+/// step's own timeout was raised to 480 s with it (`fast::cargo_steps`), because a table limit of 480 on a step of its own 300
+/// still cuts at 300 and would have changed nothing. 480 s until LB-C027's bq gate slot is installed and proven, then the limit
+/// is re-measured in the slot and set so the slowest step uses at most 60 % of it. The reason is `lucina-server`: a root workspace
+/// member, so the plain `unit-tests` step is what the gate runs for it, and its 556 tests take 128 s at load 8 while at load in
+/// the high twenties they run over 240 s; three merges (JD-C018, LM-C008, CO-C003) failed or wait on this step, JD-C018 three
+/// times. Coordinator allow 2026-11-18 (GATE-02).
 const MERGE_STEP_LIMITS: &[(&str, u64)] = &[
     ("clippy", 240),     // measured p95 151.6 s, merges 2026-11-11..17, GATE-02
-    ("unit-tests", 240), // measured p95 154.5 s, merges 2026-11-11..17, GATE-02
+    ("unit-tests", 480), // TEMPORARY until LB-C027's bq gate slot; coordinator allow 2026-11-18, GATE-02
 ];
 /// The limit of a step named in no table and no override.
 const MERGE_STEP_LIMIT_DEFAULT: u64 = 180;
@@ -2400,13 +2407,14 @@ mod tests {
         }
     }
 
-    /// The two cargo steps have the room the week of merges measured; every other step is at 180.
+    /// The two cargo steps have the room of their table row — `clippy` the week of merges measured, `unit-tests` the temporary
+    /// 480 of GATE-02; every other step is at 180.
     #[test]
     fn merge_limits_are_per_step_with_an_180_default() {
         let no_override = MergeCaps::default();
         let limit = |n: &str| no_override.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
         assert_eq!(limit("clippy"), 240);
-        assert_eq!(limit("unit-tests"), 240);
+        assert_eq!(limit("unit-tests"), 480);
         assert_eq!(limit("diffgate"), 180);
         assert_eq!(limit("inventory"), 180);
         assert_eq!(limit("unit-tests-tools-ci-lucina-ci"), 180);
@@ -2414,14 +2422,14 @@ mod tests {
     }
 
     /// A limit only ever cuts, never lifts: what the gate enforces is the step's own timeout or its limit, whichever is smaller.
-    /// The two cargo steps are built with 300 s (`fast::cargo_steps`), so the table's 240 takes effect; `fmt` and `diffgate` are
-    /// built with 60 and a step no table names keeps the 180 rather than the 300 it could run.
+    /// The two cargo steps are built with 300 s and 480 s (`fast::cargo_steps`), so each table number takes effect; `fmt` and
+    /// `diffgate` are built with 60 and a step no table names keeps the 180 rather than the 300 it could run.
     #[test]
     fn a_merge_limit_cuts_a_step_s_own_timeout_and_never_lifts_it() {
         let no_override = MergeCaps::default();
         for (name, own, enforced) in [
             ("clippy", 300_u64, 240_u64),
-            ("unit-tests", 300, 240),
+            ("unit-tests", 480, 480),
             ("unit-tests-tools-ci-lucina-ci", 300, 180),
             ("fmt", 60, 60),
             ("diffgate", 60, 60),
@@ -2441,7 +2449,7 @@ mod tests {
         };
         let l = |n: &str| c.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
         assert_eq!(l("clippy"), 40);
-        assert_eq!(l("unit-tests"), 7, "7 beats the table's 240");
+        assert_eq!(l("unit-tests"), 7, "7 beats the table's 480");
         assert_eq!(l("secrets"), 7);
         assert_eq!(l("diffgate"), 7, "the override is every step");
         let nine = MergeCaps::parse("9");
