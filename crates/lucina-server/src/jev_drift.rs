@@ -244,7 +244,10 @@ impl YesNoStats {
             }
         }
         // Past the gate: every outcome but a pass before it (not question-shaped, not yes/no, Jev down).
-        let past_gate = matches!(t.why.as_deref(), Some("live_lookup" | "not_in_facts" | "about_lucina"));
+        let past_gate = matches!(
+            t.why.as_deref(),
+            Some("live_lookup" | "not_in_facts" | "about_lucina")
+        );
         if t.outcome != "pass" || past_gate {
             self.yes_no += 1;
             if let Some(k) = &t.kind {
@@ -515,13 +518,9 @@ pub fn score(rows: &[Routed]) -> Replay {
     score_from(
         rows,
         std::env::var("LUCINA_JEV_FIRST_MIN").ok().as_deref(),
-        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN")
-            .ok()
-            .as_deref(),
+        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN").ok().as_deref(),
         std::env::var("LUCINA_JEV_OVER_RULE").ok().as_deref(),
-        std::env::var("LUCINA_JEV_OVER_RULE_MIN")
-            .ok()
-            .as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE_MIN").ok().as_deref(),
     )
 }
 
@@ -1005,7 +1004,10 @@ mod tests {
         assert_eq!(t.p_yes, Some(0.97));
         assert_eq!(t.jev_ms, Some(410));
         assert!(parse_yesno_line(&line("preview", "answer", "", "Some(0.97)")).is_none());
-        assert!(parse_log_line(&line("turn", "answer", "", "None")).is_none(), "not a jev_first line");
+        assert!(
+            parse_log_line(&line("turn", "answer", "", "None")).is_none(),
+            "not a jev_first line"
+        );
 
         let mut y = YesNoStats::default();
         y.add(&t);
@@ -1013,7 +1015,10 @@ mod tests {
         y.add(&parse_yesno_line(&line("turn", "unsure", "", "Some(0.5)")).unwrap());
         y.add(&parse_yesno_line(&line("turn", "pass", "not_yes_no", "None")).unwrap());
         y.add(&parse_yesno_line(&line("turn", "pass", "live_lookup", "Some(0.5)")).unwrap());
-        assert_eq!((y.turns, y.yes_no, y.answered, y.answered_yes, y.unsure), (5, 4, 2, 1, 1));
+        assert_eq!(
+            (y.turns, y.yes_no, y.answered, y.answered_yes, y.unsure),
+            (5, 4, 2, 1, 1)
+        );
         assert_eq!(y.passes.get("not_yes_no"), Some(&1));
         assert_eq!(y.answered_rate(), Some(0.5));
         assert_eq!(y.mean_jev_ms(), Some(410));
@@ -1025,13 +1030,31 @@ mod tests {
             .unwrap();
         assert_eq!(old.yesno, YesNoStats::default());
 
-        let mut a = Summary { date: "2026-10-22".into(), days: 7, live: LiveStats::default(), replay: None };
+        let mut a = Summary {
+            date: "2026-10-22".into(),
+            days: 7,
+            live: LiveStats::default(),
+            replay: None,
+        };
         let mut b = a.clone();
         b.date = "2026-10-29".into();
-        a.live.yesno = YesNoStats { yes_no: 20, answered: 16, ..YesNoStats::default() };
-        b.live.yesno = YesNoStats { yes_no: 20, answered: 10, ..YesNoStats::default() };
+        a.live.yesno = YesNoStats {
+            yes_no: 20,
+            answered: 16,
+            ..YesNoStats::default()
+        };
+        b.live.yesno = YesNoStats {
+            yes_no: 20,
+            answered: 10,
+            ..YesNoStats::default()
+        };
         let flags = drift(&a, &b);
-        assert!(flags.iter().any(|f| f.starts_with("yes/no questions Jev answered itself moved -30 points")), "{flags:?}");
+        assert!(
+            flags
+                .iter()
+                .any(|f| f.starts_with("yes/no questions Jev answered itself moved -30 points")),
+            "{flags:?}"
+        );
         let (_, body) = render(&b, Some(&a), &flags, None, None);
         assert!(body.contains("**Yes/no questions**"), "{body}");
     }
