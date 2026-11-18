@@ -80,9 +80,13 @@ pub fn limit_in_log_line(line: &str, session_id: &str) -> Option<String> {
     if line[at + key.len()..].chars().next().is_some_and(|c| !c.is_whitespace()) {
         return None;
     }
-    let i = line.find("error.error=\"")?;
-    let rest = &line[i + "error.error=\"".len()..];
-    let error = rest[..rest.find('"').unwrap_or(rest.len())].to_string();
+    let error = match line.find("error.error=\"") {
+        Some(i) => {
+            let rest = &line[i + "error.error=\"".len()..];
+            rest[..rest.find('"').unwrap_or(rest.len())].to_string()
+        }
+        None => return None,
+    };
     let lower = error.to_lowercase();
     LIMIT_PHRASES.iter().any(|p| lower.contains(p)).then_some(error)
 }
