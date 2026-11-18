@@ -18,7 +18,11 @@ struct Server {
 
 impl Server {
     fn new(root: &Path) -> Server {
-        Server { folder: Folder::open(root).unwrap(), before_put: None, gets: 0 }
+        Server {
+            folder: Folder::open(root).unwrap(),
+            before_put: None,
+            gets: 0,
+        }
     }
 }
 
@@ -37,7 +41,12 @@ impl Remote for Server {
         self.gets += 1;
         self.folder.read(rel).map_err(rerr)
     }
-    fn put(&mut self, rel: &str, bytes: &[u8], expect: Option<&str>) -> Result<String, RemoteError> {
+    fn put(
+        &mut self,
+        rel: &str,
+        bytes: &[u8],
+        expect: Option<&str>,
+    ) -> Result<String, RemoteError> {
         if let Some(h) = self.before_put.as_mut() {
             h(self.folder.root());
         }
@@ -49,7 +58,11 @@ impl Remote for Server {
 }
 
 fn opts() -> Options {
-    Options { device: "juno".into(), date: "2026-11-08".into(), max_size: DEFAULT_MAX_SIZE }
+    Options {
+        device: "juno".into(),
+        date: "2026-11-08".into(),
+        max_size: DEFAULT_MAX_SIZE,
+    }
 }
 
 fn write(root: &Path, rel: &str, text: &str) {
@@ -75,7 +88,12 @@ impl Pair {
         let (here, there) = (d.path().join("here"), d.path().join("there"));
         fs::create_dir_all(&here).unwrap();
         fs::create_dir_all(&there).unwrap();
-        Pair { _d: d, here, there, state: State::default() }
+        Pair {
+            _d: d,
+            here,
+            there,
+            state: State::default(),
+        }
     }
     fn run_with(&mut self, server: &mut Server) -> Report {
         let folder = Folder::open(&self.here).unwrap();
@@ -100,9 +118,17 @@ fn first_sync_pulls_everything_then_nothing_to_do() {
     write(&p.there, "A/.lucina-vault-1-2.tmp", "tmp");
     let r = p.run();
     assert_eq!(r.pulled, 4, "{r:?}");
-    assert_eq!(read(&p.here, "A/Permanent/Claim.md").as_deref(), Some("claim"));
+    assert_eq!(
+        read(&p.here, "A/Permanent/Claim.md").as_deref(),
+        Some("claim")
+    );
     assert_eq!(read(&p.here, ".obsidian/app.json").as_deref(), Some("{}"));
-    for skipped in [".obsidian/plugins/x/data.json", ".trash/old.md", ".stversions/a.md", "A/.lucina-vault-1-2.tmp"] {
+    for skipped in [
+        ".obsidian/plugins/x/data.json",
+        ".trash/old.md",
+        ".stversions/a.md",
+        "A/.lucina-vault-1-2.tmp",
+    ] {
         assert_eq!(read(&p.here, skipped), None, "{skipped}");
     }
     assert_eq!(p.state.base.len(), 4);
@@ -135,10 +161,16 @@ fn both_edited_keeps_both_and_sends_the_copy() {
     write(&p.here, "Note.md", "mine");
     write(&p.there, "Note.md", "theirs");
     let r = p.run();
-    assert_eq!(r.conflicts, vec!["Note (conflict 2026-11-08 juno).md".to_owned()]);
+    assert_eq!(
+        r.conflicts,
+        vec!["Note (conflict 2026-11-08 juno).md".to_owned()]
+    );
     for root in [&p.here, &p.there] {
         assert_eq!(read(root, "Note.md").as_deref(), Some("theirs"));
-        assert_eq!(read(root, "Note (conflict 2026-11-08 juno).md").as_deref(), Some("mine"));
+        assert_eq!(
+            read(root, "Note (conflict 2026-11-08 juno).md").as_deref(),
+            Some("mine")
+        );
     }
     assert!(!p.run().changed());
 }
@@ -153,14 +185,25 @@ fn a_second_conflict_the_same_day_gets_its_own_name() {
         write(&p.there, "Note.md", theirs);
         p.run();
     }
-    assert_eq!(read(&p.there, "Note (conflict 2026-11-08 juno).md").as_deref(), Some("m1"));
-    assert_eq!(read(&p.there, "Note (conflict 2026-11-08 juno 2).md").as_deref(), Some("m2"));
+    assert_eq!(
+        read(&p.there, "Note (conflict 2026-11-08 juno).md").as_deref(),
+        Some("m1")
+    );
+    assert_eq!(
+        read(&p.there, "Note (conflict 2026-11-08 juno 2).md").as_deref(),
+        Some("m2")
+    );
 }
 
 #[test]
 fn deletions_go_to_the_trash_and_yield_to_edits() {
     let mut p = Pair::new();
-    for f in ["gone here.md", "gone there.md", "deleted here edited there.md", "deleted there edited here.md"] {
+    for f in [
+        "gone here.md",
+        "gone there.md",
+        "deleted here edited there.md",
+        "deleted there edited here.md",
+    ] {
         write(&p.there, f, "1");
     }
     p.run();
@@ -176,8 +219,14 @@ fn deletions_go_to_the_trash_and_yield_to_edits() {
     assert_eq!(read(&p.there, ".trash/gone here.md").as_deref(), Some("1"));
     assert_eq!(read(&p.here, "gone there.md"), None);
     assert_eq!(read(&p.here, ".trash/gone there.md").as_deref(), Some("1"));
-    assert_eq!(read(&p.here, "deleted here edited there.md").as_deref(), Some("edit"));
-    assert_eq!(read(&p.there, "deleted there edited here.md").as_deref(), Some("edit"));
+    assert_eq!(
+        read(&p.here, "deleted here edited there.md").as_deref(),
+        Some("edit")
+    );
+    assert_eq!(
+        read(&p.there, "deleted there edited here.md").as_deref(),
+        Some("edit")
+    );
     assert!(!p.run().changed());
 }
 
@@ -199,7 +248,10 @@ fn a_change_on_the_server_during_the_run_is_never_overwritten() {
     // Round one is refused by the server; round two sees both edits and keeps both.
     assert!(r.deferred >= 1, "{r:?}");
     assert_eq!(read(&p.there, "a.md").as_deref(), Some("someone else"));
-    assert_eq!(read(&p.there, "a (conflict 2026-11-08 juno).md").as_deref(), Some("mine"));
+    assert_eq!(
+        read(&p.there, "a (conflict 2026-11-08 juno).md").as_deref(),
+        Some("mine")
+    );
     assert_eq!(read(&p.here, "a.md").as_deref(), Some("someone else"));
 }
 
@@ -212,9 +264,15 @@ fn settings_only_come_from_the_server() {
     write(&p.here, ".obsidian/hotkeys.json", "{}");
     let r = p.run();
     assert_eq!(r.pushed, 0, "{r:?}");
-    assert_eq!(read(&p.there, ".obsidian/app.json").as_deref(), Some("{\"a\":1}"));
+    assert_eq!(
+        read(&p.there, ".obsidian/app.json").as_deref(),
+        Some("{\"a\":1}")
+    );
     assert_eq!(read(&p.there, ".obsidian/hotkeys.json"), None);
-    assert_eq!(read(&p.here, ".obsidian/app.json").as_deref(), Some("{\"a\":1}"));
+    assert_eq!(
+        read(&p.here, ".obsidian/app.json").as_deref(),
+        Some("{\"a\":1}")
+    );
 }
 
 #[test]
@@ -223,7 +281,10 @@ fn large_files_are_left_out() {
     write(&p.there, "big.pdf", &"x".repeat(100));
     let folder = Folder::open(&p.here).unwrap();
     let mut s = Server::new(&p.there);
-    let o = Options { max_size: 10, ..opts() };
+    let o = Options {
+        max_size: 10,
+        ..opts()
+    };
     let r = run(&folder, &mut s, &mut p.state, &o, &mut |_| {}).unwrap();
     assert_eq!((r.pulled, r.large), (0, 1));
 }
@@ -233,17 +294,38 @@ fn compare_and_swap_on_the_folder() {
     let d = tempfile::tempdir().unwrap();
     let f = Folder::open(d.path()).unwrap();
     let r1 = f.put("x/a.md", b"1", None, false).unwrap();
-    assert!(matches!(f.put("x/a.md", b"2", None, false), Err(Error::Conflict { .. })));
-    assert!(matches!(f.put("x/a.md", b"2", Some("nope"), false), Err(Error::Conflict { .. })));
+    assert!(matches!(
+        f.put("x/a.md", b"2", None, false),
+        Err(Error::Conflict { .. })
+    ));
+    assert!(matches!(
+        f.put("x/a.md", b"2", Some("nope"), false),
+        Err(Error::Conflict { .. })
+    ));
     let r2 = f.put("x/a.md", b"2", Some(&r1), false).unwrap();
-    assert!(matches!(f.trash("x/a.md", &r1), Err(Error::Conflict { .. })));
+    assert!(matches!(
+        f.trash("x/a.md", &r1),
+        Err(Error::Conflict { .. })
+    ));
     assert_eq!(f.trash("x/a.md", &r2).unwrap(), ".trash/x/a.md");
-    for bad in ["../a.md", ".obsidian/app.json", ".trash/a.md", "a//b.md", "/a.md"] {
-        assert!(matches!(f.put(bad, b"1", None, false), Err(Error::Invalid(_))), "{bad}");
+    for bad in [
+        "../a.md",
+        ".obsidian/app.json",
+        ".trash/a.md",
+        "a//b.md",
+        "/a.md",
+    ] {
+        assert!(
+            matches!(f.put(bad, b"1", None, false), Err(Error::Invalid(_))),
+            "{bad}"
+        );
     }
     assert!(f.put(".obsidian/app.json", b"{}", None, true).is_ok());
     // No temporary file is left behind.
-    let left: Vec<_> = fs::read_dir(d.path().join("x")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    let left: Vec<_> = fs::read_dir(d.path().join("x"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
     assert!(left.is_empty(), "{left:?}");
 }
 
@@ -294,11 +376,32 @@ fn the_cache_spares_rehashing_but_sees_changes() {
 
 #[test]
 fn plan_matches_the_rules_table() {
-    let e = |p: &str, r: &str| Entry { path: p.into(), size: 1, rev: r.into() };
-    let local = Manifest { files: vec![e("a.md", "1"), e("b.md", "2"), e(".obsidian/app.json", "x")] };
-    let remote = Manifest { files: vec![e("a.md", "1"), e("b.md", "3"), e(".obsidian/app.json", "y")] };
-    let base = [("b.md".to_owned(), "2".to_owned()), ("c.md".to_owned(), "9".to_owned())].into_iter().collect();
+    let e = |p: &str, r: &str| Entry {
+        path: p.into(),
+        size: 1,
+        rev: r.into(),
+    };
+    let local = Manifest {
+        files: vec![e("a.md", "1"), e("b.md", "2"), e(".obsidian/app.json", "x")],
+    };
+    let remote = Manifest {
+        files: vec![e("a.md", "1"), e("b.md", "3"), e(".obsidian/app.json", "y")],
+    };
+    let base = [
+        ("b.md".to_owned(), "2".to_owned()),
+        ("c.md".to_owned(), "9".to_owned()),
+    ]
+    .into_iter()
+    .collect();
     let (items, _) = plan(&local, &remote, &base, DEFAULT_MAX_SIZE);
     let acts: Vec<(&str, Act)> = items.iter().map(|i| (i.path.as_str(), i.act)).collect();
-    assert_eq!(acts, vec![(".obsidian/app.json", Act::Pull), ("a.md", Act::Record), ("b.md", Act::Pull), ("c.md", Act::Nothing)]);
+    assert_eq!(
+        acts,
+        vec![
+            (".obsidian/app.json", Act::Pull),
+            ("a.md", Act::Record),
+            ("b.md", Act::Pull),
+            ("c.md", Act::Nothing)
+        ]
+    );
 }
