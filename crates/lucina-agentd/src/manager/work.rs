@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -540,6 +540,31 @@ fn nonblank(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// Whether `workspace/expect` is a regular file with something in it, seen without following a
+/// symlink anywhere on the way: the file the run had to leave behind is inside the workspace,
+/// and a link that steps out of it is not that file. The length is the no-follow one too, so a
+/// link is neither a file nor an empty one.
+fn expect_written(workspace: &str, expect: &str) -> bool {
+    let mut path = PathBuf::from(workspace);
+    let mut last = None;
+    for part in Path::new(expect).components() {
+        // `check_expect` refused an absolute path and a `..`; anything else that is not a plain
+        // name is a refusal too.
+        let Component::Normal(name) = part else {
+            return false;
+        };
+        path.push(name);
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            return false;
+        };
+        if meta.file_type().is_symlink() {
+            return false;
+        }
+        last = Some(meta);
+    }
+    last.is_some_and(|m| m.is_file() && m.len() > 0)
+}
+
 /// Sets the end of a job: when it ended and whether it produced nothing.
 fn finish(job: &mut WorkJob) {
     job.ended_at = Some(now_iso());
@@ -553,11 +578,10 @@ fn finish(job: &mut WorkJob) {
     if job.state == WorkState::Lost {
         return;
     }
-    let expect_present = job.expect.as_ref().map(|e| {
-        std::fs::metadata(Path::new(&job.workspace).join(e))
-            .map(|m| m.is_file() && m.len() > 0)
-            .unwrap_or(false)
-    });
+    let expect_present = job
+        .expect
+        .as_ref()
+        .map(|e| expect_written(&job.workspace, e));
     // Without a head from the start (not a git directory) lane's own start head is the base.
     let base = job.base_head.as_deref().or(job.lane_base_head.as_deref());
     job.empty = emptiness(

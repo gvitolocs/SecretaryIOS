@@ -525,6 +525,51 @@ fn an_expected_file_is_handed_to_lane_as_expect_file() {
 }
 
 #[test]
+fn an_expect_reached_through_a_symlink_is_not_the_file_the_run_left_behind() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let out = Path::new(&ws).join("out");
+    // The control: the expected file is where the job said it is.
+    std::fs::create_dir(&out).unwrap();
+    std::fs::write(out.join("report.md"), "here\n").unwrap();
+    let good = start(
+        &d,
+        &f,
+        "LA",
+        &ws,
+        &["--cost", "build", "--expect", "out/report.md"],
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&good, &lane_status(&good, "verified", json!({})));
+    let job = wait_state(&d, &good, "verified");
+    assert_eq!(job["empty"], false, "the file is there: {job}");
+
+    // The same job with `out` a link to a directory outside the workspace, where a file of
+    // that name is not empty either: what the worker left is not in the workspace.
+    std::fs::remove_dir_all(&out).unwrap();
+    let outside = f.root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("report.md"), "elsewhere\n").unwrap();
+    std::os::unix::fs::symlink(&outside, &out).unwrap();
+    let bad = start(
+        &d,
+        &f,
+        "LA",
+        &ws,
+        &["--cost", "build", "--expect", "out/report.md"],
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&bad, &lane_status(&bad, "verified", json!({})));
+    let job = wait_state(&d, &bad, "verified");
+    assert_eq!(job["empty"], true, "a link is not the file: {job}");
+}
+
+#[test]
 fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
     let f = Fixture::new();
     let d = f.daemon(&[]);
@@ -1247,6 +1292,7 @@ fn a_run_lane_does_not_know_is_lost() {
 #[test]
 fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
     let f = Fixture::new();
+    common::write_exec(&f.root.path().join("lane/lane"), &counting_stand_in());
     std::fs::write(f.data().join("run-fail"), "").unwrap();
     let d = f.daemon(&[]);
     let ws = f.repo("ws");
