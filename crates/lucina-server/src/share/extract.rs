@@ -9,6 +9,7 @@ use tokio::process::Command;
 use serde_json::Value;
 
 use super::handlers::Extracted;
+use super::timing::{Outcome, ShareTiming, Sizes};
 use super::{clip, Part};
 use crate::AppState;
 // Moved to lucina-tools so web_extract shares them (Hermes web tools port).
@@ -222,7 +223,8 @@ fn osd_rotation(out: &str) -> Option<u32> {
             .find_map(|l| l.strip_prefix(name)?.trim().parse::<f64>().ok())
     };
     let rotate = field("Rotate:")? as u32;
-    (matches!(rotate, 90 | 180 | 270) && field("Orientation confidence:")? >= MIN_ORIENTATION_CONFIDENCE)
+    (matches!(rotate, 90 | 180 | 270)
+        && field("Orientation confidence:")? >= MIN_ORIENTATION_CONFIDENCE)
         .then_some(rotate)
 }
 
@@ -235,7 +237,12 @@ async fn turn_upright(jpg: &Path) {
     };
     if let Some(rotate) = osd_rotation(&out) {
         tracing::info!(rotate, "turning a picture upright before reading it");
-        if let Err(e) = command("convert", &[path, "-rotate", &rotate.to_string(), "-quality", "90", path]).await {
+        if let Err(e) = command(
+            "convert",
+            &[path, "-rotate", &rotate.to_string(), "-quality", "90", path],
+        )
+        .await
+        {
             tracing::warn!(error = %e, "could not turn the picture");
         }
     }
@@ -260,7 +267,10 @@ fn text_box(tsv: &str) -> Option<(i64, i64, i64, i64)> {
         let n = |v: &str| v.parse::<i64>().unwrap_or(0);
         if level == "1" {
             (page_w, page_h) = (n(width), n(height));
-        } else if level == "5" && conf.parse::<f64>().unwrap_or(0.0) >= 20.0 && text.trim().chars().count() >= 3 {
+        } else if level == "5"
+            && conf.parse::<f64>().unwrap_or(0.0) >= 20.0
+            && text.trim().chars().count() >= 3
+        {
             words += 1;
             x0 = x0.min(n(left));
             y0 = y0.min(n(top));
@@ -278,18 +288,31 @@ fn text_box(tsv: &str) -> Option<(i64, i64, i64, i64)> {
 }
 
 /// A second look at just the text area, enlarged: a photo of a screen gives the model far more pixels per digit.
-async fn close_reading(st: &AppState, jpg: &Path) -> Option<String> {
+async fn close_reading(st: &AppState, jpg: &Path, timing: &ShareTiming) -> Option<String> {
     let path = jpg.to_str()?;
-    let tsv = command("tesseract", &[path, "stdout", "-l", "eng", "tsv"]).await.ok()?;
+    let tsv = command("tesseract", &[path, "stdout", "-l", "eng", "tsv"])
+        .await
+        .ok()?;
     let (x, y, w, h) = text_box(&tsv)?;
     let crop = jpg.with_extension("close.jpg");
     let geometry = format!("{w}x{h}+{x}+{y}");
     let out = crop.to_str()?;
-    let args = [path, "-crop", &geometry, "+repage", "-resize", "1536x1536", "-quality", "92", out];
+    let args = [
+        path,
+        "-crop",
+        &geometry,
+        "+repage",
+        "-resize",
+        "1536x1536",
+        "-quality",
+        "92",
+        out,
+    ];
     command("convert", &args).await.ok()?;
-    let read = super::vision::read_text(st, &crop).await;
+    let read = super::vision::read_text(st, &crop, timing).await;
     let _ = tokio::fs::remove_file(&crop).await;
-    read.map_err(|e| tracing::warn!(error = %e, "the close reading failed")).ok()
+    read.map_err(|e| tracing::warn!(error = %e, "the close reading failed"))
+        .ok()
 }
 
 /// This much OCR text (a screenshot, a page) is worth answering from at once when the GPU is taken.
@@ -337,37 +360,59 @@ async fn vision_jpeg(path: &Path) -> anyhow::Result<std::path::PathBuf> {
     Ok(jpg)
 }
 /// Vision description (with the model's category) plus OCR text.
-async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
-    let jpg = vision_jpeg(path).await?;
+async fn image(st: &AppState, path: &Path, timing: &ShareTiming) -> anyhow::Result<Extracted> {
+    let thumbnail = timing.begin("thumbnail", false);
+    let jpg = vision_jpeg(path).await;
+    let made = Outcome::of(&jpg);
+    let jpg = jpg?;
+    thumbnail.finish(made, Sizes::NONE);
+    let upright = timing.begin("upright", false);
     turn_upright(&jpg).await;
+    upright.finish(Outcome::Ok, Sizes::NONE);
     let mut x = Extracted::new("image");
     // OCR first, it takes seconds: a busy GPU (a cold vision start, the lease) must not cost the
     // text. Vision has its own budget inside the read's limit, so a slow one only loses itself.
+    let ocr_phase = timing.begin("ocr", false);
     let text = match ocr(&jpg).await {
-        Ok(s) => s.trim().to_owned(),
+        Ok(s) => {
+            let text = s.trim().to_owned();
+            ocr_phase.finish(Outcome::Ok, Sizes::chars(text.chars().count()));
+            text
+        }
         Err(e) => {
+            ocr_phase.finish(Outcome::Error, Sizes::NONE);
             x.warnings.push(format!("OCR failed: {e}"));
             String::new()
         }
     };
+    // The GPU lease, the server coming up and its answer: the line where this wait begins is written
+    // before it starts, so a share that never gets an answer is not silence.
+    let vision = timing.begin("vision", true);
     let description = match tokio::time::timeout(
         st.cfg.share.vision_budget,
-        super::vision::describe(st, &jpg, text.chars().count() < ENOUGH_OCR_CHARS),
+        super::vision::describe(st, &jpg, text.chars().count() < ENOUGH_OCR_CHARS, timing),
     )
     .await
     {
         Ok(Ok(s)) => {
+            let chars = s.chars().count();
             let (category, description) = super::vision::split_category(&s);
             x.subtype = category;
+            vision.finish(Outcome::Ok, Sizes::chars(chars));
             description
         }
         Ok(Err(e)) => {
+            vision.finish(Outcome::Error, Sizes::NONE);
             x.warnings
                 .push(format!("vision could not read the image: {e}"));
             String::new()
         }
         Err(_) => {
-            tracing::warn!(seconds = st.cfg.share.vision_budget.as_secs(), "vision took too long; going on with the OCR text");
+            vision.finish(Outcome::Timeout, Sizes::NONE);
+            tracing::warn!(
+                seconds = st.cfg.share.vision_budget.as_secs(),
+                "vision took too long; going on with the OCR text"
+            );
             x.warnings
                 .push("vision took too long, so only the OCR text was read".into());
             String::new()
@@ -377,23 +422,49 @@ async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     let close = if description.is_empty() {
         None
     } else {
-        close_reading(st, &jpg).await
+        let close_phase = timing.begin("close_reading", false);
+        let read = close_reading(st, &jpg, timing).await;
+        close_phase.finish(
+            read.as_ref().map_or(Outcome::Skipped, |_| Outcome::Ok),
+            Sizes::chars(read.as_ref().map_or(0, |s| s.chars().count())),
+        );
+        read
     };
     x.text = match close {
-        Some(c) => format!("Vision: {description}\nClose reading of the text:\n{c}\nOCR text:\n{text}"),
+        Some(c) => {
+            format!("Vision: {description}\nClose reading of the text:\n{c}\nOCR text:\n{text}")
+        }
         None => format!("Vision: {description}\nOCR text:\n{text}"),
     };
     let model = st.model.as_ref();
     match x.subtype.as_deref() {
         Some("receipt") => {
-            x.structured = super::structured::receipt(model, &x.text)
-                .await
-                .unwrap_or(Value::Null)
+            let phase = timing.begin("structured", false);
+            let fields = super::structured::receipt(model, &x.text).await;
+            phase.finish(
+                Outcome::of(&fields),
+                Sizes::chars(
+                    fields
+                        .as_ref()
+                        .ok()
+                        .map_or(0, |v| v.to_string().chars().count()),
+                ),
+            );
+            x.structured = fields.unwrap_or(Value::Null);
         }
         Some("document_photo") if super::structured::looks_like_invoice(&text) => {
-            x.structured = super::structured::invoice(model, &text)
-                .await
-                .unwrap_or(Value::Null);
+            let phase = timing.begin("structured", false);
+            let fields = super::structured::invoice(model, &text).await;
+            phase.finish(
+                Outcome::of(&fields),
+                Sizes::chars(
+                    fields
+                        .as_ref()
+                        .ok()
+                        .map_or(0, |v| v.to_string().chars().count()),
+                ),
+            );
+            x.structured = fields.unwrap_or(Value::Null);
             if !x.structured.is_null() {
                 x.subtype = Some("invoice".into());
             }
@@ -476,7 +547,11 @@ pub(crate) async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted>
         let img = path.with_extension(format!("page-{i}.jpg"));
         tokio::fs::write(&img, bytes).await?;
         let page = if i == 0 {
-            image(st, &img).await.map(|p| p.text)
+            // The page read of a PDF is not an image share: it writes no timing lines of its own,
+            // the read of the whole file does.
+            image(st, &img, &ShareTiming::silent())
+                .await
+                .map(|p| p.text)
         } else {
             ocr(&img).await
         };
@@ -519,7 +594,9 @@ async fn level_wav(wav: &Path) -> anyhow::Result<()> {
             return None;
         }
         let analysis = crate::voice_level::analyse(&samples);
-        let lifted = analysis.normalised(&samples).map(|v| crate::voice_level::wav_of(&v, rate));
+        let lifted = analysis
+            .normalised(&samples)
+            .map(|v| crate::voice_level::wav_of(&v, rate));
         Some((analysis.level, lifted))
     })
     .await?;
@@ -559,7 +636,9 @@ fn record_level_in_background(path: &Path) {
             Command::new("ffmpeg")
                 .args(["-nostdin", "-loglevel", "error", "-i"])
                 .arg(&link)
-                .args(["-t", "600", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"])
+                .args([
+                    "-t", "600", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
+                ])
                 .kill_on_drop(true)
                 .output(),
         )
@@ -642,8 +721,8 @@ async fn audio(
                 record_level_in_background(path);
             }
             (
-            Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
-            "on-device",
+                Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
+                "on-device",
             )
         }
         None => match transcribe(st, path, voice).await {
@@ -727,7 +806,12 @@ async fn key_frames(path: &Path, duration: f64) -> Vec<std::path::PathBuf> {
     }
     frames
 }
-async fn video(st: &AppState, path: &Path, on_device: Option<&str>) -> anyhow::Result<Extracted> {
+async fn video(
+    st: &AppState,
+    path: &Path,
+    on_device: Option<&str>,
+    timing: &ShareTiming,
+) -> anyhow::Result<Extracted> {
     let mut x = audio(st, path, on_device, false).await?;
     x.kind = "video";
     let duration = x.structured["duration_s"].as_f64().unwrap_or(0.0);
@@ -736,14 +820,30 @@ async fn video(st: &AppState, path: &Path, on_device: Option<&str>) -> anyhow::R
         x.warnings
             .push("no frames could be taken from the video".into());
     }
+    // One line for the whole look at the frames: six of them would be a line each,
+    // and what matters here is that the frames were what the video spent its time on.
+    let phase = timing.begin("frames", true);
+    let mut chars = 0;
     for (i, frame) in frames.iter().enumerate() {
-        let described = match super::vision::describe(st, frame, true).await {
-            Ok(s) => super::vision::split_category(&s).1,
+        let described = match super::vision::describe(st, frame, true, &ShareTiming::silent()).await
+        {
+            Ok(s) => {
+                chars += s.chars().count();
+                super::vision::split_category(&s).1
+            }
             Err(e) => format!("could not be read: {e}"),
         };
         x.text
             .push_str(&format!("\n## Frame {}\n{described}", i + 1));
     }
+    phase.finish(
+        if frames.is_empty() {
+            Outcome::Skipped
+        } else {
+            Outcome::Ok
+        },
+        Sizes::chars(chars),
+    );
     x.structured["frames"] = serde_json::json!(frames.len());
     Ok(x)
 }
@@ -786,6 +886,7 @@ async fn read_text_file(path: &Path, max: u64) -> anyhow::Result<(String, bool)>
 /// files unread. `on_device` is a transcript the phone already made.
 /// `summarize: false` skips the long-document summary (a chat turn reading a
 /// Drive file has no time for it; it gets the passages it needs instead).
+/// `timing` collects the phases of this read (see [`super::timing`]).
 pub(super) async fn read(
     st: &AppState,
     dir: &Path,
@@ -794,6 +895,7 @@ pub(super) async fn read(
     on_device: Option<&str>,
     lang: &str,
     summarize: bool,
+    timing: &ShareTiming,
 ) -> anyhow::Result<Extracted> {
     if let Some(text) = &part.text {
         let mut x = Extracted::new("text");
@@ -815,7 +917,11 @@ pub(super) async fn read(
             }
             return Ok(x);
         }
-        let (bytes, mime) = download(st, &url).await?;
+        let phase = timing.begin("download", true);
+        let fetched = download(st, &url).await;
+        let out = Outcome::of(&fetched);
+        let (bytes, mime) = fetched?;
+        phase.finish(out, Sizes::bytes(bytes.len() as u64));
         if mime.starts_with("image/") || mime.starts_with("application/pdf") {
             let ext = if mime.starts_with("image/") {
                 "jpg"
@@ -874,7 +980,7 @@ pub(super) async fn read(
         tokio::task::spawn_blocking(move || f(&path, &arg))
     };
     let mut x = match routed {
-        "image" => image(st, &path).await?,
+        "image" => image(st, &path, timing).await?,
         "pdf" => pdf(st, &path).await?,
         "document" | "slides" => {
             let p = path.clone();
@@ -922,7 +1028,7 @@ pub(super) async fn read(
             x
         }
         "audio" => audio(st, &path, on_device, part.attachment.kind == "voice").await?,
-        "video" => video(st, &path, on_device).await?,
+        "video" => video(st, &path, on_device, timing).await?,
         _ => {
             let mut x = Extracted::new("other");
             let size = tokio::fs::metadata(&path)
@@ -954,7 +1060,15 @@ pub(super) async fn read(
         // Summaries are for the owner: English or Danish, never Italian (the caption track above still
         // follows the video's language).
         let summary_lang = if lang == "it" { "en" } else { lang };
-        match super::structured::summarize(st.model.as_ref(), &x.text, summary_lang).await {
+        // One line for the whole summary, whose model calls are inside it.
+        let phase = timing.begin("summary", true);
+        let summarized =
+            super::structured::summarize(st.model.as_ref(), &x.text, summary_lang).await;
+        phase.finish(
+            Outcome::of(&summarized),
+            Sizes::chars(summarized.as_ref().ok().map_or(0, |s| s.chars().count())),
+        );
+        match summarized {
             Ok(s) => x.summary = Some(s),
             Err(e) => x.warnings.push(format!("summary failed: {e}")),
         }
@@ -968,7 +1082,9 @@ mod tests {
 
     #[test]
     fn a_picture_is_turned_only_on_a_sure_reading() {
-        let osd = |r: u32, c: f64| format!("Page number: 0\nOrientation in degrees: {r}\nRotate: {r}\nOrientation confidence: {c}\nScript: Latin\n");
+        let osd = |r: u32, c: f64| {
+            format!("Page number: 0\nOrientation in degrees: {r}\nRotate: {r}\nOrientation confidence: {c}\nScript: Latin\n")
+        };
         assert_eq!(osd_rotation(&osd(180, 10.15)), Some(180));
         assert_eq!(osd_rotation(&osd(90, 10.66)), Some(90));
         assert_eq!(osd_rotation(&osd(0, 11.7)), None, "already upright");
@@ -980,15 +1096,34 @@ mod tests {
     fn the_close_reading_crops_to_the_text() {
         let head = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
         let page = "1\t1\t0\t0\t0\t0\t0\t0\t1000\t1000\t-1\t\n";
-        let word = |x: i64, y: i64, conf: i64, t: &str| format!("5\t1\t1\t1\t1\t1\t{x}\t{y}\t50\t20\t{conf}\t{t}\n");
-        let many = |n: usize| (0..n).map(|i| word(300 + i as i64 * 10, 300, 90, "word")).collect::<String>();
+        let word = |x: i64, y: i64, conf: i64, t: &str| {
+            format!("5\t1\t1\t1\t1\t1\t{x}\t{y}\t50\t20\t{conf}\t{t}\n")
+        };
+        let many = |n: usize| {
+            (0..n)
+                .map(|i| word(300 + i as i64 * 10, 300, 90, "word"))
+                .collect::<String>()
+        };
         let (x, y, w, h) = text_box(&format!("{head}{page}{}", many(10))).unwrap();
         assert_eq!((x, y), (260, 260), "with a margin");
         assert!(w < 400 && h < 200, "{w}x{h}");
-        assert_eq!(text_box(&format!("{head}{page}{}", many(3))), None, "too little text");
+        assert_eq!(
+            text_box(&format!("{head}{page}{}", many(3))),
+            None,
+            "too little text"
+        );
         let low: String = (0..10).map(|_| word(300, 300, 5, "zzz")).collect();
-        assert_eq!(text_box(&format!("{head}{page}{low}")), None, "low confidence is not text");
-        let spread = format!("{head}{page}{}{}{}", many(8), word(0, 0, 90, "top"), word(950, 980, 90, "end"));
+        assert_eq!(
+            text_box(&format!("{head}{page}{low}")),
+            None,
+            "low confidence is not text"
+        );
+        let spread = format!(
+            "{head}{page}{}{}{}",
+            many(8),
+            word(0, 0, 90, "top"),
+            word(950, 980, 90, "end")
+        );
         assert_eq!(text_box(&spread), None, "text fills the picture");
     }
     use std::io::Write;
