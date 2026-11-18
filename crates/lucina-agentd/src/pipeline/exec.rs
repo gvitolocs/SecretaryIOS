@@ -14,12 +14,15 @@
 //! tag, ops record).
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use super::kill::{self, Step};
 use super::repo::{self, Crate, Gate, Rules};
 use super::{GateResult, JobKind, Outcome, Spec};
 
@@ -69,24 +72,57 @@ fn fail(code: &str, message: impl Into<String>) -> Outcome {
     }
 }
 
-/// SIGKILL every process in the group led by `pgid`. [`Exec::sh_run`] uses this for the warm-up
-/// only: its `timeout` runs without `--foreground`, so it calls `setpgid(0, 0)` on itself and the
-/// limit's pid is that group's id. uutils `timeout` signals the group with SIGTERM when the cap
-/// fires, but its `--kill-after` SIGKILL reaches only the process it waits on — a grandchild that
-/// ignores SIGTERM lives on and keeps the shared target dir, holding the next gate off its own
-/// limit (finding LA-R056, point 2). Once `timeout` returns we end the whole group ourselves, so
-/// nothing the warm-up forked outlives it. `kill -s KILL -- -<pgid>` is the same form the crate
-/// already uses to stop a PTY session; `#![forbid(unsafe_code)]` bars the `kill`(2) syscall, so it
-/// goes out through the `kill` program. A group that has already emptied answers ESRCH, which is
-/// not an error here: the point is that it is empty now, so the program's own noise stays off the
-/// job log.
-fn reap_process_group(pgid: u32) {
-    let _ = Command::new("kill")
-        .args(["-s", "KILL", "--", &format!("-{pgid}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+/// The grace a step gets between the deadline's SIGTERM and the SIGKILL rounds: what
+/// `timeout --kill-after=30s` gave a gate step until now, kept as it was. GATE-05 asked for the
+/// killing to reach every process of the step, not for it to start later.
+const KILL_GRACE: Duration = Duration::from_secs(30);
+
+/// How long the question "does a step of this job get its own systemd scope?" may take to answer.
+/// `/bin/true` in a scope of its own: a user manager that is there answers in tens of milliseconds,
+/// one that is not fails at once.
+const SCOPE_PROBE_CAP: Duration = Duration::from_secs(10);
+
+/// The sequence behind a step's command file: one per step this process runs, so two steps of one
+/// job — or two jobs of one test thread — never write the same file.
+static STEP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// What the host answers to the one question every step asks: can it have a transient systemd
+/// scope of its own, or is the process group all there is. Asked once per job, by asking and not by
+/// guessing from the environment (finding GATE-05: the group alone is the route a nested scope
+/// keeps, and it is not the route a `setsid` child leaves by).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Scope {
+    /// `systemd-run --user --scope` takes the unit it is asked for, so every step stands in a
+    /// control group of its own as well as leading a process group.
+    Takes,
+    /// There is no user manager to ask, or it refused: the steps get their process group alone, and
+    /// say so in the log. Never a reason to fail a step.
+    NoUserManager(String),
+    /// The probe did not answer within [`SCOPE_PROBE_CAP`]. Not the same as [`Scope::NoUserManager`]:
+    /// a step must not lose its scope because of a probe that hung, and a test must not read the
+    /// two answers as one.
+    DidNotAnswer(String),
+}
+
+impl Scope {
+    /// Why this answer says a step has no scope, for the one line each step says in its place.
+    fn reason(&self) -> &str {
+        match self {
+            Scope::Takes => "",
+            Scope::NoUserManager(r) | Scope::DidNotAnswer(r) => r,
+        }
+    }
+}
+
+/// The job's own scratch directory, held for as long as the job runs: what a step's `TMPDIR` points
+/// at when the environment it was given would put temporary files under `/tmp` or `/var/tmp`
+/// (finding FENCE-08), and gone with this guard whatever the job's outcome.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 struct Exec {
@@ -106,11 +142,17 @@ struct Exec {
     /// recipe passes them, and only to its own commands.
     deploy_env: Vec<String>,
     /// The merge warm-up's cap in seconds. 20 minutes by default, well outside the timed gates;
-    /// a test may set it to a few seconds to watch the cap fire. It is given to `timeout` as
-    /// seconds; without `--foreground` `timeout` leads its own process group, and the warm-up then
-    /// SIGKILLs that whole group once `timeout` returns, so the cap ends the warm-up and every
-    /// process it forked (see [`reap_process_group`]).
+    /// a test may set it to a few seconds to watch the cap fire. It is the step's own deadline
+    /// ([`Exec::sh_run`]), so it is the warm-up's length and not `timeout`'s argument.
     warm_up_secs: u64,
+    /// How long a step gets to end itself after its deadline before the SIGKILL rounds start
+    /// ([`KILL_GRACE`]; a test may shorten it to watch either half of the sequence).
+    kill_grace: Duration,
+    /// Whether this host takes a scope for a step, asked of the host once ([`Exec::probe_scope`]).
+    user_scope: Option<Scope>,
+    /// The job's own scratch, and so a step's `TMPDIR` where the inherited one is not usable
+    /// ([`Exec::job_scratch`]).
+    step_tmp: Option<PathBuf>,
 }
 
 struct Members {
@@ -141,6 +183,9 @@ impl Exec {
             source_env: std::env::vars_os().collect(),
             deploy_env: Vec::new(),
             warm_up_secs: 20 * 60,
+            kill_grace: KILL_GRACE,
+            user_scope: None,
+            step_tmp: None,
             spec,
             log,
             path,
@@ -253,44 +298,197 @@ impl Exec {
         r
     }
 
-    /// `bash -c cmd` in `cwd` with output into the log, under `timeout`. Returns its success.
+    /// `bash -c cmd` in `cwd` with output into the log, under `timeout_min` minutes. Returns its
+    /// success.
     fn sh(&mut self, cwd: &Path, cmd: &str, timeout_min: u64) -> bool {
+        let mins = timeout_min.max(1);
         self.sh_run(
             cwd,
             cmd,
-            &format!("{}m", timeout_min.max(1)),
+            Duration::from_secs(mins * 60),
             &format!("timed out after {timeout_min} min"),
-            false,
         )
         .is_none()
     }
 
-    /// [`Exec::sh`]'s worker, with the limit given to `timeout` verbatim (`limit`, e.g. `45m` or
-    /// `20s`), the phrase to report on a timeout (`timed_out`) and whether to end `timeout`'s whole
-    /// process group once it returns (`reap_group`). Returns `None` when the command succeeded, or
-    /// the reason it did not: `timed_out` on a timeout, otherwise the exit code. The gates run
-    /// through [`Exec::sh`] with `reap_group` off and ignore the reason; the warm-up turns it on and
-    /// puts the reason in its own log line, so a cap that fires can say so. The command, its clean
-    /// environment and the log lines are exactly as [`Exec::sh`] always had them; `reap_group` off
-    /// is the same `.status()` call, so a gate's `timeout` argv is unchanged.
-    fn sh_run(
-        &mut self,
-        cwd: &Path,
-        cmd: &str,
-        limit: &str,
-        timed_out: &str,
-        reap_group: bool,
-    ) -> Option<String> {
+    /// The step's environment as the job builds it: the allowlist from the source environment plus
+    /// the deploy recipe's declared names, and how many names were kept back — a count only, never
+    /// a name or a value.
+    fn built_env(&self) -> (Vec<(OsString, OsString)>, usize) {
+        let extra: Vec<&str> = self.deploy_env.iter().map(String::as_str).collect();
+        crate::env::scrubbed_env_from(self.source_env.iter().cloned(), &extra)
+    }
+
+    /// `name` as a step runs it: found in the job's own PATH, the one the step is given. std looks a
+    /// bare program name up in *this process's* PATH instead, and the job's PATH is the promise the
+    /// gate runs under — the same door `an_exported_cargo_function_does_not_beat_the_gate_s_path`
+    /// closed for the command itself.
+    fn resolve(&self, name: &str) -> Option<PathBuf> {
+        std::env::split_paths(&self.path)
+            .map(|dir| dir.join(name))
+            .find(|p| p.is_file())
+    }
+
+    /// Whether this job's steps get a transient systemd scope of their own, asked of the host once
+    /// ([`Exec::probe_scope`]) and kept for the rest of the job. With no `systemd-run` on the job's
+    /// own PATH there is nothing to ask, and no reason to fork for the answer.
+    fn user_scope(&mut self, built: &[(OsString, OsString)], systemd_run: Option<&Path>) -> Scope {
+        if let Some(s) = &self.user_scope {
+            return s.clone();
+        }
+        let scope = match systemd_run {
+            None => Scope::NoUserManager("systemd-run is not on the job's PATH".to_string()),
+            Some(program) => self.probe_scope(program, built),
+        };
+        self.user_scope = Some(scope.clone());
+        scope
+    }
+
+    /// Ask the host: run `/bin/true` in a transient scope under a probe's own unit name, bounded,
+    /// with its noise kept out of the job log (a refusal says nothing a job needs to read twice —
+    /// the reason is the exit). It goes through `systemd-run --user --scope` exactly as a step
+    /// does, and gets the environment a step gets, because those two are what the question is
+    /// about: whether this user has a manager to make the unit and whether the step's environment
+    /// can reach its bus (`$XDG_RUNTIME_DIR/bus`).
+    fn probe_scope(&self, program: &Path, built: &[(OsString, OsString)]) -> Scope {
+        // A user manager is the bus, and the bus is named by this one variable. Without it there
+        // is nobody to ask and `systemd-run` says so by failing at once.
+        if !built.iter().any(|(k, _)| k == "XDG_RUNTIME_DIR") {
+            return Scope::NoUserManager(
+                "XDG_RUNTIME_DIR is not set, so there is no systemd user manager to ask"
+                    .to_string(),
+            );
+        }
+        let unit = kill::probe_name();
+        let mut child = match Command::new(program)
+            .args([
+                "--user",
+                "--scope",
+                "--quiet",
+                "--collect",
+                "--unit",
+                unit.as_str(),
+                "--",
+            ])
+            .arg("/bin/true")
+            .current_dir(&self.dir)
+            .env_clear()
+            .envs(built.iter().cloned())
+            .env("PATH", &self.path)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return Scope::NoUserManager(format!("systemd-run could not be started: {e}"))
+            }
+        };
+        // The probe asks the scope question, so it must not also be what the question is about: it
+        // gets the process group alone, which is enough to end a `/bin/true`.
+        let ended = Step::new(child.id(), None).run_to_end(
+            &mut child,
+            SCOPE_PROBE_CAP,
+            Duration::from_millis(200),
+        );
+        if ended.timed_out || ended.status.is_none() {
+            return Scope::DidNotAnswer(format!(
+                "the {unit} probe did not answer within {}s",
+                SCOPE_PROBE_CAP.as_secs()
+            ));
+        }
+        let code = ended.status.and_then(|s| s.code());
+        match code {
+            Some(0) => Scope::Takes,
+            Some(c) => Scope::NoUserManager(format!("the {unit} probe exited {c}")),
+            None => Scope::NoUserManager(format!("the {unit} probe died on a signal")),
+        }
+    }
+
+    /// The job's own scratch directory, made before its first step and taken away with the returned
+    /// guard: what a step's `TMPDIR` is when the environment it was given would put temporary files
+    /// under `/tmp` or `/var/tmp` (finding FENCE-08: everything here runs with `TMPDIR=/tmp`, and
+    /// the host sandbox `lucina-agents` checks for itself refuses a test file under it, so every
+    /// `lagent merge --full` that touched that crate failed on a step that had done nothing wrong).
+    /// `None`, with a line in the log, when it cannot be made — which is not a reason to fail a
+    /// step, only to give it the `TMPDIR` it came with.
+    fn job_scratch(&mut self) -> Option<Scratch> {
+        let dir = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        let scratch = dir.join("tmp");
+        match std::fs::create_dir_all(&scratch) {
+            Ok(()) => {
+                self.step_tmp = Some(scratch.clone());
+                Some(Scratch(scratch))
+            }
+            Err(e) => {
+                self.say(&format!(
+                    "cannot make the job's scratch {}: {e}; a step gets the TMPDIR it was given",
+                    scratch.display()
+                ));
+                None
+            }
+        }
+    }
+
+    /// Whether a step's `TMPDIR` sends its temporary files where the host will refuse them: absent,
+    /// empty, relative, or under `/tmp` or `/var/tmp`. A caller who set somewhere sane keeps it —
+    /// the built environment's value travels with its name (`a_gate_command_gets_the_allowlisted_environment`).
+    fn tmpdir_is_unusable(v: Option<&std::ffi::OsStr>) -> bool {
+        let Some(t) = v.filter(|t| !t.is_empty()) else {
+            return true;
+        };
+        let p = Path::new(t);
+        let mut c = p.components();
+        let (Some(std::path::Component::RootDir), Some(std::path::Component::Normal(first))) =
+            (c.next(), c.next())
+        else {
+            // Relative, empty, or the root itself: nothing a step's temporary files belong in.
+            return true;
+        };
+        first == "tmp"
+            || (first == "var"
+                && matches!(c.next(), Some(std::path::Component::Normal(second)) if second == "tmp"))
+    }
+
+    /// [`Exec::sh`]'s worker, and the warm-up's: `bash` over `cmd` in `cwd`, under the step's own
+    /// deadline (`cap`, reported with the phrase `timed_out`), with output into the job log, leading
+    /// a process group of its own and — where the host takes one ([`Exec::user_scope`]) — standing in
+    /// a transient systemd scope of its own. Returns `None` when the command succeeded, or the reason
+    /// it did not: `timed_out` on a timeout, otherwise the exit code.
+    ///
+    /// `timeout(1)` is not in this. On this host (uutils coreutils) its final SIGKILL reaches only
+    /// the process it waits on, so a grandchild that ignores SIGTERM outlived the limit and, still
+    /// holding the shared `CARGO_TARGET_DIR`'s cargo lock, kept the next gate busy for longer than
+    /// its own cap allowed (finding GATE-05). The deadline and every signal after it are the job's
+    /// own instead, aimed at both routes to the step's processes ([`super::kill`]: the group, for
+    /// what a step hands to a nested scope, and the scope's control group, for a child that leaves
+    /// the group), and they come again after a step that ended by itself: no step of a job leaves a
+    /// process behind. The command's environment, PATH, `CARGO_TARGET_DIR`, log lines and outcomes
+    /// are the ones `sh_run` always built.
+    fn sh_run(&mut self, cwd: &Path, cmd: &str, cap: Duration, timed_out: &str) -> Option<String> {
         self.say(&format!("$ {cmd}"));
         // The command gets the built environment (the allowlist from the executor's own
         // environment, plus the deploy recipe's declared names), not what the executor
         // inherited. How many names were kept back is said by count only.
-        let (built, not_passed) = {
-            let extra: Vec<&str> = self.deploy_env.iter().map(String::as_str).collect();
-            crate::env::scrubbed_env_from(self.source_env.iter().cloned(), &extra)
-        };
+        let (mut built, not_passed) = self.built_env();
         if not_passed > 0 {
             self.say(&format!("env: {not_passed} variable(s) not passed"));
+        }
+        // FENCE-08: a step whose `TMPDIR` would put its temporary files under `/tmp` or `/var/tmp`
+        // gets the job's own scratch instead. A name the built environment carries is only sent
+        // elsewhere when it is unusable, so an allowlisted value that is fine keeps its meaning.
+        if let Some(scratch) = &self.step_tmp {
+            if Self::tmpdir_is_unusable(
+                built
+                    .iter()
+                    .find(|(k, _)| k == "TMPDIR")
+                    .map(|(_, v)| v.as_os_str()),
+            ) {
+                built.retain(|(k, _)| k != "TMPDIR");
+                built.push((OsString::from("TMPDIR"), scratch.clone().into()));
+            }
         }
         let (Ok(out), Ok(err)) = (self.log.try_clone(), self.log.try_clone()) else {
             // No duplicated fd means the command never starts. Without a word here the job ends
@@ -299,16 +497,72 @@ impl Exec {
             self.say("cannot run: the job log could not be duplicated for the command's output");
             return Some("cannot run: the job log could not be duplicated".to_string());
         };
-        // `timeout` without `--foreground`: it calls `setpgid(0, 0)` on itself, so it leads a new
-        // process group and the limit's SIGTERM goes to the whole group, not just the process it
-        // waits on. That alone does not end every process a warm-up forked (see the `reap_group`
-        // branch below and [`reap_process_group`]).
-        let mut command = Command::new("timeout");
+        let Some(bash) = self.resolve("bash") else {
+            self.say("cannot run: bash is not on the job's PATH");
+            return Some("cannot run: bash is not on the job's PATH".to_string());
+        };
+        let systemd_run = self.resolve("systemd-run");
+        let scope = self.user_scope(&built, systemd_run.as_deref());
+        let unit = (scope == Scope::Takes).then(|| kill::unit_name(&self.spec.job_id));
+        // The command goes to the step in a file of its own, never in the command line that
+        // `systemd-run` is given: systemd-run expands the braced form `${…}` in what it is handed as
+        // the payload, so a gate whose command tests `[ -n "${LAGENT_WAIVERS_FILE+x}" ]` would
+        // arrive at its shell with the test already answered (`${VAR+x}` is not a name systemd
+        // recognises, and what it does not recognise it replaces with nothing). A file keeps the
+        // command text exactly as the repo wrote it, for both routes — and it goes when the step
+        // does, so a job leaves no step script behind either.
+        // The job dir canonicalized because the step runs in the worktree: a relative one would
+        // name the file somewhere else from there.
+        let script = {
+            let dir = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
+            dir.join(format!(
+                "step-{}.sh",
+                STEP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ))
+        };
+        if let Err(e) = std::fs::write(&script, format!("{cmd}\n")) {
+            self.say(&format!(
+                "cannot run: the step's command could not be written to {}: {e}",
+                script.display()
+            ));
+            return Some("cannot run: the step's command could not be written".to_string());
+        }
+        // The step's own transient scope, the way `manager/work.rs` starts a lane runner:
+        // `systemd-run --scope` execs its payload into the unit it made, so the step's pid leads
+        // the process group *and* is the only member of the scope. Where there is no user manager,
+        // the group is what there is, and the job says so once per step rather than failing it.
+        let mut command = match (&unit, &systemd_run) {
+            (Some(u), Some(program)) => {
+                self.say(&format!("scope: {u}"));
+                let mut c = Command::new(program);
+                c.args([
+                    "--user",
+                    "--scope",
+                    "--quiet",
+                    "--collect",
+                    "--unit",
+                    u.as_str(),
+                    "--",
+                ]);
+                c.arg(&bash);
+                c
+            }
+            _ => {
+                self.say(&format!(
+                    "scope: none ({}): the step has its process group alone",
+                    scope.reason()
+                ));
+                Command::new(&bash)
+            }
+        };
         command
-            .args(["--kill-after=30s", limit, "bash", "-c", cmd])
+            .arg(&script)
             .current_dir(cwd)
+            // The group the deadline and every signal after it works on (`super::kill`), and the
+            // group a step's own `fork` work stays in unless it leaves on purpose.
+            .process_group(0)
             .env_clear()
-            .envs(built)
+            .envs(built.iter().cloned())
             .env("PATH", &self.path)
             // The gate runs with exactly the PATH above. A shell init hook left in the
             // environment (BASH_ENV, or ENV for a POSIX sh) is read before the command and can
@@ -332,43 +586,49 @@ impl Exec {
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err));
-        // `reap_group` off (every gate): the plain `.status()` wait, unchanged. On (the warm-up):
-        // `timeout` is the leader of the group it made, so its pid is the group id — remember it,
-        // wait for `timeout` however it ends, then end the whole group. Its own kill-after only
-        // reaches the direct child, so without this a grandchild that ignores SIGTERM would outlive
-        // the warm-up (finding LA-R056, point 2). The exit status is the same `.status()` gave.
-        let status = if reap_group {
-            match command.spawn() {
-                Ok(mut child) => {
-                    let pgid = child.id();
-                    let status = child.wait();
-                    reap_process_group(pgid);
-                    status
-                }
-                Err(e) => Err(e),
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = std::fs::remove_file(&script);
+                self.say(&format!("cannot run: {e}"));
+                return Some(format!("cannot run: {e}"));
             }
-        } else {
-            command.status()
         };
-        match status {
-            Ok(s) if s.success() => None,
-            Ok(s) => {
-                let why = if s.code() == Some(124) {
-                    timed_out.to_string()
-                } else {
-                    format!(
-                        "exit {}",
-                        s.code()
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "signal".into())
-                    )
-                };
+        // The two routes to every process this step started, the deadline, and the sweep after it.
+        let grace = self.kill_grace;
+        let ended = Step::new(child.id(), unit).run_to_end(&mut child, cap, grace);
+        // Read and gone: the step is over, and its command file was only ever for it.
+        let _ = std::fs::remove_file(&script);
+        if !ended.miss.is_empty() {
+            self.say(&ended.miss.line());
+        }
+        if ended.left > 0 {
+            self.say(&format!(
+                "{} of the step's processes were still there when the killing gave up",
+                ended.left
+            ));
+        }
+        if ended.timed_out {
+            self.say(&format!("failed: {timed_out}"));
+            return Some(timed_out.to_string());
+        }
+        match ended.status {
+            Some(s) if s.success() => None,
+            Some(s) => {
+                let why = format!(
+                    "exit {}",
+                    s.code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into())
+                );
                 self.say(&format!("failed: {why}"));
                 Some(why)
             }
-            Err(e) => {
-                self.say(&format!("cannot run: {e}"));
-                Some(format!("cannot run: {e}"))
+            None => {
+                // No status and no timeout: the wait itself could not be had. Report it as its own
+                // failure rather than as a step that ended.
+                self.say("failed: the step did not answer within its bound");
+                Some("did not answer within its bound".to_string())
             }
         }
     }
@@ -576,13 +836,12 @@ impl Exec {
     /// gate: it is outside every timed step, its result is not recorded, and a failure or timeout
     /// is only logged before the merge goes on to `git merge` and the gates exactly as before. It
     /// is skipped when the repo runs no cargo gate (`cargo` is `off`/`none`) or the base has no
-    /// `Cargo.toml` to check. It runs through [`Exec::sh_run`] for the same clean environment, PATH
-    /// and `CARGO_TARGET_DIR`, under its own cap ([`Exec::warm_up_secs`], given to `timeout` as
-    /// seconds) and with `gate_env` kept empty, so it gets none of the gate allow/waivers. It runs
-    /// with `reap_group` on: the cap ends the check and, because uutils `timeout`'s own kill-after
-    /// reaches only the direct child, the whole group `timeout` led is then SIGKILLed, so nothing it
-    /// forked survives the warm-up (finding LA-R056, point 2). The reason it returns (a timeout in
-    /// particular) goes into the `warm-up: failed` line.
+    /// `Cargo.toml` to check. It runs through [`Exec::sh_run`] like every other step — the same
+    /// clean environment, PATH and `CARGO_TARGET_DIR`, and the same deadline, signals and sweep, so
+    /// a warm-up that is ended by its cap ends *whole* — under its own cap
+    /// ([`Exec::warm_up_secs`]) and with `gate_env` kept empty, so it gets none of the gate
+    /// allow/waivers. The reason it returns (a timeout in particular) goes into the
+    /// `warm-up: failed` line.
     fn warm_up(&mut self, dir: &Path, base: &str, rules: &Rules) {
         if repo::cargo_mode(&rules.merge.cargo) == Some(repo::CargoMode::None) {
             return;
@@ -600,9 +859,8 @@ impl Exec {
         let why = self.sh_run(
             dir,
             "cargo check --workspace --quiet",
-            &format!("{cap}s"),
+            Duration::from_secs(cap),
             &format!("timed out after {cap}s"),
-            true,
         );
         match why {
             None => self.say(&format!("warm-up: done in {}s", t.elapsed().as_secs())),
@@ -614,6 +872,9 @@ impl Exec {
     }
 
     pub fn merge(&mut self) -> Outcome {
+        // The job's own scratch, for the `TMPDIR` of every step of it, gone with the job whatever
+        // its outcome (finding FENCE-08).
+        let _scratch = self.job_scratch();
         let (Some(branch), Some(head)) = (self.spec.branch.clone(), self.spec.head.clone()) else {
             return fail("INVALID", "a merge job needs a branch and a commit");
         };
@@ -969,6 +1230,9 @@ impl Exec {
     }
 
     pub fn deploy(&mut self) -> Outcome {
+        // The job's own scratch, for the `TMPDIR` of every step of it, gone with the job whatever
+        // its outcome (finding FENCE-08).
+        let _scratch = self.job_scratch();
         let Some(runtime) = self.spec.runtime.clone() else {
             return fail("INVALID", "a deploy job needs a runtime");
         };
@@ -2724,5 +2988,377 @@ mod tests {
             "the branch's lock",
             "{log}"
         );
+    }
+
+    // ── LA-C024: a step is ended whole, at its deadline and after it ─────────────────────
+    //
+    // Three shapes of the one thing that went wrong (finding GATE-05): a step whose grandchild
+    // ignores SIGTERM, which the limit's final blow never reached because it only ever went to the
+    // process the limit waited on. By the process group (`group`), out of the group with `setsid`
+    // (`setsid`), and holding the shared `CARGO_TARGET_DIR`'s lock while it does it (`lock`). They
+    // are red against a runner that signals the direct child only, and green against the two routes
+    // of [`super::kill`].
+
+    /// A copy of bash under a name of this run alone, and the `argv[0]` marker that goes with it:
+    /// how a test below finds its own survivor again ([`find_marker`] matches the `comm` name or the
+    /// argv) without `pgrep`, without a pattern, and without touching a process that is not its own.
+    fn survivor_names(root: &Path) -> (String, String, PathBuf) {
+        let uid = uuid::Uuid::new_v4().simple().to_string();
+        // 14 characters: `comm` is cut at 15, and the name is what survives an empty `cmdline`.
+        let tag = format!("lg{}", &uid[..12]);
+        let marker = format!("lucina-gate-marker-{tag}");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let bash = ["/bin/bash", "/usr/bin/bash"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+            .expect("a bash to copy");
+        let copy = bin.join(&tag);
+        std::fs::copy(&bash, &copy).unwrap();
+        (tag, marker, copy)
+    }
+
+    /// The gate command of a straggler test: start a process that writes its own pid the instant it
+    /// is alive — atomically, so the reader never sees half a pid — and then ignores SIGTERM for
+    /// five minutes, and end the step as soon as that proof is there. So the step that *passed* its
+    /// gate is a step that left a process behind, which is the step that must not leave one.
+    /// `kind` is `group` (a plain background job), `setsid` (out of the step's process group, which
+    /// is what leaves only the control group as a route to it) or `lock` (an exclusive `flock` on a
+    /// file in the step's `CARGO_TARGET_DIR`, held for the same five minutes).
+    fn straggler_gate_script(kind: &str, copy: &Path, marker: &str, proof: &Path) -> String {
+        let proof = proof.display();
+        let copy = copy.display();
+        let take = if kind == "lock" {
+            "flock -x 9 || exit 1; "
+        } else {
+            ""
+        };
+        let inner = format!(
+            "trap \"\" TERM; {take}printf \"%s\\n\" $$ > '{proof}.tmp' && mv -f '{proof}.tmp' '{proof}'; while :; do sleep 300; done"
+        );
+        let spawn = match kind {
+            // `setsid`: the child takes a new session and a new process group, so the group signal
+            // is not a route to it at all. The marker is its `argv[0]`. Backgrounded, like the
+            // others: a step that *waits* for the thing it is only supposed to leave behind never
+            // ends, and the deadline is not what this is about.
+            "setsid" => format!("setsid '{copy}' -c '{inner}' {marker} &"),
+            "lock" => format!("( exec 9>\"$LOCK\"; exec -a {marker} '{copy}' -c '{inner}' ) &"),
+            _ => format!("( exec -a {marker} '{copy}' -c '{inner}' ) &"),
+        };
+        let head = if kind == "lock" {
+            "test -n \"$CARGO_TARGET_DIR\" || { echo 'the step was given no CARGO_TARGET_DIR' >&2; exit 9; }\nmkdir -p \"$CARGO_TARGET_DIR\" || exit 9\nLOCK=\"$CARGO_TARGET_DIR/lucina-c024-gate.lock\"\n"
+        } else {
+            ""
+        };
+        format!(
+            "#!/bin/bash\n{head}{spawn}\nfor _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e '{proof}' ] && exit 0; sleep 0.1; done\necho 'the straggler never recorded its own pid' >&2\nexit 9\n"
+        )
+    }
+
+    /// A trunk whose only gate is `run`, and a topic branch to merge onto it.
+    fn one_gate_repo(root: &Path, run: &str) -> (PathBuf, PathBuf, String) {
+        let (_origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            format!("[merge]\ndiffgate = false\n[[gate]]\nname = \"leave\"\nrun = \"{run}\"\n"),
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        (_origin, repo, head)
+    }
+
+    /// That no process of this run is left: gone from `/proc`, or a zombie on its way out (a killed
+    /// process is not reaped by the signal that killed it, so this waits for that a moment). An
+    /// unreadable `/proc` is the error it is: a scan that saw nothing would make the test pass for
+    /// the wrong reason.
+    fn assert_leaves_nothing(marker: &str, tag: &str, log: &str) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let leftover = loop {
+            let hits =
+                find_marker(marker, tag).expect("/proc cannot be read: the test proves nothing");
+            if hits.is_empty() || Instant::now() >= deadline {
+                break hits;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(
+            leftover.is_empty(),
+            "the step left marker/tag processes {leftover:?}\nLOG:\n{log}"
+        );
+    }
+
+    /// The line a step says when it gets no scope, or `None` when it got one: how the `setsid` test
+    /// below knows whether it just watched the control group do its work or a host with no user
+    /// manager at all.
+    fn scope_fallback_line(log: &str) -> Option<String> {
+        log.lines().find_map(|l| {
+            l.contains("scope: none (").then(|| {
+                l.split_once("] ")
+                    .map(|(_, r)| r.to_string())
+                    .unwrap_or_else(|| l.to_string())
+            })
+        })
+    }
+
+    #[test]
+    fn a_gate_step_leaves_no_grandchild_that_ignores_sigterm() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (tag, marker, copy) = survivor_names(root);
+        let _reaper = MarkerReaper {
+            marker: marker.clone(),
+            comm_tag: tag.clone(),
+        };
+        let proof = root.join("straggler-pid");
+        let script = root.join("bin").join("leave-a-straggler");
+        write_exec(
+            &script,
+            &straggler_gate_script("group", &copy, &marker, &proof),
+        );
+        let (origin, repo, head) = one_gate_repo(root, &script.display().to_string());
+        let dir = root.join("job-gate-straggler");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        // The grace between the first blow and the killing is 30 s on a real gate, as
+        // `--kill-after=30s` was; here it is the thing under test, not something to wait for.
+        x.kill_grace = std::time::Duration::from_millis(250);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+
+        // The merge landed and its gate passed — and the gate passed *because* the survivor had
+        // started and recorded itself, which the script demands before it exits 0.
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        assert!(out.gates.iter().all(|g| g.ok), "{log}");
+        // Then: the step is over, so the process it left behind is not running. It is the direct
+        // child's own SIGTERM-ignoring sibling of the warm-up's, in the step's process group, and a
+        // limit that only ever reached the direct child leaves exactly this one alive.
+        let pid = read_recorded_pid(&proof);
+        assert!(
+            pid_ended_by_cap(pid, &marker, &tag),
+            "the step left its SIGTERM-ignoring grandchild (pid {pid}) alive\nLOG:\n{log}"
+        );
+        assert_leaves_nothing(&marker, &tag, &log);
+        // Nothing was unreachable: a kill that was refused says so in the log.
+        assert!(!log.contains("refused the signal"), "{log}");
+        assert!(!log.contains("when the killing gave up"), "{log}");
+        assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+    }
+
+    #[test]
+    fn a_gate_step_leaves_no_grandchild_that_left_its_process_group() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (tag, marker, copy) = survivor_names(root);
+        let _reaper = MarkerReaper {
+            marker: marker.clone(),
+            comm_tag: tag.clone(),
+        };
+        let proof = root.join("setsid-pid");
+        let script = root.join("bin").join("leave-a-setsid-straggler");
+        write_exec(
+            &script,
+            &straggler_gate_script("setsid", &copy, &marker, &proof),
+        );
+        let (origin, repo, head) = one_gate_repo(root, &script.display().to_string());
+        let dir = root.join("job-gate-setsid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.kill_grace = std::time::Duration::from_millis(250);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        let fallback = scope_fallback_line(&log);
+        if let Some(line) = &fallback {
+            // No systemd user manager on this host, so the step had its process group alone — and a
+            // child that left that group is then out of reach of everything the job can do. Say so
+            // loudly, and hold the fallback itself to its word: it must be in the log (the step did
+            // not fail for the missing scope), and it must not be a probe that hung, which is a bug
+            // and not a host without systemd.
+            assert!(
+                !line.contains("did not answer"),
+                "the scope probe did not answer: {line}\nLOG:\n{log}"
+            );
+            assert!(
+                out.ok,
+                "the step failed for want of a scope: {out:?}\nLOG:\n{log}"
+            );
+            println!("NOT PROVED (no systemd user manager here, so no control group to kill through): {line}");
+            return;
+        }
+        // The scope route, which is what this test is for: the step stood in a control group of its
+        // own, and the child that left the process group died of it.
+        assert!(
+            log.contains("scope: lucina-gate-"),
+            "the step neither got a scope nor said why not:\n{log}"
+        );
+        let pid = read_recorded_pid(&proof);
+        assert!(
+            pid_ended_by_cap(pid, &marker, &tag),
+            "the step left its `setsid` grandchild (pid {pid}) alive: outside the process group, \
+             only the step's own scope control group reaches it\nLOG:\n{log}"
+        );
+        assert_leaves_nothing(&marker, &tag, &log);
+        assert!(!log.contains("refused the signal"), "{log}");
+        assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+    }
+
+    #[test]
+    fn a_gate_step_leaves_the_lock_of_its_cargo_target_dir_free() {
+        // GATE-05 as the owner saw it: not a process alive for its own sake, but a step that had
+        // been reported and was still holding the shared target dir, so the *next* gate sat behind
+        // a lock nobody could see. The lock here is an explicit `flock` on a file in
+        // `CARGO_TARGET_DIR`, which is what cargo's own lock is — the same one lock on the same
+        // directory, taken by a grandchild that ignores SIGTERM.
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (tag, marker, copy) = survivor_names(root);
+        let _reaper = MarkerReaper {
+            marker: marker.clone(),
+            comm_tag: tag.clone(),
+        };
+        let proof = root.join("lock-holder-pid");
+        let script = root.join("bin").join("hold-the-target-lock");
+        write_exec(
+            &script,
+            &straggler_gate_script("lock", &copy, &marker, &proof),
+        );
+        let (origin, repo, head) = one_gate_repo(root, &script.display().to_string());
+        let dir = root.join("job-gate-lock");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.kill_grace = std::time::Duration::from_millis(250);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        let lock = root.join("target").join("lucina-c024-gate.lock");
+        // The proof file is written *after* `flock -x 9` is granted, so the survivor really did
+        // hold the lock: without that, the free lock below would mean nothing.
+        let pid = read_recorded_pid(&proof);
+        // The step is over. A non-blocking `flock` of the very same file must be granted now — that
+        // is the next gate getting its turn. While the survivor lives, this is refused, and this is
+        // the assertion a runner that only signals the direct child fails.
+        let got = Command::new("flock")
+            .args(["-n", &lock.display().to_string(), "/bin/true"])
+            .status()
+            .expect("flock runs");
+        assert!(
+            got.success(),
+            "the lock {} was still held after the step ended (its holder was pid {pid})\nLOG:\n{log}",
+            lock.display()
+        );
+        assert!(
+            pid_ended_by_cap(pid, &marker, &tag),
+            "the lock holder (pid {pid}) is still there\nLOG:\n{log}"
+        );
+        assert_leaves_nothing(&marker, &tag, &log);
+        assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+    }
+
+    #[test]
+    fn a_step_that_ends_inside_its_limit_is_the_step_it_always_was() {
+        // The other half of the change: what a step that ends by itself always gave the job — the
+        // `$ <command>` line, its stdout and its stderr in the job log, `failed: exit <n>`, the gate
+        // outcome — is still exactly what it gives. This is the test that keeps the three above from
+        // being about the killing only.
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let pass = bin.join("says-hello");
+        write_exec(&pass, "#!/bin/sh\necho 'hello from the step'\nexit 0\n");
+        let (_origin, repo, head) = one_gate_repo(root, &pass.display().to_string());
+        let dir = root.join("job-step-passes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        assert_eq!(out.gates.len(), 1, "{log}");
+        assert!(out.gates[0].ok, "{log}");
+        assert!(log.contains("gate: leave"), "{log}");
+        assert!(log.contains(&format!("$ {}", pass.display())), "{log}");
+        assert!(log.contains("hello from the step"), "{log}");
+        assert!(!log.contains("failed:"), "{log}");
+        assert!(!log.contains("cannot run"), "{log}");
+        assert!(!log.contains("timed out"), "{log}");
+
+        // A step that fails inside its limit: the reason is its exit code, the gate is the failure,
+        // and the job says both.
+        let root2 = tempfile::tempdir().unwrap();
+        let root2 = root2.path();
+        let bin2 = root2.join("bin");
+        std::fs::create_dir_all(&bin2).unwrap();
+        let fail = bin2.join("says-no");
+        write_exec(&fail, "#!/bin/sh\necho 'bad from the step' >&2\nexit 3\n");
+        let (_origin2, repo2, head2) = one_gate_repo(root2, &fail.display().to_string());
+        let dir2 = root2.join("job-step-fails");
+        std::fs::create_dir_all(&dir2).unwrap();
+        let mut x = Exec::open(&dir2, spec(root2, &repo2, "topic", &head2)).unwrap();
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir2.join("log")).unwrap_or_default();
+        assert!(!out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "GATE_FAILED", "{log}");
+        assert_eq!(out.gates.len(), 1, "{log}");
+        assert!(!out.gates[0].ok, "{log}");
+        assert!(out.message.contains("leave"), "{}", out.message);
+        assert!(log.contains("bad from the step"), "{log}");
+        assert!(log.contains("failed: exit 3"), "{log}");
+        assert!(!log.contains("cannot run"), "{log}");
+        assert!(!log.contains("timed out"), "{log}");
+        assert!(!log.contains("refused the signal"), "{log}");
+        assert!(!log.contains("when the killing gave up"), "{log}");
+    }
+
+    #[test]
+    fn a_gate_step_writes_its_temporary_files_outside_tmp() {
+        // FENCE-08: everything here runs with `TMPDIR=/tmp`, and the host sandbox that
+        // `lucina-agents`' own test checks for itself refuses a file under it — so a merge of
+        // anything touching that crate failed on a gate that had done nothing wrong. A step whose
+        // `TMPDIR` is not usable gets the job's own scratch, which is gone when the job is.
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = bin.join("where-is-tmpdir");
+        write_exec(
+            &script,
+            "#!/bin/bash\nprintf %s \"$TMPDIR\" > tmpdir-seen.txt\nmkdir -p \"$TMPDIR/sub\" || { echo \"cannot make a directory in $TMPDIR\" >&2; exit 9; }\nprintf 'written\\n' > \"$TMPDIR/sub/written.txt\" || exit 9\ntest -s \"$TMPDIR/sub/written.txt\"\n",
+        );
+        let (origin, repo, head) = one_gate_repo(root, &script.display().to_string());
+        let dir = root.join("job-tmpdir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        // The failure condition, as this host gives it: an inherited `TMPDIR` under `/tmp`.
+        x.source_env = crate::testutil::env_source(&[
+            ("PATH", "/usr/bin:/bin"),
+            ("HOME", "/home/fake"),
+            ("TMPDIR", "/tmp"),
+        ]);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        // The step passed, which it can only do if it could make a directory and write a file in
+        // the `TMPDIR` it was given.
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        let seen = std::fs::read_to_string(root.join("wt/.landing/tmpdir-seen.txt")).unwrap();
+        // Pinned exactly, which is the whole contract: the scratch is `<job dir>/tmp`, so it is
+        // neither of the machine-wide directories the owner's rule names, and the step wrote its
+        // file inside it (the script exits 9 when it cannot).
+        let want = std::fs::canonicalize(&dir).unwrap().join("tmp");
+        assert_eq!(Path::new(seen.trim()), want.as_path(), "{log}");
+        // And the scratch was the job's, not the machine's: it went when the job did.
+        assert!(
+            !Path::new(&seen).exists(),
+            "the job left its scratch {seen} behind\nLOG:\n{log}"
+        );
+        assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
     }
 }
