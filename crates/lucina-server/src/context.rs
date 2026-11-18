@@ -16,7 +16,7 @@ use chrono::Utc;
 use lucina_intent::policy::{self, Policy};
 use lucina_intent::presence;
 use lucina_intent::tier0::{self, Classification};
-use lucina_memory::{Scope, TurnSurface};
+use lucina_memory::{Scope, Surface, TurnSurface};
 use lucina_store::reminders::delivered_context;
 
 use crate::planner::TurnInput;
@@ -105,6 +105,8 @@ pub fn presence_block(st: &AppState, prompt: &str) -> String {
 
 /// Classify a turn: tier 0, else the model (tier 1) on the recent turns.
 /// `mcp`: the turn comes from a Lucina MCP client (an agent's or assistant app's text, not the owner's).
+/// `owner_turn`: the owner's own surface, with nothing in the turn saying someone else wrote it
+/// ([`prepare_keyed`] computes it); only such a turn may start something.
 /// `device`: the device the owner is talking through (`crate::device::jev_device_of_turn`), a fact in Jev's state.
 /// `sample`: a real turn of the owner's own, whose Jev answer is kept (`jev_samples`).
 #[allow(clippy::too_many_arguments)]
@@ -116,6 +118,7 @@ pub async fn classify(
     platform: &str,
     device: &str,
     mcp: bool,
+    owner_turn: bool,
     sample: bool,
 ) -> Classification {
     let s = &st.cfg.intent;
@@ -327,7 +330,7 @@ pub async fn prepare_with(
         device: "",
     };
     prepare_keyed(
-        st, surface, session, keys, user_text, user_label, platform, tools_mode,
+        st, surface, session, keys, user_text, user_label, platform, None, tools_mode,
     )
     .await
 }
@@ -469,7 +472,9 @@ that is not RUNNING cannot be stopped because it has already ended.",
     )
 }
 
-/// [`prepare_with`] for any channel.
+/// [`prepare_with`] for any channel. `channel_owner`: a channel turn's own verdict on whether the
+/// owner himself wrote it ([`crate::chat::ChannelOrigin::owner`]); `None` on the Secretary path,
+/// which has no origin.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_keyed(
     st: &AppState,
@@ -479,10 +484,15 @@ pub async fn prepare_keyed(
     user_text: &str,
     user_label: &str,
     platform: &str,
+    channel_owner: Option<bool>,
     tools_mode: bool,
 ) -> Prepared {
     let now = Utc::now();
     let tz = st.cfg.time_zone;
+    // Whose words these are, for what may start something on them: his own surface — never a
+    // delegate, a group, another person or background work — and no channel fact saying otherwise.
+    let owner_turn =
+        matches!(surface.surface(), Surface::OwnerDirect) && channel_owner != Some(false);
     let metadata = keys.recent.metadata_block(keys.recent_key, tz, now);
     let first_after_idle = metadata.contains("- first turn after idle: yes");
     // The owner's personal memory, per the turn's surface (recent turns
@@ -521,6 +531,7 @@ pub async fn prepare_keyed(
             platform,
             keys.device,
             surface.caller().is_some(),
+            owner_turn,
             owner && surface.caller().is_none() && !crate::selftest::is_session(session),
         )
         .await;
