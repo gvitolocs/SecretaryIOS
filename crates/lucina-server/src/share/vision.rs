@@ -82,17 +82,11 @@ pub fn stop_orphans(cfg: &super::ShareConfig) {
         return;
     };
     let mmproj = cfg.vision_mmproj.to_string_lossy();
-    for pid in dir
-        .flatten()
-        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
-    {
+    for pid in dir.flatten().filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok()) {
         let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
             continue;
         };
-        let args: Vec<_> = raw
-            .split(|b| *b == 0)
-            .map(String::from_utf8_lossy)
-            .collect();
+        let args: Vec<_> = raw.split(|b| *b == 0).map(String::from_utf8_lossy).collect();
         if is_vision_server(&args, &mmproj) {
             tracing::info!(pid, "stopping a vision server left by an earlier lucina-rs");
             // SAFETY: a signal to the process whose command line was just read as ours.
@@ -106,9 +100,7 @@ pub fn stop_orphans(cfg: &super::ShareConfig) {
 /// Lucina's vision server, and not the `systemd-run` or lease wrappers holding the same arguments.
 fn is_vision_server(args: &[std::borrow::Cow<'_, str>], mmproj: &str) -> bool {
     args.first().is_some_and(|a| a.ends_with("llama-server"))
-        && args
-            .windows(2)
-            .any(|w| w[0] == "--mmproj" && w[1] == mmproj)
+        && args.windows(2).any(|w| w[0] == "--mmproj" && w[1] == mmproj)
 }
 
 async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
@@ -140,12 +132,7 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
     let log = st.cfg.data_dir.join("vision-server.log");
     let out = {
         use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&log)?
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&log)?
     };
     let child = cmd
         .arg("-m")
@@ -181,48 +168,68 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
         log,
     })
 }
-/// Waiting for the server to answer `/health`: the lease handing over the GPU and the cold load. Its
-/// line says where a picture that never got a description spent its time.
-async fn ready(server: &mut Server, seconds: u64, timing: &ShareTiming) -> anyhow::Result<()> {
+/// Waiting for the server to answer `/health`. A start through gpu-lease answers only once the GPU has
+/// been handed over, so the wait for its first answer is the lease's own line (`gpu_lease`) and the wait
+/// from there to an `ok` is the cold load of the model (`vision_ready`); a start that needs no lease gets
+/// the one line. Where a picture that never got a description spent its time is then in the log.
+async fn ready(
+    server: &mut Server,
+    seconds: u64,
+    lease: bool,
+    timing: &ShareTiming,
+) -> anyhow::Result<()> {
     let http = reqwest::Client::new();
     let deadline = Instant::now() + Duration::from_secs(seconds);
-    let phase = timing.begin("vision_ready", true);
-    while Instant::now() < deadline {
+    let mut gpu_lease = lease.then(|| timing.begin("gpu_lease", true));
+    let mut health = (!lease).then(|| timing.begin("vision_ready", true));
+    loop {
+        if Instant::now() >= deadline {
+            for phase in [gpu_lease.take(), health.take()].into_iter().flatten() {
+                phase.finish(Outcome::Timeout, Sizes::NONE);
+            }
+            bail!("vision startup timeout");
+        }
         if let Some(status) = server.child.try_wait()? {
-            phase.finish(Outcome::Error, Sizes::NONE);
+            for phase in [gpu_lease.take(), health.take()].into_iter().flatten() {
+                phase.finish(Outcome::Error, Sizes::NONE);
+            }
             bail!(
                 "vision process exited before becoming ready ({status}): {}",
                 last_lines(&server.log, 3)
             );
         }
-        if http
+        let answer = http
             .get(format!("{}/health", server.url))
             .timeout(Duration::from_secs(1))
             .send()
-            .await
-            .is_ok_and(|r| r.status().is_success())
-        {
-            phase.finish(Outcome::Ok, Sizes::NONE);
+            .await;
+        let healthy = answer.as_ref().is_ok_and(|r| r.status().is_success());
+        // A refused connection is no server yet: the lease has not been handed over. Anything else, an
+        // answer or a slow connect, is the process itself standing at the port.
+        let standing = match &answer {
+            Ok(_) => true,
+            Err(e) => !e.is_connect(),
+        };
+        if standing && gpu_lease.is_some() {
+            if let Some(phase) = gpu_lease.take() {
+                phase.finish(Outcome::Ok, Sizes::NONE);
+            }
+            health = Some(timing.begin("vision_ready", true));
+        }
+        if healthy {
+            for phase in [gpu_lease.take(), health.take()].into_iter().flatten() {
+                phase.finish(Outcome::Ok, Sizes::NONE);
+            }
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    phase.finish(Outcome::Timeout, Sizes::NONE);
-    bail!("vision startup timeout")
 }
 /// The last `n` non-empty lines of a log file, on one line (empty when there is none).
 fn last_lines(path: &Path, n: usize) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    lines[lines.len().saturating_sub(n)..]
-        .join(" | ")
-        .chars()
-        .take(400)
-        .collect()
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join(" | ").chars().take(400).collect()
 }
 
 async fn completion(url: &str, path: &Path, prompt: &str) -> anyhow::Result<String> {
@@ -281,7 +288,13 @@ async fn server_url(st: &AppState, cpu_too: bool, timing: &ShareTiming) -> anyho
     // A picture queued behind another's start waits here, up to START_WAIT.
     let lock_phase = timing.begin("vision_start_lock", true);
     let start_lock = tokio::time::timeout(START_WAIT, st.share.vision_start.lock()).await;
-    lock_phase.finish(Outcome::of(&start_lock), Sizes::NONE);
+    lock_phase.finish(
+        match &start_lock {
+            Ok(_) => Outcome::Ok,
+            Err(_) => Outcome::Timeout,
+        },
+        Sizes::NONE,
+    );
     let _start = start_lock.context("another start of the vision server is taking too long")?;
     if let Some(url) = running(st).await {
         return Ok(url);
@@ -290,7 +303,7 @@ async fn server_url(st: &AppState, cpu_too: bool, timing: &ShareTiming) -> anyho
     let started = start(st, true).await;
     spawn.finish(Outcome::of(&started), Sizes::NONE);
     let mut server = started?;
-    if let Err(e) = ready(&mut server, GPU_READY_SECS, timing).await {
+    if let Err(e) = ready(&mut server, GPU_READY_SECS, true, timing).await {
         drop(server);
         if !cpu_too {
             tracing::info!(error = %e, "vision did not start on the GPU; the OCR text will do");
@@ -301,7 +314,7 @@ async fn server_url(st: &AppState, cpu_too: bool, timing: &ShareTiming) -> anyho
         let started = start(st, false).await;
         spawn.finish(Outcome::of(&started), Sizes::NONE);
         server = started?;
-        ready(&mut server, 100, timing).await?;
+        ready(&mut server, 100, false, timing).await?;
     }
     let url = server.url.clone();
     *st.share.vision.lock().await = Some(server);
@@ -355,9 +368,7 @@ pub(crate) async fn read_text(
 ) -> anyhow::Result<String> {
     let url = match &st.cfg.share.vision_url {
         Some(url) => url.clone(),
-        None => running(st)
-            .await
-            .context("the vision server is not running")?,
+        None => running(st).await.context("the vision server is not running")?,
     };
     let result = completion_timed(&url, path, READ_TEXT_PROMPT, timing).await;
     let _ = running(st).await;
@@ -375,25 +386,13 @@ mod tests {
         };
         let m = "/models/mmproj.gguf";
         assert!(is_vision_server(
-            &cow(&[
-                "/home/nez/llama.cpp/build/bin/llama-server",
-                "-m",
-                "x",
-                "--mmproj",
-                m
-            ]),
+            &cow(&["/home/nez/llama.cpp/build/bin/llama-server", "-m", "x", "--mmproj", m]),
             m
         ));
         // Its scope and lease wrappers carry the same arguments; Qwen has no such mmproj.
         assert!(!is_vision_server(&cow(&["systemd-run", "--mmproj", m]), m));
-        assert!(!is_vision_server(
-            &cow(&["/bin/llama-server", "-m", "qwen.gguf"]),
-            m
-        ));
-        assert!(!is_vision_server(
-            &cow(&["/bin/llama-server", "--mmproj", "other"]),
-            m
-        ));
+        assert!(!is_vision_server(&cow(&["/bin/llama-server", "-m", "qwen.gguf"]), m));
+        assert!(!is_vision_server(&cow(&["/bin/llama-server", "--mmproj", "other"]), m));
     }
 
     #[test]
