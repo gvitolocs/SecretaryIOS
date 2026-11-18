@@ -13,11 +13,13 @@
 //!   tool the request needs (or none), and a confident guess becomes a short
 //!   hint for the model. It never removes tools: a wrong guess costs nothing.
 //! - **JEV-first** (`LUCINA_JEV_FIRST`): from [`JEV_FIRST_MIN`] up (per intent,
-//!   `LUCINA_JEV_FIRST_INTENT_MIN`) Jev routes the turn before the tier-0 rules,
-//!   except a deterministic route ([`deterministic_intent`]). Each decision is
-//!   one `event="jev_first"` log line. `POST /api/secretary/jev/route` replays a
-//!   text through the same path. The weekly check is `lucina-rs jev drift-report`
-//!   (`docs/lucina-rust/JEV-ROUTING.md`); it only suggests new thresholds.
+//!   `LUCINA_JEV_FIRST_INTENT_MIN`) Jev routes the turn before the tier-0 rules. A deterministic
+//!   route ([`deterministic_intent`]) keeps the turn only against an answer Jev is not sure of or
+//!   has no option for; a sure one of Jev's own intents wins over it from [`JEV_OVER_RULE_MIN`] up
+//!   (`LUCINA_JEV_OVER_RULE`, `LUCINA_JEV_OVER_RULE_MIN`). Each decision is one
+//!   `event="jev_first"` log line. `POST /api/secretary/jev/route` replays a text through the same
+//!   path. The weekly check is `lucina-rs jev drift-report` (`docs/lucina-rust/JEV-ROUTING.md`);
+//!   it only suggests new thresholds.
 
 use std::sync::Arc;
 
@@ -32,12 +34,27 @@ pub const INTENT_MIN: f64 = 0.6;
 /// A first-tool guess at least this sure becomes a hint (`LUCINA_JEV_TOOL_MIN`).
 pub const TOOL_HINT_MIN: f64 = 0.7;
 
-fn env_f64(key: &str, default: f64) -> f64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.trim().parse::<f64>().ok())
+/// A threshold as an environment value: a number in 0..=1, `default` for anything else (a bad
+/// value never routes).
+fn threshold(v: Option<&str>, default: f64) -> f64 {
+    v.and_then(|v| v.trim().parse::<f64>().ok())
         .filter(|v| (0.0..=1.0).contains(v))
         .unwrap_or(default)
+}
+
+/// An `LUCINA_*` switch value: off only for `0`, `false`, `off` or `no` (case-insensitive);
+/// anything else, unset included, is on.
+pub(crate) fn switch_off(v: Option<&str>) -> bool {
+    v.is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
+    })
+}
+
+fn env_f64(key: &str, default: f64) -> f64 {
+    threshold(std::env::var(key).ok().as_deref(), default)
 }
 
 /// The intents Jev may pick, with what each means. Tier-0-only intents (log
@@ -331,8 +348,9 @@ pub fn jev_first_min_from(intent: &str, global: Option<&str>, per_intent: Option
         .unwrap_or(JEV_FIRST_MIN)
 }
 
-/// Tier-0 routes that parse their own arguments and that Jev has no option for (her computer,
-/// groceries, the log inspector, study focus): they keep precedence over JEV-first.
+/// Tier-0 routes that parse their own arguments (her computer, groceries, the log inspector, study
+/// focus). They keep the turn against an answer Jev is unsure of or has no option for; a sure
+/// answer of one of Jev's own intents wins over them ([`jev_beats_rule_from`]).
 pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
     deterministic_intent(&c.intent)
 }
@@ -354,21 +372,94 @@ pub fn deterministic_intent(intent: &str) -> bool {
         )
 }
 
+/// A Jev answer that names one of its own intents routes the turn over a deterministic keyword
+/// rule from this confidence up (`LUCINA_JEV_OVER_RULE_MIN`), whatever JEV-first's own threshold
+/// for it is.
+pub const JEV_OVER_RULE_MIN: f64 = 0.90;
+
+/// Does Jev's answer `intent` at `confidence` route the turn over the deterministic rule
+/// `rule_intent`? It must be an intent Jev itself offers ([`INTENT_OPTIONS`]), neither `chat` nor
+/// the rule's own, and sure past both [`jev_first_min`] for it and [`JEV_OVER_RULE_MIN`] —
+/// `LUCINA_JEV_OVER_RULE` off restores the rule's precedence.
+/// Pure: the environment values are the caller's, like [`jev_first_min_from`].
+pub fn jev_beats_rule_from(
+    intent: &str,
+    confidence: f64,
+    rule_intent: &str,
+    over_rule: Option<&str>,
+    over_rule_min: Option<&str>,
+    first_min: Option<&str>,
+    first_intent_min: Option<&str>,
+) -> bool {
+    !switch_off(over_rule)
+        && !intent.is_empty()
+        && intent != "unknown"
+        && intent != "chat"
+        && intent != rule_intent
+        && INTENT_OPTIONS.iter().any(|(n, _)| *n == intent)
+        && confidence
+            >= jev_first_min_from(intent, first_min, first_intent_min)
+                .max(threshold(over_rule_min, JEV_OVER_RULE_MIN))
+}
+
+/// [`jev_beats_rule_from`] with the environment's values. [`crate::jev_drift`]'s replay of which
+/// side routes a turn uses it, so the report describes the routing the server actually does.
+pub fn jev_beats_rule(intent: &str, confidence: f64, rule_intent: &str) -> bool {
+    jev_beats_rule_from(
+        intent,
+        confidence,
+        rule_intent,
+        std::env::var("LUCINA_JEV_OVER_RULE").ok().as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_FIRST_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN").ok().as_deref(),
+    )
+}
+
 /// Does JEV-first route this turn? `Err` names why not (for the drift log).
 pub fn jev_first(
     jev: Option<(&str, f64)>,
     rule: Option<&lucina_intent::tier0::Classification>,
 ) -> Result<(), &'static str> {
+    jev_first_from(
+        jev,
+        rule,
+        std::env::var("LUCINA_JEV_FIRST_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE").ok().as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE_MIN").ok().as_deref(),
+    )
+}
+
+/// [`jev_first`] with the environment values as arguments, like [`jev_first_min_from`].
+pub fn jev_first_from(
+    jev: Option<(&str, f64)>,
+    rule: Option<&lucina_intent::tier0::Classification>,
+    first_min: Option<&str>,
+    first_intent_min: Option<&str>,
+    over_rule: Option<&str>,
+    over_rule_min: Option<&str>,
+) -> Result<(), &'static str> {
     let Some((intent, confidence)) = jev else {
         return Err("jev_unavailable");
     };
-    if rule.is_some_and(deterministic_rule) {
-        return Err("deterministic_rule");
+    if let Some(r) = rule.filter(|r| deterministic_rule(r)) {
+        if !jev_beats_rule_from(
+            intent,
+            confidence,
+            &r.intent,
+            over_rule,
+            over_rule_min,
+            first_min,
+            first_intent_min,
+        ) {
+            return Err("deterministic_rule");
+        }
     }
     if intent.is_empty() || intent == "unknown" {
         return Err("jev_unknown");
     }
-    if confidence < jev_first_min(intent) {
+    if confidence < jev_first_min_from(intent, first_min, first_intent_min) {
         return Err("below_threshold");
     }
     Ok(())
@@ -660,6 +751,122 @@ mod tests {
         assert_eq!(
             jev_first(Some(("chat", 0.8)), Some(&rule("schedule_reminder"))),
             Ok(())
+        );
+    }
+
+    /// TURN-01: a sure answer of one of Jev's own intents routes the turn over a deterministic
+    /// keyword rule that disagrees with it; anything else leaves the rule in charge.
+    #[test]
+    fn a_sure_jev_answer_beats_a_deterministic_rule() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rule = |intent: &str| {
+            lucina_intent::tier0::from_model_json(
+                &json!({"intent": intent, "confidence": 1.0}),
+                "x",
+                "",
+                &s,
+            )
+        };
+        // The live case: the shopping list asked about, the grocery spending rule matched.
+        assert_eq!(
+            jev_first(
+                Some(("grocery.shopping_list.query", 0.99)),
+                Some(&rule("grocery.expense.query"))
+            ),
+            Ok(())
+        );
+        // Below JEV_OVER_RULE_MIN the rule keeps the turn.
+        assert_eq!(
+            jev_first(
+                Some(("grocery.shopping_list.query", 0.89)),
+                Some(&rule("grocery.expense.query"))
+            ),
+            Err("deterministic_rule")
+        );
+        assert_eq!(
+            jev_first(
+                Some(("unknown", 0.99)),
+                Some(&rule("grocery.expense.query"))
+            ),
+            Err("deterministic_rule")
+        );
+        // An intent Jev has no option for stays with its own rule.
+        assert!(INTENT_OPTIONS
+            .iter()
+            .all(|(n, _)| *n != "lucina_log_inspect"));
+        assert_eq!(
+            jev_first(
+                Some(("lucina_log_inspect", 0.99)),
+                Some(&rule("computer_task"))
+            ),
+            Err("deterministic_rule")
+        );
+        // The same intent on both sides: unchanged, the rule keeps the turn and runs its own
+        // classification, the one that parses the message's arguments.
+        assert_eq!(
+            jev_first(
+                Some(("grocery.expense.query", 0.99)),
+                Some(&rule("grocery.expense.query"))
+            ),
+            Err("deterministic_rule")
+        );
+        assert_eq!(
+            rule_when_jev_unsure(Some(rule("grocery.expense.query")))
+                .map(|c| c.intent)
+                .as_deref(),
+            Some("grocery.expense.query")
+        );
+    }
+
+    /// The same with the environment's values as arguments: the switch back to the rule's
+    /// precedence, and `LUCINA_JEV_OVER_RULE_MIN`.
+    #[test]
+    fn the_over_rule_precedence_switch_and_threshold_are_the_environment_s() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rule = |intent: &str| {
+            lucina_intent::tier0::from_model_json(
+                &json!({"intent": intent, "confidence": 1.0}),
+                "x",
+                "",
+                &s,
+            )
+        };
+        let spending = rule("grocery.expense.query");
+        let jev = Some(("grocery.shopping_list.query", 0.99));
+        for switch in ["0", "false", "off", "no", "OFF", " No "] {
+            assert_eq!(
+                jev_first_from(jev, Some(&spending), None, None, Some(switch), None),
+                Err("deterministic_rule"),
+                "{switch}"
+            );
+        }
+        for switch in ["1", "true", "on", "yes", "", "x"] {
+            assert_eq!(
+                jev_first_from(jev, Some(&spending), None, None, Some(switch), None),
+                Ok(()),
+                "{switch}"
+            );
+        }
+        assert_eq!(
+            jev_first_from(jev, Some(&spending), None, None, None, None),
+            Ok(()),
+            "default: on"
+        );
+        // The threshold: 0.93 beats the rule only at or above the floor it must clear.
+        let unsure = Some(("grocery.shopping_list.query", 0.93));
+        assert_eq!(
+            jev_first_from(unsure, Some(&spending), None, None, None, Some("0.95")),
+            Err("deterministic_rule")
+        );
+        assert_eq!(
+            jev_first_from(unsure, Some(&spending), None, None, None, Some("x")),
+            Ok(()),
+            "a bad value is ignored: the default 0.90 still lets 0.93 through"
+        );
+        // JEV-first's own threshold for the intent is a floor too, never a ceiling.
+        assert_eq!(
+            jev_first_from(unsure, Some(&spending), Some("0.95"), None, None, None),
+            Err("deterministic_rule")
         );
     }
 

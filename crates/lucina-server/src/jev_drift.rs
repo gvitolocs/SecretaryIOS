@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::jev_route::{deterministic_intent, JEV_FIRST_MIN};
+use crate::jev_route::{deterministic_intent, jev_beats_rule, JEV_FIRST_MIN};
 
 /// Confidence buckets, `[lo, hi)`; the last one includes 1.0.
 pub const BUCKETS: [(f64, f64); 5] = [(0.0, 0.5), (0.5, 0.6), (0.6, 0.75), (0.75, 0.9), (0.9, 1.0)];
@@ -509,7 +509,8 @@ pub fn right(labels: &[String], intent: &str) -> bool {
 }
 
 /// Jev's accuracy by bucket and intent, the live router's, and the JEV-first policy's at each
-/// threshold (Jev's answer when sure and not `unknown`, unless a deterministic rule matched).
+/// threshold (Jev's answer when sure and not `unknown`, unless a deterministic rule matched and
+/// Jev's answer did not beat it — the same precedence [`crate::jev_route::jev_first`] uses).
 pub fn score(rows: &[Routed]) -> Replay {
     let mut r = Replay {
         turns: rows.len(),
@@ -533,9 +534,12 @@ pub fn score(rows: &[Routed]) -> Replay {
             }
             None => r.jev_missing += 1,
         }
-        let rule_keeps = x.tier0.as_deref().is_some_and(deterministic_intent);
+        let rule_keeps = x.tier0.as_deref().is_some_and(|t| {
+            deterministic_intent(t) && !jev.map_or(true, |(j, c)| jev_beats_rule(j, c, t))
+        });
         for (th, t) in &mut r.policy {
-            // The live rule: a sure, known intent, unless a deterministic route keeps the turn.
+            // The live rule: a sure, known intent, unless a deterministic route keeps the turn
+            // (which a sure answer of Jev's own intents takes over).
             let pick = jev
                 .filter(|&(j, c)| c >= *th && !j.is_empty() && j != "unknown" && !rule_keeps)
                 .map_or(x.routed.as_str(), |(j, _)| j);
@@ -1166,6 +1170,32 @@ mod tests {
     fn jev_policy_keeps_the_router_for_an_empty_intent() {
         let r = score(&[routed("chat", Some(("", 0.99)), "chat", None)]);
         assert_eq!(r.policy[0], (0.6, Tally { n: 1, right: 1 }));
+    }
+
+    #[test]
+    fn jev_policy_replays_the_over_rule_precedence() {
+        // A sure answer of Jev's own intents takes the turn from the grocery rule it disagrees
+        // with, at every threshold; an unsure one leaves it with the rule.
+        let over = routed(
+            "grocery.shopping_list.query",
+            Some(("grocery.shopping_list.query", 0.99)),
+            "grocery.expense.query",
+            Some("grocery.expense.query"),
+        );
+        let r = score(&[over]);
+        for (th, t) in r.policy {
+            assert_eq!((th, t), (th, Tally { n: 1, right: 1 }), "{th}");
+        }
+        let kept = routed(
+            "grocery.shopping_list.query",
+            Some(("grocery.shopping_list.query", 0.85)),
+            "grocery.expense.query",
+            Some("grocery.expense.query"),
+        );
+        let r = score(&[kept]);
+        for (th, t) in r.policy {
+            assert_eq!((th, t), (th, Tally { n: 1, right: 0 }), "{th}");
+        }
     }
 
     #[test]
