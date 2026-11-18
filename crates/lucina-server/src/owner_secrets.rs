@@ -1117,9 +1117,10 @@ pub fn secret_words(text: &str) -> Option<SecretWords> {
 }
 
 /// Talk about storing a secret in other words than [`secret_words`] ("salvami la password del
-/// Wi-Fi", "ask me for the OpenAI key"), or a request for the card itself ("prompt a secret for the
-/// Anthropic api key", "open the secret card for the Discord token", "show me the card for the
-/// Stripe key"): a short tool loop decides what it means (chat `secret_turn`).
+/// Wi-Fi", "ask me for the OpenAI key"), or a request for the card itself: the card asked for by
+/// naming a secret ("open the secret card for the Discord token") or by naming the card together
+/// with what goes in it ("show me the card for the Stripe key"): a short tool loop decides what it
+/// means (chat `secret_turn`). "show me the wifi password" is neither; the normal turn answers it.
 pub fn secret_talk(text: &str) -> bool {
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
@@ -1151,8 +1152,10 @@ pub fn secret_talk(text: &str) -> bool {
     const REQUEST_VERBS: &[&str] = &[
         "prompt", "request", "open", "show", "pop", "bring", "apri", "aprimi", "mostra", "mostrami", "richiedi", "åbn", "vis",
     ];
-    // The card under its other names, only together with a key noun: "show me the key points".
-    const CARD_WORDS: &[&str] = &["card", "tile", "prompt", "scheda", "kort"];
+    // The card under its other names, only together with a noun: "open the card for the key".
+    const CARD_WORDS: &[&str] = &["card", "cards", "tile", "tiles", "prompt", "scheda", "schede", "kort", "kortet"];
+    // The word that says what the card is for on its own: "open the secret card".
+    const SECRET_WORD: &[&str] = &["secret", "secrets", "segreto", "segreti", "hemmelighed"];
     // STRONG_NOUNS without "pin", "pwd", "psk" and "passcode", which "open" and "show" meet in
     // other meanings: "open the map and drop a pin".
     const REQUEST_NOUNS: &[&str] = &[
@@ -1169,12 +1172,14 @@ pub fn secret_talk(text: &str) -> bool {
         let strong = words.iter().any(|w| STRONG_NOUNS.contains(w)) || joined.contains("api key");
         return strong || infisical || words.iter().any(|w| WEAK_NOUNS.contains(w));
     }
-    // A request for the card: the verb with a secret noun, or with a key noun and the card named
-    // ("open the card for the Stripe key").
-    let verb = words.iter().any(|w| REQUEST_VERBS.contains(w));
-    let secret_noun = words.iter().any(|w| REQUEST_NOUNS.contains(w)) || joined.contains("api key");
-    let key_card = words.iter().any(|w| WEAK_NOUNS.contains(w)) && words.iter().any(|w| CARD_WORDS.contains(w));
-    let asked = verb && (secret_noun || key_card);
+    // A request for the card: the verb with a secret named, or with the card named together with
+    // the thing that goes in it ("open the card for the Stripe key"). A verb with only "password"
+    // or "token" is a wish to see one ("show me the wifi password"), and the normal turn answers it.
+    let secret_word = words.iter().any(|w| SECRET_WORD.contains(w));
+    let card_noun = words.iter().any(|w| REQUEST_NOUNS.contains(w)) || joined.contains("api key")
+        || words.iter().any(|w| WEAK_NOUNS.contains(w));
+    let asked = words.iter().any(|w| REQUEST_VERBS.contains(w))
+        && (secret_word || (words.iter().any(|w| CARD_WORDS.contains(w)) && card_noun));
     let polite = POLITE.iter().any(|p| joined.starts_with(&format!("{p} ")));
     // A question about secrets is answered, not a card.
     if (words.first().is_some_and(|w| QUESTION.contains(w)) || text.trim_end().ends_with('?')) && !(polite && asked) {
@@ -1349,17 +1354,18 @@ mod tests {
                     "prompt a secret now for the claude key card", "prompt a secret immediately for the anthropic api key",
                     "open the secret card for the discord token", "show me the card for the stripe key",
                     "pop the password card for the wifi", "apri la scheda per la chiave di OpenAI", "vis kortet til adgangskode",
-                    "can you open the secret card for the github token?"] {
+                    "can you open the secret card for the github token?", "prompt for the openai api key",
+                    "open a tile for the maps key"] {
             assert!(secret_talk(yes), "{yes}");
         }
-        // Not "show me the token economy article": "show" and "token" are exactly the shape above, so
-        // it opens a card like "open the secret card for the discord token" does.
         for no in ["come salvo una password?", "how do I store a token", "qual è la chiave del successo", "salva la nota", "add milk to the list",
                    "il token è scaduto", "what is a secret", "give me the key points of this article", "the key to success is patience",
                    "what is an api key?", "send me the report", "here is the plan for tomorrow", "where is infisical running?",
                    "add the key points to my notes", "save this page?", "show me the key points", "open the map and drop a pin",
                    "open the door with the key", "prompt me tomorrow about the report", "request a refund for the order",
-                   "what is a secret card?", "where is the secret card?", "open the notes about password hygiene?"] {
+                   "what is a secret card?", "where is the secret card?", "open the notes about password hygiene?",
+                   "show me the token economy article", "show me the wifi password", "open the password manager",
+                   "request a new token from the api", "bring the credentials document to the meeting"] {
             assert!(!secret_talk(no), "{no}");
         }
     }
