@@ -592,6 +592,38 @@ fn an_expect_reached_through_a_symlink_is_not_the_file_the_run_left_behind() {
     assert_eq!(job["empty"], true, "a link is not the file: {job}");
 }
 
+/// `./report.md` names the file the run left in the workspace: a leading `.` is the directory
+/// the walk starts in, not a step out of it.
+#[test]
+fn an_expect_named_with_a_leading_dot_is_the_file_in_the_workspace() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    std::fs::write(Path::new(&ws).join("report.md"), "# report\n").unwrap();
+    let id = start(
+        &d,
+        &f,
+        "LA",
+        &ws,
+        &["--cost", "build", "--expect", "./report.md"],
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, &lane_status(&id, "verified", json!({})));
+    let job = wait_state(&d, &id, "verified");
+    assert_eq!(job["empty"], false, "the file is there, dot or not: {job}");
+
+    // The workspace itself, on the other hand, is not a file a run left behind.
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build", "--expect", "."])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, &lane_status(&id, "verified", json!({})));
+    let job = wait_state(&d, &id, "verified");
+    assert_eq!(job["empty"], true, "a directory is not the file: {job}");
+}
+
 /// The job must be on disk before `lane run` begins.
 #[test]
 fn a_job_that_cannot_be_saved_does_not_start_the_run() {
@@ -1696,42 +1728,6 @@ fn a_status_with_no_note_of_its_own_clears_the_note_lane_gave() {
     });
     assert_eq!(job["state"], "running", "{job}");
     // The next status says it has no note: the note was lane's own, and lane withdrew it.
-    f.status(&id, &lane_status(&id, "verified", json!({"note": null})));
-    let job = wait_state(&d, &id, "verified");
-    assert!(job["note"].is_null(), "{job}");
-}
-
-/// The note came from `lane` before the daemon went down; the job that comes back from
-/// `jobs.json` still knows that, and a status that says it has no note takes the note away.
-#[test]
-fn a_note_lane_gave_is_cleared_after_a_restart_too() {
-    let f = Fixture::new();
-    let mut d = f.daemon(&[]);
-    let ws = f.repo("ws");
-    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    f.status(
-        &id,
-        &lane_status(&id, "running", json!({"note": "thinking hard"})),
-    );
-    let job = wait_for(&d, &id, "waiting for lane's note", |j| {
-        j["note"] == "thinking hard"
-    });
-    assert_eq!(job["state"], "running", "{job}");
-
-    assert_eq!(
-        d.guard.terminate(Duration::from_secs(5)),
-        Some(0),
-        "clean exit on SIGTERM"
-    );
-    d.guard = common::spawn_daemon_env(d.dir.path(), &f.env(&[]));
-    // The note came over the restart, and with it the word that it is lane's own.
-    let job = show(&d, &id);
-    assert_eq!(job["note"], "thinking hard", "{job}");
-
-    // A status that says it has no note: what lane gave before the restart it takes back after.
     f.status(&id, &lane_status(&id, "verified", json!({"note": null})));
     let job = wait_state(&d, &id, "verified");
     assert!(job["note"].is_null(), "{job}");

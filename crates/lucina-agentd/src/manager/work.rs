@@ -643,15 +643,18 @@ fn nonblank(v: Option<String>) -> Option<String> {
 /// Whether `workspace/expect` is a regular file with something in it, seen without following a
 /// symlink anywhere on the way: the file the run had to leave behind is inside the workspace,
 /// and a link that steps out of it is not that file. The length is the no-follow one too, so a
-/// link is neither a file nor an empty one.
+/// link is neither a file nor an empty one. A leading `.` is the workspace the walk already
+/// starts in, so it is passed over; anything else that is not a plain name is a refusal.
 fn expect_written(workspace: &str, expect: &str) -> bool {
     let mut path = PathBuf::from(workspace);
     let mut last = None;
     for part in Path::new(expect).components() {
-        // `check_expect` refused an absolute path and a `..`; anything else that is not a plain
-        // name is a refusal too.
-        let Component::Normal(name) = part else {
-            return false;
+        // `check_expect` refused an absolute path and a `..`; a prefix, and anything else that
+        // is not a plain name or the current directory, is refused here too.
+        let name = match part {
+            Component::CurDir => continue,
+            Component::Normal(name) => name,
+            _ => return false,
         };
         path.push(name);
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
