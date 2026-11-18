@@ -38,7 +38,7 @@ pub struct StartArgs {
     pub lead: String,
     /// The change the run works for (`LA-C004`; `lagent id new change`); it belongs to the lead
     #[arg(long)]
-    pub change: String,
+    pub change: Option<String>,
     /// A short name for the run; it ends up in the run's lane id (`la-r023-ids-writer`)
     #[arg(long)]
     pub name: Option<String>,
@@ -366,7 +366,8 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
                 .display()
                 .to_string();
             let body = json!({
-                "lead": a.lead, "change": a.change, "name": a.name, "session": session,
+                "lead": a.lead, "change": a.change.as_deref().unwrap_or_default(), "name": a.name,
+                "session": session,
                 "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
                 "workspace": pipe::host_path(&workspace), "verify": a.verify, "expect": a.expect,
                 "title": a.title, "spec": spec,
