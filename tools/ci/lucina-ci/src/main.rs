@@ -17,6 +17,7 @@ use inventory::Unit;
 use runner::Spec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use verdict::{CheckRun, MergeVerdict};
@@ -1439,6 +1440,38 @@ fn file_waiver_allows(
     (added, halt, summary)
 }
 
+/// The per-run directory of `check-fast`, taken away with this value (GATE-07): the trap that removes it on every exit, in
+/// the form Rust has. Until now only the last statement of a run that reached its end removed it, so a check that left
+/// early — a step it could not start, a proof toolchain it could not read, a panic — left `check-fast-<pid>` in `$TMPDIR`
+/// behind, with the tool's whole log and its own copy of the binary in it. The one exit no guard covers is a signal that
+/// kills the check itself: nothing of a dead process runs afterwards.
+struct RunDir(PathBuf);
+
+impl Drop for RunDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A copy of this executable, under the run's own directory: the binary every step of a `check-fast` is started from
+/// (GATE-06). The tool lives at one path every worktree shares, and the launcher installs a new build into it by rename
+/// while another check may already be running; that rename takes the name away from the process that was started from it,
+/// and each step of the check is this same binary re-started as `__inner`. A copy made once, at the start, belongs to this
+/// run alone and no rebuild can reach it. The copy is chosen over keying the installed binary by its source id, because an
+/// id only separates *different* sources — a merge and its own lane build the same source and would still replace each other
+/// — and it is a copy and not a link, so that no write of another build reaches the bytes a step starts from, through the
+/// name or through the inode.
+fn self_copy(dir: &Path) -> Result<PathBuf, String> {
+    let from = std::env::current_exe().map_err(|e| format!("this program: {e}"))?;
+    let to = dir.join("bin").join("lucina-ci");
+    fs::create_dir_all(to.parent().unwrap_or(dir))
+        .map_err(|e| format!("{}: {e}", to.parent().unwrap_or(dir).display()))?;
+    fs::copy(&from, &to).map_err(|e| format!("{} -> {}: {e}", from.display(), to.display()))?;
+    fs::set_permissions(&to, fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("{}: {e}", to.display()))?;
+    Ok(to)
+}
+
 /// `check-fast [--base REF] [--proofs] [--all-proofs] [--mutants] [--no-build]`
 fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     let root = repo_root()?;
@@ -1477,10 +1510,17 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         changed.len()
     );
     let b = runner::budget(a.num("--mem-cap-gib", 8)?, None, runner::mem_total()?)?;
-    let out = std::env::temp_dir()
-        .join(format!("check-fast-{}", std::process::id()))
-        .display()
-        .to_string();
+    let out_dir = std::env::temp_dir().join(format!("check-fast-{}", std::process::id()));
+    if let Err(e) = fs::create_dir_all(&out_dir) {
+        return Err(format!("{}: {e}", out_dir.display()));
+    }
+    let _out_dir = RunDir(out_dir.clone());
+    let out = out_dir.display().to_string();
+    // Every step of this run goes through the copy from here on, and so does the `inventory` command below: the shared
+    // path this process was started from is no longer read (GATE-06).
+    let own_copy = self_copy(&out_dir)?;
+    runner::install_step_exe(own_copy.clone());
+    let exe = own_copy.display().to_string();
     let none = runner::Toolchain {
         verus: String::new(),
         version: String::new(),
@@ -1693,10 +1733,6 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     }
 
     // The proofs the change reaches. Inventory first: a new proof must be listed.
-    let exe = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .display()
-        .to_string();
     if root.join(inventory::INVENTORY).exists() {
         step(
             "inventory",
@@ -1780,7 +1816,6 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             }
         }
     }
-    let _ = fs::remove_dir_all(&out);
     for s in &skipped {
         println!("skipped  {s}");
     }
