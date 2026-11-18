@@ -1916,7 +1916,7 @@ deep-codex = ["qoder", "codex-a"]
         std::thread::sleep(Duration::from_millis(1100));
         let grown = work.age_of("wk-2#lost", Some(&at(-30))).unwrap();
         assert!(
-            grown >= 1 && grown < DAY,
+            (1..DAY).contains(&grown),
             "the age counts this daemon's time, not the clock's: {grown}"
         );
     }
