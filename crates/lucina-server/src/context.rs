@@ -171,9 +171,15 @@ pub async fn classify(
                     (true, false) => "side_effect_without_rule:planner",
                     _ => "",
                 };
+                // Jev won against a deterministic rule that disagreed with it (TURN-01): which one.
+                let overrode_rule = rule
+                    .as_ref()
+                    .filter(|r| crate::jev_route::deterministic_rule(r) && r.intent != c.intent)
+                    .map(|r| r.intent.clone())
+                    .unwrap_or_default();
                 tracing::info!(target: "lucina_jev::route", event = "jev_first", used = true,
                     intent = %c.intent, confidence, tier0 = ?rule.as_ref().map(|r| r.intent.as_str()),
-                    guard, "jev_first");
+                    overrode_rule = %overrode_rule, guard, "jev_first");
                 if guard.ends_with(":chat") {
                     return chat(confidence);
                 }
@@ -190,11 +196,26 @@ pub async fn classify(
                 tracing::info!(target: "lucina_jev::route", event = "jev_first", used = false, reason,
                     intent = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1),
                     tier0 = ?rule.as_ref().map(|r| r.intent.as_str()), "jev_first fallback");
+                let deterministic = rule
+                    .as_ref()
+                    .is_some_and(|r| crate::jev_route::deterministic_rule(r));
+                // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
+                let confidence = s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN);
+                if unsure_tools(mcp, deterministic) {
+                    // The words Jev could not place may still ask for something done. The turn takes
+                    // the planner's path, with her whole tool set and the guards and confirmations
+                    // of any other planner turn; nothing here starts a side effect by itself.
+                    tracing::info!(target: "lucina_jev::route", event = "unsure_tools", reason,
+                        jev = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1));
+                    let mut c = chat(confidence);
+                    c.reply_mode = "full_plan".into();
+                    c.needs_tools = true;
+                    return c;
+                }
+                return crate::jev_route::rule_when_jev_unsure(rule)
+                    .unwrap_or_else(|| chat(confidence));
             }
         }
-        // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
-        return crate::jev_route::rule_when_jev_unsure(rule)
-            .unwrap_or_else(|| chat(s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN)));
     }
     if let Some(c) = rule {
         // A tier-0 regex rule gets Jev's second opinion; only a sure
@@ -249,6 +270,22 @@ pub async fn classify(
             Classification::fallback()
         }
     }
+}
+
+/// `LUCINA_UNSURE_TOOLS` (on unless off): a turn Jev was unsure of. Only an owner turn with no
+/// deterministic route to run goes to the planner with her tools; an MCP turn and a turn a
+/// deterministic rule keeps are answered as before. Pure: [`unsure_tools`] reads the environment.
+pub fn unsure_tools_from(mcp: bool, deterministic: bool, switch: Option<&str>) -> bool {
+    !mcp && !deterministic && !crate::jev_route::switch_off(switch)
+}
+
+/// [`unsure_tools_from`] with `LUCINA_UNSURE_TOOLS`.
+pub fn unsure_tools(mcp: bool, deterministic: bool) -> bool {
+    unsure_tools_from(
+        mcp,
+        deterministic,
+        std::env::var("LUCINA_UNSURE_TOOLS").ok().as_deref(),
+    )
 }
 
 /// `prepareLucinaTurnContext` for an owner turn.
@@ -624,5 +661,36 @@ pub async fn prepare_keyed(
         policy,
         game,
         game_live,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TURN-02: only an owner turn with nothing deterministic to run goes to the planner's tools.
+    /// The switch's off words restore today's plain chat; anything else is on.
+    #[test]
+    fn unsure_turns_go_to_the_tools_only_for_the_owner_without_a_deterministic_rule() {
+        for switch in ["0", "false", "off", "no", "OFF", " No "] {
+            for (mcp, deterministic) in [(false, false), (false, true), (true, false), (true, true)]
+            {
+                assert!(
+                    !unsure_tools_from(mcp, deterministic, Some(switch)),
+                    "{switch} {mcp}/{deterministic}"
+                );
+            }
+        }
+        for switch in ["1", "true", "on", "yes", "", "x"] {
+            // No deterministic rule, the owner's own words: the tools.
+            assert!(unsure_tools_from(false, false, Some(switch)));
+            // A deterministic rule runs its own parsing; an MCP turn never acts as the owner.
+            assert!(!unsure_tools_from(false, true, Some(switch)));
+            assert!(!unsure_tools_from(true, false, Some(switch)));
+            assert!(!unsure_tools_from(true, true, Some(switch)));
+        }
+        // Unset is on.
+        assert!(unsure_tools_from(false, false, None));
+        assert!(unsure_tools(false, false));
     }
 }

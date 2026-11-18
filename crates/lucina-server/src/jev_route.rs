@@ -356,7 +356,9 @@ pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
 }
 
 /// A turn Jev was not sure of, or could not answer, with JEV-first on: only a deterministic route
-/// still runs. No other regex rule and no model call picks an intent, so the turn is plain chat.
+/// still runs. No other regex rule and no model call picks an intent, so with none the turn is
+/// either the planner with her tools or plain chat, whichever way
+/// [`crate::context::unsure_tools`] falls out.
 pub fn rule_when_jev_unsure(
     rule: Option<lucina_intent::tier0::Classification>,
 ) -> Option<lucina_intent::tier0::Classification> {
