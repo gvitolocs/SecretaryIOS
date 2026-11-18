@@ -365,7 +365,7 @@ fn a_silent_session_ends_and_comes_back() {
         assert!(Instant::now() < deadline, "{}", agent(d, &id));
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert_eq!(http(&d.socket(), "GET", "/sessions", None, None).1["sessions"][0]["endedAtMs"].is_u64(), true);
+    assert!(http(&d.socket(), "GET", "/sessions", None, None).1["sessions"][0]["endedAtMs"].is_u64());
     let swept = d.json(&["workspace", "sweep"]);
     assert_eq!(swept[0]["workspaceId"], workspace.as_str(), "{swept}");
     assert!(!dir.exists());
