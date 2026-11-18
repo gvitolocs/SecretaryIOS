@@ -1345,13 +1345,21 @@ mod tests {
                     "let me gibe you the maps apikey", "let me give you the maps api key", "I'll send you the GitHub token",
                     "here is the openai key", "here's my wifi password", "can you open the card so I paste the Stripe key",
                     "what? no thats not how that works you open a tile so i paste it and you store that ot infisical",
-                    "giv dig nøglen til kortet", "ti passo la chiave di Google Maps"] {
+                    "giv dig nøglen til kortet", "ti passo la chiave di Google Maps",
+                    "prompt a secret now for the claude key card", "prompt a secret immediately for the anthropic api key",
+                    "open the secret card for the discord token", "show me the card for the stripe key",
+                    "pop the password card for the wifi", "apri la scheda per la chiave di OpenAI", "vis kortet til adgangskode",
+                    "can you open the secret card for the github token?"] {
             assert!(secret_talk(yes), "{yes}");
         }
+        // Not "show me the token economy article": "show" and "token" are exactly the shape above, so
+        // it opens a card like "open the secret card for the discord token" does.
         for no in ["come salvo una password?", "how do I store a token", "qual è la chiave del successo", "salva la nota", "add milk to the list",
                    "il token è scaduto", "what is a secret", "give me the key points of this article", "the key to success is patience",
                    "what is an api key?", "send me the report", "here is the plan for tomorrow", "where is infisical running?",
-                   "add the key points to my notes", "save this page?"] {
+                   "add the key points to my notes", "save this page?", "show me the key points", "open the map and drop a pin",
+                   "open the door with the key", "prompt me tomorrow about the report", "request a refund for the order",
+                   "what is a secret card?", "where is the secret card?", "open the notes about password hygiene?"] {
             assert!(!secret_talk(no), "{no}");
         }
     }
