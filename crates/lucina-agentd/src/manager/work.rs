@@ -151,7 +151,7 @@ impl Work {
         let e = seen
             .entry(key.to_string())
             .or_insert((Instant::now(), wall));
-        Some(e.1.saturating_add(u64::try_from(e.0.elapsed().as_secs()).unwrap_or(u64::MAX) as i64))
+        Some(e.1.saturating_add(i64::try_from(e.0.elapsed().as_secs()).unwrap_or(i64::MAX)))
     }
 
     /// Lets go of one counted age: the window it measures is over and its key will not come
