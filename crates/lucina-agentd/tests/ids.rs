@@ -1943,7 +1943,8 @@ fn a_note_after_a_runs_end_row_owes_the_store_nothing() {
     );
     assert_eq!(
         ok(&d, &["id", "import", &path]),
-        "imported 1 rows (1 as annotations)"
+        "imported 1 rows (1 as annotations)\n\
+         LA.tsv:2  LA-R001  annotation: state \"removed\" does not belong to a run"
     );
     assert_eq!(view(&d, "LA-R001")["state"], "verified");
 
