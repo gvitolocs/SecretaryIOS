@@ -131,7 +131,7 @@ impl DocumentReader for LibraryReader {
             None,
             "en",
             false,
-            &crate::share::ShareTiming::silent(),
+            crate::share::ShareTiming::silent(),
         )
         .await
         .map_err(|e| e.to_string())?;

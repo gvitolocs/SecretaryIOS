@@ -223,8 +223,7 @@ fn osd_rotation(out: &str) -> Option<u32> {
             .find_map(|l| l.strip_prefix(name)?.trim().parse::<f64>().ok())
     };
     let rotate = field("Rotate:")? as u32;
-    (matches!(rotate, 90 | 180 | 270)
-        && field("Orientation confidence:")? >= MIN_ORIENTATION_CONFIDENCE)
+    (matches!(rotate, 90 | 180 | 270) && field("Orientation confidence:")? >= MIN_ORIENTATION_CONFIDENCE)
         .then_some(rotate)
 }
 
@@ -237,12 +236,7 @@ async fn turn_upright(jpg: &Path) {
     };
     if let Some(rotate) = osd_rotation(&out) {
         tracing::info!(rotate, "turning a picture upright before reading it");
-        if let Err(e) = command(
-            "convert",
-            &[path, "-rotate", &rotate.to_string(), "-quality", "90", path],
-        )
-        .await
-        {
+        if let Err(e) = command("convert", &[path, "-rotate", &rotate.to_string(), "-quality", "90", path]).await {
             tracing::warn!(error = %e, "could not turn the picture");
         }
     }
@@ -267,10 +261,7 @@ fn text_box(tsv: &str) -> Option<(i64, i64, i64, i64)> {
         let n = |v: &str| v.parse::<i64>().unwrap_or(0);
         if level == "1" {
             (page_w, page_h) = (n(width), n(height));
-        } else if level == "5"
-            && conf.parse::<f64>().unwrap_or(0.0) >= 20.0
-            && text.trim().chars().count() >= 3
-        {
+        } else if level == "5" && conf.parse::<f64>().unwrap_or(0.0) >= 20.0 && text.trim().chars().count() >= 3 {
             words += 1;
             x0 = x0.min(n(left));
             y0 = y0.min(n(top));
@@ -288,15 +279,27 @@ fn text_box(tsv: &str) -> Option<(i64, i64, i64, i64)> {
 }
 
 /// A second look at just the text area, enlarged: a photo of a screen gives the model far more pixels per digit.
-async fn close_reading(st: &AppState, jpg: &Path, timing: &ShareTiming) -> Option<String> {
-    let path = jpg.to_str()?;
-    let tsv = command("tesseract", &[path, "stdout", "-l", "eng", "tsv"])
-        .await
-        .ok()?;
-    let (x, y, w, h) = text_box(&tsv)?;
+/// With the text it found goes the outcome of the look: `skipped` when the letters cover too much of the
+/// page to be worth enlarging, `error` when one of its commands or the model itself failed.
+async fn close_reading(
+    st: &AppState,
+    jpg: &Path,
+    timing: &ShareTiming,
+) -> (Option<String>, Outcome) {
+    let Some(path) = jpg.to_str() else {
+        return (None, Outcome::Error);
+    };
+    let Ok(tsv) = command("tesseract", &[path, "stdout", "-l", "eng", "tsv"]).await else {
+        return (None, Outcome::Error);
+    };
+    let Some((x, y, w, h)) = text_box(&tsv) else {
+        return (None, Outcome::Skipped);
+    };
     let crop = jpg.with_extension("close.jpg");
     let geometry = format!("{w}x{h}+{x}+{y}");
-    let out = crop.to_str()?;
+    let Some(out) = crop.to_str() else {
+        return (None, Outcome::Error);
+    };
     let args = [
         path,
         "-crop",
@@ -308,11 +311,18 @@ async fn close_reading(st: &AppState, jpg: &Path, timing: &ShareTiming) -> Optio
         "92",
         out,
     ];
-    command("convert", &args).await.ok()?;
+    if command("convert", &args).await.is_err() {
+        return (None, Outcome::Error);
+    }
     let read = super::vision::read_text(st, &crop, timing).await;
     let _ = tokio::fs::remove_file(&crop).await;
-    read.map_err(|e| tracing::warn!(error = %e, "the close reading failed"))
-        .ok()
+    match read {
+        Ok(s) => (Some(s), Outcome::Ok),
+        Err(e) => {
+            tracing::warn!(error = %e, "the close reading failed");
+            (None, Outcome::Error)
+        }
+    }
 }
 
 /// This much OCR text (a screenshot, a page) is worth answering from at once when the GPU is taken.
@@ -361,18 +371,18 @@ async fn vision_jpeg(path: &Path) -> anyhow::Result<std::path::PathBuf> {
 }
 /// Vision description (with the model's category) plus OCR text.
 async fn image(st: &AppState, path: &Path, timing: &ShareTiming) -> anyhow::Result<Extracted> {
-    let thumbnail = timing.begin("thumbnail", false);
+    let thumbnail = timing.begin("thumbnail", true);
     let jpg = vision_jpeg(path).await;
     let made = Outcome::of(&jpg);
-    let jpg = jpg?;
     thumbnail.finish(made, Sizes::NONE);
+    let jpg = jpg?;
     let upright = timing.begin("upright", false);
     turn_upright(&jpg).await;
     upright.finish(Outcome::Ok, Sizes::NONE);
     let mut x = Extracted::new("image");
     // OCR first, it takes seconds: a busy GPU (a cold vision start, the lease) must not cost the
     // text. Vision has its own budget inside the read's limit, so a slow one only loses itself.
-    let ocr_phase = timing.begin("ocr", false);
+    let ocr_phase = timing.begin("ocr", true);
     let text = match ocr(&jpg).await {
         Ok(s) => {
             let text = s.trim().to_owned();
@@ -423,17 +433,15 @@ async fn image(st: &AppState, path: &Path, timing: &ShareTiming) -> anyhow::Resu
         None
     } else {
         let close_phase = timing.begin("close_reading", false);
-        let read = close_reading(st, &jpg, timing).await;
+        let (read, outcome) = close_reading(st, &jpg, timing).await;
         close_phase.finish(
-            read.as_ref().map_or(Outcome::Skipped, |_| Outcome::Ok),
+            outcome,
             Sizes::chars(read.as_ref().map_or(0, |s| s.chars().count())),
         );
         read
     };
     x.text = match close {
-        Some(c) => {
-            format!("Vision: {description}\nClose reading of the text:\n{c}\nOCR text:\n{text}")
-        }
+        Some(c) => format!("Vision: {description}\nClose reading of the text:\n{c}\nOCR text:\n{text}"),
         None => format!("Vision: {description}\nOCR text:\n{text}"),
     };
     let model = st.model.as_ref();
@@ -549,7 +557,7 @@ pub(crate) async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted>
         let page = if i == 0 {
             // The page read of a PDF is not an image share: it writes no timing lines of its own,
             // the read of the whole file does.
-            image(st, &img, &ShareTiming::silent())
+            image(st, &img, ShareTiming::silent())
                 .await
                 .map(|p| p.text)
         } else {
@@ -594,9 +602,7 @@ async fn level_wav(wav: &Path) -> anyhow::Result<()> {
             return None;
         }
         let analysis = crate::voice_level::analyse(&samples);
-        let lifted = analysis
-            .normalised(&samples)
-            .map(|v| crate::voice_level::wav_of(&v, rate));
+        let lifted = analysis.normalised(&samples).map(|v| crate::voice_level::wav_of(&v, rate));
         Some((analysis.level, lifted))
     })
     .await?;
@@ -636,9 +642,7 @@ fn record_level_in_background(path: &Path) {
             Command::new("ffmpeg")
                 .args(["-nostdin", "-loglevel", "error", "-i"])
                 .arg(&link)
-                .args([
-                    "-t", "600", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
-                ])
+                .args(["-t", "600", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"])
                 .kill_on_drop(true)
                 .output(),
         )
@@ -721,8 +725,8 @@ async fn audio(
                 record_level_in_background(path);
             }
             (
-                Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
-                "on-device",
+            Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
+            "on-device",
             )
         }
         None => match transcribe(st, path, voice).await {
@@ -824,9 +828,11 @@ async fn video(
     // and what matters here is that the frames were what the video spent its time on.
     let phase = timing.begin("frames", true);
     let mut chars = 0;
+    // A frame belongs to the video's own line, not to one of its own: the shared collector of no share
+    // costs nothing per frame.
+    let silent = ShareTiming::silent();
     for (i, frame) in frames.iter().enumerate() {
-        let described = match super::vision::describe(st, frame, true, &ShareTiming::silent()).await
-        {
+        let described = match super::vision::describe(st, frame, true, silent).await {
             Ok(s) => {
                 chars += s.chars().count();
                 super::vision::split_category(&s).1
@@ -920,8 +926,9 @@ pub(super) async fn read(
         let phase = timing.begin("download", true);
         let fetched = download(st, &url).await;
         let out = Outcome::of(&fetched);
+        let got = fetched.as_ref().map_or(0, |(b, _)| b.len());
+        phase.finish(out, Sizes::bytes(got as u64));
         let (bytes, mime) = fetched?;
-        phase.finish(out, Sizes::bytes(bytes.len() as u64));
         if mime.starts_with("image/") || mime.starts_with("application/pdf") {
             let ext = if mime.starts_with("image/") {
                 "jpg"
@@ -1082,9 +1089,7 @@ mod tests {
 
     #[test]
     fn a_picture_is_turned_only_on_a_sure_reading() {
-        let osd = |r: u32, c: f64| {
-            format!("Page number: 0\nOrientation in degrees: {r}\nRotate: {r}\nOrientation confidence: {c}\nScript: Latin\n")
-        };
+        let osd = |r: u32, c: f64| format!("Page number: 0\nOrientation in degrees: {r}\nRotate: {r}\nOrientation confidence: {c}\nScript: Latin\n");
         assert_eq!(osd_rotation(&osd(180, 10.15)), Some(180));
         assert_eq!(osd_rotation(&osd(90, 10.66)), Some(90));
         assert_eq!(osd_rotation(&osd(0, 11.7)), None, "already upright");
@@ -1096,34 +1101,15 @@ mod tests {
     fn the_close_reading_crops_to_the_text() {
         let head = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
         let page = "1\t1\t0\t0\t0\t0\t0\t0\t1000\t1000\t-1\t\n";
-        let word = |x: i64, y: i64, conf: i64, t: &str| {
-            format!("5\t1\t1\t1\t1\t1\t{x}\t{y}\t50\t20\t{conf}\t{t}\n")
-        };
-        let many = |n: usize| {
-            (0..n)
-                .map(|i| word(300 + i as i64 * 10, 300, 90, "word"))
-                .collect::<String>()
-        };
+        let word = |x: i64, y: i64, conf: i64, t: &str| format!("5\t1\t1\t1\t1\t1\t{x}\t{y}\t50\t20\t{conf}\t{t}\n");
+        let many = |n: usize| (0..n).map(|i| word(300 + i as i64 * 10, 300, 90, "word")).collect::<String>();
         let (x, y, w, h) = text_box(&format!("{head}{page}{}", many(10))).unwrap();
         assert_eq!((x, y), (260, 260), "with a margin");
         assert!(w < 400 && h < 200, "{w}x{h}");
-        assert_eq!(
-            text_box(&format!("{head}{page}{}", many(3))),
-            None,
-            "too little text"
-        );
+        assert_eq!(text_box(&format!("{head}{page}{}", many(3))), None, "too little text");
         let low: String = (0..10).map(|_| word(300, 300, 5, "zzz")).collect();
-        assert_eq!(
-            text_box(&format!("{head}{page}{low}")),
-            None,
-            "low confidence is not text"
-        );
-        let spread = format!(
-            "{head}{page}{}{}{}",
-            many(8),
-            word(0, 0, 90, "top"),
-            word(950, 980, 90, "end")
-        );
+        assert_eq!(text_box(&format!("{head}{page}{low}")), None, "low confidence is not text");
+        let spread = format!("{head}{page}{}{}{}", many(8), word(0, 0, 90, "top"), word(950, 980, 90, "end"));
         assert_eq!(text_box(&spread), None, "text fills the picture");
     }
     use std::io::Write;
