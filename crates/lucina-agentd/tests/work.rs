@@ -1851,6 +1851,107 @@ fn board_shows_the_work_section() {
     );
 }
 
+/// The work section is an addition to the board, and a daemon that will not answer `/work`
+/// costs that addition only: the board is printed as it is and keeps its exit code.
+#[test]
+fn a_board_that_cannot_read_the_work_jobs_is_still_the_board() {
+    use std::io::{Read, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // A daemon of one answer each: the pipeline board is served, `/work` refuses.
+    let answering = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let request = String::from_utf8_lossy(&head).to_string();
+            let path = request.split(' ').nth(1).unwrap_or("/").to_string();
+            let (status, body) = if path.starts_with("/work") {
+                (
+                    "500 Internal Server Error",
+                    r#"{"error":{"code":"ERROR","message":"the work jobs could not be read"}}"#,
+                )
+            } else {
+                (
+                    "200 OK",
+                    r#"{"workspaces":[{"state":"active","project":"SecretaryIOS","branch":"main","workspaceId":"ws-1"}],"mainCheckouts":[],"unmanaged":[]}"#,
+                )
+            };
+            let text = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(text.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    let r = common::run(
+        Command::new(common::LAGENT)
+            .args(["board"])
+            .env("LUCINA_AGENTD_SOCKET", &socket),
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains("SecretaryIOS"), "{}", r.stdout);
+    assert!(r.stdout.contains("ws-1"), "{}", r.stdout);
+    assert!(!r.stdout.contains("\nWORK\n"), "{}", r.stdout);
+    drop(answering);
+}
+
+/// `lagent` speaks the paths of the machine the owner is on: a workspace named under
+/// `LAGENT_MAC_PREFIX` is the same directory on this host, and that is what the daemon is told
+/// and what `lane run` gets.
+#[test]
+fn a_workspace_under_the_mac_prefix_reaches_the_run_as_the_host_path() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    // The host home as the Mac sees it, one prefix over this fixture's own tree.
+    let home = f.root.path().display().to_string();
+    let prefix = format!("{home}/mnt");
+    let mac_ws = format!("{prefix}/ws");
+    let spec = f.spec();
+    let change = change_for(&d, "LA");
+    let started = common::run(
+        Command::new(common::LAGENT)
+            .args([
+                "work",
+                "start",
+                "--json",
+                "--lead",
+                "LA",
+                "--change",
+                &change,
+                "--lane",
+                "qoder",
+                "--workspace",
+                &mac_ws,
+                "--cost",
+                "build",
+                "--spec",
+                &spec,
+            ])
+            .env("LUCINA_AGENTD_SOCKET", d.socket())
+            .env("HOME", &home)
+            .env("LAGENT_MAC_PREFIX", &prefix)
+            .env_remove("LAGENT_SESSION"),
+    );
+    assert_eq!(started.code, 0, "{}", started.stderr);
+    let job: Value = serde_json::from_str(&started.stdout).unwrap();
+    let id = job["id"].as_str().unwrap().to_string();
+    assert_eq!(job["workspace"], ws, "{job}");
+    // The run itself was started in the host directory, not in the Mac's mount of it.
+    let args = read(&f.data().join(format!("{id}.args")));
+    assert!(args.lines().any(|l| l == ws), "{args}");
+    assert!(!args.contains(&mac_ws), "{args}");
+}
+
 /// [`FAKE_LANE`] with one addition: every `lane status <id>` call, however it ends, appends a
 /// byte to `<id>.status-calls`. Counting those tells a test whether the poller still asks.
 fn counting_stand_in() -> String {
