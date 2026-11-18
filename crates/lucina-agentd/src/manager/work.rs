@@ -207,6 +207,28 @@ impl Work {
             .remove(key);
     }
 
+    /// Lets go of every counted age of one job: the job is out of the list for good, and a key
+    /// of its id is never asked for again.
+    fn forget_job(&self, id: &str) {
+        let prefix = format!("{id}#");
+        self.seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|k, _| !k.starts_with(&prefix));
+    }
+
+    /// The keys the clock remembers an age for. Only a test reads them, to see what a window
+    /// that is over leaves behind.
+    #[cfg(test)]
+    fn seen_keys(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// The key of the listing day: the day a finished run stays in the list nobody asked a
     /// length for. The age counted under it belongs to the ending it was first measured from,
     /// starts over when the job names a later one, and is let go of when the run is brought
@@ -249,14 +271,21 @@ impl Work {
     /// Whether the poller still asks `lane` about this job: [`pollable`], and for a run agentd
     /// lost itself the day it is followed again counted as this daemon counts it, from the
     /// ending this lost episode has. The wall clock stays the upper bound of [`pollable`]: a
-    /// job is never followed for more than a day of wall time after it ended.
+    /// job is never followed for more than a day of wall time after it ended. When a lost
+    /// episode is not followed any more, by either clock, the day it was counted with goes with
+    /// it: nothing asks about that ending again.
     fn follows(&self, job: &WorkJob) -> bool {
         match job.state {
             WorkState::Lost => {
-                pollable(job)
+                let key = Self::lost_key(job);
+                let open = pollable(job)
                     && self
-                        .age_of(&Self::lost_key(job), job.ended_at.as_deref())
-                        .is_some_and(|a| a < DAY)
+                        .age_of(&key, job.ended_at.as_deref())
+                        .is_some_and(|a| a < DAY);
+                if !open {
+                    self.forget(&key);
+                }
+                open
             }
             _ => pollable(job),
         }
@@ -1396,13 +1425,18 @@ impl Manager {
             // A job with no run id has no row to owe.
             None => None,
         };
-        if let Some(error) = refused {
-            tracing::error!(job = %failed.id, error = %error, "cannot write the run's id row");
-            failed.note = Some(refused_end_row_note(&error));
+        match refused {
+            // The row is in, the job is out of the list for good, and the ages counted of it
+            // go with it.
+            None => self.work().forget_job(&failed.id),
+            Some(error) => {
+                tracing::error!(job = %failed.id, error = %error, "cannot write the run's id row");
+                failed.note = Some(refused_end_row_note(&error));
+                let mut jobs = self.work().jobs();
+                jobs.push(failed);
+                self.work().persist(&jobs);
+            }
         }
-        let mut jobs = self.work().jobs();
-        jobs.push(failed);
-        self.work().persist(&jobs);
     }
 
     /// The note of an end row the store would not take, saved with the job.
@@ -2312,10 +2346,108 @@ deep-codex = ["qoder", "codex-a"]
             !misses.contains_key("wk-1"),
             "`lane status` was asked for a run that never began: {misses:?}"
         );
+        assert!(
+            m.work_get("wk-1").is_err(),
+            "the start whose row is in is still a job"
+        );
         assert_eq!(
             m.inner.ids.latest_state(&run.id).as_deref(),
             Some("failed"),
             "the row the end owed the store"
+        );
+    }
+
+    /// A lost episode that runs out its day is done with: what it counted its window with does
+    /// not stay in the clock's memory for the life of the daemon.
+    #[test]
+    fn a_lost_window_that_spent_its_day_is_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |secs: i64| (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339();
+        let lost = WorkJob {
+            id: "wk-9".into(),
+            state: WorkState::Lost,
+            ended_at: Some(at(-(DAY - 1))),
+            ..WorkJob::default()
+        };
+        assert!(
+            work.follows(&lost),
+            "the episode is a second short of its day"
+        );
+        assert!(
+            work.seen_keys().iter().any(|k| k.starts_with("wk-9#lost#")),
+            "the day is counted under the episode's own key"
+        );
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !work.follows(&lost),
+            "a day of this daemon's time is over: the episode is spent"
+        );
+        let left: Vec<String> = work
+            .seen_keys()
+            .into_iter()
+            .filter(|k| k.starts_with("wk-9"))
+            .collect();
+        assert!(
+            left.is_empty(),
+            "the spent window left its age behind in the clock: {left:?}"
+        );
+    }
+
+    /// A job that leaves the list for good takes its counted ages with it: the born instant and
+    /// the listing day of a run nobody follows any more are keys that never come back.
+    #[tokio::test]
+    async fn a_job_that_leaves_the_list_for_good_leaves_its_clock_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = manager_at(dir.path(), Path::new("/bin/false"), Duration::from_secs(1));
+        let run = issued_run(&m);
+        let at = |secs: i64| (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339();
+        let job = WorkJob {
+            id: "wk-1".into(),
+            lead: "LA".into(),
+            state: WorkState::Starting,
+            run_id: Some(run.id.clone()),
+            created_at: at(-30),
+            ..WorkJob::default()
+        };
+        m.work().jobs().push(job.clone());
+        // The three ages a job of this shape can have counted: when it was born, the day it is
+        // listed for and the window of an episode that called it lost.
+        let lost = WorkJob {
+            state: WorkState::Lost,
+            ended_at: Some(at(-30)),
+            ..job.clone()
+        };
+        let w = m.work();
+        let _ = w.age_of("wk-1#born", Some(&job.created_at));
+        let _ = w.age_of(&Work::ended_key(&lost), lost.ended_at.as_deref());
+        let _ = w.age_of(&Work::lost_key(&lost), lost.ended_at.as_deref());
+        let counted: Vec<String> = w
+            .seen_keys()
+            .into_iter()
+            .filter(|k| k.starts_with("wk-1#"))
+            .collect();
+        assert_eq!(counted.len(), 3, "the ages of the job: {counted:?}");
+        // The store takes the row, so this is the end of the job's life in memory.
+        m.end_a_start_that_was_not_saved(job, "cannot write the job file");
+        let left: Vec<String> = w
+            .seen_keys()
+            .into_iter()
+            .filter(|k| k.starts_with("wk-1#"))
+            .collect();
+        assert!(
+            left.is_empty(),
+            "a job that is gone is still counted: {left:?}"
+        );
+        assert!(
+            m.work_list(None, false, false).await.jobs.is_empty(),
+            "the job that is gone is still listed"
         );
     }
 
