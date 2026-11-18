@@ -294,17 +294,23 @@ pub fn title_is_sentence(title: &str, message: &str) -> bool {
         && fold_words(&title) == fold_words(message)
 }
 
-/// The title to keep when nothing better is known: [`clean_title`] of the first
-/// [`TITLE_KEEP_CHARS`] characters, cut at a word boundary. Never empty ([`UNTITLED`] when the
-/// kept part holds no word).
+/// The title to keep when nothing better is known: [`clean_title`], of the first
+/// [`TITLE_KEEP_CHARS`] characters when the title is longer than that — cut at a word boundary,
+/// so the word the cut lands in is dropped rather than left half. Never empty ([`UNTITLED`] when
+/// nothing of a word is kept).
 pub fn short_title(title: &str) -> String {
     let cleaned = clean_title(title);
-    let head: String = cleaned.chars().take(TITLE_KEEP_CHARS).collect();
-    let cut = match head.rfind(' ') {
-        Some(i) if i > 0 => &head[..i],
-        _ => &head,
+    let too_long = cleaned.chars().count() > TITLE_KEEP_CHARS;
+    let kept = if too_long {
+        let head: String = cleaned.chars().take(TITLE_KEEP_CHARS).collect();
+        match head.rfind(' ') {
+            Some(i) if i > 0 => head[..i].to_owned(),
+            _ => head,
+        }
+    } else {
+        cleaned
     };
-    let words: Vec<&str> = cut
+    let words: Vec<&str> = kept
         .split_whitespace()
         .filter(|w| w.chars().any(char::is_alphanumeric))
         .collect();
@@ -670,7 +676,7 @@ mod tests {
         assert_eq!(clean_title("(123456)"), "(123456)");
     }
 
-    /// The owner correcting one hour for another (2026-11-17): his whole sentence, which the
+    /// The owner correcting one hour for another: his whole sentence, which the
     /// direct rule reads as the event name.
     const CORRECTION: &str =
         "That is the hour of the chat, not of the meeting, the meeting is tomorrow at 10";
@@ -726,6 +732,23 @@ mod tests {
         assert_eq!(short_title(""), UNTITLED);
         // A word longer than the keep: it stays, whole, at the cut.
         assert_eq!(short_title(&"x".repeat(90)).chars().count(), 60);
+        // A title the keep covers is not cut at all: its last word is not a spare.
+        let whole = "Call the clinic about the invoice today";
+        assert_eq!(short_title(whole), whole);
+        // Ordinary words past the keep: the cut lands between two of them.
+        let long = "Please bring the annual general meeting of the association of civil engineers to a vote today";
+        let kept = short_title(long);
+        assert_eq!(
+            kept,
+            "Please bring the annual general meeting of the association"
+        );
+        assert!(kept.chars().count() <= 60, "{kept}");
+        assert!(long.chars().count() > 90, "{long}");
+        assert_eq!(
+            long.chars().skip(kept.chars().count()).next(),
+            Some(' '),
+            "cut at a word, not inside one: {kept}"
+        );
     }
 
     fn at(h: u32, m: u32, sec: u32) -> DateTime<Utc> {

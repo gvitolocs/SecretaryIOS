@@ -266,7 +266,7 @@ async fn the_next_lecture_is_a_card() {
     assert_eq!(d["actions"][0]["label"], "Navigate");
 }
 
-/// 17 Nov 2026, the owner correcting one hour for another: the direct rule reads his whole
+/// The owner correcting one hour for another, in one sentence: the direct rule reads his whole
 /// sentence as the event name and files it with that title. The sentence names no event, so the
 /// planner — which sees the recent turns — is the one asked to name it.
 #[tokio::test]
