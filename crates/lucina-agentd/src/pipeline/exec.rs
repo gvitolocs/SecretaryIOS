@@ -500,6 +500,38 @@ impl Exec {
         (results, None)
     }
 
+    /// Warm the shared `CARGO_TARGET_DIR` with one `cargo check` of the merge base, run in the
+    /// landing worktree while it is still at `base` and before the merge's timed gates. A cold
+    /// target otherwise makes the first timed step (a workspace check) pay a full build, which
+    /// under load can cross its per-step limit and kill the gate (finding GATE-04). This is not a
+    /// gate: it is outside every timed step, its result is not recorded, and a failure or timeout
+    /// is only logged before the merge goes on to `git merge` and the gates exactly as before. It
+    /// is skipped when the repo runs no cargo gate (`cargo` is `off`/`none`) or the base has no
+    /// `Cargo.toml` to check. It runs through [`Exec::sh`] for the same clean environment, PATH and
+    /// `CARGO_TARGET_DIR`; `gate_env` is kept empty, so it gets none of the gate allow/waivers.
+    fn warm_up(&mut self, dir: &Path, base: &str, rules: &Rules) {
+        if repo::cargo_mode(&rules.merge.cargo) == Some(repo::CargoMode::None) {
+            return;
+        }
+        if !dir.join("Cargo.toml").is_file() {
+            return;
+        }
+        self.gate_env = Vec::new();
+        let short = &base[..base.len().min(7)];
+        self.say(&format!(
+            "warm-up: cargo check of the merge base {short} (not a gate)"
+        ));
+        let t = Instant::now();
+        if self.sh(dir, "cargo check --workspace --quiet", 20) {
+            self.say(&format!("warm-up: done in {}s", t.elapsed().as_secs()));
+        } else {
+            self.say(&format!(
+                "warm-up: failed after {}s (not a gate failure): the check of the merge base did not pass",
+                t.elapsed().as_secs()
+            ));
+        }
+    }
+
     pub fn merge(&mut self) -> Outcome {
         let (Some(branch), Some(head)) = (self.spec.branch.clone(), self.spec.head.clone()) else {
             return fail("INVALID", "a merge job needs a branch and a commit");
@@ -538,6 +570,9 @@ impl Exec {
                 Ok(d) => d,
                 Err(e) => return fail("LANDING_FAILED", e),
             };
+            // Warm the shared target at the base, outside every timed gate step, so the first
+            // timed check does not pay a cold build (finding GATE-04). Its outcome changes nothing.
+            self.warm_up(&dir, &base, &rules);
             // Always a merge commit (the owner, 2026-11-07: "merge for everyone"; merge, don't
             // rebase): the branch's commits land as they were made, the merge names the branch.
             let method = "merge";
@@ -2126,6 +2161,130 @@ mod tests {
                 !log.contains("/run/user/1000/ssh.sock"),
                 "the log does not repeat the socket path"
             );
+        }
+    }
+
+    /// A trunk whose tip has a root `Cargo.toml`, so the merge base is warmable. The manifest
+    /// declares no `[package]`: `crate_of` gives no crate, so a change that touches no crate adds
+    /// no cargo gate and the merge's only gate is the one declared in `rules`. The rules are
+    /// committed to `main`, so they are the trunk rules the warm-up reads at the base.
+    fn main_with_cargo(root: &Path, rules: &str) -> (PathBuf, PathBuf) {
+        let (origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        std::fs::write(repo.join(".lucina/pipeline.toml"), rules).unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "cargo on main"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        (origin, repo)
+    }
+
+    /// The rules for a warmable repo: one always-passing declared gate, cargo on.
+    fn warm_rules(cargo: &str) -> String {
+        format!("[merge]\ndiffgate = false\ncargo = \"{cargo}\"\n[[gate]]\nname = \"trivial\"\nrun = \"exit 0\"\n")
+    }
+
+    /// A trunk with a base `Cargo.toml`, a topic that changes one non-crate file, `shadow` dropped
+    /// on the job's PATH as `cargo`, and the merge run over it. Returns the landing origin, the
+    /// outcome, the job log, and the base commit.
+    fn warm_shadow_merge(
+        root: &Path,
+        rules: &str,
+        shadow: &str,
+    ) -> (PathBuf, Outcome, String, String) {
+        let (origin, repo) = main_with_cargo(root, rules);
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("cargo"), shadow);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let base = git(&origin, &["rev-parse", "main"]);
+        let dir = root.join("job-warm");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        (origin, out, log, base)
+    }
+
+    #[test]
+    fn a_warm_up_that_fails_does_not_fail_the_merge() {
+        // The shadow cargo fails any `cargo check`, so the warm-up at the base fails; the declared
+        // gate runs `exit 0` and never reaches cargo. The merge still lands, and the warm-up is not
+        // in the report's gates.
+        let shadow = "#!/bin/sh\nif [ \"$1\" = check ]; then exit 1; fi\nexit 0\n";
+        let root_a = tempfile::tempdir().unwrap();
+        let (origin, out, log, _base) =
+            warm_shadow_merge(root_a.path(), &warm_rules("check"), shadow);
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+        assert!(
+            log.contains("warm-up: cargo check of the merge base"),
+            "{log}"
+        );
+        assert!(log.contains("warm-up: failed after"), "{log}");
+        assert!(log.contains("(not a gate failure)"), "{log}");
+        let names: Vec<&str> = out.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["trivial"], "{log}");
+        assert!(out.gates.iter().all(|g| g.ok), "{log}");
+
+        // The same merge with cargo = "off" skips the warm-up and reports the same gate results.
+        let root_b = tempfile::tempdir().unwrap();
+        let (_o, out_b, log_b, _b) = warm_shadow_merge(root_b.path(), &warm_rules("off"), shadow);
+        assert!(!log_b.contains("warm-up"), "{log_b}");
+        let names_b: Vec<&str> = out_b.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, names_b);
+        assert_eq!(
+            out.gates.iter().map(|g| g.ok).collect::<Vec<_>>(),
+            out_b.gates.iter().map(|g| g.ok).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_warm_up_checks_the_merge_base_before_the_first_gate() {
+        let root = tempfile::tempdir().unwrap();
+        let head_file = root.path().join("cargo-check-head");
+        // A warm-up that succeeds, recording the HEAD it ran under the way the env tests write names.txt.
+        let shadow = format!(
+            "#!/bin/sh\nif [ \"$1\" = check ]; then git -C . rev-parse HEAD >> {}; fi\nexit 0\n",
+            head_file.display()
+        );
+        let (_origin, out, log, base) =
+            warm_shadow_merge(root.path(), &warm_rules("check"), &shadow);
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        // It ran at the base commit, not the merge candidate.
+        let recorded = std::fs::read_to_string(&head_file).unwrap();
+        assert_eq!(recorded.trim(), base, "{recorded}\n{log}");
+        assert_ne!(recorded.trim(), out.landed.unwrap());
+        // Logged before the first gate, and it finished.
+        let w = log
+            .find("warm-up: cargo check of the merge base")
+            .expect("warm-up line");
+        let g = log.find("gate: trivial").expect("gate line");
+        assert!(
+            w < g,
+            "the warm-up must be logged before the first gate:\n{log}"
+        );
+        assert!(log.contains("warm-up: done in"), "{log}");
+    }
+
+    #[test]
+    fn a_repo_that_runs_no_cargo_skips_the_warm_up() {
+        for cargo in ["off", "none"] {
+            let root = tempfile::tempdir().unwrap();
+            let check_file = root.path().join("saw-check");
+            // The shadow records every `cargo check`; with cargo = off/none the warm-up must not run it.
+            let shadow = format!(
+                "#!/bin/sh\nif [ \"$1\" = check ]; then echo check >> {}; fi\nexit 0\n",
+                check_file.display()
+            );
+            let (_origin, out, log, _base) =
+                warm_shadow_merge(root.path(), &warm_rules(cargo), &shadow);
+            assert_eq!(out.code, "MERGED", "{out:?}\nLOG:\n{log}");
+            assert!(!log.contains("warm-up"), "{log}");
+            assert!(!check_file.exists(), "cargo check ran for cargo = {cargo}");
         }
     }
 }
