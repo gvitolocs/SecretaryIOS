@@ -907,6 +907,194 @@ fn a_ledger_of_lines_the_rules_refuse_is_kept_as_annotations() {
     );
 }
 
+/// One finding id of two files and two subjects: `LB.tsv:48` is the nezopt disk at 96% and
+/// `JS.tsv:183` the LucinaJS GC verifier abort. The `by` and `result` cells are as the ledgers
+/// write them.
+const LB_HOST: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+HOST-01\t2026-11-17T13:37:00Z\tfinding\treported\tnezopt: the disk is at 96%, 76 GB free\tLB\t\t\t\t\tLB-C015
+";
+
+const JS_HOST: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+HOST-01\t2026-11-17T13:34:01Z\tfinding\treported\tGC verifier: two host objects share reserved slot 0\tLN-R053\t\t\t\tCRASH-04 JS-R055
+";
+
+/// A change that goes on in another file: `PK.tsv:33` opens it and `PV.tsv:35` merges it.
+const PK_CHANGE: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+PK-C009\t2026-11-16T09:00:00Z\tchange\topen\tAdd the id import\tPK
+";
+
+const PV_CHANGE: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+PK-C009\t2026-11-17T09:00:00Z\tchange\tmerged\tThe id import is in\tPV
+";
+
+/// A ledger of three lines: `PH.tsv:17` and `PH.tsv:21` are one run, one state and two titles.
+const PH_RUN: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+PH-R007\t2026-11-17T08:00:00Z\trun\tstarted\tThe game-icons hover card\tPH
+PH-R007\t2026-11-17T08:00:19Z\trun\tstarted\tSkip the price-history panel\tPH
+";
+
+/// What an import of a file whose path is `p` and whose lines are `lines` is asked of the store.
+fn write_ledger(dir: &Path, name: &str, body: &str) -> String {
+    let file = dir.join(name);
+    std::fs::write(&file, body).unwrap();
+    file.display().to_string()
+}
+
+#[test]
+fn one_id_of_two_files_naming_two_subjects_leaves_the_second_line_a_note() {
+    let d = Daemon::start();
+    for lead in ["LB", "PK"] {
+        lead_add(&d, lead);
+    }
+    ok(
+        &d,
+        &[
+            "id",
+            "area",
+            "add",
+            "HOST",
+            "--lead",
+            "LB",
+            "the nezopt host",
+        ],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let lb = write_ledger(dir.path(), "LB.tsv", LB_HOST);
+    let js = write_ledger(dir.path(), "JS.tsv", JS_HOST);
+    let pk = write_ledger(dir.path(), "PK.tsv", PK_CHANGE);
+    let pv = write_ledger(dir.path(), "PV.tsv", PV_CHANGE);
+    let why = "id HOST-01 already has another row with another title";
+
+    // The file that comes first owns the ordinary row.
+    assert_eq!(
+        ok(&d, &["id", "import", &lb]),
+        "imported 1 rows (0 as annotations)"
+    );
+
+    // The other file's line names another subject under the same id: the dry run says so in a
+    // line of its own and writes nothing.
+    let dry =
+        format!("would import 1 rows (1 as annotations)\nJS.tsv:2  HOST-01  annotation: {why}");
+    let store = read(&ids_file(&d));
+    assert_eq!(ok(&d, &["id", "import", &js, "--dry-run"]), dry);
+    let j = lagent_json(&d, &["id", "import", &js, "--dry-run"]);
+    assert_eq!(j["annotations"].as_array().unwrap().len(), 1);
+    assert_eq!(j["annotations"][0]["id"], "HOST-01");
+    assert_eq!(j["annotations"][0]["file"], "JS.tsv");
+    assert_eq!(j["annotations"][0]["reason"], why);
+    assert_eq!(read(&ids_file(&d)), store, "the dry run wrote nothing");
+
+    // The real import keeps the line as a note of the id, verbatim, and gives it no row of
+    // its own: the view keeps the title of the file that came first.
+    assert_eq!(
+        ok(&d, &["id", "import", &js]),
+        dry.replacen("would import", "imported", 1)
+    );
+    let v = view(&d, "HOST-01");
+    assert_eq!(v["state"], "reported");
+    assert_eq!(v["title"], "nezopt: the disk is at 96%, 76 GB free");
+    assert_eq!(v["rows"], 2);
+    assert_eq!(v["annotations"].as_array().unwrap().len(), 1);
+    assert_eq!(v["annotations"][0]["file"], "JS.tsv");
+    assert_eq!(v["annotations"][0]["line"], 2);
+    let rs = rows(&d, "HOST-01");
+    assert_eq!(rs[1]["state"], "note", "the second line is a note");
+    assert_eq!(
+        rs[1]["annotation"]["raw"],
+        JS_HOST.lines().nth(1).unwrap(),
+        "the row keeps the line as it stands"
+    );
+
+    // Both files again: the note is not kept twice and nothing is new.
+    assert_eq!(
+        ok(&d, &["id", "import", &lb]),
+        "imported 0 rows (0 as annotations)"
+    );
+    assert_eq!(
+        ok(&d, &["id", "import", &js]),
+        "imported 0 rows (0 as annotations)"
+    );
+    assert_eq!(view(&d, "HOST-01")["rows"], 2);
+
+    // A line that takes the id to another state is another matter, although it comes from a
+    // second file with a second title.
+    assert_eq!(
+        ok(&d, &["id", "import", &pk]),
+        "imported 1 rows (0 as annotations)"
+    );
+    assert_eq!(
+        ok(&d, &["id", "import", &pv]),
+        "imported 1 rows (0 as annotations)"
+    );
+    let v = view(&d, "PK-C009");
+    assert_eq!(v["state"], "merged");
+    assert_eq!(v["title"], "The id import is in");
+    assert_eq!(v["rows"], 2);
+    assert_eq!(v["annotations"], json!([]));
+
+    // The other order of the two files: it is the first import that owns the view.
+    let first = Daemon::start();
+    lead_add(&first, "LB");
+    ok(
+        &first,
+        &[
+            "id",
+            "area",
+            "add",
+            "HOST",
+            "--lead",
+            "LB",
+            "the nezopt host",
+        ],
+    );
+    assert_eq!(
+        ok(&first, &["id", "import", &js]),
+        "imported 1 rows (0 as annotations)"
+    );
+    assert_eq!(
+        ok(&first, &["id", "import", &lb]),
+        format!("imported 1 rows (1 as annotations)\nLB.tsv:2  HOST-01  annotation: {why}")
+    );
+    let v = view(&first, "HOST-01");
+    assert_eq!(
+        v["title"],
+        "GC verifier: two host objects share reserved slot 0"
+    );
+    assert_eq!(v["annotations"][0]["file"], "LB.tsv");
+}
+
+#[test]
+fn a_second_title_for_a_state_an_earlier_line_of_the_file_gave_is_said() {
+    let d = Daemon::start();
+    lead_add(&d, "PH");
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_ledger(dir.path(), "PH.tsv", PH_RUN);
+    let note = "PH.tsv:3  PH-R007  same state as line 2, other title";
+
+    // Both lines are ordinary rows: the file is only asked to say what it did.
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--dry-run"]),
+        format!("would import 2 rows (0 as annotations)\n{note}")
+    );
+    let out = ok(&d, &["id", "import", &path]);
+    assert!(out.contains(note), "{out}");
+    assert!(
+        out.starts_with("imported 2 rows (0 as annotations)"),
+        "{out}"
+    );
+    let v = view(&d, "PH-R007");
+    assert_eq!(v["state"], "started");
+    assert_eq!(v["rows"], 2, "both lines are rows of the id");
+    assert_eq!(v["annotations"], json!([]), "the rules refused nothing");
+    assert_eq!(v["title"], "Skip the price-history panel");
+
+    // The same file again: no line is new, so nothing is said of a title either.
+    assert_eq!(
+        ok(&d, &["id", "import", &path]),
+        "imported 0 rows (0 as annotations)"
+    );
+}
+
 /// The first line of the fake lane's stored arguments after `flag`.
 fn arg_after(args: &[String], flag: &str) -> String {
     let at = args
@@ -1701,4 +1889,87 @@ fn a_final_job_is_followed_until_the_store_has_its_end_row() {
         lagent_json(&d, &["work", "show", &id])["state"] == "verified",
         "the job moved on for the row alone"
     );
+}
+
+/// A note that comes after a run's end row says nothing of the run's state: `LB.tsv:54` is the
+/// last ordinary row of `LB-R012` and `LB.tsv:138`, whose state no run allows, is the last row of
+/// all. The poller must not read that note as the state and owe the store a second end row.
+#[test]
+fn a_note_after_a_runs_end_row_owes_the_store_nothing() {
+    let f = Fixture::new();
+    let mut env = f.env();
+    env.push(("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string()));
+    let d = Daemon::start_with_env(&env);
+    std::fs::write(
+        f.data().join("ids-path"),
+        ids_file(&d).display().to_string(),
+    )
+    .unwrap();
+    setup_la(&d);
+    let ws = f.repo("ws");
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    let job = work_job(&work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Ended"],
+    ));
+    let id = job["id"].as_str().unwrap().to_string();
+    assert_eq!(job["runId"], "LA-R001");
+
+    // The run ends verified: its end row is the store's last ordinary row of the id.
+    f.status(
+        &id,
+        &lane_status(
+            &id,
+            "verified",
+            json!({"final_lane": "qoder", "model": "auto-free",
+                   "verify": {"cmd": "true", "ran_cmd": null, "exit_code": 0, "head": "deadbeef",
+                              "ran": true, "timed_out": false, "note": null},
+                   "attempts": [{"lane": "qoder", "outcome": "ok", "reason": null,
+                                 "before_head": head, "after_head": null}]}),
+        ),
+    );
+    let rs = wait_rows(&d, "LA-R001", 2);
+    assert_eq!(rs[1]["state"], "verified", "{rs:?}");
+
+    // The lead's ledger then writes the run off as removed. The state belongs to no run, so the
+    // line is kept as a note: the last row of the id, and nothing to say of its state.
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_ledger(
+        dir.path(),
+        "LA.tsv",
+        "id\tutc\tkind\tstate\ttitle\nLA-R001\t2026-11-17T14:18:56Z\trun\tremoved\t/home/nez/scratch/amazon-p1-target\n",
+    );
+    assert_eq!(
+        ok(&d, &["id", "import", &path]),
+        "imported 1 rows (1 as annotations)"
+    );
+    assert_eq!(view(&d, "LA-R001")["state"], "verified");
+
+    // A second job the lane never answers for goes lost, which takes three passes of the
+    // poller. By then the ended job has been followed as often as it is ever followed.
+    work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Never"],
+    );
+    let rs = wait_rows(&d, "LA-R002", 2);
+    assert_eq!(rs[1]["state"], "failed", "{rs:?}");
+    assert_eq!(
+        lagent_json(&d, &["work", "show", "la-r002-never"])["state"],
+        "lost"
+    );
+    let rs = rows(&d, "LA-R001");
+    let states: Vec<&str> = rs
+        .iter()
+        .map(|r| r["state"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        states,
+        ["started", "verified", "note"],
+        "the note owed the store no second end row"
+    );
+    assert_eq!(lagent_json(&d, &["work", "show", &id])["state"], "verified");
 }

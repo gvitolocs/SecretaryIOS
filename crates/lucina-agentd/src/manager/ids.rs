@@ -1317,4 +1317,33 @@ mod tests {
         // A restart finds the partial line and stays read-only: the number is still unissued.
         assert!(open(d.path()).lock().read_only.is_some());
     }
+
+    /// `LB.tsv:54` is the last ordinary row of `LB-R012` and `LB.tsv:138` the last row of all:
+    /// `removed` is no run state, so that line is kept as an annotation.
+    #[test]
+    fn the_latest_row_of_an_id_skips_its_annotations() {
+        let d = dir();
+        let ids = open(d.path());
+        ids.issue(Kind::Lead, "LA", None, "lead", |_| lead_row("LA"))
+            .unwrap();
+        ids.issue(Kind::Run, "LA", None, "daemon", |_| run_row("one"))
+            .unwrap();
+        ids.import(
+            parse_tsv(
+                "LA.tsv",
+                "LA-R001\t2026-11-17T14:18:56Z\trun\tremoved\t/home/nez/scratch/amazon-p1-target\n",
+            ),
+            false,
+        )
+        .unwrap();
+        let st = ids.lock();
+        assert_eq!(st.rows.len(), 3);
+        assert!(st.rows[2].is_annotation(), "the line is an annotation");
+        drop(st);
+        assert_eq!(ids.latest_state("LA-R001").as_deref(), Some("started"));
+        assert_eq!(
+            ids.latest_row("LA-R001").map(|(s, _)| s).as_deref(),
+            Some("started")
+        );
+    }
 }

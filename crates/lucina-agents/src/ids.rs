@@ -1458,9 +1458,9 @@ LA\t2026-11-01T00:00:00Z\tlead\tregistered\tLucina Agents
         assert_eq!(l.rows.len(), 1);
         assert_eq!(l.skipped[0].line, 4);
         assert_eq!(l.skipped[0].reason, "\"id\" is not an id");
-        // The raw line keeps what the file holds, a carriage return aside.
+        // The raw line keeps what the file holds, its carriage return included.
         let l = ledger("LA-C001\tt\tchange\tstamp\tx\r\n");
-        assert_eq!(l.rows[0].source.raw, "LA-C001\tt\tchange\tstamp\tx");
+        assert_eq!(l.rows[0].source.raw, "LA-C001\tt\tchange\tstamp\tx\r");
     }
 
     #[test]
@@ -1654,6 +1654,20 @@ GC\tJS\tgarbage collector, twice\nHOST\tLucinaJS: host objects (CRASH-04)\nREENT
         assert_eq!(import_plan(&rows, same_line.rows.clone()).len(), 1);
         let other_time = ledger("LA-C001\tt2\tchange\topen\tx\n");
         assert_eq!(import_plan(&rows, other_time.rows).len(), 1);
+    }
+
+    /// A cell of refs the lead separates by commas, as `LB.tsv` writes them, is still one ref
+    /// per id.
+    #[test]
+    fn refs_written_with_commas_are_one_ref_each() {
+        let rows = rows_of(
+            "LB-R001\t2026-11-17T12:09:00Z\trun\tstarted\tA run\tLB\n\
+             LB-C001\t2026-11-17T12:09:00Z\tchange\topen\tA change\tLB\t\t\t\t\tLANE-01,LB-R001,LB-R002\n",
+        );
+        assert!(rows[0].refs.is_empty(), "{:?}", rows[0].refs);
+        assert_eq!(rows[1].refs, ["LANE-01", "LB-R001", "LB-R002"]);
+        let t = trace(&rows, "LB-R001").unwrap();
+        assert_eq!(rel(&t, "works for"), ["LB-C001"]);
     }
 
     fn graph() -> Vec<IdRow> {
