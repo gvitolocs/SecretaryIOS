@@ -223,7 +223,8 @@ fn osd_rotation(out: &str) -> Option<u32> {
             .find_map(|l| l.strip_prefix(name)?.trim().parse::<f64>().ok())
     };
     let rotate = field("Rotate:")? as u32;
-    (matches!(rotate, 90 | 180 | 270) && field("Orientation confidence:")? >= MIN_ORIENTATION_CONFIDENCE)
+    (matches!(rotate, 90 | 180 | 270)
+        && field("Orientation confidence:")? >= MIN_ORIENTATION_CONFIDENCE)
         .then_some(rotate)
 }
 
@@ -236,7 +237,12 @@ async fn turn_upright(jpg: &Path) {
     };
     if let Some(rotate) = osd_rotation(&out) {
         tracing::info!(rotate, "turning a picture upright before reading it");
-        if let Err(e) = command("convert", &[path, "-rotate", &rotate.to_string(), "-quality", "90", path]).await {
+        if let Err(e) = command(
+            "convert",
+            &[path, "-rotate", &rotate.to_string(), "-quality", "90", path],
+        )
+        .await
+        {
             tracing::warn!(error = %e, "could not turn the picture");
         }
     }
@@ -261,7 +267,10 @@ fn text_box(tsv: &str) -> Option<(i64, i64, i64, i64)> {
         let n = |v: &str| v.parse::<i64>().unwrap_or(0);
         if level == "1" {
             (page_w, page_h) = (n(width), n(height));
-        } else if level == "5" && conf.parse::<f64>().unwrap_or(0.0) >= 20.0 && text.trim().chars().count() >= 3 {
+        } else if level == "5"
+            && conf.parse::<f64>().unwrap_or(0.0) >= 20.0
+            && text.trim().chars().count() >= 3
+        {
             words += 1;
             x0 = x0.min(n(left));
             y0 = y0.min(n(top));
@@ -441,7 +450,9 @@ async fn image(st: &AppState, path: &Path, timing: &ShareTiming) -> anyhow::Resu
         read
     };
     x.text = match close {
-        Some(c) => format!("Vision: {description}\nClose reading of the text:\n{c}\nOCR text:\n{text}"),
+        Some(c) => {
+            format!("Vision: {description}\nClose reading of the text:\n{c}\nOCR text:\n{text}")
+        }
         None => format!("Vision: {description}\nOCR text:\n{text}"),
     };
     let model = st.model.as_ref();
@@ -557,9 +568,7 @@ pub(crate) async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted>
         let page = if i == 0 {
             // The page read of a PDF is not an image share: it writes no timing lines of its own,
             // the read of the whole file does.
-            image(st, &img, ShareTiming::silent())
-                .await
-                .map(|p| p.text)
+            image(st, &img, ShareTiming::silent()).await.map(|p| p.text)
         } else {
             ocr(&img).await
         };
@@ -602,7 +611,9 @@ async fn level_wav(wav: &Path) -> anyhow::Result<()> {
             return None;
         }
         let analysis = crate::voice_level::analyse(&samples);
-        let lifted = analysis.normalised(&samples).map(|v| crate::voice_level::wav_of(&v, rate));
+        let lifted = analysis
+            .normalised(&samples)
+            .map(|v| crate::voice_level::wav_of(&v, rate));
         Some((analysis.level, lifted))
     })
     .await?;
@@ -642,7 +653,9 @@ fn record_level_in_background(path: &Path) {
             Command::new("ffmpeg")
                 .args(["-nostdin", "-loglevel", "error", "-i"])
                 .arg(&link)
-                .args(["-t", "600", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"])
+                .args([
+                    "-t", "600", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
+                ])
                 .kill_on_drop(true)
                 .output(),
         )
@@ -725,8 +738,8 @@ async fn audio(
                 record_level_in_background(path);
             }
             (
-            Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
-            "on-device",
+                Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
+                "on-device",
             )
         }
         None => match transcribe(st, path, voice).await {
@@ -1089,7 +1102,9 @@ mod tests {
 
     #[test]
     fn a_picture_is_turned_only_on_a_sure_reading() {
-        let osd = |r: u32, c: f64| format!("Page number: 0\nOrientation in degrees: {r}\nRotate: {r}\nOrientation confidence: {c}\nScript: Latin\n");
+        let osd = |r: u32, c: f64| {
+            format!("Page number: 0\nOrientation in degrees: {r}\nRotate: {r}\nOrientation confidence: {c}\nScript: Latin\n")
+        };
         assert_eq!(osd_rotation(&osd(180, 10.15)), Some(180));
         assert_eq!(osd_rotation(&osd(90, 10.66)), Some(90));
         assert_eq!(osd_rotation(&osd(0, 11.7)), None, "already upright");
@@ -1101,15 +1116,34 @@ mod tests {
     fn the_close_reading_crops_to_the_text() {
         let head = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
         let page = "1\t1\t0\t0\t0\t0\t0\t0\t1000\t1000\t-1\t\n";
-        let word = |x: i64, y: i64, conf: i64, t: &str| format!("5\t1\t1\t1\t1\t1\t{x}\t{y}\t50\t20\t{conf}\t{t}\n");
-        let many = |n: usize| (0..n).map(|i| word(300 + i as i64 * 10, 300, 90, "word")).collect::<String>();
+        let word = |x: i64, y: i64, conf: i64, t: &str| {
+            format!("5\t1\t1\t1\t1\t1\t{x}\t{y}\t50\t20\t{conf}\t{t}\n")
+        };
+        let many = |n: usize| {
+            (0..n)
+                .map(|i| word(300 + i as i64 * 10, 300, 90, "word"))
+                .collect::<String>()
+        };
         let (x, y, w, h) = text_box(&format!("{head}{page}{}", many(10))).unwrap();
         assert_eq!((x, y), (260, 260), "with a margin");
         assert!(w < 400 && h < 200, "{w}x{h}");
-        assert_eq!(text_box(&format!("{head}{page}{}", many(3))), None, "too little text");
+        assert_eq!(
+            text_box(&format!("{head}{page}{}", many(3))),
+            None,
+            "too little text"
+        );
         let low: String = (0..10).map(|_| word(300, 300, 5, "zzz")).collect();
-        assert_eq!(text_box(&format!("{head}{page}{low}")), None, "low confidence is not text");
-        let spread = format!("{head}{page}{}{}{}", many(8), word(0, 0, 90, "top"), word(950, 980, 90, "end"));
+        assert_eq!(
+            text_box(&format!("{head}{page}{low}")),
+            None,
+            "low confidence is not text"
+        );
+        let spread = format!(
+            "{head}{page}{}{}{}",
+            many(8),
+            word(0, 0, 90, "top"),
+            word(950, 980, 90, "end")
+        );
         assert_eq!(text_box(&spread), None, "text fills the picture");
     }
     use std::io::Write;

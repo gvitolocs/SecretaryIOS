@@ -82,11 +82,17 @@ pub fn stop_orphans(cfg: &super::ShareConfig) {
         return;
     };
     let mmproj = cfg.vision_mmproj.to_string_lossy();
-    for pid in dir.flatten().filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok()) {
+    for pid in dir
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+    {
         let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
             continue;
         };
-        let args: Vec<_> = raw.split(|b| *b == 0).map(String::from_utf8_lossy).collect();
+        let args: Vec<_> = raw
+            .split(|b| *b == 0)
+            .map(String::from_utf8_lossy)
+            .collect();
         if is_vision_server(&args, &mmproj) {
             tracing::info!(pid, "stopping a vision server left by an earlier lucina-rs");
             // SAFETY: a signal to the process whose command line was just read as ours.
@@ -100,7 +106,9 @@ pub fn stop_orphans(cfg: &super::ShareConfig) {
 /// Lucina's vision server, and not the `systemd-run` or lease wrappers holding the same arguments.
 fn is_vision_server(args: &[std::borrow::Cow<'_, str>], mmproj: &str) -> bool {
     args.first().is_some_and(|a| a.ends_with("llama-server"))
-        && args.windows(2).any(|w| w[0] == "--mmproj" && w[1] == mmproj)
+        && args
+            .windows(2)
+            .any(|w| w[0] == "--mmproj" && w[1] == mmproj)
 }
 
 async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
@@ -132,7 +140,12 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
     let log = st.cfg.data_dir.join("vision-server.log");
     let out = {
         use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&log)?
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&log)?
     };
     let child = cmd
         .arg("-m")
@@ -228,8 +241,16 @@ async fn ready(
 /// The last `n` non-empty lines of a log file, on one line (empty when there is none).
 fn last_lines(path: &Path, n: usize) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    lines[lines.len().saturating_sub(n)..].join(" | ").chars().take(400).collect()
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(n)..]
+        .join(" | ")
+        .chars()
+        .take(400)
+        .collect()
 }
 
 async fn completion(url: &str, path: &Path, prompt: &str) -> anyhow::Result<String> {
@@ -368,7 +389,9 @@ pub(crate) async fn read_text(
 ) -> anyhow::Result<String> {
     let url = match &st.cfg.share.vision_url {
         Some(url) => url.clone(),
-        None => running(st).await.context("the vision server is not running")?,
+        None => running(st)
+            .await
+            .context("the vision server is not running")?,
     };
     let result = completion_timed(&url, path, READ_TEXT_PROMPT, timing).await;
     let _ = running(st).await;
@@ -386,13 +409,25 @@ mod tests {
         };
         let m = "/models/mmproj.gguf";
         assert!(is_vision_server(
-            &cow(&["/home/nez/llama.cpp/build/bin/llama-server", "-m", "x", "--mmproj", m]),
+            &cow(&[
+                "/home/nez/llama.cpp/build/bin/llama-server",
+                "-m",
+                "x",
+                "--mmproj",
+                m
+            ]),
             m
         ));
         // Its scope and lease wrappers carry the same arguments; Qwen has no such mmproj.
         assert!(!is_vision_server(&cow(&["systemd-run", "--mmproj", m]), m));
-        assert!(!is_vision_server(&cow(&["/bin/llama-server", "-m", "qwen.gguf"]), m));
-        assert!(!is_vision_server(&cow(&["/bin/llama-server", "--mmproj", "other"]), m));
+        assert!(!is_vision_server(
+            &cow(&["/bin/llama-server", "-m", "qwen.gguf"]),
+            m
+        ));
+        assert!(!is_vision_server(
+            &cow(&["/bin/llama-server", "--mmproj", "other"]),
+            m
+        ));
     }
 
     #[test]
