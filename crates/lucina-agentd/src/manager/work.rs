@@ -175,6 +175,23 @@ impl Work {
         )
     }
 
+    /// The age of a saved time as this daemon counts it, or the wall clock's own when the time
+    /// cannot be read: [`age_of`] needs a stamp it can parse, and a stamp it cannot is one the
+    /// plain clock never answered either.
+    fn age_of_secs(&self, key: &str, stamp: Option<&str>) -> Option<i64> {
+        self.age_of(key, stamp).or_else(|| stamp.and_then(age_secs))
+    }
+
+    /// Whether this job belongs in the listing nobody asked a length for: the day after a run
+    /// ended is counted as this daemon counts it, the way the lost window and the lost time are.
+    /// A clock that steps forward by more than a day after the first look at a finished run
+    /// would otherwise drop runs that only just ended, and a job saved with a stamp this daemon
+    /// has never looked at is measured by the wall once and by its own time from then on.
+    fn shown(&self, job: &WorkJob) -> bool {
+        let age = self.age_of_secs(&format!("{}#ended", job.id), job.ended_at.as_deref());
+        recent_at(job.state, age)
+    }
+
     /// Whether the poller still asks `lane` about this job: [`pollable`], and for a run agentd
     /// lost itself the day it is followed again counted as this daemon counts it, from the
     /// ending this lost episode has. The wall clock stays the upper bound of [`pollable`]: a
@@ -455,9 +472,16 @@ fn age_secs(rfc3339: &str) -> Option<i64> {
     )
 }
 
-/// Whether a stored or direct job still belongs in the default list.
+/// Whether a stored or direct job still belongs in the default list. The wall clock's own
+/// answer, for a row that comes straight from `lane ls`; a stored job is measured by
+/// [`Work::shown`], which counts the day as this daemon counts it.
 fn recent(state: WorkState, stamp: Option<&str>) -> bool {
-    !state.is_terminal() || stamp.and_then(age_secs).is_none_or(|a| a <= DAY)
+    recent_at(state, stamp.and_then(age_secs))
+}
+
+/// The same rule, with the age of the ending already measured by the caller.
+fn recent_at(state: WorkState, age: Option<i64>) -> bool {
+    !state.is_terminal() || age.is_none_or(|a| a <= DAY)
 }
 
 fn lane_not_found(kind: &str, name: &str) -> ManagerError {
@@ -959,7 +983,7 @@ impl Manager {
         let mut jobs: Vec<WorkJob> = stored
             .into_iter()
             .filter(|j| lead.as_deref().is_none_or(|l| j.lead == l))
-            .filter(|j| include_old || recent(j.state, j.ended_at.as_deref()))
+            .filter(|j| include_old || self.work().shown(j))
             .collect();
         let mut warning = None;
         let mut unparsed = 0;
@@ -1900,6 +1924,42 @@ deep-codex = ["qoder", "codex-a"]
         assert!(
             work.follows(&job),
             "the second episode inherits the day the first one spent"
+        );
+    }
+
+    /// The day a finished run stays in the listing nobody asked a length for is counted as this
+    /// daemon counts it: a clock that steps forward over the ending does not drop the run.
+    #[test]
+    fn the_listing_day_counts_time_that_cannot_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |hours: i64| (chrono::Utc::now() + chrono::Duration::hours(hours)).to_rfc3339();
+        let failed = |stamp: String| WorkJob {
+            id: "wk-3".into(),
+            state: WorkState::Failed,
+            ended_at: Some(stamp),
+            ..WorkJob::default()
+        };
+        // The clock stands ahead of the ending: the first look at it gives an age of zero.
+        assert!(
+            work.shown(&failed(at(6))),
+            "a run the clock ran ahead of is shown"
+        );
+        // Thirty hours later the wall clock has left the day behind, and a listing measured by
+        // it would have dropped a run that ended under its day by this daemon's count.
+        assert!(
+            !recent(WorkState::Failed, Some(&at(-30))),
+            "the wall clock is not how the listing counts it"
+        );
+        assert!(
+            work.shown(&failed(at(-30))),
+            "a step forward drops a run that is a day old only to the clock"
         );
     }
 
