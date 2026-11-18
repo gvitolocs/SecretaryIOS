@@ -77,14 +77,21 @@ pub fn limit_in_log_line(line: &str, session_id: &str) -> Option<String> {
     let key = format!("session.id={session_id}");
     let at = line.find(&key)?;
     // The id must end there (no longer id that starts the same).
-    if line[at + key.len()..].chars().next().is_some_and(|c| !c.is_whitespace()) {
+    if line[at + key.len()..]
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace())
+    {
         return None;
     }
     let i = line.find("error.error=\"")?;
     let rest = &line[i + "error.error=\"".len()..];
     let error = rest[..rest.find('"').unwrap_or(rest.len())].to_string();
     let lower = error.to_lowercase();
-    LIMIT_PHRASES.iter().any(|p| lower.contains(p)).then_some(error)
+    LIMIT_PHRASES
+        .iter()
+        .any(|p| lower.contains(p))
+        .then_some(error)
 }
 
 #[cfg(test)]
@@ -97,29 +104,108 @@ mod tests {
     #[test]
     fn the_real_zen_limit_line_is_a_limit_for_its_session_only() {
         let e = limit_in_log_line(REAL, "ses_e4550afe4ffec45cR8Hl7cjxEM").unwrap();
-        assert!(e.starts_with("AI_APICallError: Free usage limit reached."), "{e}");
+        assert!(
+            e.starts_with("AI_APICallError: Free usage limit reached."),
+            "{e}"
+        );
         assert_eq!(limit_in_log_line(REAL, "ses_other"), None);
-        assert_eq!(limit_in_log_line(REAL, "ses_e4550afe4ffec45cR8Hl7cjx"), None, "a prefix of the id is another session");
+        assert_eq!(
+            limit_in_log_line(REAL, "ses_e4550afe4ffec45cR8Hl7cjx"),
+            None,
+            "a prefix of the id is another session"
+        );
         assert_eq!(limit_in_log_line(REAL, ""), None);
-        assert_eq!(limit_in_log_line(&REAL.replace("level=ERROR", "level=WARN"), "ses_e4550afe4ffec45cR8Hl7cjxEM"), None);
+        assert_eq!(
+            limit_in_log_line(
+                &REAL.replace("level=ERROR", "level=WARN"),
+                "ses_e4550afe4ffec45cR8Hl7cjxEM"
+            ),
+            None
+        );
         let other = REAL.replace("Free usage limit reached", "connection reset");
-        assert_eq!(limit_in_log_line(&other, "ses_e4550afe4ffec45cR8Hl7cjxEM"), None, "other errors are left to the stall rule");
+        assert_eq!(
+            limit_in_log_line(&other, "ses_e4550afe4ffec45cR8Hl7cjxEM"),
+            None,
+            "other errors are left to the stall rule"
+        );
     }
 
     fn facts() -> WatchFacts {
-        WatchFacts { idle_ms: 0, stall_ms: Some(1000), open_tools: 0, open_permissions: 0, log_limit: false }
+        WatchFacts {
+            idle_ms: 0,
+            stall_ms: Some(1000),
+            open_tools: 0,
+            open_permissions: 0,
+            log_limit: false,
+        }
     }
 
     #[test]
     fn verdicts() {
         assert_eq!(verdict(&facts()), Verdict::Wait);
-        assert_eq!(verdict(&WatchFacts { idle_ms: 999, ..facts() }), Verdict::Wait);
-        assert_eq!(verdict(&WatchFacts { idle_ms: 1000, ..facts() }), Verdict::Stalled);
-        assert_eq!(verdict(&WatchFacts { idle_ms: 5000, open_tools: 1, ..facts() }), Verdict::Wait, "a long tool is not a stall");
-        assert_eq!(verdict(&WatchFacts { idle_ms: 5000, open_permissions: 1, ..facts() }), Verdict::Wait, "the owner may answer late");
-        assert_eq!(verdict(&WatchFacts { idle_ms: 5000, stall_ms: None, ..facts() }), Verdict::Wait);
-        assert_eq!(verdict(&WatchFacts { log_limit: true, ..facts() }), Verdict::Limit);
-        assert_eq!(verdict(&WatchFacts { log_limit: true, open_tools: 2, stall_ms: None, ..facts() }), Verdict::Limit);
-        assert_eq!(verdict(&WatchFacts { log_limit: true, open_permissions: 1, ..facts() }), Verdict::Wait);
+        assert_eq!(
+            verdict(&WatchFacts {
+                idle_ms: 999,
+                ..facts()
+            }),
+            Verdict::Wait
+        );
+        assert_eq!(
+            verdict(&WatchFacts {
+                idle_ms: 1000,
+                ..facts()
+            }),
+            Verdict::Stalled
+        );
+        assert_eq!(
+            verdict(&WatchFacts {
+                idle_ms: 5000,
+                open_tools: 1,
+                ..facts()
+            }),
+            Verdict::Wait,
+            "a long tool is not a stall"
+        );
+        assert_eq!(
+            verdict(&WatchFacts {
+                idle_ms: 5000,
+                open_permissions: 1,
+                ..facts()
+            }),
+            Verdict::Wait,
+            "the owner may answer late"
+        );
+        assert_eq!(
+            verdict(&WatchFacts {
+                idle_ms: 5000,
+                stall_ms: None,
+                ..facts()
+            }),
+            Verdict::Wait
+        );
+        assert_eq!(
+            verdict(&WatchFacts {
+                log_limit: true,
+                ..facts()
+            }),
+            Verdict::Limit
+        );
+        assert_eq!(
+            verdict(&WatchFacts {
+                log_limit: true,
+                open_tools: 2,
+                stall_ms: None,
+                ..facts()
+            }),
+            Verdict::Limit
+        );
+        assert_eq!(
+            verdict(&WatchFacts {
+                log_limit: true,
+                open_permissions: 1,
+                ..facts()
+            }),
+            Verdict::Wait
+        );
     }
 }
