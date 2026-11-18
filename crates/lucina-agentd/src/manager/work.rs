@@ -805,7 +805,9 @@ impl Manager {
                         Some(st) => {
                             apply_read(j, &st);
                             if j.note.is_none() {
+                                // What `lane run` printed is lane's own word.
                                 j.note = Some(note);
+                                j.note_from_lane = true;
                             }
                             if j.state.is_terminal() && j.ended_at.is_none() {
                                 finish(j);
@@ -814,6 +816,7 @@ impl Manager {
                         None => {
                             j.state = WorkState::Failed;
                             j.note = Some(note);
+                            j.note_from_lane = true;
                             j.ended_at = Some(now_iso());
                         }
                     }
@@ -1058,6 +1061,7 @@ impl Manager {
                     // `lane` knows the run after all: it is not lost.
                     job.ended_at = None;
                     job.note = None;
+                    job.note_from_lane = false;
                     job.empty = None;
                 }
                 apply_read(&mut job, &status);

@@ -233,6 +233,13 @@ pub struct WorkJob {
     pub empty: Option<bool>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Whether `note` is what `lane` itself said: the note of a status, or the tail of
+    /// `lane run`'s stderr. A later status that says it has no note (`null` or `""`) takes such
+    /// a note away; one agentd wrote for itself (a state it did not know, a run it lost) stays.
+    /// Not kept over a restart: after one, only a fresh read of `lane` makes a note lane's own
+    /// again.
+    #[serde(skip)]
+    pub note_from_lane: bool,
     /// A run that was started with `lane` directly and is only listed.
     #[serde(default)]
     pub direct: bool,
@@ -370,6 +377,8 @@ pub fn status_unreadable(job: &mut WorkJob, error: &str) -> bool {
     let before = job.clone();
     let cut: String = error.chars().take(160).collect();
     job.note = Some(format!("{UNREADABLE_NOTE} {cut}"));
+    // Agentd's own words about the answer it could not read, not lane's.
+    job.note_from_lane = false;
     job.status_errors = job.status_errors.saturating_add(1);
     *job != before
 }
@@ -382,11 +391,22 @@ fn str_field(v: &Value, key: &str) -> Option<Option<String>> {
     }
 }
 
+/// A number field of a status, the way [`str_field`] reads a text one: `None` when the key is
+/// missing or not a whole number, so the old value stays; `Some(None)` for a null, which clears.
+fn int_field(v: &Value, key: &str) -> Option<Option<i32>> {
+    match v.get(key)? {
+        Value::Null => Some(None),
+        v => v.as_i64().and_then(|n| i32::try_from(n).ok()).map(Some),
+    }
+}
+
 /// Copies what `lane status` says into `job`. Fields the status lacks are left as they
 /// are; unknown fields are ignored. `after_head` is the last attempt's non-empty
 /// `after_head` (`lane` has no top-level one). Returns true when anything changed.
 pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
     let before = job.clone();
+    // Set when this call wrote an `unknown lane state:` note of its own.
+    let mut unknown_state_note = false;
     // A readable answer ends a run of unreadable ones.
     job.status_errors = 0;
     if job
@@ -412,7 +432,13 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
                     job.note = None;
                 }
             }
-            None => job.note = Some(format!("unknown lane state: {raw}")),
+            // The word is this call's own, not lane's: no note in the same status gets past it,
+            // and the note of the next status does not clear it either.
+            None => {
+                job.note = Some(format!("unknown lane state: {raw}"));
+                job.note_from_lane = false;
+                unknown_state_note = true;
+            }
         }
     }
     // Absent or not a boolean counts as false: a later status without the field clears it.
@@ -450,12 +476,14 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
             job.verify_exit = None;
             job.verify_head = None;
         }
+        // A field that is not there, or not of the right type, leaves the old value alone.
         Some(v @ Value::Object(_)) => {
-            job.verify_exit = v
-                .get("exit_code")
-                .and_then(Value::as_i64)
-                .and_then(|n| i32::try_from(n).ok());
-            job.verify_head = v.get("head").and_then(Value::as_str).map(str::to_string);
+            if let Some(exit) = int_field(v, "exit_code") {
+                job.verify_exit = exit;
+            }
+            if let Some(head) = str_field(v, "head") {
+                job.verify_head = head;
+            }
         }
         _ => {}
     }
@@ -480,18 +508,24 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
             })
             .collect();
     }
-    if let Some(note) = status
-        .get("note")
-        .and_then(Value::as_str)
-        .filter(|n| !n.is_empty())
-    {
+    let lane_note = status.get("note");
+    if let Some(note) = lane_note.and_then(Value::as_str).filter(|n| !n.is_empty()) {
         // An unknown state's note (set above) wins over the lane's own note.
-        if !job
-            .note
-            .as_deref()
-            .is_some_and(|n| n.starts_with("unknown lane state: "))
-        {
+        if !unknown_state_note {
             job.note = Some(note.to_string());
+            job.note_from_lane = true;
+        }
+    } else if matches!(lane_note, Some(Value::Null))
+        || lane_note
+            .and_then(Value::as_str)
+            .is_some_and(|n| n.is_empty())
+    {
+        // `lane` says it has no note this time: the note it gave before goes with that. What is
+        // not lane's own word stays, and so does a note this call wrote for a state it does not
+        // know. A note kept over a restart is not known to be lane's, so it stays too.
+        if job.note_from_lane && !unknown_state_note {
+            job.note = None;
+            job.note_from_lane = false;
         }
     }
     // What `lane run` recorded of the ids it was given. A job agentd started keeps its own.
@@ -514,7 +548,9 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
         match &job.run_id {
             None => job.run_id = Some(run),
             Some(own) if *own != run => {
+                // Agentd's own words about an id that does not match: not lane's note.
                 job.note = Some(format!("lane recorded run {run}, agentd issued {own}"));
+                job.note_from_lane = false;
             }
             Some(_) => {}
         }
@@ -908,6 +944,79 @@ mod tests {
         j.note = Some("mine".into());
         apply_status(&mut j, &json!({"state": "verified"}));
         assert_eq!(j.note.as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn a_status_that_says_it_has_no_note_takes_lane_s_note_away() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(
+            &mut j,
+            &json!({"state": "running", "note": "thinking hard"}),
+        );
+        assert_eq!(j.note.as_deref(), Some("thinking hard"));
+        // A null says it; so does an empty string.
+        assert!(apply_status(
+            &mut j,
+            &json!({"state": "verified", "note": null})
+        ));
+        assert_eq!(j.note, None);
+        apply_status(
+            &mut j,
+            &json!({"state": "running", "note": "thinking again"}),
+        );
+        assert!(apply_status(
+            &mut j,
+            &json!({"state": "running", "note": ""})
+        ));
+        assert_eq!(j.note, None);
+        // A status that does not speak of a note at all says nothing: the note stays.
+        apply_status(&mut j, &json!({"state": "running", "note": "kept"}));
+        apply_status(&mut j, &json!({"state": "running"}));
+        assert_eq!(j.note.as_deref(), Some("kept"));
+        // What agentd wrote for itself is not lane's to take away, nor is the unknown state
+        // this call just met.
+        j.note = Some("lane has no record of this run".into());
+        j.note_from_lane = false;
+        apply_status(&mut j, &json!({"state": "running", "note": null}));
+        assert_eq!(j.note.as_deref(), Some("lane has no record of this run"));
+        apply_status(&mut j, &json!({"state": "hibernating", "note": null}));
+        assert_eq!(
+            j.note.as_deref(),
+            Some("unknown lane state: hibernating"),
+            "the word of a state agentd does not know"
+        );
+        // The unknown state's note, then a status that knows the state and has no note.
+        assert!(apply_status(
+            &mut j,
+            &json!({"state": "running", "note": null})
+        ));
+        assert_eq!(j.note, None);
+    }
+
+    #[test]
+    fn a_verify_that_names_nothing_leaves_the_old_one_alone() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(&mut j, &json!({"verify": {"exit_code": 0, "head": "abc"}}));
+        assert_eq!(j.verify_exit, Some(0));
+        assert_eq!(j.verify_head.as_deref(), Some("abc"));
+        // A verify that names neither field: the run did not stop verifying.
+        apply_status(&mut j, &json!({"verify": {"cmd": "true"}}));
+        assert_eq!(j.verify_exit, Some(0));
+        assert_eq!(j.verify_head.as_deref(), Some("abc"));
+        // A field of the wrong type is not read at all.
+        apply_status(&mut j, &json!({"verify": {"exit_code": "0", "head": 7}}));
+        assert_eq!(j.verify_exit, Some(0));
+        assert_eq!(j.verify_head.as_deref(), Some("abc"));
+        // A null is the field said away: it clears what it names, and only that.
+        assert!(apply_status(
+            &mut j,
+            &json!({"verify": {"exit_code": null}})
+        ));
+        assert_eq!(j.verify_exit, None);
+        assert_eq!(j.verify_head.as_deref(), Some("abc"));
+        // No verify at all ends the step.
+        assert!(apply_status(&mut j, &json!({"verify": null})));
+        assert_eq!(j.verify_head, None);
     }
 
     const LS: &str = include_str!("../tests/fixtures/lane/ls.jsonl");

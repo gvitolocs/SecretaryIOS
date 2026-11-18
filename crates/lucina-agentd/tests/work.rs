@@ -1462,6 +1462,29 @@ fn an_unreadable_status_breaks_the_streak_of_misses() {
     );
 }
 
+#[test]
+fn a_status_with_no_note_of_its_own_clears_the_note_lane_gave() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(
+        &id,
+        &lane_status(&id, "running", json!({"note": "thinking hard"})),
+    );
+    let job = wait_for(&d, &id, "waiting for lane's note", |j| {
+        j["note"] == "thinking hard"
+    });
+    assert_eq!(job["state"], "running", "{job}");
+    // The next status says it has no note: the note was lane's own, and lane withdrew it.
+    f.status(&id, &lane_status(&id, "verified", json!({"note": null})));
+    let job = wait_state(&d, &id, "verified");
+    assert!(job["note"].is_null(), "{job}");
+}
+
 /// The base head of a run and a status that ends on `after` in its last attempt.
 fn done_with_after_head(
     d: &Daemon,
