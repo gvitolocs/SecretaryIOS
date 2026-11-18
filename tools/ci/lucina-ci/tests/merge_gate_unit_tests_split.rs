@@ -191,7 +191,7 @@ fn loadavg_1min() -> f64 {
 
 /// The build of the tests and the run of them are two steps, each printing the limit of its own row of `MERGE_STEP_LIMITS`:
 /// 1200 s for the build, and the 240 s the measured week asked for for the run — which is no longer the temporary 480 s,
-/// since the run no longer carries the build with it.
+/// since the run no longer carries the build with it; the 480 s of `clippy` (GATE-13) is a different row.
 #[test]
 fn merge_gate_builds_the_tests_and_runs_them_as_two_steps_with_two_limits() {
     let (repo, bin) = setup("split", "exit 0", "exit 0");
@@ -207,8 +207,8 @@ fn merge_gate_builds_the_tests_and_runs_them_as_two_steps_with_two_limits() {
         "the run step is at the 240 s it was measured to need: {ran}"
     );
     assert!(
-        !out.contains("/ 480s"),
-        "the temporary 480 s is gone from every line: {out}"
+        !built.contains("/ 480s") && !ran.contains("/ 480s"),
+        "the temporary 480 s is gone from both unit-tests lines: {built} / {ran}"
     );
     assert!(
         out.contains(", 0 failed, "),
