@@ -24,6 +24,12 @@
 //! Each row says who declared it (`declaredBy`): the daemon for the rows it writes when it
 //! starts and follows a work job, `lead` for rows issued through `POST /ids`, `import` for rows
 //! read from a hand-kept ledger.
+//!
+//! An import never refuses a file: a line the rules of its kind do not allow is kept as an
+//! annotation row, and a line whose lead or area is not registered — the operator
+//! registers a lead with `lagent id lead add` before the import — is skipped and listed with the
+//! reason. Only a code that is both a lead's and an area's stops the whole request, for there
+//! every id of either kind it owns would be ambiguous.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -36,7 +42,7 @@ use std::time::Duration;
 use lucina_agents::ids::{
     check_new, check_new_area, check_state, current, default_state, format_id, import_plan,
     lead_of, next_number, parse_areas_tsv, parse_id, parse_tsv, states, trace, trailers, IdRow,
-    IdView, Kind,
+    IdView, Kind, Ledger, LedgerRow, SkippedRow,
 };
 use lucina_agents::work::WorkJob;
 use serde::Deserialize;
@@ -386,58 +392,96 @@ impl Ids {
         self.lock().after_break(id)
     }
 
-    /// Reads a hand-kept ledger's rows in. Nothing is written when any row names a lead or an
-    /// area that is not registered. Returns how many rows were added and skipped.
-    fn import(&self, incoming: Vec<IdRow>) -> Result<(usize, usize), ManagerError> {
-        let total = incoming.len();
+    /// Reads a hand-kept ledger's lines in. A line whose lead or area is not registered is
+    /// skipped and listed with the file and line it came from; the rest of the file is taken.
+    /// Nothing is written when `dry_run`. Returns the lines a write takes (or would take) and
+    /// the lines skipped, both in the order of the files.
+    fn import(
+        &self,
+        ledger: Ledger,
+        dry_run: bool,
+    ) -> Result<(Vec<LedgerRow>, Vec<SkippedRow>), ManagerError> {
         let mut st = self.lock();
         st.refuse_if_read_only()?;
-        let codes = |kind: Kind| -> HashSet<String> {
-            st.rows
-                .iter()
-                .chain(incoming.iter())
-                .filter(|r| r.kind == kind)
-                .map(|r| r.id.clone())
-                .collect()
-        };
-        let leads = codes(Kind::Lead);
-        let areas = codes(Kind::Area);
-        for r in &incoming {
-            let prefix = parse_id(&r.id).map(|p| p.prefix).unwrap_or_default();
-            match r.kind {
-                Kind::Run | Kind::Change | Kind::Version if !leads.contains(&prefix) => {
-                    return Err(invalid(format!("lead {prefix} is not registered")));
-                }
-                Kind::Finding if !areas.contains(&prefix) => {
-                    return Err(invalid(format!("area {prefix} is not registered")));
-                }
-                Kind::Area if !leads.contains(&r.by) => {
-                    return Err(invalid(format!("lead {} is not registered", r.by)));
-                }
-                Kind::Area if leads.contains(&r.id) => {
-                    return Err(invalid(format!(
-                        "\"{}\" is a lead code: an area code must differ from every lead code",
-                        r.id
-                    )));
-                }
-                Kind::Lead if areas.contains(&r.id) => {
-                    return Err(invalid(format!(
-                        "\"{}\" is an area code: a lead code must differ from every area code",
-                        r.id
-                    )));
-                }
-                _ => {}
+        // What registers a code: an ordinary row of its kind, in the store or in this file. An
+        // annotation row registers nothing; the id it names is still checked against what is
+        // registered.
+        let ordinary = |l: &LedgerRow| !l.is_annotation();
+        let mut leads: HashSet<String> = st
+            .rows
+            .iter()
+            .filter(|r| r.kind == Kind::Lead && !r.is_annotation())
+            .map(|r| r.id.clone())
+            .collect();
+        for l in ledger.rows.iter().filter(|l| ordinary(l)) {
+            if l.row.kind == Kind::Lead {
+                leads.insert(l.row.id.clone());
             }
         }
-        let mut plan = import_plan(&st.rows, incoming);
-        for r in &mut plan {
-            r.declared_by = Some("import".to_string());
+        let mut areas: HashSet<String> = st
+            .rows
+            .iter()
+            .filter(|r| r.kind == Kind::Area && !r.is_annotation())
+            .map(|r| r.id.clone())
+            .collect();
+        for l in ledger.rows.iter().filter(|l| ordinary(l)) {
+            if l.row.kind == Kind::Area && leads.contains(&l.row.by) {
+                areas.insert(l.row.id.clone());
+            }
         }
-        let imported = plan.len();
-        if imported > 0 {
-            st.write(&self.dir, &mut plan)?;
+        let mut kept: Vec<LedgerRow> = Vec::new();
+        let mut skipped = ledger.skipped;
+        for l in ledger.rows {
+            let prefix = parse_id(&l.row.id).map(|p| p.prefix).unwrap_or_default();
+            let missing = match l.row.kind {
+                Kind::Run | Kind::Change | Kind::Version if !leads.contains(&prefix) => {
+                    Some(format!("lead {prefix} is not registered"))
+                }
+                Kind::Finding if !areas.contains(&prefix) => {
+                    Some(format!("area {prefix} is not registered"))
+                }
+                Kind::Area if ordinary(&l) && !leads.contains(&l.row.by) => {
+                    Some(format!("lead {} is not registered", l.row.by))
+                }
+                _ => None,
+            };
+            match missing {
+                // The file keeps going: a lead the operator has not registered is their
+                // business, not a reason to refuse the lines around it.
+                Some(reason) => skipped.push(SkippedRow {
+                    file: l.source.file,
+                    line: l.source.line,
+                    reason,
+                }),
+                None => kept.push(l),
+            }
         }
-        Ok((imported, total - imported))
+        // A code both a lead's and an area's is a real clash: every id of either kind it owns
+        // would be ambiguous. That is refused whole, and nothing is written.
+        for l in kept.iter().filter(|l| ordinary(l)) {
+            if l.row.kind == Kind::Area && leads.contains(&l.row.id) {
+                return Err(invalid(format!(
+                    "\"{}\" is a lead code: an area code must differ from every lead code",
+                    l.row.id
+                )));
+            }
+            if l.row.kind == Kind::Lead && areas.contains(&l.row.id) {
+                return Err(invalid(format!(
+                    "\"{}\" is an area code: a lead code must differ from every area code",
+                    l.row.id
+                )));
+            }
+        }
+        let mut plan = import_plan(&st.rows, kept);
+        for l in &mut plan {
+            l.row.declared_by = Some("import".to_string());
+        }
+        if !dry_run && !plan.is_empty() {
+            let mut rows: Vec<IdRow> = plan.iter().map(|l| l.row.clone()).collect();
+            st.write(&self.dir, &mut rows)?;
+        }
+        skipped.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        Ok((plan, skipped))
     }
 }
 
@@ -541,6 +585,26 @@ pub struct ImportIds {
     /// The text is an area file (`code`, `lead`, `covers`).
     #[serde(default)]
     pub areas: bool,
+    /// The name the annotation and skip listings quote the lines by. Only the text of a ledger
+    /// is read: a path here is the caller's own, nothing of it is opened.
+    #[serde(default)]
+    pub file: String,
+    /// Say what the import would take; write nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// The name a ledger's lines are quoted by: the last component of the name the caller gave, or
+/// the name of the format when none was given.
+fn ledger_name(given: &str, areas: bool) -> String {
+    let g = given.trim();
+    if g.is_empty() {
+        return if areas { "areas.tsv" } else { "ids.tsv" }.to_string();
+    }
+    Path::new(g)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| g.to_string())
 }
 
 /// A `git` call in `dir` with the cleared environment of the lane commands; its output when it
@@ -742,14 +806,30 @@ impl Manager {
 
     /// Reads a hand-kept ledger (or an area file) into the store.
     pub fn ids_import(&self, req: ImportIds) -> Result<Value, ManagerError> {
-        let rows = if req.areas {
-            parse_areas_tsv(&req.tsv)
+        let file = ledger_name(&req.file, req.areas);
+        let ledger = if req.areas {
+            parse_areas_tsv(&file, &req.tsv)
         } else {
-            parse_tsv(&req.tsv)
-        }
-        .map_err(invalid)?;
-        let (imported, skipped) = self.ids().import(rows)?;
-        Ok(json!({"imported": imported, "skipped": skipped}))
+            parse_tsv(&file, &req.tsv)
+        };
+        let (plan, skipped) = self.ids().import(ledger, req.dry_run)?;
+        let annotations: Vec<Value> = plan
+            .iter()
+            .filter(|l| l.is_annotation())
+            .map(|l| {
+                json!({
+                    "file": l.source.file,
+                    "line": l.source.line,
+                    "id": l.row.id,
+                    "reason": l.why,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "imported": plan.len(),
+            "annotations": annotations,
+            "skipped": skipped,
+        }))
     }
 
     /// Whether `code` is a registered lead.
@@ -767,7 +847,8 @@ impl Manager {
         match self.ids().kind_of(change) {
             None => {
                 return Err(invalid(format!(
-                    "change \"{change}\" does not exist: open one with `lagent id new change --lead {lead} --title <text>`"
+                    "no change {change}: {}",
+                    change_hint(lead)
                 )))
             }
             Some(Kind::Change) => {}
@@ -998,6 +1079,13 @@ fn lead_prefix(id: &str) -> Option<String> {
     parse_id(id).map(|p| p.prefix)
 }
 
+/// How a work job gets the change it is missing, spelled out for the lead it works for.
+pub(super) fn change_hint(lead: &str) -> String {
+    format!(
+        "a work job needs --change {lead}-C<nnn>; open one with: lagent id new change --lead {lead} --title \"<what the change does>\""
+    )
+}
+
 /// A full commit id: exactly 40 lowercase hex characters, the shape `git rev-parse HEAD`
 /// answers. Nothing of another shape may be handed to git as a revision.
 fn is_full_sha(s: &str) -> bool {
@@ -1210,14 +1298,13 @@ mod tests {
             .to_string();
         assert_eq!(e, err, "append");
         let e = ids
-            .import(vec![IdRow {
-                id: "LA-R009".into(),
-                kind: Kind::Run,
-                utc: "2026-11-18T09:00:00Z".into(),
-                state: "started".into(),
-                title: "imported".into(),
-                ..IdRow::default()
-            }])
+            .import(
+                parse_tsv(
+                    "LA.tsv",
+                    "LA-R009\t2026-11-18T09:00:00Z\trun\tstarted\timported\n",
+                ),
+                false,
+            )
             .map(|_| ())
             .unwrap_err()
             .to_string();
