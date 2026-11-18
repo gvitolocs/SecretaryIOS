@@ -3689,20 +3689,18 @@ mod tests {
             "the scratch {seen:?} is not under the owner's home, so the job directory it hangs from \
              is not the one a real run gets"
         );
-        // The two machine-wide temporary directories, named as the guard in [`Exec::sh_run`] names them,
-        // because that is the whole of FENCE-08: a file under either is refused by the host sandbox. Not
-        // `std::env::temp_dir()` — on this host that is the scratch tree the owner's rules send the test's
-        // own job directory to, so it would refuse the very layout asked for and let the old vacuous one
-        // through: `tempfile::tempdir()` follows whatever `TMPDIR` says, and where this runs on the
-        // machine's default it put the job directory, and so the scratch, under `/tmp/<random>`.
+        // Neither of the machine-wide temporary directories, in the guard's own words: asked of
+        // [`Exec::tmpdir_is_unusable`], which is the decision this whole finding turned on, rather than
+        // paraphrased here a second time — a copy of a rule in the test of that rule is the half that
+        // drifts from it. Not `std::env::temp_dir()` either: on this host that is the scratch tree the
+        // owner's rules send this test's own job directory to, so it would refuse the very layout asked
+        // for and let the old vacuous one through. `tempfile::tempdir()` follows whatever `TMPDIR` says,
+        // and where this runs on the machine's default it put the job directory, and so the scratch,
+        // under it.
         assert!(
-            !seen.starts_with("/tmp"),
-            "the scratch {seen:?} is under the machine-wide /tmp, which is where a job directory of a real \
-             run is never built\nLOG:\n{log}"
-        );
-        assert!(
-            !seen.starts_with("/var/tmp"),
-            "the scratch {seen:?} is under the machine-wide /var/tmp\nLOG:\n{log}"
+            !Exec::tmpdir_is_unusable(Some(seen.as_os_str())),
+            "the scratch {seen:?} is where the runner's own guard would refuse to leave a step's \
+             temporary files, which is the one thing FENCE-08 was about\nLOG:\n{log}"
         );
         assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
         let _ = std::fs::remove_dir_all(&home);
