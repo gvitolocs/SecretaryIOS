@@ -41,8 +41,8 @@ use std::time::Duration;
 
 use lucina_agents::ids::{
     check_new, check_new_area, check_state, current, default_state, format_id, import_plan,
-    lead_of, next_number, parse_areas_tsv, parse_id, parse_tsv, states, trace, trailers, IdRow,
-    IdView, Kind, Ledger, LedgerRow, SkippedRow,
+    lead_code_clash, lead_of, next_number, parse_areas_tsv, parse_id, parse_tsv, states, trace,
+    trailers, IdRow, IdView, Kind, Ledger, LedgerRow, SkippedRow,
 };
 use lucina_agents::work::WorkJob;
 use serde::Deserialize;
@@ -394,10 +394,11 @@ impl Ids {
         self.lock().after_break(id)
     }
 
-    /// Reads a hand-kept ledger's lines in. A line whose lead or area is not registered is
-    /// skipped and listed with the file and line it came from; the rest of the file is taken.
-    /// Nothing is written when `dry_run`. Returns the lines a write takes (or would take) and
-    /// the lines skipped, both in the order of the files.
+    /// Reads a hand-kept ledger's lines in. A line whose lead or area is not registered, and an
+    /// areas line of a code a registered lead already holds, are skipped and listed with the file
+    /// and line they came from; the rest of the file is taken. Nothing is written when `dry_run`.
+    /// Returns the lines a write takes (or would take) and the lines skipped, both in the order
+    /// of the files.
     fn import(
         &self,
         ledger: Ledger,
@@ -459,22 +460,28 @@ impl Ids {
             }
         }
         // A code both a lead's and an area's is a real clash: every id of either kind it owns
-        // would be ambiguous. That is refused whole, and nothing is written.
-        for l in kept.iter().filter(|l| ordinary(l)) {
-            if l.row.kind == Kind::Area && leads.contains(&l.row.id) {
-                return Err(invalid(format!(
-                    "\"{}\" is a lead code: an area code must differ from every lead code",
-                    l.row.id
-                )));
+        // would be ambiguous. A ledger line that takes such a code as a lead is still refused
+        // whole, and nothing is written. An areas line of it registers nothing and is listed, so
+        // the areas around it are still taken: one such line is no reason to lose a file.
+        let mut taken: Vec<LedgerRow> = Vec::new();
+        for l in kept {
+            if ordinary(&l) && l.row.kind == Kind::Area && leads.contains(&l.row.id) {
+                skipped.push(SkippedRow {
+                    file: l.source.file,
+                    line: l.source.line,
+                    reason: lead_code_clash(&l.row.id),
+                });
+                continue;
             }
-            if l.row.kind == Kind::Lead && areas.contains(&l.row.id) {
+            if ordinary(&l) && l.row.kind == Kind::Lead && areas.contains(&l.row.id) {
                 return Err(invalid(format!(
                     "\"{}\" is an area code: a lead code must differ from every area code",
                     l.row.id
                 )));
             }
+            taken.push(l);
         }
-        let mut plan = import_plan(&st.rows, kept);
+        let mut plan = import_plan(&st.rows, taken);
         for l in &mut plan {
             l.row.declared_by = Some("import".to_string());
         }

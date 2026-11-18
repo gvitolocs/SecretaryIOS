@@ -290,6 +290,13 @@ pub fn check_new(
     Ok(())
 }
 
+/// The reason a code a registered lead already holds cannot register an area: one id would then
+/// be two kinds at once. The single-area route refuses on it; an import lists the line as a skip,
+/// because the other lines of the file are areas that exist.
+pub fn lead_code_clash(code: &str) -> String {
+    format!("\"{code}\" is a lead code: an area code must differ from every lead code")
+}
+
 /// [`check_new`] for an area row: a valid code that is not registered, not a registered lead
 /// code, and an owning lead that is registered.
 pub fn check_new_area(rows: &[IdRow], code: &str, owner: &str, title: &str) -> Result<(), String> {
@@ -305,9 +312,7 @@ pub fn check_new_area(rows: &[IdRow], code: &str, owner: &str, title: &str) -> R
         return Err(format!("area {code} is already registered"));
     }
     if registered(rows, Kind::Lead, code) {
-        return Err(format!(
-            "\"{code}\" is a lead code: an area code must differ from every lead code"
-        ));
+        return Err(lead_code_clash(code));
     }
     if !registered(rows, Kind::Lead, owner) {
         return Err(format!("lead {owner} is not registered"));
