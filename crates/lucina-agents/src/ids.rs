@@ -244,6 +244,11 @@ pub fn check_new(
             if registered(rows, Kind::Lead, lead_or_area) {
                 return Err(format!("lead {lead_or_area} is already registered"));
             }
+            if registered(rows, Kind::Area, lead_or_area) {
+                return Err(format!(
+                    "\"{lead_or_area}\" is an area code: a lead code must differ from every area code"
+                ));
+            }
         }
         Kind::Area => {
             return Err("an area row needs its owning lead: use check_new_area".into());

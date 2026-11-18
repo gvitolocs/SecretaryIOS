@@ -705,14 +705,16 @@ impl Manager {
             std::fs::create_dir_all(&run_dir).and_then(|_| std::fs::write(&spec_path, &req.spec));
         if let Err(e) = stored {
             let note = format!("cannot store the spec: {e}");
-            self.append_run_row(
+            if let Err(id_err) = self.append_run_row(
                 &run_id,
                 IdRow {
                     state: "failed".into(),
                     result: note.clone(),
                     ..IdRow::default()
                 },
-            );
+            ) {
+                tracing::error!(run = run_id, error = %id_err, "cannot write the run's id row");
+            }
             return Err(ManagerError::Invalid(note));
         }
 
@@ -767,7 +769,7 @@ impl Manager {
                 self.work().persist(&jobs);
                 let out = jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job);
                 drop(jobs);
-                self.record_end(&out);
+                self.write_end_row(&out);
                 self.work().unlaunch(&id);
                 Ok(out)
             }
@@ -813,7 +815,7 @@ impl Manager {
             jobs.iter().find(|j| j.id == id).cloned().unwrap_or(job)
         };
         // While the id is in `launching` the poller leaves the job alone: one end row.
-        self.record_end(&out);
+        self.write_end_row(&out);
         self.work().unlaunch(&id);
         out
     }
@@ -964,18 +966,72 @@ impl Manager {
                 .map(|j| j.id.clone())
                 .collect()
         };
-        for id in open {
+        // A final job the store has no end row for is followed too: `lane` has nothing more to
+        // say about it, the id store has the whole row owed.
+        let owed = self.end_rows_owed();
+        for id in open.into_iter().chain(owed) {
             self.poll_one(&bin, &id).await;
         }
+    }
+
+    /// The ids of the final jobs whose end row is not in the store. The id store is only asked
+    /// once the jobs lock is gone: `issue` takes the store's lock and then the jobs one.
+    fn end_rows_owed(&self) -> Vec<String> {
+        let launching: HashSet<String> = self
+            .work()
+            .launching
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let want: Vec<(String, String, &'static str)> = {
+            let jobs = self.work().jobs();
+            jobs.iter()
+                .filter(|j| !pollable(j) && !launching.contains(&j.id))
+                .filter_map(|j| {
+                    let state = run_state_for(j.state, j.empty)?;
+                    Some((j.id.clone(), j.run_id.clone()?, state))
+                })
+                .collect()
+        };
+        want.into_iter()
+            .filter(|(_, run_id, state)| {
+                self.inner.ids.latest_state(run_id).as_deref() != Some(*state)
+            })
+            .map(|(id, _, _)| id)
+            .collect()
+    }
+
+    /// The run state the store still owes this final job: what [`run_state_for`] gives when the
+    /// run's latest row is not it. `None` for an unfinished job, for a state that writes no
+    /// row, and for a row that is already there.
+    fn owed_end_row_state(&self, job: &WorkJob) -> Option<&'static str> {
+        if !job.state.is_terminal() {
+            return None;
+        }
+        let state = run_state_for(job.state, job.empty)?;
+        let run_id = job.run_id.as_deref()?;
+        (self.inner.ids.latest_state(run_id).as_deref() != Some(state)).then_some(state)
     }
 
     /// One `lane status` read for one job. An answer that exits 0 but is not readable JSON is
     /// not a miss: the job never becomes `lost` from it and its state does not change. It
     /// goes through [`status_unreadable`] (a note and a count) and the job is saved when
-    /// that changed it.
+    /// that changed it. A final job that is followed only owes its end row: the store is
+    /// asked again and `lane` is left alone.
     async fn poll_one(&self, bin: &Path, id: &str) {
+        let Some(job) = self.stored_job(id) else {
+            return;
+        };
+        if !pollable(&job) {
+            // A final job reaches here only when the store still owes it its end row: `lane`
+            // is not asked again, only the store.
+            if self.owed_end_row_state(&job).is_some() {
+                self.write_end_row(&job);
+            }
+            return;
+        }
         let reply = query_status(bin, id).await;
-        let Some(mut job) = self.work().jobs().iter().find(|j| j.id == id).cloned() else {
+        let Some(mut job) = self.stored_job(id) else {
             return;
         };
         if !pollable(&job) {
@@ -1041,7 +1097,7 @@ impl Manager {
             }
         };
         if stored && ended_now {
-            self.record_end(&job);
+            self.write_end_row(&job);
         }
     }
 
@@ -1054,15 +1110,39 @@ impl Manager {
             .cloned()
     }
 
-    /// Appends a row of a run the daemon declares; a store that cannot be written is logged.
-    fn append_run_row(&self, run_id: &str, row: IdRow) {
-        if let Err(e) = self.inner.ids.append(run_id, row, "daemon") {
-            tracing::error!(run = run_id, error = %e, "cannot write the run's id row");
+    /// The stored job with this id.
+    fn stored_job(&self, id: &str) -> Option<WorkJob> {
+        self.work().jobs().iter().find(|j| j.id == id).cloned()
+    }
+
+    /// Appends a row of a run the daemon declares; the store's refusal is the caller's to keep.
+    fn append_run_row(&self, run_id: &str, row: IdRow) -> Result<(), ManagerError> {
+        self.inner.ids.append(run_id, row, "daemon").map(|_| ())
+    }
+
+    /// The job's end row. A store that refuses it is written into the job's note, and the
+    /// poller keeps the job until the row is in the store.
+    fn write_end_row(&self, job: &WorkJob) {
+        if let Err(e) = self.record_end(job) {
+            self.note_refused_end_row(&job.id, &e.to_string());
+        }
+    }
+
+    /// The note of an end row the store would not take, saved with the job.
+    fn note_refused_end_row(&self, id: &str, error: &str) {
+        let note = format!("the id store refused the end row: {error}");
+        let mut jobs = self.work().jobs();
+        if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
+            if j.note.as_deref() != Some(note.as_str()) {
+                j.note = Some(note);
+                self.work().persist(&jobs);
+            }
         }
     }
 
     /// For a chain: the first time `lane status` names the lane that is writing, one `started`
     /// row says which lane and model it is, so they are on record while the work is going on.
+    /// The next poll asks again while the row is missing, so a refusal needs no note.
     fn record_final_lane(&self, job: &WorkJob) {
         let (Some(run_id), Some(lane)) = (&job.run_id, &job.final_lane) else {
             return;
@@ -1073,7 +1153,7 @@ impl Manager {
         {
             return;
         }
-        self.append_run_row(
+        if let Err(e) = self.append_run_row(
             run_id,
             IdRow {
                 state: "started".into(),
@@ -1082,20 +1162,25 @@ impl Manager {
                 model: job.model.clone().filter(|m| !m.is_empty()),
                 ..IdRow::default()
             },
-        );
+        ) {
+            tracing::error!(run = run_id, error = %e, "cannot write the run's id row");
+        }
     }
 
     /// When a job reaches a final state: one run row from [`run_state_for`] (nothing when it
-    /// gives none, and nothing when the run's latest row already has that state).
-    fn record_end(&self, job: &WorkJob) {
+    /// gives none, and nothing when the run's latest row already has that state for this very
+    /// ending). The store's refusal is the caller's.
+    fn record_end(&self, job: &WorkJob) -> Result<(), ManagerError> {
         let Some(run_id) = &job.run_id else {
-            return;
+            return Ok(());
         };
         let Some(state) = run_state_for(job.state, job.empty) else {
-            return;
+            return Ok(());
         };
-        if self.inner.ids.latest_state(run_id).as_deref() == Some(state) {
-            return;
+        if let Some((row_state, row_utc)) = self.inner.ids.latest_row(run_id) {
+            if row_state == state && ending_is_recorded(&row_utc, job.ended_at.as_deref()) {
+                return Ok(());
+            }
         }
         let mut result = job
             .lane_state
@@ -1117,7 +1202,7 @@ impl Manager {
             row.lane = Some(lane.clone());
             row.model = job.model.clone().filter(|m| !m.is_empty());
         }
-        self.append_run_row(run_id, row);
+        self.append_run_row(run_id, row)
     }
 }
 
@@ -1127,6 +1212,23 @@ fn lane_by(lane: &str, model: Option<&str>) -> String {
         Some(m) => format!("{lane} {m}"),
         None => lane.to_string(),
     }
+}
+
+/// The store's row of this state already tells of the job's current ending: it was written at
+/// or after the job ended. A lost run that came back and ended again has a later `ended_at`
+/// than the row of its first ending, so its second row is written.
+fn ending_is_recorded(row_utc: &str, ended_at: Option<&str>) -> bool {
+    match (utc_time(row_utc), ended_at.and_then(utc_time)) {
+        (Some(row), Some(ended)) => row >= ended,
+        // Nothing to compare the row's time with: the row says this state.
+        _ => true,
+    }
+}
+
+fn utc_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&chrono::Utc))
 }
 
 /// The first non-blank line of `text`, cut to `max` characters.

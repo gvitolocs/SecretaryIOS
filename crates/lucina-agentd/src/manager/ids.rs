@@ -5,9 +5,9 @@
 //! rows are also held in memory behind one mutex: issuing an id computes the next number and
 //! appends the line while holding that mutex, then `sync_data`. The file is opened in append
 //! mode for each write and is never rewritten or truncated. A missing file is an empty store.
-//! A line that does not parse makes the store read-only for the life of the process (every
-//! write answers `the id store has an unreadable line (<n>); fix it by hand`; reads still work
-//! with the lines that parsed).
+//! A line that does not parse, and an append that fails partway, make the store read-only for
+//! the life of the process (every write answers `the id store has an unreadable line (<n>); fix
+//! it by hand`, or the error of the failed append; reads still work with the lines that parsed).
 //!
 //! Every appended row carries `prev`: the lowercase hex SHA-256 of the previous line's bytes
 //! without its newline, 64 zeros for the first line (the rule of the commit ledger in
@@ -235,7 +235,15 @@ impl State {
             .mode(0o600)
             .open(dir.join(FILE))
             .map_err(io)?;
-        Self::write_and_sync(&mut f, buf.as_bytes(), self.fail_write_after).map_err(io)?;
+        if let Err(e) =
+            Self::write_and_sync(&mut f, buf.as_bytes(), self.fail_write_after).map_err(io)
+        {
+            // Bytes of the line may already be on disk. Nothing is remembered and the store
+            // stops here for the life of the process, so the same number is never issued twice.
+            let message = e.to_string();
+            self.read_only = Some(message.clone());
+            return Err(invalid(message));
+        }
         self.last_hash = prev;
         for r in rows.iter() {
             self.lines += 1;
@@ -356,6 +364,16 @@ impl Ids {
             .map(|r| r.state.clone())
     }
 
+    /// The state and the time of the id's latest row.
+    pub(super) fn latest_row(&self, id: &str) -> Option<(String, String)> {
+        self.lock()
+            .rows
+            .iter()
+            .rev()
+            .find(|r| r.id == id)
+            .map(|r| (r.state.clone(), r.utc.clone()))
+    }
+
     /// Whether a row of the id already names the lane.
     pub(super) fn has_lane_row(&self, id: &str, lane: &str) -> bool {
         self.lock()
@@ -399,6 +417,12 @@ impl Ids {
                 Kind::Area if leads.contains(&r.id) => {
                     return Err(invalid(format!(
                         "\"{}\" is a lead code: an area code must differ from every lead code",
+                        r.id
+                    )));
+                }
+                Kind::Lead if areas.contains(&r.id) => {
+                    return Err(invalid(format!(
+                        "\"{}\" is an area code: a lead code must differ from every area code",
                         r.id
                     )));
                 }
@@ -922,15 +946,19 @@ impl Manager {
                 Ok(t) => {
                     let view = t["subject"].clone();
                     let base = view["base"].as_str().unwrap_or_default().to_string();
-                    if !base.is_empty() {
-                        out["descendsFromBase"] =
-                            match git_code(repo, &["merge-base", "--is-ancestor", &base, &full])
-                                .await
-                            {
-                                Some(0) => json!(true),
-                                Some(1) => json!(false),
-                                _ => Value::Null,
-                            };
+                    // Only a full commit id is asked of git: anything else would be taken as
+                    // an option or as a ref of this repository, and its answer would be a lie.
+                    if is_full_sha(&base) {
+                        out["descendsFromBase"] = match git_code(
+                            repo,
+                            &["merge-base", "--is-ancestor", "--", &base, &full],
+                        )
+                        .await
+                        {
+                            Some(0) => json!(true),
+                            Some(1) => json!(false),
+                            _ => Value::Null,
+                        };
                     }
                     let first = chrono::DateTime::parse_from_rfc3339(
                         view["firstUtc"].as_str().unwrap_or_default(),
@@ -968,6 +996,12 @@ impl Manager {
 /// The lead code of a run id.
 fn lead_prefix(id: &str) -> Option<String> {
     parse_id(id).map(|p| p.prefix)
+}
+
+/// A full commit id: exactly 40 lowercase hex characters, the shape `git rev-parse HEAD`
+/// answers. Nothing of another shape may be handed to git as a revision.
+fn is_full_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(test)]
