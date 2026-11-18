@@ -524,9 +524,13 @@ impl LogTail {
         self.offset += buf.len() as u64;
         self.partial.push_str(&String::from_utf8_lossy(&buf));
         let mut hit = None;
-        let i = self.partial.rfind('\n')?;
-        let rest = self.partial.split_off(i + 1);
-        let complete = std::mem::replace(&mut self.partial, rest);
+        let complete = match self.partial.rfind('\n') {
+            Some(i) => {
+                let rest = self.partial.split_off(i + 1);
+                std::mem::replace(&mut self.partial, rest)
+            }
+            None => return None,
+        };
         for line in complete.lines() {
             if hit.is_none() {
                 hit = turn_watch::limit_in_log_line(line, session_id);
