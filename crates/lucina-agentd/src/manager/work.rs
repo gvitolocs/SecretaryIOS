@@ -1355,7 +1355,10 @@ impl Manager {
             // ends it: the day `lane` is followed for is counted by this daemon, and the wall
             // clock that trips underneath it does not unmake `lane`'s own answer, which is the
             // only word this pass has on how the run ended.
-            match jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
+            match jobs
+                .iter_mut()
+                .find(|j| j.id == id && (pollable(j) || j.state == WorkState::Lost))
+            {
                 Some(stored) => {
                     *stored = job.clone();
                     self.work().persist(&jobs);
@@ -2448,6 +2451,52 @@ deep-codex = ["qoder", "codex-a"]
         assert!(
             m.work_list(None, false, false).await.jobs.is_empty(),
             "the job that is gone is still listed"
+        );
+    }
+
+    /// `lane`'s own answer that comes back as the wall-clock day trips underneath the follow
+    /// window: the ending it names is stored and given its end row on that very pass, the same
+    /// as the answer that arrived a second earlier.
+    #[tokio::test]
+    async fn a_terminal_status_that_arrives_as_the_day_trips_is_stored_with_its_row() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // A stand-in `lane` that answers five seconds into the call: the day of wall time the
+        // run has been followed for trips while its last word is on its way.
+        let lane = dir.path().join("lane");
+        std::fs::write(
+            &lane,
+            "#!/bin/sh\nsleep 5\ncat <<'EOF'\n{\"id\":\"wk-1\",\"state\":\"verified\",\"owner\":\"LA\",\"queue_position\":null,\"workspace\":\"/w\",\"final_lane\":\"qoder\",\"model\":null,\"attempts\":[{\"lane\":\"qoder\",\"outcome\":\"ok\",\"reason\":null,\"model_used\":null,\"duration_s\":1.0,\"before_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"after_head\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"changed_files\":[],\"looks\":[]}],\"dirty_files\":[],\"verify\":null,\"note\":null,\"runner_lost\":false}\nEOF\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&lane, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let m = manager_at(dir.path(), &lane, Duration::from_secs(1));
+        let run = issued_run(&m);
+        let at = |secs: i64| (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339();
+        let job = WorkJob {
+            id: "wk-1".into(),
+            lead: "LA".into(),
+            state: WorkState::Lost,
+            run_id: Some(run.id.clone()),
+            // Three seconds short of the day `lane` is followed for, by the wall clock.
+            ended_at: Some(at(-(DAY - 3))),
+            base_head: Some("a".repeat(40)),
+            created_at: at(-7200),
+            ..WorkJob::default()
+        };
+        m.work().jobs().push(job);
+        m.work_poll().await;
+        let kept = m.work_get("wk-1").expect("the job is gone");
+        assert_eq!(kept.state, WorkState::Verified, "{kept:?}");
+        assert!(kept.ended_at.is_some(), "{kept:?}");
+        assert_eq!(
+            m.inner.ids.latest_state(&run.id).as_deref(),
+            Some("verified"),
+            "the ending `lane` named has no row"
+        );
+        assert!(
+            m.end_rows_owed().is_empty(),
+            "the row it got is owed a second time"
         );
     }
 
