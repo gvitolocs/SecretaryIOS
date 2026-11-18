@@ -225,7 +225,8 @@ fn outside_cgroup(one: &str) -> String {
 /// The same for a process group, which is what `setsid` leaves. `setsid --fork` takes a moment to leave the group (the
 /// fork, the `setsid(2)`, the exec), and a count taken inside that moment sees the sleeper still in the step's own
 /// group (GATE-11). So this observes before it judges: it polls, for up to 5 s, until exactly one process matches `one`
-/// and that one stands in a group other than the step's, and says whether that ever happened in `gate03-setsid-wait`.
+/// and that one stands in a group other than the step's (an empty read of `stat`, from a process that exited meanwhile, is
+/// no group at all), and says whether that ever happened in `gate03-setsid-wait`.
 fn outside_group(one: &str) -> String {
     format!(
         "me=$(ps -o pgid= -p $$ | tr -d ' '); n=0; w=timeout; i=0\n\
@@ -233,7 +234,8 @@ fn outside_group(one: &str) -> String {
          \tn=0; all=0\n\
          \tfor p in $(pgrep -f '{one}$'); do\n\
          \t\tall=$((all+1))\n\
-         \t\t[ \"$(awk '{{print $5}}' /proc/$p/stat 2>/dev/null)\" != \"$me\" ] && n=$((n+1))\n\
+         \t\tg=$(awk '{{print $5}}' /proc/$p/stat 2>/dev/null)\n\
+         \t\t[ -n \"$g\" ] && [ \"$g\" != \"$me\" ] && n=$((n+1))\n\
          \tdone\n\
          \tif [ $n -ge 1 ] && [ $all -eq 1 ]; then w=ok; break; fi\n\
          \tsleep 0.1; i=$((i+1))\n\
