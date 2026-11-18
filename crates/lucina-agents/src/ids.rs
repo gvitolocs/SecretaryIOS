@@ -627,7 +627,12 @@ pub fn parse_tsv(file: &str, text: &str) -> Ledger {
                     where_: col(7).to_string(),
                     base: col(8).to_string(),
                     result: col(9).to_string(),
-                    refs: col(10).split_whitespace().map(str::to_string).collect(),
+                    refs: col(10)
+                        .split_whitespace()
+                        .flat_map(|t| t.split(','))
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_string)
+                        .collect(),
                     ..IdRow::default()
                 },
                 at(),
