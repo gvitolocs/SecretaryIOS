@@ -107,6 +107,11 @@ enum Frame {
     List(bool, u64, Vec<Item>),
 }
 
+/// A table part-way through the parse, in the four pieces the `Table` events build up: the column
+/// alignments, the header row, the body rows, and the flag saying the row about to close is still
+/// the header (`TableHead`), so the head is taken once and not pushed again as a body row.
+type TableParse = (Vec<String>, Vec<Vec<Span>>, Vec<Vec<Vec<Span>>>, bool);
+
 struct Reader {
     stack: Vec<Frame>,
     spans: Vec<Span>,
@@ -117,7 +122,7 @@ struct Reader {
     heading: Option<u8>,
     /// Inside `%%`, which may span lines and blocks.
     comment: bool,
-    table: Option<(Vec<String>, Vec<Vec<Span>>, Vec<Vec<Vec<Span>>>, bool)>,
+    table: Option<TableParse>,
     row: Vec<Vec<Span>>,
 }
 

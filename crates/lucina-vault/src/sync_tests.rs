@@ -6,10 +6,13 @@ use crate::Error;
 use std::fs;
 use std::path::Path;
 
+/// A hook run before each put, to change the file under the run's feet.
+type BeforePut = Box<dyn FnMut(&Path)>;
+
 /// The server: a folder, with an optional hook that runs before each put (to change the file under the run's feet).
 struct Server {
     folder: Folder,
-    before_put: Option<Box<dyn FnMut(&Path)>>,
+    before_put: Option<BeforePut>,
     gets: usize,
 }
 
