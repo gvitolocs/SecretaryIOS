@@ -944,8 +944,10 @@ pub(crate) struct ShareTurn {
     /// What the owner wrote or said (the caption, or a voice note's transcript). The secrets
     /// pre-check reads only this: shared content (OCR of a screenshot, a page) is not the owner asking.
     pub owner_text: String,
-    /// The phases of the share this turn answers. The turn adds its own wait for the intent step, the
-    /// intent step and the tool loop, so the share's summary line covers the whole of it.
+    /// The phases of the share this turn answers: the turn adds its own wait for the intent step, the
+    /// intent step, and the tool loop or the direct answer that follows it. What the share does after
+    /// the turn (its rich reply, its memory write, its timeline item) falls inside the total of the
+    /// summary line but gets no phase of its own.
     pub timing: crate::share::ShareTiming,
 }
 
@@ -1076,7 +1078,7 @@ async fn run_turn_scoped(
     // (the quoted message, the secrets pre-check) is time the owner waits too, and the share cannot
     // see it from its side.
     let timing = existing.as_ref().map(|s| s.timing.clone());
-    let mut intent_wait = timing.as_ref().map(|t| t.begin("intent_wait", false));
+    let mut intent_wait = timing.as_ref().map(|t| t.begin("intent_wait", true));
     // Swipe to reply: the quoted message rides in every model call's user part.
     let reply_block = match reply_to.as_deref() {
         Some(id) => reply::block(&st, &surface, &session, id).await,
