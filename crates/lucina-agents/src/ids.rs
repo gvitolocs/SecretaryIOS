@@ -15,6 +15,12 @@
 //! `Lead` and `Area` are registry rows: a lead row has the code as its id and the chat's name
 //! as its title; an area row has the area code as its id, what it covers as its title and the
 //! owning lead's code in `by`.
+//!
+//! The hand-kept ledgers hold kinds and states these rules do not allow. Nothing of them is
+//! dropped: [`parse_tsv`] and [`parse_areas_tsv`] keep such a line as an annotation row, which
+//! carries the whole line verbatim and says nothing more of the id than its kind and the state
+//! `note`. A line with no usable id is skipped and listed, so the import can say what became of
+//! every line of the file.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -67,7 +73,8 @@ impl std::fmt::Display for Kind {
     }
 }
 
-/// The states of a kind; the first is the default.
+/// The states of a kind; the first is the default. `note` is in no list: the routes that issue
+/// an id or change its state refuse it, and only an annotation row has it.
 pub fn states(kind: Kind) -> &'static [&'static str] {
     match kind {
         Kind::Run => &[
@@ -89,6 +96,9 @@ pub fn states(kind: Kind) -> &'static [&'static str] {
 pub fn default_state(kind: Kind) -> &'static str {
     states(kind)[0]
 }
+
+/// The state of an annotation row: a ledger line the rules of its kind do not allow.
+pub const NOTE: &str = "note";
 
 /// A lead code: exactly two capital letters.
 pub fn valid_lead(s: &str) -> bool {
@@ -150,6 +160,16 @@ pub fn format_id(kind: Kind, prefix: &str, number: u32) -> String {
     }
 }
 
+/// Where a ledger line came from: the file it was read from, its 1-based line there, and the
+/// whole line as it stands in the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    pub file: String,
+    pub line: usize,
+    pub raw: String,
+}
+
 /// One line of the store: every field of the hand-kept ledgers, and the facts the daemon adds.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,9 +213,20 @@ pub struct IdRow {
     /// `daemon`, `lead` or `import`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_by: Option<String>,
+    /// Set for an annotation row: the ledger line it keeps, verbatim. Nothing sets it on a row
+    /// the rules allow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<Annotation>,
     /// The hash of the previous line (the store fills it in).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prev: String,
+}
+
+impl IdRow {
+    /// An annotation row: a ledger line the rules of its kind did not allow, kept verbatim.
+    pub fn is_annotation(&self) -> bool {
+        self.annotation.is_some()
+    }
 }
 
 /// The highest number issued for the kind and prefix, plus one (1 when none).
@@ -208,8 +239,10 @@ pub fn next_number(rows: &[IdRow], kind: Kind, prefix: &str) -> u32 {
         .map_or(1, |n| n.saturating_add(1))
 }
 
+/// A registry code is registered by an ordinary row of its kind, never by an annotation row.
 fn registered(rows: &[IdRow], kind: Kind, code: &str) -> bool {
-    rows.iter().any(|r| r.kind == kind && r.id == code)
+    rows.iter()
+        .any(|r| !r.is_annotation() && r.kind == kind && r.id == code)
 }
 
 /// Whether a new row of the kind may be issued. `lead_or_area` is the lead code (run, change,
@@ -343,6 +376,9 @@ pub struct IdView {
     /// The id's first row is at or after a broken line of the store (set by the daemon).
     #[serde(default)]
     pub after_break: bool,
+    /// The annotation rows of the id, in the order of the store. They say nothing of the id's
+    /// state, title or other fields.
+    pub annotations: Vec<Annotation>,
 }
 
 fn nonempty(v: &Option<String>) -> Option<String> {
@@ -376,6 +412,15 @@ pub fn current(rows: &[IdRow]) -> Vec<IdView> {
         };
         let v = &mut views[i];
         v.rows += 1;
+        // An annotation row says what the ledger said; it is not a state of the id, so it
+        // changes nothing but its annotations.
+        if let Some(a) = &r.annotation {
+            v.annotations.push(a.clone());
+            if v.state.is_empty() {
+                v.state = NOTE.to_string();
+            }
+            continue;
+        }
         v.state = r.state.clone();
         v.utc = r.utc.clone();
         latest(&mut v.title, &r.title);
@@ -437,20 +482,92 @@ pub fn lead_of(rows: &[IdRow], id: &str) -> Option<String> {
 const HEADER: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs";
 const AREAS_HEADER: &str = "code\tlead\tcovers";
 
-fn id_matches_kind(id: &str, kind: Kind) -> bool {
-    match kind {
-        Kind::Lead => valid_lead(id),
-        Kind::Area => valid_area(id),
-        _ => parse_id(id).is_some_and(|p| p.kind == kind),
+/// The kind an id's form gives: a parsed run, change, version or finding id, or a declared lead
+/// or area code. `None` for a column that holds no id the rules know.
+fn form_kind(id: &str, declared: Option<Kind>) -> Option<Kind> {
+    if let Some(p) = parse_id(id) {
+        return Some(p.kind);
+    }
+    match declared {
+        Some(Kind::Lead) if valid_lead(id) => Some(Kind::Lead),
+        Some(Kind::Area) if valid_area(id) => Some(Kind::Area),
+        _ => None,
+    }
+}
+
+/// One line of a ledger as the rules read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerRow {
+    /// The row the line gave: an ordinary row, or an annotation row that keeps the line.
+    pub row: IdRow,
+    /// The line it came from, whether or not the rules allowed it.
+    pub source: Annotation,
+    /// What the rules refused; empty when they allowed the line as a row of its own.
+    pub why: String,
+}
+
+impl LedgerRow {
+    fn ordinary(row: IdRow, source: Annotation) -> LedgerRow {
+        LedgerRow {
+            row,
+            source,
+            why: String::new(),
+        }
+    }
+
+    /// The line as an annotation row: nothing of the line is taken as a field but the id; the
+    /// kind is the one its form gives, the state is `note` and the line stands verbatim.
+    fn annotated(id: &str, kind: Kind, source: Annotation, why: String) -> LedgerRow {
+        let row = IdRow {
+            id: id.to_string(),
+            kind,
+            state: NOTE.to_string(),
+            annotation: Some(source.clone()),
+            ..IdRow::default()
+        };
+        LedgerRow { row, source, why }
+    }
+
+    /// Whether the rules refused the line as a row of its own.
+    pub fn is_annotation(&self) -> bool {
+        !self.why.is_empty()
+    }
+}
+
+/// A ledger line nothing was made of, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedRow {
+    pub file: String,
+    pub line: usize,
+    pub reason: String,
+}
+
+/// What reading one hand-kept file gave, in the order of the file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ledger {
+    /// The lines that became a row, ordinary or annotation.
+    pub rows: Vec<LedgerRow>,
+    /// The lines with no usable id.
+    pub skipped: Vec<SkippedRow>,
+}
+
+impl Ledger {
+    fn skip(&mut self, file: &str, line: usize, reason: String) {
+        self.skipped.push(SkippedRow {
+            file: file.to_string(),
+            line,
+            reason,
+        });
     }
 }
 
 /// Reads a hand-kept ledger: the header line and blank lines are skipped, trailing empty
-/// columns may be missing. An unknown kind, a state that does not belong to the kind, an id
-/// that does not parse or does not match its kind, or fewer than four columns is an error
-/// that names the line (1-based).
-pub fn parse_tsv(text: &str) -> Result<Vec<IdRow>, String> {
-    let mut out = Vec::new();
+/// columns may be missing. A line whose id parses but whose kind or state the rules of that kind
+/// do not allow, or that has fewer columns than required, becomes an annotation row; a line with
+/// no usable id is skipped and listed. Reading a file cannot fail: nothing is refused.
+pub fn parse_tsv(file: &str, text: &str) -> Ledger {
+    let mut out = Ledger::default();
     let mut seen_first = false;
     for (i, raw) in text.lines().enumerate() {
         let n = i + 1;
@@ -465,47 +582,70 @@ pub fn parse_tsv(text: &str) -> Result<Vec<IdRow>, String> {
                 continue;
             }
         }
-        if cols.len() < 4 {
-            return Err(format!(
-                "line {n}: expected at least 4 columns (id, utc, kind, state), found {}",
-                cols.len()
-            ));
-        }
         let col = |k: usize| cols.get(k).map(|c| c.trim()).unwrap_or("");
-        let kind =
-            Kind::parse(col(2)).ok_or_else(|| format!("line {n}: unknown kind \"{}\"", col(2)))?;
-        if !states(kind).contains(&col(3)) {
-            return Err(format!(
-                "line {n}: state \"{}\" does not belong to a {kind}",
-                col(3)
+        let at = || Annotation {
+            file: file.to_string(),
+            line: n,
+            raw: line.to_string(),
+        };
+        let id = col(0);
+        let declared = Kind::parse(col(2));
+        let Some(kind) = form_kind(id, declared) else {
+            out.skip(
+                file,
+                n,
+                if id.is_empty() {
+                    "the id column is empty".to_string()
+                } else {
+                    format!("\"{id}\" is not an id")
+                },
+            );
+            continue;
+        };
+        let why = if cols.len() < 4 {
+            format!(
+                "expected at least 4 columns (id, utc, kind, state), found {}",
+                cols.len()
+            )
+        } else if declared.is_none() {
+            format!("unknown kind \"{}\"", col(2))
+        } else if declared != Some(kind) {
+            format!("\"{id}\" is not a valid {} id", declared.unwrap().as_str())
+        } else if !states(kind).contains(&col(3)) {
+            format!("state \"{}\" does not belong to a {kind}", col(3))
+        } else {
+            out.rows.push(LedgerRow::ordinary(
+                IdRow {
+                    id: id.to_string(),
+                    utc: col(1).to_string(),
+                    kind,
+                    state: col(3).to_string(),
+                    title: col(4).to_string(),
+                    by: col(5).to_string(),
+                    spec: col(6).to_string(),
+                    where_: col(7).to_string(),
+                    base: col(8).to_string(),
+                    result: col(9).to_string(),
+                    refs: col(10).split_whitespace().map(str::to_string).collect(),
+                    ..IdRow::default()
+                },
+                at(),
             ));
-        }
-        if !id_matches_kind(col(0), kind) {
-            return Err(format!("line {n}: \"{}\" is not a valid {kind} id", col(0)));
-        }
-        out.push(IdRow {
-            id: col(0).to_string(),
-            utc: col(1).to_string(),
-            kind,
-            state: col(3).to_string(),
-            title: col(4).to_string(),
-            by: col(5).to_string(),
-            spec: col(6).to_string(),
-            where_: col(7).to_string(),
-            base: col(8).to_string(),
-            result: col(9).to_string(),
-            refs: col(10).split_whitespace().map(str::to_string).collect(),
-            ..IdRow::default()
-        });
+            continue;
+        };
+        out.rows.push(LedgerRow::annotated(id, kind, at(), why));
     }
-    Ok(out)
+    out
 }
 
 /// Reads an area file (`code`, `lead`, `covers`) as area rows (the time stays empty so that
-/// reading the same file again gives the same rows).
-pub fn parse_areas_tsv(text: &str) -> Result<Vec<IdRow>, String> {
-    let mut out = Vec::new();
+/// reading the same file again gives the same rows). The first line of a code registers it; a
+/// later line of the same code, and a line whose lead column is missing or holds no lead code,
+/// becomes an annotation row on that code. A code that is not an area code is skipped.
+pub fn parse_areas_tsv(file: &str, text: &str) -> Ledger {
+    let mut out = Ledger::default();
     let mut seen_first = false;
+    let mut taken: HashSet<String> = HashSet::new();
     for (i, raw) in text.lines().enumerate() {
         let n = i + 1;
         let line = raw.trim_end_matches('\r');
@@ -519,29 +659,52 @@ pub fn parse_areas_tsv(text: &str) -> Result<Vec<IdRow>, String> {
                 continue;
             }
         }
-        if cols.len() < 2 {
-            return Err(format!(
-                "line {n}: expected at least 2 columns (code, lead), found {}",
-                cols.len()
-            ));
-        }
         let col = |k: usize| cols.get(k).map(|c| c.trim()).unwrap_or("");
-        if !valid_area(col(0)) {
-            return Err(format!("line {n}: \"{}\" is not an area code", col(0)));
+        let at = || Annotation {
+            file: file.to_string(),
+            line: n,
+            raw: line.to_string(),
+        };
+        let code = col(0);
+        if !valid_area(code) {
+            out.skip(
+                file,
+                n,
+                if code.is_empty() {
+                    "the code column is empty".to_string()
+                } else {
+                    format!("\"{code}\" is not an area code")
+                },
+            );
+            continue;
         }
-        if !valid_lead(col(1)) {
-            return Err(format!("line {n}: \"{}\" is not a lead code", col(1)));
-        }
-        out.push(IdRow {
-            id: col(0).to_string(),
-            kind: Kind::Area,
-            state: default_state(Kind::Area).to_string(),
-            title: col(2).to_string(),
-            by: col(1).to_string(),
-            ..IdRow::default()
-        });
+        let why = if cols.len() < 2 {
+            format!(
+                "expected at least 2 columns (code, lead), found {}",
+                cols.len()
+            )
+        } else if !valid_lead(col(1)) {
+            format!("\"{}\" is not a lead code", col(1))
+        } else if !taken.insert(code.to_string()) {
+            format!("area {code} is already registered")
+        } else {
+            out.rows.push(LedgerRow::ordinary(
+                IdRow {
+                    id: code.to_string(),
+                    kind: Kind::Area,
+                    state: default_state(Kind::Area).to_string(),
+                    title: col(2).to_string(),
+                    by: col(1).to_string(),
+                    ..IdRow::default()
+                },
+                at(),
+            ));
+            continue;
+        };
+        out.rows
+            .push(LedgerRow::annotated(code, Kind::Area, at(), why));
     }
-    Ok(out)
+    out
 }
 
 /// The header lines of the two hand-kept formats, for messages and tests.
@@ -549,16 +712,30 @@ pub fn tsv_headers() -> (&'static str, &'static str) {
     (HEADER, AREAS_HEADER)
 }
 
-/// The incoming rows that are not present yet (same id, time and state), in order. A row
-/// repeated inside `incoming` counts once.
-pub fn import_plan(existing: &[IdRow], incoming: Vec<IdRow>) -> Vec<IdRow> {
-    let mut have: HashSet<(String, String, String)> = existing
-        .iter()
-        .map(|r| (r.id.clone(), r.utc.clone(), r.state.clone()))
-        .collect();
+/// What says that a ledger line is already in the store.
+#[derive(PartialEq, Eq, Hash)]
+enum Present {
+    /// An ordinary row: its id, its time and its state.
+    Row(String, String, String),
+    /// An annotation row: its id and the file and line it came from.
+    Note(String, String, usize),
+}
+
+fn present(row: &IdRow) -> Present {
+    match &row.annotation {
+        Some(a) => Present::Note(row.id.clone(), a.file.clone(), a.line),
+        None => Present::Row(row.id.clone(), row.utc.clone(), row.state.clone()),
+    }
+}
+
+/// The incoming lines that are not present yet: an ordinary row by its id, time and state, an
+/// annotation row by its id and the file and line it came from, in order. A line repeated inside
+/// `incoming` counts once.
+pub fn import_plan(existing: &[IdRow], incoming: Vec<LedgerRow>) -> Vec<LedgerRow> {
+    let mut have: HashSet<Present> = existing.iter().map(present).collect();
     incoming
         .into_iter()
-        .filter(|r| have.insert((r.id.clone(), r.utc.clone(), r.state.clone())))
+        .filter(|l| have.insert(present(&l.row)))
         .collect()
 }
 
@@ -748,6 +925,33 @@ mod tests {
                 ..row("GC", "t", Kind::Area, "registered", "gc bugs", &[])
             },
         ]
+    }
+
+    /// A ledger read as the file `LA.tsv`.
+    fn ledger(text: &str) -> Ledger {
+        parse_tsv("LA.tsv", text)
+    }
+
+    /// The rows a ledger gave, annotations included, as the store holds them.
+    fn rows_of(text: &str) -> Vec<IdRow> {
+        stored(&ledger(text).rows)
+    }
+
+    fn stored(plan: &[LedgerRow]) -> Vec<IdRow> {
+        plan.iter().map(|l| l.row.clone()).collect()
+    }
+
+    /// A row a ledger gave as it is, with no word of refusal.
+    fn ordinary(r: IdRow) -> LedgerRow {
+        LedgerRow {
+            source: Annotation {
+                file: "LA.tsv".into(),
+                line: 1,
+                raw: String::new(),
+            },
+            why: String::new(),
+            row: r,
+        }
     }
 
     #[test]
@@ -1155,7 +1359,7 @@ LA\t2026-11-01T00:00:00Z\tlead\tregistered\tLucina Agents
 
     #[test]
     fn tsv_of_a_real_looking_ledger_parses() {
-        let rows = parse_tsv(LEDGER).unwrap();
+        let rows = rows_of(LEDGER);
         assert_eq!(rows.len(), 9);
         assert_eq!(rows[0].id, "LA-R001");
         assert_eq!(rows[0].kind, Kind::Run);
@@ -1180,87 +1384,244 @@ LA\t2026-11-01T00:00:00Z\tlead\tregistered\tLucina Agents
         );
         assert_eq!(rows[8].kind, Kind::Lead);
         assert_eq!(rows[8].id, "LA");
-        assert!(parse_tsv("").unwrap().is_empty());
-        assert!(parse_tsv("id\tutc\tkind\tstate\n").unwrap().is_empty());
+        assert_eq!(rows_of("").len(), 0);
+        assert_eq!(rows_of("id\tutc\tkind\tstate\n").len(), 0);
         // Without a header line the first line is data.
         let no_header = LEDGER.lines().skip(1).collect::<Vec<_>>().join("\n");
-        assert_eq!(parse_tsv(&no_header).unwrap().len(), 9);
+        assert_eq!(rows_of(&no_header).len(), 9);
         assert_eq!(tsv_headers().0, LEDGER.lines().next().unwrap());
     }
 
     #[test]
-    fn tsv_errors_name_the_line() {
+    fn a_line_the_rules_do_not_allow_becomes_an_annotation() {
         let head = "id\tutc\tkind\tstate\ttitle\n";
         let ok = "LA-R001\tt\trun\tstarted\tx\n";
         let cases = [
-            ("LA-R002\tt\tdeed\tstarted\tx\n", 3, "unknown kind"),
-            ("LA-R002\tt\trun\tmerged\tx\n", 3, "does not belong"),
-            ("LA-R02\tt\trun\tstarted\tx\n", 3, "is not a valid run id"),
-            ("LA-C002\tt\trun\tstarted\tx\n", 3, "is not a valid run id"),
-            ("LA-R002\tt\trun\n", 3, "at least 4 columns"),
-            ("just text\n", 3, "at least 4 columns"),
             (
-                "GC-3\tt\tfinding\treported\tx\n",
-                3,
-                "is not a valid finding id",
+                "LA-R002\tt\tdeed\tstarted\tx\n",
+                Kind::Run,
+                "unknown kind \"deed\"",
             ),
-            ("LAB\tt\tlead\tregistered\tx\n", 3, "is not a valid lead id"),
-            ("gc\tt\tarea\tregistered\tx\n", 3, "is not a valid area id"),
+            (
+                "LA-R002\tt\trun\tmerged\tx\n",
+                Kind::Run,
+                "state \"merged\" does not belong to a run",
+            ),
+            (
+                "LA-R002\tt\trun\tnote\tx\n",
+                Kind::Run,
+                "state \"note\" does not belong to a run",
+            ),
+            (
+                "LA-R002\tt\trun\n",
+                Kind::Run,
+                "expected at least 4 columns (id, utc, kind, state), found 3",
+            ),
+            (
+                "LA-C002\tt\trun\tstarted\tx\n",
+                Kind::Change,
+                "\"LA-C002\" is not a valid run id",
+            ),
+            (
+                "JOBS-01\tt\tupdate\torigin-reach\ttext\n",
+                Kind::Finding,
+                "unknown kind \"update\"",
+            ),
+            (
+                "LA-C002\tt\tcorrection\tstamp\ttext\n",
+                Kind::Change,
+                "unknown kind \"correction\"",
+            ),
         ];
-        for (bad, line, what) in cases {
-            let err = parse_tsv(&format!("{head}{ok}{bad}")).unwrap_err();
-            assert!(err.starts_with(&format!("line {line}: ")), "{bad:?}: {err}");
-            assert!(err.contains(what), "{bad:?}: {err}");
+        for (bad, kind, why) in cases {
+            let l = ledger(&format!("{head}{ok}{bad}"));
+            assert_eq!(l.rows.len(), 2, "{bad:?}");
+            assert_eq!(l.skipped, Vec::<SkippedRow>::new(), "{bad:?}");
+            assert_eq!(l.rows[0].why, "", "the ordinary row is not refused");
+            let last = &l.rows[1];
+            assert_eq!(last.why, why, "{bad:?}");
+            assert!(last.is_annotation());
+            assert_eq!(last.row.kind, kind, "{bad:?}: the id's form gives the kind");
+            assert_eq!(last.row.state, NOTE, "{bad:?}");
+            let a = last.row.annotation.as_ref().unwrap();
+            assert_eq!(a.file, "LA.tsv", "{bad:?}");
+            assert_eq!(a.line, 3, "{bad:?}");
+            assert_eq!(a.raw, bad.trim_end_matches('\n'), "{bad:?}");
+            // Nothing of the refused line is taken as a field of the row.
+            assert!(
+                last.row.utc.is_empty() && last.row.title.is_empty() && last.row.refs.is_empty(),
+                "{bad:?}"
+            );
         }
-        // A blank line before the bad one still counts.
-        let err = parse_tsv(&format!("{head}\n{ok}\n\nX\n")).unwrap_err();
-        assert!(err.starts_with("line 6: "), "{err}");
+        // A line that only keeps the ledger's own header in the middle of the file has no id.
+        let l = ledger(&format!("{head}{ok}\n{head}"));
+        assert_eq!(l.rows.len(), 1);
+        assert_eq!(l.skipped[0].line, 4);
+        assert_eq!(l.skipped[0].reason, "\"id\" is not an id");
+        // The raw line keeps what the file holds, a carriage return aside.
+        let l = ledger("LA-C001\tt\tchange\tstamp\tx\r\n");
+        assert_eq!(l.rows[0].source.raw, "LA-C001\tt\tchange\tstamp\tx");
     }
 
     #[test]
-    fn area_files_parse() {
+    fn a_line_with_no_usable_id_is_skipped_and_listed() {
+        let head = "id\tutc\tkind\tstate\ttitle\n";
+        let cases = [
+            ("just text\n", "\"just text\" is not an id"),
+            (
+                "RECURSE-01\tt\tfinding\treported\tx\n",
+                "\"RECURSE-01\" is not an id",
+            ),
+            ("GC-3\tt\tfinding\treported\tx\n", "\"GC-3\" is not an id"),
+            ("LA-R02\tt\trun\tstarted\tx\n", "\"LA-R02\" is not an id"),
+            ("\tt\trun\tstarted\tx\n", "the id column is empty"),
+            ("LA\tt\tupdate\tstamp\tx\n", "\"LA\" is not an id"),
+        ];
+        for (bad, reason) in cases {
+            let l = ledger(&format!("{head}\n{bad}"));
+            assert!(l.rows.is_empty(), "{bad:?}");
+            assert_eq!(l.skipped.len(), 1, "{bad:?}");
+            let s = &l.skipped[0];
+            assert_eq!(
+                (s.file.as_str(), s.line, s.reason.as_str()),
+                ("LA.tsv", 3, reason),
+                "{bad:?}"
+            );
+        }
+        // A blank line before a skipped one still counts in the line numbers.
+        let l = ledger(&format!("{head}\n\nX\n"));
+        assert_eq!(l.skipped[0].line, 4);
+    }
+
+    #[test]
+    fn an_annotation_says_nothing_of_the_id_it_names() {
+        let mut rows = rows_of(
+            "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs\n\
+             LA-R001\t2026-11-10T09:00:00Z\trun\tstarted\tIds pure rules\tqoder auto-free\tspec.md\tlagent-ids\tabc123\n\
+             LA-R001\t2026-11-11T09:00:00Z\trun\tverified\t\t\t\t\t\tcommit def456\tLA-C001\n\
+             LA-R001\t2026-11-12T09:00:00Z\tupdate\torigin-reach\tsix columns of prose\n",
+        );
+        let l = ledger("LA-R002\tt\tcorrection\tstamp\tonly the note of a run\n");
+        assert_eq!(l.skipped, Vec::<SkippedRow>::new());
+        rows.extend(stored(&l.rows));
+        let views = current(&rows);
+        assert_eq!(views.len(), 2);
+        let v = &views[0];
+        // The latest state and the other fields come from the rows the rules allowed: the
+        // annotation line gives neither its time, its prose nor its kind.
+        assert_eq!(v.state, "verified");
+        assert_eq!(v.title, "Ids pure rules");
+        assert_eq!(v.spec, "spec.md");
+        assert_eq!(v.result, "commit def456");
+        assert_eq!(v.refs, ["LA-C001"]);
+        assert_eq!(v.utc, "2026-11-11T09:00:00Z");
+        assert_eq!(v.rows, 3, "the annotation line is still a row of the id");
+        assert_eq!(v.annotations.len(), 1);
+        assert_eq!(v.annotations[0].line, 4);
+        assert_eq!(v.annotations[0].file, "LA.tsv");
+        assert_eq!(
+            v.annotations[0].raw,
+            "LA-R001\t2026-11-12T09:00:00Z\tupdate\torigin-reach\tsix columns of prose"
+        );
+        // An id with only annotation rows is listed, with the state of a note.
+        let only = &views[1];
+        assert_eq!(only.id, "LA-R002");
+        assert_eq!(only.kind, Kind::Run);
+        assert_eq!(only.state, NOTE);
+        assert_eq!(only.title, "");
+        assert_eq!(only.annotations.len(), 1);
+        assert_eq!(only.rows, 1);
+    }
+
+    #[test]
+    fn numbering_counts_the_annotation_rows() {
+        let rows = rows_of(
+            "LA-R005\tt\trun\tstarted\tx\n\
+             LA-R009\tt\tupdate\torigin-reach\ta note about a run that never was\n\
+             LA-C004\tt\tchange\topen\tx\n\
+             JOBS-07\tt\tcorrection\tstamp\ta note under a finding\n",
+        );
+        assert_eq!(next_number(&rows, Kind::Run, "LA"), 10);
+        assert_eq!(next_number(&rows, Kind::Change, "LA"), 5);
+        assert_eq!(next_number(&rows, Kind::Finding, "JOBS"), 8);
+        assert_eq!(next_number(&rows, Kind::Finding, "GC"), 1);
+    }
+
+    #[test]
+    fn area_files_keep_every_line() {
         let text =
-            "code\tlead\tcovers\nGC\tJS\tgarbage collector\nREENT\tLA\tre-entrancy\nOK\tLA\n";
-        let rows = parse_areas_tsv(text).unwrap();
-        assert_eq!(rows.len(), 3);
+            "code\tlead\tcovers\nGC\tJS\tgarbage collector\nREENT\tLA\tre-entrancy\nOK\tLA\n\
+GC\tJS\tgarbage collector, twice\nHOST\tLucinaJS: host objects (CRASH-04)\nREENT\n";
+        let l = parse_areas_tsv("areas.tsv", text);
+        let rows = stored(&l.rows);
+        assert_eq!(l.skipped, Vec::<SkippedRow>::new());
+        assert_eq!(rows.len(), 6);
         assert_eq!(rows[0].id, "GC");
         assert_eq!(rows[0].kind, Kind::Area);
         assert_eq!(rows[0].by, "JS");
         assert_eq!(rows[0].title, "garbage collector");
         assert_eq!(rows[0].state, "registered");
-        assert_eq!(rows[2].title, "");
-        assert!(parse_areas_tsv("").unwrap().is_empty());
-        for (bad, line) in [
-            ("code\tlead\tcovers\nGC\n", 2),
-            ("code\tlead\tcovers\ngc\tJS\tx\n", 2),
-            ("code\tlead\tcovers\nGC\tJS\tx\nGD\tjs\tx\n", 3),
-            ("code\tlead\tcovers\nGC\tJSS\tx\n", 2),
+        assert_eq!(rows[2].title, "", "a missing last column is allowed");
+        // The later lines of a code, and a line with no lead, keep what they said as a note.
+        for (i, why) in [
+            (3, "area GC is already registered"),
+            (
+                4,
+                "\"LucinaJS: host objects (CRASH-04)\" is not a lead code",
+            ),
+            (5, "expected at least 2 columns (code, lead), found 1"),
         ] {
-            let err = parse_areas_tsv(bad).unwrap_err();
-            assert!(err.starts_with(&format!("line {line}: ")), "{bad:?}: {err}");
+            assert_eq!(l.rows[i].why, why);
+            assert_eq!(l.rows[i].row.state, NOTE);
+            assert_eq!(l.rows[i].row.kind, Kind::Area);
+            assert_eq!(
+                l.rows[i].row.annotation.as_ref().unwrap().line,
+                i + 2,
+                "1-based in the file"
+            );
         }
+        assert_eq!(l.rows[3].row.id, "GC");
+        assert_eq!(l.rows[4].row.id, "HOST");
+        assert_eq!(l.rows[5].row.id, "REENT");
+        // A code that is no area code cannot say what it annotates: nothing is made of it.
+        let l = parse_areas_tsv(
+            "areas.tsv",
+            "code\tlead\tcovers\ngc\tJS\tx\nABCDEFG\tJS\tx\n",
+        );
+        assert!(l.rows.is_empty());
+        assert_eq!(
+            l.skipped
+                .iter()
+                .map(|s| (s.line, s.reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, "\"gc\" is not an area code"),
+                (3, "\"ABCDEFG\" is not an area code")
+            ]
+        );
+        assert_eq!(parse_areas_tsv("areas.tsv", "").rows.len(), 0);
     }
 
     #[test]
     fn import_plan_twice_gives_nothing_the_second_time() {
-        let incoming = parse_tsv(LEDGER).unwrap();
+        let incoming = ledger(LEDGER).rows;
         let first = import_plan(&[], incoming.clone());
         assert_eq!(first, incoming);
-        let second = import_plan(&first, incoming.clone());
+        let second = import_plan(&stored(&first), incoming.clone());
         assert!(second.is_empty());
         // One new state row among the old ones.
         let mut more = incoming.clone();
-        more.push(row(
+        more.push(ordinary(row(
             "LA-R002",
             "2026-11-13T00:00:00Z",
             Kind::Run,
             "accepted",
             "",
             &[],
-        ));
-        let plan = import_plan(&first, more);
+        )));
+        let plan = import_plan(&stored(&first), more);
         assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].state, "accepted");
+        assert_eq!(plan[0].row.state, "accepted");
         // The same row twice in one file counts once; the order is kept.
         let twice = vec![
             incoming[2].clone(),
@@ -1269,8 +1630,30 @@ LA\t2026-11-01T00:00:00Z\tlead\tregistered\tLucina Agents
         ];
         let plan = import_plan(&[], twice);
         assert_eq!(plan.len(), 2);
-        assert_eq!(plan[0].id, "LA-R002");
-        assert_eq!(plan[1].id, "LA-R001");
+        assert_eq!(plan[0].row.id, "LA-R002");
+        assert_eq!(plan[1].row.id, "LA-R001");
+    }
+
+    #[test]
+    fn an_annotation_is_present_by_its_file_and_line() {
+        let text = "LA-R001\tt\tupdate\tstamp\tx\n";
+        let l = ledger(text);
+        let first = import_plan(&[], l.rows.clone());
+        assert_eq!(first.len(), 1);
+        // The same line of the same file again: nothing new, although the row says the same as
+        // an earlier one would.
+        let again = import_plan(&stored(&first), l.rows.clone());
+        assert!(again.is_empty());
+        // The same text on another line of another file is another annotation.
+        let other = parse_tsv("JS.tsv", text);
+        let plan = import_plan(&stored(&first), other.rows);
+        assert_eq!(plan.len(), 1);
+        // An ordinary row is present by its id, time and state.
+        let rows = rows_of("LA-C001\tt\tchange\topen\tx\n");
+        let same_line = ledger("LA-C001\tt\tchange\tmerged\tx\n");
+        assert_eq!(import_plan(&rows, same_line.rows.clone()).len(), 1);
+        let other_time = ledger("LA-C001\tt2\tchange\topen\tx\n");
+        assert_eq!(import_plan(&rows, other_time.rows).len(), 1);
     }
 
     fn graph() -> Vec<IdRow> {
