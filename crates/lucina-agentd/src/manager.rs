@@ -35,6 +35,7 @@ use crate::store::{Store, StoreError};
 mod external_agents;
 mod gate;
 mod handoff;
+mod ids;
 mod orch;
 mod permissions;
 mod pipeline;
@@ -50,6 +51,7 @@ pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
 pub use handoff::{
     CONTINUED_FROM_LABEL, CONTINUED_ON_LABEL, CONTINUED_PROVIDER_LABEL, HANDOFF_LABEL,
 };
+pub use ids::{ImportIds, NewId, StateId};
 pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, MCP_TOKEN_LABEL, ORIGIN_LABEL};
 pub use permissions::{
     ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE,
@@ -220,6 +222,9 @@ pub enum ManagerError {
         "no work job \"{0}\"; a run started with lane directly is read with `lane status {0}`"
     )]
     WorkNotFound(String),
+    /// An id nobody issued (`lagent id show`, `lagent trace`).
+    #[error("{0}")]
+    IdNotFound(String),
     #[error("{0}")]
     CommandExpired(String),
     /// A subagent tried to start another agent (the depth limit).
@@ -299,6 +304,7 @@ impl ManagerError {
             ManagerError::CodexNotAllowed(_) => "CODEX_NOT_ALLOWED",
             ManagerError::JunoToolRefused(_) => "JUNO_TOOL_REFUSED",
             ManagerError::WorkNotFound(_) => "WORK_NOT_FOUND",
+            ManagerError::IdNotFound(_) => "ID_NOT_FOUND",
         }
     }
 }
@@ -541,6 +547,8 @@ struct Inner {
     pipeline: crate::pipeline::Pipeline,
     devices: crate::devices::Devices,
     work: work::Work,
+    /// The identifiers of runs, changes, versions and findings.
+    ids: ids::Ids,
 }
 
 #[derive(Clone)]
@@ -667,6 +675,7 @@ impl Manager {
         let pipeline = crate::pipeline::Pipeline::open(store.clone(), options.pipeline.clone())?;
         let devices = crate::devices::Devices::open(options.devices.clone());
         let work = work::Work::open(options.work.clone());
+        let ids = ids::Ids::open(&options.work.dir);
         let manager = Manager {
             inner: Arc::new(Inner {
                 workspaces,
@@ -675,6 +684,7 @@ impl Manager {
                 pipeline,
                 devices,
                 work,
+                ids,
                 store,
                 providers,
                 lanes,
