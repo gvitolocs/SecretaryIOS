@@ -236,9 +236,9 @@ pub struct WorkJob {
     /// Whether `note` is what `lane` itself said: the note of a status, or the tail of
     /// `lane run`'s stderr. A later status that says it has no note (`null` or `""`) takes such
     /// a note away; one agentd wrote for itself (a state it did not know, a run it lost) stays.
-    /// Not kept over a restart: after one, only a fresh read of `lane` makes a note lane's own
-    /// again.
-    #[serde(skip)]
+    /// Kept over a restart like the note itself is: a note that came from `lane` before the
+    /// daemon went down is still lane's own when it comes back.
+    #[serde(default)]
     pub note_from_lane: bool,
     /// A run that was started with `lane` directly and is only listed.
     #[serde(default)]
@@ -522,7 +522,7 @@ pub fn apply_status(job: &mut WorkJob, status: &Value) -> bool {
     {
         // `lane` says it has no note this time: the note it gave before goes with that. What is
         // not lane's own word stays, and so does a note this call wrote for a state it does not
-        // know. A note kept over a restart is not known to be lane's, so it stays too.
+        // know. A note kept over a restart is still known to be lane's, so it goes too.
         if job.note_from_lane && !unknown_state_note {
             job.note = None;
             job.note_from_lane = false;
@@ -991,6 +991,27 @@ mod tests {
             &json!({"state": "running", "note": null})
         ));
         assert_eq!(j.note, None);
+    }
+
+    /// Where a note came from is saved with the note: a job file that says nothing of it gives
+    /// false, one written by this code gives what the last read of `lane` showed.
+    #[test]
+    fn the_note_flag_that_says_a_note_is_lane_s_is_kept_with_it() {
+        let mut j = job("wk-1", "chat", WorkState::Running, Priority::Normal, "t");
+        apply_status(
+            &mut j,
+            &json!({"state": "running", "note": "thinking hard"}),
+        );
+        assert!(j.note_from_lane);
+        let text = serde_json::to_string(&j).unwrap();
+        assert!(text.contains(r#""noteFromLane":true"#), "{text}");
+        let back: WorkJob = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, j, "the job is not what the job file says");
+        // An old job file does not know the flag: its note is not known to be lane's.
+        let old: WorkJob =
+            serde_json::from_str(r#"{"id":"wk-1","lead":"chat","note":"an old note"}"#).unwrap();
+        assert!(!old.note_from_lane);
+        assert_eq!(old.note.as_deref(), Some("an old note"));
     }
 
     #[test]

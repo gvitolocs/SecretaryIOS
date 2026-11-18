@@ -1725,6 +1725,42 @@ deep-codex = ["qoder", "codex-a"]
         assert!(!work.cfg.dir.join("jobs.json").exists());
     }
 
+    /// A note that came from `lane` is saved with the word that says so: a job reloaded from
+    /// `jobs.json` still loses that note to a status that says it has none.
+    #[test]
+    fn a_note_lane_gave_is_still_lane_s_after_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = || WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        };
+        let first = Work::open(cfg());
+        let job = WorkJob {
+            id: "wk-1".into(),
+            state: WorkState::Running,
+            note: Some("thinking hard".into()),
+            note_from_lane: true,
+            ..WorkJob::default()
+        };
+        first.persist(std::slice::from_ref(&job));
+        let second = Work::open(cfg());
+        let mut job = second.jobs()[0].clone();
+        assert!(
+            job.note_from_lane,
+            "jobs.json does not say the note was lane's own word"
+        );
+        assert_eq!(job.note.as_deref(), Some("thinking hard"));
+        apply_status(
+            &mut job,
+            &serde_json::json!({"state": "verified", "note": null}),
+        );
+        assert_eq!(job.state, WorkState::Verified);
+        assert_eq!(job.note, None, "a note lane took back survived the reload");
+    }
+
     /// A saved time the clock now stands ahead of: the age is zero, never negative.
     #[test]
     fn an_age_the_clock_stood_ahead_of_counts_as_zero() {
