@@ -764,12 +764,8 @@ impl Manager {
             Path::new(&workspace),
         );
         check_target(&lanes, lane.as_deref(), chain.as_deref(), lucina)?;
-        let change = nonblank(Some(req.change)).ok_or_else(|| {
-            ManagerError::Invalid(
-                "change is required: the run works for a change (`lagent id new change --lead <code> --title <text>`)"
-                    .into(),
-            )
-        })?;
+        let change = nonblank(Some(req.change))
+            .ok_or_else(|| ManagerError::Invalid(super::ids::change_hint(&lead)))?;
         self.check_work_ids(&lead, &change)?;
         let name = nonblank(req.name);
         let session = nonblank(req.session);

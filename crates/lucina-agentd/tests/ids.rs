@@ -687,8 +687,14 @@ fn a_hand_kept_ledger_imports_once() {
     std::fs::write(&file, LEDGER).unwrap();
     let path = file.display().to_string();
 
-    assert_eq!(ok(&d, &["id", "import", &path]), "imported 8, skipped 0");
-    assert_eq!(ok(&d, &["id", "import", &path]), "imported 0, skipped 8");
+    assert_eq!(
+        ok(&d, &["id", "import", &path]),
+        "imported 8 rows (0 as annotations)"
+    );
+    assert_eq!(
+        ok(&d, &["id", "import", &path]),
+        "imported 0 rows (0 as annotations)"
+    );
     // The rows are there, merged: the latest state, the first row's fields.
     let r = view(&d, "LA-R001");
     assert_eq!(r["state"], "verified");
@@ -696,6 +702,7 @@ fn a_hand_kept_ledger_imports_once() {
     assert_eq!(r["declaredBy"], "import");
     assert_eq!(r["base"], "abc123");
     assert_eq!(r["result"], "commit def456");
+    assert_eq!(r["annotations"], json!([]), "no line was refused here");
     assert_eq!(view(&d, "GC-01")["state"], "fixed");
     assert_eq!(view(&d, "LA-C001")["state"], "merged");
     // The numbering goes on after the imported ids.
@@ -709,30 +716,51 @@ fn a_hand_kept_ledger_imports_once() {
         "GC-02"
     );
 
-    // Rows of a lead that is not registered are refused, and nothing is written.
-    let before = read(&ids_file(&d));
+    // A row of a lead that is not registered is skipped and listed; the rest of the file is
+    // taken, and the store is not refused whole.
     let bad = dir.path().join("bad.tsv");
     std::fs::write(
         &bad,
         "id\tutc\tkind\tstate\ttitle\nLA-R010\t2026-11-13T00:00:00Z\trun\tstarted\tok row\nPK-R001\t2026-11-13T00:00:00Z\trun\tstarted\tpokoin\n",
     )
     .unwrap();
-    let e = refused(&d, &["id", "import", &bad.display().to_string()]);
-    assert!(e.contains("lead PK is not registered"), "{e}");
-    assert_eq!(read(&ids_file(&d)), before);
-    // An area that is not registered is refused for a finding.
+    let b = bad.display().to_string();
+    let out = ok(&d, &["id", "import", &b]);
+    assert!(out.contains("imported 1 rows (0 as annotations)"), "{out}");
+    assert!(
+        out.contains("bad.tsv:3  skipped: lead PK is not registered"),
+        "{out}"
+    );
+    assert_eq!(
+        view(&d, "LA-R010")["state"],
+        "started",
+        "the good row came in"
+    );
+    assert!(
+        !ok(&d, &["id", "ls"]).contains("PK-R001"),
+        "nothing of the skipped lead"
+    );
+    // An area that is not registered is listed the same way for a finding.
     std::fs::write(
         &bad,
         "id\tutc\tkind\tstate\ttitle\nZZZ-01\tt\tfinding\treported\tx\n",
     )
     .unwrap();
-    let e = refused(&d, &["id", "import", &bad.display().to_string()]);
-    assert!(e.contains("area ZZZ is not registered"), "{e}");
-    // A line that is not a row names its line.
+    let out = ok(&d, &["id", "import", &b]);
+    assert!(out.contains("skipped: area ZZZ is not registered"), "{out}");
+    // A line that is not a row names its line, and nothing of it is written.
+    let before = read(&ids_file(&d));
     std::fs::write(&bad, "id\tutc\tkind\tstate\ntrash\n").unwrap();
-    let e = refused(&d, &["id", "import", &bad.display().to_string()]);
-    assert!(e.contains("line 2"), "{e}");
-    assert_eq!(read(&ids_file(&d)), before);
+    let out = ok(&d, &["id", "import", &b]);
+    assert!(
+        out.contains("bad.tsv:2  skipped: \"trash\" is not an id"),
+        "{out}"
+    );
+    assert_eq!(
+        read(&ids_file(&d)),
+        before,
+        "a file of skips writes nothing"
+    );
 
     // An area file.
     let areas = dir.path().join("areas.tsv");
@@ -740,13 +768,331 @@ fn a_hand_kept_ledger_imports_once() {
     let a = areas.display().to_string();
     assert_eq!(
         ok(&d, &["id", "import", &a, "--areas"]),
-        "imported 1, skipped 0"
+        "imported 1 rows (0 as annotations)"
     );
     assert_eq!(
         ok(&d, &["id", "import", &a, "--areas"]),
-        "imported 0, skipped 1"
+        "imported 0 rows (0 as annotations)"
     );
     assert_eq!(view(&d, "REENT")["by"], "LA");
+}
+
+/// A hand-kept ledger of every kind of line the rules do not allow: an unknown kind, a state of
+/// another kind, a line with too few columns, a line with no id, a line of no id at all, a lead
+/// nobody registered and an area nobody registered.
+const MIXED: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+LA-C001\t2026-11-10T08:00:00Z\tchange\topen\tIdentifiers\tLA
+LA-R001\t2026-11-10T09:00:00Z\trun\tstarted\tIds pure rules\tqoder auto-free\tspec.md\tlagent-ids\tabc123
+LA-R001\t2026-11-10T10:00:00Z\trun\tverified\t\t\t\t\t\tcommit def456\tLA-C001
+GC-01\t2026-11-09T08:00:00Z\tfinding\treported\tUse after free\tJS-R004
+LA-R001\t2026-11-11T09:00:00Z\trun\tdone\tthe word the lead kept for a finished run
+LA-R002\t2026-11-11T09:30:00Z\tupdate\tstamp\ta note the ledger wrote under a run id
+LA-C002\t2026-11-11T10:00:00Z\tchange
+RECURSE-01\t2026-11-11T11:00:00Z\tfinding\treported\ta line of prose nothing was made of
+\t2026-11-11T11:30:00Z\trun\tstarted\ta line with an empty id column
+PK-R001\t2026-11-11T12:00:00Z\trun\tstarted\ta run of a lead nobody registered
+ZZZ-01\t2026-11-11T12:30:00Z\tfinding\treported\ta finding of an area nobody registered
+";
+
+/// What the ledger above is asked of the store: three lines kept as annotations, four skipped.
+const MIXED_SUMMARY: &str = "LA.tsv:6  LA-R001  annotation: state \"done\" does not belong to a run
+LA.tsv:7  LA-R002  annotation: unknown kind \"update\"
+LA.tsv:8  LA-C002  annotation: expected at least 4 columns (id, utc, kind, state), found 3
+LA.tsv:9  skipped: \"RECURSE-01\" is not an id
+LA.tsv:10  skipped: the id column is empty
+LA.tsv:11  skipped: lead PK is not registered
+LA.tsv:12  skipped: area ZZZ is not registered";
+
+#[test]
+fn a_ledger_of_lines_the_rules_refuse_is_kept_as_annotations() {
+    let d = Daemon::start();
+    lead_add(&d, "LA");
+    lead_add(&d, "JS");
+    ok(&d, &["id", "area", "add", "GC", "--lead", "JS", "gc"]);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("LA.tsv");
+    std::fs::write(&file, MIXED).unwrap();
+    let path = file.display().to_string();
+    let before = read(&ids_file(&d));
+
+    // The dry run: the counts, the annotations, the skips — and the store untouched.
+    let dry = format!("would import 7 rows (3 as annotations)\n{MIXED_SUMMARY}");
+    assert_eq!(ok(&d, &["id", "import", &path, "--dry-run"]), dry);
+    assert_eq!(read(&ids_file(&d)), before, "the dry run wrote nothing");
+    let j = lagent_json(&d, &["id", "import", &path, "--dry-run"]);
+    assert_eq!(j["imported"], 7);
+    assert_eq!(j["annotations"].as_array().unwrap().len(), 3);
+    assert_eq!(j["skipped"].as_array().unwrap().len(), 4);
+    assert_eq!(j["annotations"][0]["id"], "LA-R001");
+    assert_eq!(j["annotations"][0]["line"], 6);
+    assert_eq!(j["annotations"][0]["file"], "LA.tsv");
+    assert_eq!(j["skipped"][3]["reason"], "area ZZZ is not registered");
+    assert_eq!(j["skipped"][3]["line"], 12);
+    assert_eq!(
+        read(&ids_file(&d)),
+        before,
+        "--json of a dry run writes nothing"
+    );
+
+    // The real import: the same summary, and seven rows more on disk.
+    let out = ok(&d, &["id", "import", &path]);
+    assert_eq!(out, dry.replacen("would import", "imported", 1));
+    assert_eq!(
+        read(&ids_file(&d)).lines().count(),
+        before.lines().count() + 7
+    );
+    // The second time nothing is new — the annotations of the same lines included — while the
+    // lines with no usable id and no registered lead are listed again, as they are every time.
+    let skips = MIXED_SUMMARY.lines().skip(3).collect::<Vec<_>>().join("\n");
+    assert_eq!(
+        ok(&d, &["id", "import", &path]),
+        format!("imported 0 rows (0 as annotations)\n{skips}")
+    );
+    assert_eq!(
+        read(&ids_file(&d)).lines().count(),
+        before.lines().count() + 7
+    );
+    assert!(
+        !ok(&d, &["id", "ls"]).contains("hash chain"),
+        "the annotations are chained like any row"
+    );
+
+    // The view: the state and the fields of the rows the rules allowed, the refused lines
+    // listed as they stand.
+    let v = view(&d, "LA-R001");
+    assert_eq!(v["state"], "verified");
+    assert_eq!(v["title"], "Ids pure rules");
+    assert_eq!(v["result"], "commit def456");
+    assert_eq!(v["rows"], 3);
+    assert_eq!(v["annotations"][0]["raw"], MIXED.lines().nth(5).unwrap());
+    // An id of nothing but a refused line is listed, with the state of a note.
+    let only = view(&d, "LA-R002");
+    assert_eq!(only["state"], "note");
+    assert_eq!(only["kind"], "run", "the id's form gave the kind");
+    assert_eq!(only["title"], "");
+    assert_eq!(only["declaredBy"], "import");
+    assert_eq!(only["annotations"][0]["line"], 7);
+    assert_eq!(only["annotations"][0]["file"], "LA.tsv");
+    assert_eq!(
+        rows(&d, "LA-R002")[0]["annotation"]["raw"],
+        MIXED.lines().nth(6).unwrap(),
+        "the row keeps the line verbatim"
+    );
+    assert_eq!(view(&d, "LA-C002")["state"], "note");
+    assert_eq!(view(&d, "LA-C002")["kind"], "change");
+    assert_eq!(view(&d, "GC-01")["state"], "reported");
+
+    // A number never comes back down to a line the rules refused.
+    assert_eq!(new_run(&d, "LA", "next"), "LA-R003");
+    assert_eq!(new_change(&d, "LA"), "LA-C003");
+
+    // `note` is only ever the state of an annotation row: the routes that write refuse it.
+    let e = refused(&d, &["id", "state", "LA-C001", "note"]);
+    assert!(
+        e.contains("state \"note\" does not belong to a change"),
+        "{e}"
+    );
+    let e = refused(
+        &d,
+        &[
+            "id", "new", "run", "--lead", "LA", "--title", "x", "--by", "qoder", "--agent", "a",
+            "--state", "note",
+        ],
+    );
+    assert!(e.contains("does not belong to a run"), "{e}");
+    assert_eq!(
+        read(&ids_file(&d)).lines().count(),
+        before.lines().count() + 9,
+        "the two refusals wrote nothing"
+    );
+}
+
+/// One finding id of two files and two subjects: `LB.tsv:48` is the nezopt disk at 96% and
+/// `JS.tsv:183` the LucinaJS GC verifier abort. The `by` and `result` cells are as the ledgers
+/// write them.
+const LB_HOST: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+HOST-01\t2026-11-17T13:37:00Z\tfinding\treported\tnezopt: the disk is at 96%, 76 GB free\tLB\t\t\t\t\tLB-C015
+";
+
+const JS_HOST: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+HOST-01\t2026-11-17T13:34:01Z\tfinding\treported\tGC verifier: two host objects share reserved slot 0\tLN-R053\t\t\t\tCRASH-04 JS-R055
+";
+
+/// A change that goes on in another file: `PK.tsv:33` opens it and `PV.tsv:35` merges it.
+const PK_CHANGE: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+PK-C009\t2026-11-16T09:00:00Z\tchange\topen\tAdd the id import\tPK
+";
+
+const PV_CHANGE: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+PK-C009\t2026-11-17T09:00:00Z\tchange\tmerged\tThe id import is in\tPV
+";
+
+/// A ledger of three lines: `PH.tsv:17` and `PH.tsv:21` are one run, one state and two titles.
+const PH_RUN: &str = "id\tutc\tkind\tstate\ttitle\tby\tspec\twhere\tbase\tresult\trefs
+PH-R007\t2026-11-17T08:00:00Z\trun\tstarted\tThe game-icons hover card\tPH
+PH-R007\t2026-11-17T08:00:19Z\trun\tstarted\tSkip the price-history panel\tPH
+";
+
+/// What an import of a file whose path is `p` and whose lines are `lines` is asked of the store.
+fn write_ledger(dir: &Path, name: &str, body: &str) -> String {
+    let file = dir.join(name);
+    std::fs::write(&file, body).unwrap();
+    file.display().to_string()
+}
+
+#[test]
+fn one_id_of_two_files_naming_two_subjects_leaves_the_second_line_a_note() {
+    let d = Daemon::start();
+    for lead in ["LB", "PK"] {
+        lead_add(&d, lead);
+    }
+    ok(
+        &d,
+        &[
+            "id",
+            "area",
+            "add",
+            "HOST",
+            "--lead",
+            "LB",
+            "the nezopt host",
+        ],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let lb = write_ledger(dir.path(), "LB.tsv", LB_HOST);
+    let js = write_ledger(dir.path(), "JS.tsv", JS_HOST);
+    let pk = write_ledger(dir.path(), "PK.tsv", PK_CHANGE);
+    let pv = write_ledger(dir.path(), "PV.tsv", PV_CHANGE);
+    let why = "id HOST-01 already has another row with another title";
+
+    // The file that comes first owns the ordinary row.
+    assert_eq!(
+        ok(&d, &["id", "import", &lb]),
+        "imported 1 rows (0 as annotations)"
+    );
+
+    // The other file's line names another subject under the same id: the dry run says so in a
+    // line of its own and writes nothing.
+    let dry =
+        format!("would import 1 rows (1 as annotations)\nJS.tsv:2  HOST-01  annotation: {why}");
+    let store = read(&ids_file(&d));
+    assert_eq!(ok(&d, &["id", "import", &js, "--dry-run"]), dry);
+    let j = lagent_json(&d, &["id", "import", &js, "--dry-run"]);
+    assert_eq!(j["annotations"].as_array().unwrap().len(), 1);
+    assert_eq!(j["annotations"][0]["id"], "HOST-01");
+    assert_eq!(j["annotations"][0]["file"], "JS.tsv");
+    assert_eq!(j["annotations"][0]["reason"], why);
+    assert_eq!(read(&ids_file(&d)), store, "the dry run wrote nothing");
+
+    // The real import keeps the line as a note of the id, verbatim, and gives it no row of
+    // its own: the view keeps the title of the file that came first.
+    assert_eq!(
+        ok(&d, &["id", "import", &js]),
+        dry.replacen("would import", "imported", 1)
+    );
+    let v = view(&d, "HOST-01");
+    assert_eq!(v["state"], "reported");
+    assert_eq!(v["title"], "nezopt: the disk is at 96%, 76 GB free");
+    assert_eq!(v["rows"], 2);
+    assert_eq!(v["annotations"].as_array().unwrap().len(), 1);
+    assert_eq!(v["annotations"][0]["file"], "JS.tsv");
+    assert_eq!(v["annotations"][0]["line"], 2);
+    let rs = rows(&d, "HOST-01");
+    assert_eq!(rs[1]["state"], "note", "the second line is a note");
+    assert_eq!(
+        rs[1]["annotation"]["raw"],
+        JS_HOST.lines().nth(1).unwrap(),
+        "the row keeps the line as it stands"
+    );
+
+    // Both files again: the note is not kept twice and nothing is new.
+    assert_eq!(
+        ok(&d, &["id", "import", &lb]),
+        "imported 0 rows (0 as annotations)"
+    );
+    assert_eq!(
+        ok(&d, &["id", "import", &js]),
+        "imported 0 rows (0 as annotations)"
+    );
+    assert_eq!(view(&d, "HOST-01")["rows"], 2);
+
+    // A line that takes the id to another state is another matter, although it comes from a
+    // second file with a second title.
+    assert_eq!(
+        ok(&d, &["id", "import", &pk]),
+        "imported 1 rows (0 as annotations)"
+    );
+    assert_eq!(
+        ok(&d, &["id", "import", &pv]),
+        "imported 1 rows (0 as annotations)"
+    );
+    let v = view(&d, "PK-C009");
+    assert_eq!(v["state"], "merged");
+    assert_eq!(v["title"], "The id import is in");
+    assert_eq!(v["rows"], 2);
+    assert_eq!(v["annotations"], json!([]));
+
+    // The other order of the two files: it is the first import that owns the view.
+    let first = Daemon::start();
+    lead_add(&first, "LB");
+    ok(
+        &first,
+        &[
+            "id",
+            "area",
+            "add",
+            "HOST",
+            "--lead",
+            "LB",
+            "the nezopt host",
+        ],
+    );
+    assert_eq!(
+        ok(&first, &["id", "import", &js]),
+        "imported 1 rows (0 as annotations)"
+    );
+    assert_eq!(
+        ok(&first, &["id", "import", &lb]),
+        format!("imported 1 rows (1 as annotations)\nLB.tsv:2  HOST-01  annotation: {why}")
+    );
+    let v = view(&first, "HOST-01");
+    assert_eq!(
+        v["title"],
+        "GC verifier: two host objects share reserved slot 0"
+    );
+    assert_eq!(v["annotations"][0]["file"], "LB.tsv");
+}
+
+#[test]
+fn a_second_title_for_a_state_an_earlier_line_of_the_file_gave_is_said() {
+    let d = Daemon::start();
+    lead_add(&d, "PH");
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_ledger(dir.path(), "PH.tsv", PH_RUN);
+    let note = "PH.tsv:3  PH-R007  same state as line 2, other title";
+
+    // Both lines are ordinary rows: the file is only asked to say what it did.
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--dry-run"]),
+        format!("would import 2 rows (0 as annotations)\n{note}")
+    );
+    let out = ok(&d, &["id", "import", &path]);
+    assert!(out.contains(note), "{out}");
+    assert!(
+        out.starts_with("imported 2 rows (0 as annotations)"),
+        "{out}"
+    );
+    let v = view(&d, "PH-R007");
+    assert_eq!(v["state"], "started");
+    assert_eq!(v["rows"], 2, "both lines are rows of the id");
+    assert_eq!(v["annotations"], json!([]), "the rules refused nothing");
+    assert_eq!(v["title"], "Skip the price-history panel");
+
+    // The same file again: no line is new, so nothing is said of a title either.
+    assert_eq!(
+        ok(&d, &["id", "import", &path]),
+        "imported 0 rows (0 as annotations)"
+    );
 }
 
 /// The first line of the fake lane's stored arguments after `flag`.
@@ -1067,6 +1413,12 @@ fn work_refusals() {
         ],
     );
     assert!(e.contains("--change"), "{e}");
+    assert_eq!(
+        e.trim(),
+        "Error: a work job needs --change LA-C<nnn>; open one with: lagent id new change --lead \
+         LA --title \"<what the change does>\"",
+        "the refusal says how to get a change"
+    );
     // A change of another lead.
     let r = work_start(&d, &f, &ws, &["--cost", "build", "--lane", "qoder"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
@@ -1142,7 +1494,12 @@ fn work_refusals() {
             &spec,
         ],
     );
-    assert!(r.stderr.contains("does not exist"), "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("no change LA-C099: a work job needs --change LA-C<nnn>"),
+        "{}",
+        r.stderr
+    );
     let run = new_run(&d, "LA", "hand run");
     let r = lagent(
         &d,
@@ -1415,6 +1772,70 @@ fn a_lead_code_must_differ_from_every_area_code() {
     assert_eq!(read(&ids_file(&d)), before, "the import wrote nothing");
 }
 
+/// `areas.tsv:54` gives an area the code `PV`, which a lead already holds. The line registers
+/// nothing, but it is not allowed to refuse the file either: the areas around it are real, and
+/// every finding of theirs would be skipped for a line that means nothing to them.
+#[test]
+fn an_areas_line_of_a_code_a_lead_holds_is_listed_and_the_file_imports() {
+    let d = Daemon::start();
+    for lead in ["LA", "LB", "PV"] {
+        lead_add(&d, lead);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_ledger(
+        dir.path(),
+        "areas.tsv",
+        "code\tlead\tcovers\n\
+         GC\tLA\tLucinaJS garbage collector\n\
+         PV\tPV\tPoko video\n\
+         BQ\tLB\tbq build queue\n",
+    );
+    let why = "\"PV\" is a lead code: an area code must differ from every lead code";
+    let skip = format!("areas.tsv:3  skipped: {why}");
+
+    // The dry run takes the two lines that are areas, lists the one that is not, and writes
+    // nothing.
+    let before = read(&ids_file(&d));
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--areas", "--dry-run"]),
+        format!("would import 2 rows (0 as annotations)\n{skip}")
+    );
+    assert_eq!(read(&ids_file(&d)), before, "a dry run writes nothing");
+    let j = lagent_json(&d, &["id", "import", &path, "--areas", "--dry-run"]);
+    assert_eq!(j["skipped"].as_array().unwrap().len(), 1, "{j}");
+    assert_eq!(j["skipped"][0]["file"], "areas.tsv");
+    assert_eq!(j["skipped"][0]["line"], 3);
+    assert_eq!(j["skipped"][0]["reason"], why);
+
+    // The import: the same lists, GC and BQ registered, and nothing of the PV line kept.
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--areas"]),
+        format!("imported 2 rows (0 as annotations)\n{skip}")
+    );
+    assert_eq!(view(&d, "GC")["kind"], "area");
+    assert_eq!(view(&d, "GC")["by"], "LA", "GC came from the file");
+    assert_eq!(view(&d, "BQ")["by"], "LB");
+    assert_eq!(view(&d, "PV")["kind"], "lead", "PV stayed a lead");
+    assert_eq!(
+        view(&d, "PV")["annotations"],
+        json!([]),
+        "nothing was kept of the line"
+    );
+
+    // The file again: both areas are present, so nothing is taken, and the skip is still listed.
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--areas"]),
+        format!("imported 0 rows (0 as annotations)\n{skip}")
+    );
+
+    // The single area route is untouched: it still refuses a code a lead holds.
+    let e = refused(
+        &d,
+        &["id", "area", "add", "PV", "--lead", "PV", "poko video"],
+    );
+    assert!(e.contains(why), "{e}");
+}
+
 #[test]
 fn a_lost_run_that_ends_failed_again_gets_a_second_failed_row() {
     let f = Fixture::new();
@@ -1532,4 +1953,88 @@ fn a_final_job_is_followed_until_the_store_has_its_end_row() {
         lagent_json(&d, &["work", "show", &id])["state"] == "verified",
         "the job moved on for the row alone"
     );
+}
+
+/// A note that comes after a run's end row says nothing of the run's state: `LB.tsv:54` is the
+/// last ordinary row of `LB-R012` and `LB.tsv:138`, whose state no run allows, is the last row of
+/// all. The poller must not read that note as the state and owe the store a second end row.
+#[test]
+fn a_note_after_a_runs_end_row_owes_the_store_nothing() {
+    let f = Fixture::new();
+    let mut env = f.env();
+    env.push(("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string()));
+    let d = Daemon::start_with_env(&env);
+    std::fs::write(
+        f.data().join("ids-path"),
+        ids_file(&d).display().to_string(),
+    )
+    .unwrap();
+    setup_la(&d);
+    let ws = f.repo("ws");
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    let job = work_job(&work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Ended"],
+    ));
+    let id = job["id"].as_str().unwrap().to_string();
+    assert_eq!(job["runId"], "LA-R001");
+
+    // The run ends verified: its end row is the store's last ordinary row of the id.
+    f.status(
+        &id,
+        &lane_status(
+            &id,
+            "verified",
+            json!({"final_lane": "qoder", "model": "auto-free",
+                   "verify": {"cmd": "true", "ran_cmd": null, "exit_code": 0, "head": "deadbeef",
+                              "ran": true, "timed_out": false, "note": null},
+                   "attempts": [{"lane": "qoder", "outcome": "ok", "reason": null,
+                                 "before_head": head, "after_head": null}]}),
+        ),
+    );
+    let rs = wait_rows(&d, "LA-R001", 2);
+    assert_eq!(rs[1]["state"], "verified", "{rs:?}");
+
+    // The lead's ledger then writes the run off as removed. The state belongs to no run, so the
+    // line is kept as a note: the last row of the id, and nothing to say of its state.
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_ledger(
+        dir.path(),
+        "LA.tsv",
+        "id\tutc\tkind\tstate\ttitle\nLA-R001\t2026-11-17T14:18:56Z\trun\tremoved\t/home/nez/scratch/amazon-p1-target\n",
+    );
+    assert_eq!(
+        ok(&d, &["id", "import", &path]),
+        "imported 1 rows (1 as annotations)\n\
+         LA.tsv:2  LA-R001  annotation: state \"removed\" does not belong to a run"
+    );
+    assert_eq!(view(&d, "LA-R001")["state"], "verified");
+
+    // A second job the lane never answers for goes lost, which takes three passes of the
+    // poller. By then the ended job has been followed as often as it is ever followed.
+    work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Never"],
+    );
+    let rs = wait_rows(&d, "LA-R002", 2);
+    assert_eq!(rs[1]["state"], "failed", "{rs:?}");
+    assert_eq!(
+        lagent_json(&d, &["work", "show", "la-r002-never"])["state"],
+        "lost"
+    );
+    let rs = rows(&d, "LA-R001");
+    let states: Vec<&str> = rs
+        .iter()
+        .map(|r| r["state"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        states,
+        ["started", "verified", "note"],
+        "the note owed the store no second end row"
+    );
+    assert_eq!(lagent_json(&d, &["work", "show", &id])["state"], "verified");
 }
