@@ -1584,12 +1584,15 @@ fn a_lane_status_that_cannot_start_is_not_a_miss() {
     std::fs::remove_file(f.root.path().join("lane/lane")).unwrap();
     // The daemon says so, and the job is none the worse for it.
     let log = d.dir.path().join("agentd.log");
-    wait_for(&d, &id, "waiting for a status that did not start", |_| {
-        read(&log).contains("lane status did not start")
-    });
-    // A job this old would be lost on three misses; five calls that cannot start are not
-    // misses, so state and note stay as they are.
-    std::thread::sleep(Duration::from_secs(5));
+    let failed_spawns = || read(&log).matches("lane status did not start").count() as u64;
+    // Not one line, but three of them: a job this old is lost on three misses in a row, and
+    // the assert below says nothing until a host that would lose it has had its three passes.
+    wait_for(
+        &d,
+        &id,
+        "waiting for three statuses that cannot start",
+        |j| failed_spawns() >= 3 && j["state"] == "running",
+    );
     let job = show(&d, &id);
     assert_eq!(job["state"], "running", "{job}");
     assert!(job["note"].is_null(), "{job}");
@@ -1699,15 +1702,28 @@ fn an_unreadable_status_breaks_the_streak_of_misses() {
     // The stand-in exits 2 on every call but its third, which prints garbage and exits 0.
     let seq = f.data().join(format!("{id}.seq"));
     std::fs::write(&seq, "0\n").unwrap();
-    let job = wait_state_within(&d, &id, "lost", lost_budget());
-    assert_eq!(job["note"], "lane has no record of this run", "{job}");
+    let asked = || read(&seq).trim().parse::<u64>().unwrap_or(0);
+    // The call counter is what the asserts are read against, and read before the run is lost:
+    // a lost job is asked about too, and by the time `lost` is on the job the calls that broke
+    // the streak are long gone among those that counted towards it.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while asked() < 4 {
+        assert!(Instant::now() < deadline, "the fourth status never came");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The pass that read the garbage is over by now, and two misses do not make three.
+    std::thread::sleep(Duration::from_millis(300));
+    let job = show(&d, &id);
+    assert_ne!(job["state"], "lost", "lost on the fourth call: {job}");
     // Three misses in a row are needed; the readable exit 0 in the middle broke the streak, so
     // the lost came no earlier than the sixth call.
-    let asked: u64 = read(&seq).trim().parse().unwrap();
+    let job = wait_state_within(&d, &id, "lost", lost_budget());
+    let called = asked();
     assert!(
-        asked >= 6,
-        "lost after {asked} polls, of which three were misses in a row"
+        called >= 6,
+        "lost after {called} polls, of which three were misses in a row"
     );
+    assert_eq!(job["note"], "lane has no record of this run", "{job}");
 }
 
 #[test]
@@ -1872,7 +1888,7 @@ fn a_run_lane_calls_lost_is_final_and_is_never_asked_again() {
             json!({"attempts": [], "dirty_files": [], "note": "the runner is gone"}),
         ),
     );
-    let job = wait_state(&d, &id, "lost");
+    let job = wait_state_within(&d, &id, "lost", lost_budget());
     assert_eq!(job["laneState"], "lost", "{job}");
     // Lane's own note, not the `unknown lane state` of a word it did not know.
     assert_eq!(job["note"], "the runner is gone", "{job}");

@@ -90,10 +90,13 @@ mod tests {
 
     #[test]
     fn one_wait_call_holds_the_connection_for_minutes_not_hours() {
+        // The number itself is what this is about: three hours on one connection is not what
+        // the socket is for. Restoring it to 10800 fails here, not only in relation to itself.
+        assert_eq!(WAIT_MAX_SECS, 300, "minutes, not hours");
         // The CLI asks again every 300 s, so the total it waits is its own business; what
         // reaches the daemon is capped here, as pipeline caps its long-poll.
-        assert_eq!(wait_cap(Some(10_800)), WAIT_MAX_SECS);
-        assert_eq!(wait_cap(None), WAIT_MAX_SECS);
+        assert_eq!(wait_cap(Some(10_800)), 300);
+        assert_eq!(wait_cap(None), 300);
         assert_eq!(wait_cap(Some(30)), 30);
         assert_eq!(wait_cap(Some(0)), 0);
     }
