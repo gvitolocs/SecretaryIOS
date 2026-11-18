@@ -928,6 +928,24 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_code_may_not_be_a_registered_area_code() {
+        let rows = registry();
+        // `GC` is two capital letters and no lead: the area side is what stops it, with the
+        // area check's own wording turned around.
+        assert!(valid_lead("GC"));
+        assert_eq!(
+            check_new(&rows, Kind::Lead, "GC", "the gc chat").unwrap_err(),
+            "\"GC\" is an area code: a lead code must differ from every area code"
+        );
+        assert_eq!(
+            check_new_area(&rows, "LA", "JS", "x").unwrap_err(),
+            "\"LA\" is a lead code: an area code must differ from every lead code"
+        );
+        // A code that is neither is still allowed.
+        assert!(check_new(&rows, Kind::Lead, "PK", "Pokoin").is_ok());
+    }
+
+    #[test]
     fn check_new_area_refusals() {
         let rows = registry();
         assert!(check_new_area(&rows, "REENT", "LA", "re-entrancy").is_ok());

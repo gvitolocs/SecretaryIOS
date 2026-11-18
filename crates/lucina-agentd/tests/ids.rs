@@ -1315,3 +1315,223 @@ fn a_trace_follows_a_finding_to_the_runs_and_a_commit_to_its_run() {
     );
     assert!(refused(&d, &["trace"]).contains("--commit"));
 }
+
+/// A state row through the API, with `base` as the column of the row: what a lead state row or
+/// an imported ledger can hold.
+fn state_with_base(d: &Daemon, id: &str, state: &str, base: &str) {
+    let sock = d.socket().display().to_string();
+    let body = json!({ "state": state, "base": base }).to_string();
+    let r = common::run(Command::new("curl").args([
+        "-s",
+        "-X",
+        "POST",
+        "-H",
+        "content-type: application/json",
+        "-d",
+        &body,
+        "--unix-socket",
+        &sock,
+        &format!("http://x/ids/{id}/state"),
+    ]));
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let v: Value = serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("{e}: {}", r.stdout));
+    assert_eq!(v["id"], id, "{v}");
+    assert_eq!(v["base"], base, "{v}");
+}
+
+#[test]
+fn only_a_full_commit_id_is_asked_of_git_as_the_base() {
+    let f = Fixture::new();
+    let d = f.daemon();
+    setup_la(&d);
+    let repo = f.repo("repo");
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    let r = work_start(
+        &d,
+        &f,
+        &repo,
+        &["--cost", "build", "--lane", "qoder", "--name", "Gitty"],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let run = work_job(&r)["runId"].as_str().unwrap().to_string();
+    let sha = commit(
+        &repo,
+        "the worker's commit",
+        &["Lead: LA", &format!("Run: {run}"), "Change: LA-C001"],
+    );
+
+    // The base the daemon wrote is a full commit id, so git really answers.
+    let c = lagent_json(&d, &["trace", "--commit", &sha, "--repo", &repo]);
+    assert_eq!(c["runView"]["base"], base.as_str(), "{c}");
+    assert_eq!(c["descendsFromBase"], true, "{c}");
+
+    // Anything else never reaches git: `--help` would make `git merge-base` print its help,
+    // and a ref would be resolved to a commit that has nothing to do with the run's base.
+    let upper = base.to_uppercase();
+    let short = "0".repeat(39);
+    for bad in ["--help", "HEAD", upper.as_str(), short.as_str()] {
+        state_with_base(&d, &run, "verified", bad);
+        let c = lagent_json(&d, &["trace", "--commit", &sha, "--repo", &repo]);
+        assert_eq!(c["runView"]["id"], run.as_str(), "{c}");
+        assert_eq!(c["runView"]["base"], bad, "{c}");
+        assert_eq!(c["descendsFromBase"], Value::Null, "base {bad}: {c}");
+    }
+
+    // The full id again gets its answer: the guard is about the shape, not about the run.
+    state_with_base(&d, &run, "accepted", &base);
+    let c = lagent_json(&d, &["trace", "--commit", &sha, "--repo", &repo]);
+    assert_eq!(c["descendsFromBase"], true, "{c}");
+}
+
+#[test]
+fn a_lead_code_must_differ_from_every_area_code() {
+    let d = Daemon::start();
+    lead_add(&d, "LA");
+    ok(&d, &["id", "area", "add", "GC", "--lead", "LA", "gc"]);
+
+    // The area side has always refused a code that is a lead; the lead side now refuses a
+    // code that is an area, or one id would be two kinds at once.
+    let e = refused(&d, &["id", "lead", "add", "GC", "the gc chat"]);
+    assert!(
+        e.contains("\"GC\" is an area code: a lead code must differ from every area code"),
+        "{e}"
+    );
+    assert_eq!(view(&d, "GC")["kind"], "area", "GC stayed an area");
+    assert_eq!(
+        view(&d, "GC")["by"],
+        "LA",
+        "the area kept its owning lead, not a lead's title"
+    );
+
+    // The import route refuses it too and writes nothing.
+    let before = read(&ids_file(&d));
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("lead.tsv");
+    std::fs::write(
+        &file,
+        "id\tutc\tkind\tstate\ttitle\nGC\t2026-11-13T00:00:00Z\tlead\tregistered\tthe gc chat\n",
+    )
+    .unwrap();
+    let e = refused(&d, &["id", "import", &file.display().to_string()]);
+    assert!(e.contains("\"GC\" is an area code"), "{e}");
+    assert_eq!(read(&ids_file(&d)), before, "the import wrote nothing");
+}
+
+#[test]
+fn a_lost_run_that_ends_failed_again_gets_a_second_failed_row() {
+    let f = Fixture::new();
+    let mut env = f.env();
+    env.push(("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string()));
+    let d = Daemon::start_with_env(&env);
+    std::fs::write(
+        f.data().join("ids-path"),
+        ids_file(&d).display().to_string(),
+    )
+    .unwrap();
+    setup_la(&d);
+    let ws = f.repo("ws");
+    let job = work_job(&work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Again"],
+    ));
+    let id = job["id"].as_str().unwrap().to_string();
+    assert_eq!(id, "la-r001-again", "{job}");
+    assert_eq!(job["runId"], "LA-R001");
+
+    // `lane` never answers for the run: the job is lost and its `failed` row is written.
+    let rs = wait_rows(&d, "LA-R001", 2);
+    assert_eq!(rs[1]["state"], "failed", "{rs:?}");
+    assert_eq!(lagent_json(&d, &["work", "show", &id])["state"], "lost");
+
+    // `lane` knows the run again: a running job has no run state, so no row is written.
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    wait_until("the job runs again", || {
+        lagent_json(&d, &["work", "show", &id])["state"] == "running"
+    });
+    assert_eq!(rows(&d, "LA-R001").len(), 2, "the recovery wrote a row");
+
+    // It ends `failed` again: the new ending has its own row, with its own result.
+    f.status(
+        &id,
+        &lane_status(&id, "failed", json!({"note": "the runner died"})),
+    );
+    let rs = wait_rows(&d, "LA-R001", 3);
+    let states: Vec<&str> = rs.iter().map(|r| r["state"].as_str().unwrap()).collect();
+    assert_eq!(states, ["started", "failed", "failed"], "{rs:?}");
+    assert_eq!(rs[2]["declaredBy"], "daemon", "{rs[2]}");
+    assert!(
+        rs[2]["result"]
+            .as_str()
+            .is_some_and(|r| r.contains("failed")),
+        "{}",
+        rs[2]
+    );
+}
+
+#[test]
+fn a_final_job_is_followed_until_the_store_has_its_end_row() {
+    let f = Fixture::new();
+    let mut d = f.daemon();
+    setup_la(&d);
+    let ws = f.repo("ws");
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    let job = work_job(&work_start(
+        &d,
+        &f,
+        &ws,
+        &["--cost", "build", "--lane", "qoder", "--name", "Owed"],
+    ));
+    let id = job["id"].as_str().unwrap().to_string();
+    assert_eq!(job["runId"], "LA-R001");
+    assert_eq!(rows(&d, "LA-R001").len(), 1);
+
+    // The run ends while the store cannot be written: the row is refused, and the job says so.
+    stop(&mut d);
+    let file = ids_file(&d);
+    let good = read(&file);
+    let broken = format!("{good}not a row\n");
+    std::fs::write(&file, &broken).unwrap();
+    f.status(
+        &id,
+        &lane_status(
+            &id,
+            "verified",
+            json!({"final_lane": "qoder", "model": "auto-free",
+                   "verify": {"cmd": "true", "ran_cmd": null, "exit_code": 0, "head": "deadbeef",
+                              "ran": true, "timed_out": false, "note": null},
+                   "attempts": [{"lane": "qoder", "outcome": "ok", "reason": null,
+                                 "before_head": head, "after_head": null}]}),
+        ),
+    );
+    start_again(&mut d, &f.env());
+
+    wait_until("the note names the refused end row", || {
+        lagent_json(&d, &["work", "show", &id])["note"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("the id store refused the end row: "))
+    });
+    let shown = lagent_json(&d, &["work", "show", &id]);
+    let note = shown["note"].as_str().unwrap_or_default().to_string();
+    assert!(
+        note.contains("the id store has an unreadable line (4); fix it by hand"),
+        "{note}"
+    );
+    assert_eq!(shown["state"], "verified", "{shown}");
+    assert_eq!(rows(&d, "LA-R001").len(), 1, "the store took nothing");
+    assert_eq!(read(&file), broken, "the file is byte-identical");
+
+    // The bad line is gone and the daemon starts again: the final job is still followed, so
+    // the row it owed is written although `lane` has nothing new to say.
+    stop(&mut d);
+    std::fs::write(&file, &good).unwrap();
+    start_again(&mut d, &f.env());
+    let rs = wait_rows(&d, "LA-R001", 2);
+    assert_eq!(rs[1]["state"], "verified", "{rs:?}");
+    assert_eq!(rs[1]["declaredBy"], "daemon", "{}", rs[1]);
+    assert!(
+        lagent_json(&d, &["work", "show", &id])["state"] == "verified",
+        "the job moved on for the row alone"
+    );
+}

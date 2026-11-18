@@ -94,6 +94,9 @@ struct State {
     /// Why nothing may be written.
     read_only: Option<String>,
     chain_broken_at: Option<usize>,
+    /// The test seam, never set outside the unit tests of this module: an append stops after
+    /// this many bytes and answers an error, as a disk that fills in the middle of a line.
+    fail_write_after: Option<usize>,
 }
 
 impl State {
@@ -190,6 +193,27 @@ impl State {
         views
     }
 
+    /// The append of `bytes` to the open file and its `sync_data`. `fail_after` is the test
+    /// seam: the write stops after that many bytes and answers an error.
+    fn write_and_sync(
+        f: &mut std::fs::File,
+        bytes: &[u8],
+        fail_after: Option<usize>,
+    ) -> std::io::Result<()> {
+        match fail_after {
+            Some(after) => {
+                let mut left = &bytes[..after.min(bytes.len())];
+                while !left.is_empty() {
+                    let taken = f.write(left)?;
+                    left = &left[taken..];
+                }
+                Err(std::io::Error::other("the disk took only part of the line"))
+            }
+            None => f.write_all(bytes),
+        }?;
+        f.sync_data()
+    }
+
     /// Appends the rows (their `prev` is filled in here) as one write.
     fn write(&mut self, dir: &Path, rows: &mut [IdRow]) -> Result<(), ManagerError> {
         self.refuse_if_read_only()?;
@@ -211,8 +235,7 @@ impl State {
             .mode(0o600)
             .open(dir.join(FILE))
             .map_err(io)?;
-        f.write_all(buf.as_bytes()).map_err(io)?;
-        f.sync_data().map_err(io)?;
+        Self::write_and_sync(&mut f, buf.as_bytes(), self.fail_write_after).map_err(io)?;
         self.last_hash = prev;
         for r in rows.iter() {
             self.lines += 1;
@@ -391,6 +414,15 @@ impl Ids {
             st.write(&self.dir, &mut plan)?;
         }
         Ok((imported, total - imported))
+    }
+}
+
+#[cfg(test)]
+impl Ids {
+    /// The seam of [`State::write_and_sync`]: the next append puts `after` bytes on disk and
+    /// then answers an error, as a disk that fills in the middle of a line.
+    fn fail_next_write(&self, after: usize) {
+        self.lock().fail_write_after = Some(after);
     }
 }
 
@@ -1090,5 +1122,78 @@ mod tests {
             .issue(Kind::Run, "LA", None, "daemon", |_| dangling)
             .is_err());
         assert_eq!(std::fs::read_to_string(file(d.path())).unwrap(), before);
+    }
+
+    #[test]
+    fn an_append_that_stops_mid_line_freezes_the_store_and_the_number_is_not_reissued() {
+        let d = dir();
+        let ids = open(d.path());
+        ids.issue(Kind::Lead, "LA", None, "lead", |_| lead_row("LA"))
+            .unwrap();
+        let one_line = std::fs::read_to_string(file(d.path())).unwrap();
+        let last_hash = sha256_hex(one_line.trim_end().as_bytes());
+
+        // The first byte reaches the file, the rest of the line does not.
+        ids.fail_next_write(1);
+        let err = ids
+            .issue(Kind::Run, "LA", None, "daemon", |_| run_row("one"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("cannot write the id store: "),
+            "the append's error: {err}"
+        );
+        let partial = std::fs::read_to_string(file(d.path())).unwrap();
+        assert_eq!(partial, one_line + "{", "a prefix of the line is on disk");
+
+        // The store is read-only for the life of the process, with that very error, and
+        // nothing was remembered of the attempt: no row, and `last_hash` still the old line.
+        let st = ids.lock();
+        assert_eq!(st.read_only.as_deref(), Some(err.as_str()));
+        assert_eq!(st.rows.len(), 1, "the failed row is not in memory");
+        assert_eq!(st.lines, 1);
+        assert_eq!(st.last_hash, last_hash);
+        drop(st);
+
+        // Every write route refuses, so no second start hands out `LA-R001` again.
+        let e = ids
+            .issue(Kind::Run, "LA", None, "daemon", |_| run_row("two"))
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, err, "issue");
+        let e = ids
+            .append(
+                "LA-R001",
+                IdRow {
+                    state: "verified".into(),
+                    ..IdRow::default()
+                },
+                "daemon",
+            )
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, err, "append");
+        let e = ids
+            .import(vec![IdRow {
+                id: "LA-R009".into(),
+                kind: Kind::Run,
+                utc: "2026-11-18T09:00:00Z".into(),
+                state: "started".into(),
+                title: "imported".into(),
+                ..IdRow::default()
+            }])
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, err, "import");
+        assert_eq!(
+            std::fs::read_to_string(file(d.path())).unwrap(),
+            partial,
+            "nothing more was written"
+        );
+        // A restart finds the partial line and stays read-only: the number is still unissued.
+        assert!(open(d.path()).lock().read_only.is_some());
     }
 }
