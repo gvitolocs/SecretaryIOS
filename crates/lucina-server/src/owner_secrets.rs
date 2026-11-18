@@ -1117,7 +1117,9 @@ pub fn secret_words(text: &str) -> Option<SecretWords> {
 }
 
 /// Talk about storing a secret in other words than [`secret_words`] ("salvami la password del
-/// Wi-Fi", "ask me for the OpenAI key"): a short tool loop decides what it means (chat `secret_turn`).
+/// Wi-Fi", "ask me for the OpenAI key"), or a request for the card itself ("prompt a secret for the
+/// Anthropic api key", "open the secret card for the Discord token", "show me the card for the
+/// Stripe key"): a short tool loop decides what it means (chat `secret_turn`).
 pub fn secret_talk(text: &str) -> bool {
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
@@ -1144,6 +1146,21 @@ pub fn secret_talk(text: &str) -> bool {
         "sender dig",
     ];
     const QUESTION: &[&str] = &["come", "how", "why", "perché", "perche", "cosa", "what", "dove", "where", "quale", "which", "hvordan"];
+    // He asks for the card itself instead of handing the value over. Not "ask": "ask me for" is
+    // already an offer, and "ask him about the token" is no card.
+    const REQUEST_VERBS: &[&str] = &[
+        "prompt", "request", "open", "show", "pop", "bring", "apri", "aprimi", "mostra", "mostrami", "richiedi", "åbn", "vis",
+    ];
+    // The card under its other names, only together with a key noun: "show me the key points".
+    const CARD_WORDS: &[&str] = &["card", "tile", "prompt", "scheda", "kort"];
+    // STRONG_NOUNS without "pin", "pwd", "psk" and "passcode", which "open" and "show" meet in
+    // other meanings: "open the map and drop a pin".
+    const REQUEST_NOUNS: &[&str] = &[
+        "secret", "secrets", "password", "passphrase", "token", "credentials", "credential", "apikey", "segreto", "adgangskode",
+        "hemmelighed",
+    ];
+    // A polite request is not a question about secrets: its "?" keeps the card.
+    const POLITE: &[&str] = &["can you", "could you", "would you", "puoi", "kan du"];
     let joined = words.join(" ");
     let offer = OFFERS.iter().any(|p| format!(" {joined} ").contains(&format!(" {p} ")));
     let infisical = words.contains(&"infisical")
@@ -1152,12 +1169,19 @@ pub fn secret_talk(text: &str) -> bool {
         let strong = words.iter().any(|w| STRONG_NOUNS.contains(w)) || joined.contains("api key");
         return strong || infisical || words.iter().any(|w| WEAK_NOUNS.contains(w));
     }
+    // A request for the card: the verb with a secret noun, or with a key noun and the card named
+    // ("open the card for the Stripe key").
+    let verb = words.iter().any(|w| REQUEST_VERBS.contains(w));
+    let secret_noun = words.iter().any(|w| REQUEST_NOUNS.contains(w)) || joined.contains("api key");
+    let key_card = words.iter().any(|w| WEAK_NOUNS.contains(w)) && words.iter().any(|w| CARD_WORDS.contains(w));
+    let asked = verb && (secret_noun || key_card);
+    let polite = POLITE.iter().any(|p| joined.starts_with(&format!("{p} ")));
     // A question about secrets is answered, not a card.
-    if words.first().is_some_and(|w| QUESTION.contains(w)) || text.trim_end().ends_with('?') {
+    if (words.first().is_some_and(|w| QUESTION.contains(w)) || text.trim_end().ends_with('?')) && !(polite && asked) {
         return false;
     }
     let strong = words.iter().any(|w| STRONG_NOUNS.contains(w)) || joined.contains("api key");
-    strong && words.iter().any(|w| VERBS.contains(w))
+    asked || (strong && words.iter().any(|w| VERBS.contains(w)))
 }
 
 /// The owner's request in words: its cards in the queue. The reply, the card's item id, and the
