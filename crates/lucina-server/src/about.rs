@@ -83,7 +83,7 @@ impl AboutYou {
 
 fn about_err(e: AboutError) -> ApiError {
     match e {
-        AboutError::Secret => ApiError::new(400, "secret_refused", &e.to_string()),
+        AboutError::Secret => ApiError::new(400, "secret_refused", e.to_string()),
         AboutError::NotFound => ApiError::new(404, "not_found", "no such fact"),
         AboutError::Io => ApiError::new(500, "store_failed", "the memory could not be written"),
         AboutError::Invalid(m) => ApiError::new(400, "bad_request", &m),
