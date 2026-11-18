@@ -1,22 +1,43 @@
-# Lucina Agents daemon (the Rust rebuild of Paseo). User unit on nezopt.
-# Not installed yet: Paseo (paseo.service) stays the live orchestrator until the
-# parity matrix (docs/design/agents-parity.md) is green and the owner signs off.
+# Lucina Agents daemon (the Rust rebuild of Paseo; docs/design/agents-parity.md tracks what Paseo
+# still does that this does not). User unit on nezopt, and this file is what the repo carries of it:
+# deploy/lucina-agentd/install.sh - what `lagent deploy lucina-agentd` runs - installs it to
+# ~/.config/systemd/user/, reloads and restarts, and leaves the host's drop-ins in
+# lucina-agentd.service.d alone (they hold the Honcho MCP line, the infisical-broker ExecStart and the
+# journal name). Enabled once by hand, as any user unit:
 #
-#   install -m 0755 target/release/lucina-agentd target/release/lagent ~/.local/bin/
-#   cp deploy/lucina-agentd.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #   systemctl --user enable --now lucina-agentd     (then add it to ~/.config/pokoin/expected-active.txt)
 [Unit]
 Description=Lucina Agents daemon (agent supervisor)
 After=network-online.target
+# Same shape as lucina-rs.service: 10 starts in 10 min, and tripping the limit is a pause and not a
+# dead end - the unit ends failed, Restart= is spent, and the watchdog resets it and starts it again
+# within 2 minutes and says so (deploy/lucina-rs/health-check.sh runs reset-failed on every unit it
+# watches, this one included). Named instead of inherited: the user-manager defaults (5 starts in
+# 10 s) already trip on the fifth RestartSec=2 attempt, about 8 s in, and come from the host's config
+# rather than from the repo.
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/lucina-agentd
-Restart=on-failure
+# always: a clean exit is not a decision. earlyoom ends user units with SIGTERM, lucina-agentd drains
+# and exits 0, and on-failure left it down (the same rule that cost lucina-rs 23 min on 2026-11-17,
+# incident:lucina-rs-earlyoom:20261117). A stop that was asked for still wins: systemd applies Restart=
+# only to a start job it queued itself, never to a stop job (systemd.service(5), Restart=), so
+# `systemctl stop` stays stopped and the `systemctl --user restart` of deploy/lucina-agentd/install.sh
+# (what `lagent deploy lucina-agentd` runs) is that suppressed stop plus one start: a single new daemon.
+# Running jobs are their own units and survive it. Stop it for real with
+# `lucina-maint stop lucina-agentd.service --reason "..."`: the marker keeps the watchdog off its back.
+Restart=always
 RestartSec=2
 # lucina-agentd drains in at most ~4 s on SIGTERM and exits 0.
 TimeoutStopSec=10s
 KillMode=mixed
+# 100 is the lowest an unprivileged user unit may ask for (the user manager runs at 100 and a unit
+# cannot go below its manager), and nezopt puts every user unit at DefaultOOMScoreAdjust=200 by
+# default, in earlyoom's ranking next to a build. Builds go up, not services down (bq, separate change).
+OOMScoreAdjust=100
 # The drop-in runs it through infisical-broker exec; journal lines keep this name.
 SyslogIdentifier=lucina-agentd
 Environment=RUST_LOG=info

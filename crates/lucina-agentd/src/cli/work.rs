@@ -25,22 +25,33 @@ pub enum WorkCommand {
         /// The work id (`wk-…`)
         id: String,
     },
-    /// Wait for a run to end; the exit code says how it ended: 0 done or verified, 1 failed
-    /// or lost, 3 all lanes exhausted, 4 dirty after quota, 5 still going at the timeout,
-    /// 6 ended with jobs queued, 7 ended dirty, 8 ended empty
+    /// Wait for a run to end; the exit code says how it ended: 0 done or verified, 1 failed,
+    /// 3 all lanes exhausted, 4 dirty after quota, 5 still going at the timeout, 6 ended with
+    /// jobs queued, 7 ended dirty, 8 ended empty, 9 lost
     Wait(WaitArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct StartArgs {
-    /// The chat that owns the run (default: $LAGENT_SESSION, $CLAUDE_CODE_HOST_SESSION_ID, $CLAUDE_CODE_SESSION_ID)
+    /// The lead code of the chat that owns the run (two capital letters, registered with `lagent id lead add`)
     #[arg(long)]
-    pub lead: Option<String>,
+    pub lead: String,
+    /// The change the run works for (`LA-C004`; `lagent id new change`); it belongs to the lead
+    #[arg(long)]
+    pub change: String,
+    /// A short name for the run; it ends up in the run's lane id (`la-r023-ids-writer`)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The chat that starts the run (default: $LAGENT_SESSION, $CLAUDE_CODE_HOST_SESSION_ID, $CLAUDE_CODE_SESSION_ID; may be absent)
+    #[arg(long)]
+    pub session: Option<String>,
     /// Who runs first when the host is busy: owner, high, normal or backlog
     #[arg(long, default_value = "normal")]
     pub priority: String,
-    /// light: the worker reads, reviews or measures and never builds (its cargo calls are refused by lane and it needs --expect); build: it compiles or tests
-    #[arg(long, default_value = "build")]
+    /// light: the worker reads, reviews or measures and never builds (its cargo calls are refused
+    /// by lane and it needs --expect); build: it compiles or tests. The default is light, the same
+    /// as a plain `lane run`: a worker that builds passes --cost build.
+    #[arg(long, default_value = "light")]
     pub cost: String,
     /// The lane to run (one of --lane and --chain)
     #[arg(long, conflicts_with = "chain")]
@@ -87,8 +98,8 @@ pub struct WaitArgs {
     pub timeout: u64,
 }
 
-/// The lead: the first of the session variables that is set.
-fn session_lead() -> Option<String> {
+/// The session: the first of the session variables that is set.
+fn session_from_env() -> Option<String> {
     [
         "LAGENT_SESSION",
         "CLAUDE_CODE_HOST_SESSION_ID",
@@ -203,6 +214,14 @@ fn job_row(j: &Value) -> Vec<String> {
     ]
 }
 
+/// An id as listed; a job without one (a run `lane` has no ids for) shows `-`.
+fn ident(v: &Value) -> String {
+    v.as_str()
+        .filter(|x| !x.is_empty())
+        .unwrap_or("-")
+        .to_string()
+}
+
 fn list_text(leads: &[Value]) -> String {
     if leads.is_empty() {
         return "No work jobs.".into();
@@ -215,10 +234,17 @@ fn list_text(leads: &[Value]) -> String {
                 .map(Vec::as_slice)
                 .unwrap_or_default()
                 .iter()
-                .map(job_row)
+                .map(|j| {
+                    // The run and the change come first; the rest is the old row.
+                    let mut row = vec![ident(&j["runId"]), ident(&j["change"])];
+                    row.extend(job_row(j));
+                    row
+                })
                 .collect();
             let t = table(
                 &[
+                    "RUN",
+                    "CHANGE",
                     "ID",
                     "STATE",
                     "PRI",
@@ -324,9 +350,11 @@ fn print_and_exit(out: &Output, json: bool, code: i32) -> ! {
 pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Output, CmdError> {
     match cmd {
         WorkCommand::Start(a) => {
-            let lead = a.lead.clone().filter(|l| !l.trim().is_empty()).or_else(session_lead).ok_or_else(|| {
-                invalid("no lead: pass --lead <chat> (or set LAGENT_SESSION, CLAUDE_CODE_HOST_SESSION_ID or CLAUDE_CODE_SESSION_ID)")
-            })?;
+            let session = a
+                .session
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(session_from_env);
             if a.lane.is_none() && a.chain.is_none() {
                 return Err(invalid("give --lane <name> or --chain <name>"));
             }
@@ -338,7 +366,8 @@ pub async fn work(client: &Client, cmd: &WorkCommand, json: bool) -> Result<Outp
                 .display()
                 .to_string();
             let body = json!({
-                "lead": lead, "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
+                "lead": a.lead, "change": a.change, "name": a.name, "session": session,
+                "priority": priority, "cost": cost, "lane": a.lane, "chain": a.chain,
                 "workspace": pipe::host_path(&workspace), "verify": a.verify, "expect": a.expect,
                 "title": a.title, "spec": spec,
             });
@@ -597,5 +626,61 @@ mod tests {
         assert!(t
             .lines()
             .any(|l| l.starts_with("scope") && l.ends_with('-')));
+    }
+
+    #[test]
+    fn a_lost_runner_shows_in_the_state_the_header_and_show_ids() {
+        let queued = json!({"id": "x", "state": "queued", "runnerLost": true});
+        assert_eq!(job_row(&queued)[1], "queued(lost)");
+        let running = json!({"state": "running", "runnerLost": true});
+        assert_eq!(job_row(&running)[1], "running(lost)");
+        // A finished run, or one whose runner is fine, shows its plain state.
+        assert_eq!(
+            job_row(&json!({"state": "failed", "runnerLost": true}))[1],
+            "failed"
+        );
+        assert_eq!(
+            job_row(&json!({"state": "queued", "runnerLost": false}))[1],
+            "queued"
+        );
+        let l = json!({"lead": "PK", "running": 1, "queued": 1, "ended": 0, "empty": 0, "lost": 2});
+        assert_eq!(
+            lead_header(&l),
+            "PK: 1 running, 1 queued, 0 ended, 0 empty, 2 lost"
+        );
+        let shown = show_text(&queued);
+        assert!(
+            shown.ends_with("runner lost: yes (resume or dismiss it with lane)"),
+            "{shown}"
+        );
+        assert!(!show_text(&json!({"state": "queued"})).contains("runner lost"));
+    }
+
+    #[test]
+    fn the_list_has_the_run_and_the_change_first() {
+        let leads = vec![json!({
+            "lead": "LA", "running": 0, "queued": 1, "ended": 0, "empty": 0,
+            "jobs": [
+                {"id": "la-r001-x", "runId": "LA-R001", "change": "LA-C001", "state": "queued", "runnerLost": true},
+                {"id": "zz-direct", "state": "running"}
+            ]
+        })];
+        let t = list_text(&leads);
+        let mut lines = t.lines();
+        assert_eq!(
+            lines.next(),
+            Some("LA: 0 running, 1 queued, 0 ended, 0 empty")
+        );
+        let head = lines.next().unwrap();
+        assert!(head.starts_with("RUN"), "{head}");
+        assert!(head.contains("CHANGE") && head.contains("ID"), "{head}");
+        let first = lines.next().unwrap();
+        assert!(first.starts_with("LA-R001"), "{first}");
+        assert!(
+            first.contains("LA-C001") && first.contains("queued(lost)"),
+            "{first}"
+        );
+        let second = lines.next().unwrap();
+        assert!(second.starts_with("-"), "{second}");
     }
 }

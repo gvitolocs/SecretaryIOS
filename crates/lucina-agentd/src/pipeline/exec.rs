@@ -76,6 +76,9 @@ struct Exec {
     members: Option<Members>,
     /// The job's allows as gate-command environment (empty while diffgate or a non-merge command runs).
     gate_env: Vec<(String, String)>,
+    /// The job directory, and the waivers file written into it (decided once, before the first gate).
+    dir: PathBuf,
+    waivers: Option<Option<String>>,
     /// The executor's own environment: the source the built child environments come from
     /// ([`crate::env`]). A field, not std::env at spawn time, so tests pass a stand-in in.
     source_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
@@ -107,6 +110,8 @@ impl Exec {
         );
         Ok(Exec {
             gate_env: Vec::new(),
+            dir: dir.to_path_buf(),
+            waivers: None,
             source_env: std::env::vars_os().collect(),
             deploy_env: Vec::new(),
             spec,
@@ -114,6 +119,50 @@ impl Exec {
             path,
             members: None,
         })
+    }
+
+    /// The job's waivers file for the gate commands: written once (temp file and rename, 0644)
+    /// the first time it is asked for, `None` when the job has no waiver or the write failed.
+    fn waivers_file(&mut self) -> Option<String> {
+        if let Some(done) = &self.waivers {
+            return done.clone();
+        }
+        let lines = repo::waiver_lines(
+            &self.spec.allow,
+            self.spec.requested_by.as_deref().unwrap_or(""),
+            &self.spec.job_id,
+        );
+        let mut path = None;
+        if !lines.is_empty() {
+            let dir = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
+            let file = dir.join(repo::WAIVERS_FILE);
+            let tmp = dir.join(format!("{}.tmp", repo::WAIVERS_FILE));
+            let text = lines.iter().map(|l| format!("{l}\n")).collect::<String>();
+            let written = std::fs::write(&tmp, text)
+                .and_then(|_| {
+                    std::fs::set_permissions(
+                        &tmp,
+                        std::os::unix::fs::PermissionsExt::from_mode(0o644),
+                    )
+                })
+                .and_then(|_| std::fs::rename(&tmp, &file));
+            match written {
+                Ok(()) => {
+                    self.say(&format!(
+                        "waivers passed to gate commands: {} ({})",
+                        lines.len(),
+                        file.display()
+                    ));
+                    path = Some(file.display().to_string());
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    self.say(&format!("cannot write the waivers file: {e}"));
+                }
+            }
+        }
+        self.waivers = Some(path.clone());
+        path
     }
 
     /// Finish cleanup while the executor still holds the job's flock, regardless of outcome.
@@ -213,6 +262,9 @@ impl Exec {
             // environment (BASH_ENV, or ENV for a POSIX sh) is read before the command and can
             // rewrite PATH, which would put a machine-wide wrapper ahead of what the job asked
             // for; the machine's own PATH is already folded into `path`, so its tools stay found.
+            // An exported shell function — BASH_FUNC_<name>%% — beats PATH the same way, and the
+            // allowlist above is what keeps it back: it admits exact names and the LC_ and BQ_
+            // prefixes only. `an_exported_cargo_function_does_not_beat_the_gate_s_path` is the proof.
             .env_remove("BASH_ENV")
             .env_remove("ENV")
             .env("CARGO_TARGET_DIR", &self.spec.target_dir)
@@ -222,6 +274,7 @@ impl Exec {
             .env_remove("LAGENT_ALLOW")
             .env_remove("LAGENT_ALLOW_GATE_CHANGE")
             .env_remove("LAGENT_ALLOW_SPEC_CHANGE")
+            .env_remove(repo::WAIVERS_ENV)
             .env_remove(repo::LEDGER_ENV)
             .envs(self.gate_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
@@ -263,7 +316,9 @@ impl Exec {
         }
     }
 
-    /// Fetch, then the trunk's commit.
+    /// Fetch, then the trunk's commit. A remote repo's trunk is the remote's: once the fetch is
+    /// done and its ref is still missing, there is nothing to land on and nothing is fetched
+    /// from a local branch of the same name.
     fn trunk_tip(&mut self) -> Git {
         let repo = self.repo();
         let trunk = self.spec.trunk.clone();
@@ -278,6 +333,12 @@ impl Exec {
                         &format!("refs/remotes/{remote}/{trunk}^{{commit}}"),
                     ],
                 )
+                .map_err(|_| {
+                    format!(
+                        "{remote}/{trunk} does not exist in {}: the remote does not carry the trunk (git fetch {remote}, or check the branch name)",
+                        repo.display()
+                    )
+                })
             }
             None => self.git(
                 &repo,
@@ -395,12 +456,16 @@ impl Exec {
 
     fn run_gates(&mut self, dir: &Path, gates: &[Gate]) -> (Vec<GateResult>, Option<String>) {
         let mut results = Vec::new();
+        let waivers = self.waivers_file();
         for g in gates {
             self.say(&format!("gate: {}", g.name));
             self.gate_env = if g.name == "diffgate" {
                 Vec::new()
             } else {
                 let mut env = repo::allow_env(&self.spec.allow);
+                if let Some(w) = &waivers {
+                    env.push((repo::WAIVERS_ENV.to_string(), w.clone()));
+                }
                 env.push((
                     repo::LEDGER_ENV.to_string(),
                     self.ledger_path().display().to_string(),
@@ -1005,6 +1070,7 @@ mod tests {
             force: false,
             full: false,
             ledger: None,
+            requested_by: None,
         }
     }
 
@@ -1121,6 +1187,61 @@ mod tests {
         assert!(out.gates[0].flaky, "{out:?}\nLOG:\n{log}");
         // Both gate runs went through the shadow, not through a cargo of the machine: it failed
         // once (one line in its state file) and passed on the retry.
+        assert_eq!(
+            std::fs::read_to_string(&ran).ok().as_deref(),
+            Some("once\n"),
+            "{out:?}\nLOG:\n{log}"
+        );
+        assert!(
+            out.message.contains("flaky, passed on retry: t"),
+            "{}\nLOG:\n{log}",
+            out.message
+        );
+        assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
+    }
+
+    #[test]
+    fn an_exported_cargo_function_does_not_beat_the_gate_s_path() {
+        // The 2026-11-17 failure: the caller had exported a `cargo` shell function, and the
+        // gate's bash resolved it before PATH, so the machine's cargo answered both gate runs
+        // ("could not find Cargo.toml") and the flaky test failed everywhere. What closes it is
+        // `crate::env`'s allowlist: a BASH_FUNC_* name is neither an exact entry nor an LC_ or
+        // BQ_ prefix, so it never reaches the built child environment. This is the test that
+        // would have caught the failure and is the proof that it still cannot come back —
+        // against a gate command that would say so: a gate that sees the function runs
+        // `echo HIJACKED` instead of the shadow, which shows up as a non-flaky pass and an
+        // empty state file. The function is injected as the source environment's stand-in
+        // (`source_env`, never as a process-wide variable).
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let ran = root.join("cargo-ran-fn");
+        write_exec(
+            &bin.join("cargo"),
+            &format!(
+                "#!/bin/sh\nif [ -s {r} ]; then exit 0; fi\necho once >>{r}\nexit 1\n",
+                r = ran.display()
+            ),
+        );
+        std::fs::write(repo.join(".lucina/pipeline.toml"), "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let dir = root.join("job-fn");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        x.source_env =
+            crate::testutil::env_source(&[("BASH_FUNC_cargo%%", "() { echo HIJACKED; }")]);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert!(out.gates[0].flaky, "{out:?}\nLOG:\n{log}");
         assert_eq!(
             std::fs::read_to_string(&ran).ok().as_deref(),
             Some("once\n"),
@@ -1440,6 +1561,131 @@ mod tests {
         assert_eq!(out.code, "GATE_FAILED", "{}", out.message);
         assert!(!out.rules_from_merge);
         assert_eq!(git(&origin, &["rev-parse", "main"]), before);
+    }
+
+    /// A repo whose one gate records what it sees of `LAGENT_WAIVERS_FILE` in `<root>/seen.jsonl`
+    /// (a copy of the file, or the word `unset`) and always passes.
+    fn waiver_probe_repo(root: &Path) -> PathBuf {
+        let (_origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        let seen = root.join("seen.jsonl");
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            format!(
+                "[merge]\ndiffgate = false\n[[gate]]\nname = \"probe\"\nrun = \"if [ -n \\\"${{LAGENT_WAIVERS_FILE+x}}\\\" ]; then cp \\\"$LAGENT_WAIVERS_FILE\\\" {0}; else echo unset > {0}; fi\"\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        repo
+    }
+
+    /// Merge `file` on topic with `allow`; the job directory, the outcome and what the gate saw.
+    fn merge_with_waivers(
+        root: &Path,
+        repo: &Path,
+        n: usize,
+        allow: &[&str],
+    ) -> (PathBuf, Outcome, String) {
+        let head = commit(repo, &format!("w{n}.txt"), "w\n", "add w");
+        let mut s = spec(root, repo, "topic", &head);
+        s.allow = allow.iter().map(|a| a.to_string()).collect();
+        s.requested_by = Some("local_req".into());
+        let dir = root.join(format!("job-waivers-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(root.join("seen.jsonl"));
+        let out = Exec::open(&dir, s).unwrap().merge();
+        let seen = std::fs::read_to_string(root.join("seen.jsonl")).unwrap_or_default();
+        (dir, out, seen)
+    }
+
+    #[test]
+    fn gate_commands_get_the_waivers_file_only_when_the_job_has_waivers() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let repo = waiver_probe_repo(root);
+
+        // Two allows with reasons: the gate sees the file, with both lines.
+        let (dir, out, seen) = merge_with_waivers(
+            root,
+            &repo,
+            1,
+            &[
+                "skipped-test=ignored: needs a server",
+                "spec-change=proof reworded",
+            ],
+        );
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        let file = dir.join("waivers.jsonl");
+        let bytes = std::fs::read(&file).unwrap();
+        assert_eq!(seen.as_bytes(), bytes.as_slice());
+        let rows: Vec<serde_json::Value> = seen
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        let want = [
+            ("skipped-test", "ignored: needs a server"),
+            ("spec-change", "proof reworded"),
+        ];
+        for (row, (rule, reason)) in rows.iter().zip(want) {
+            let o = row.as_object().unwrap();
+            assert_eq!(o.len(), 4);
+            assert_eq!(o["rule"], rule);
+            assert_eq!(o["reason"], reason);
+            assert_eq!(o["by"], "local_req");
+            assert_eq!(o["job"], "job_t");
+        }
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert!(!dir.join("waivers.jsonl.tmp").exists());
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(
+            log.contains("waivers passed to gate commands: 2 ("),
+            "{log}"
+        );
+        // Still the same bytes after the gates ran.
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+
+        // No allow: the gate sees the variable unset and no file exists.
+        let (dir, out, seen) = merge_with_waivers(root, &repo, 2, &[]);
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        assert_eq!(seen.trim(), "unset");
+        assert!(!dir.join("waivers.jsonl").exists());
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(!log.contains("waivers passed"), "{log}");
+
+        // Only a blank reason: the same.
+        let (dir, out, seen) = merge_with_waivers(root, &repo, 3, &["skipped-test=  "]);
+        assert_eq!(out.code, "MERGED", "{}", out.message);
+        assert_eq!(seen.trim(), "unset");
+        assert!(!dir.join("waivers.jsonl").exists());
+    }
+
+    #[test]
+    fn a_deploy_job_never_has_the_waivers_file_or_variable() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let mut s = spec(root, root, "b", "abc");
+        s.kind = JobKind::Deploy;
+        s.allow = vec!["skipped-test=why".into()];
+        s.requested_by = Some("local_req".into());
+        let mut x = Exec::open(root, s).unwrap();
+        let seen = root.join("seen");
+        let cmd = format!(
+            "if [ -n \"${{LAGENT_WAIVERS_FILE+x}}\" ]; then echo set; else echo unset; fi > {}",
+            seen.display()
+        );
+        assert!(x.sh(root, &cmd, 1));
+        assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), "unset");
+        assert!(!root.join("waivers.jsonl").exists());
     }
 
     #[test]

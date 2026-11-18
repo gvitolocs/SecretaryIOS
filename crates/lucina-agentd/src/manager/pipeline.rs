@@ -14,9 +14,8 @@ use serde_json::{json, Value};
 
 use super::{Manager, ManagerError};
 use crate::now_iso;
-use crate::pipeline::{
-    self, repo::Rules, Job, JobKind, JobState, Lease, Outcome, Pipeline, Spec, Task,
-};
+use crate::pipeline::{self, Job, JobKind, JobState, Lease, Outcome, Pipeline, Spec, Task};
+use crate::trunks::{self, Trunk};
 use crate::workspaces::{git, procs, CreateWorkspace, WsError};
 
 /// How long a lease lasts unless asked otherwise, and at most.
@@ -43,6 +42,10 @@ pub struct StartTask {
     pub flaw: Option<String>,
     #[serde(default)]
     pub flaw_target: Option<String>,
+    /// A commit or ref to base the worktree on instead of the trunk tip (`--base`), accepted only
+    /// when it is on the trunk or on one of the repo's allowed bases.
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -110,25 +113,6 @@ pub struct ReleaseRequest {
     pub reason: Option<String>,
 }
 
-/// What the pipeline knows about a repo.
-#[derive(Debug, Clone)]
-struct RepoInfo {
-    root: PathBuf,
-    name: String,
-    remote: Option<String>,
-    trunk: String,
-}
-
-impl RepoInfo {
-    /// The ref worktrees branch off and merges land on.
-    fn base_ref(&self) -> String {
-        match &self.remote {
-            Some(r) => format!("{r}/{}", self.trunk),
-            None => self.trunk.clone(),
-        }
-    }
-}
-
 fn default_repo() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     format!("{home}/Projects/Lucina/SecretaryIOS")
@@ -138,56 +122,94 @@ fn invalid(m: impl Into<String>) -> ManagerError {
     ManagerError::Invalid(m.into())
 }
 
-async fn repo_info(path: &Path) -> Result<RepoInfo, ManagerError> {
-    let info = git::info(path).await;
-    let root = info
-        .main_root
-        .clone()
-        .or_else(|| info.repo_root().map(Path::to_path_buf))
-        .ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))?;
-    let name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let remote = git::read(&root, &["remote", "get-url", "origin"])
-        .await
-        .map(|_| "origin".to_string());
-    let default = match &remote {
-        Some(r) => git::read(
-            &root,
-            &[
-                "symbolic-ref",
-                "--quiet",
-                "--short",
-                &format!("refs/remotes/{r}/HEAD"),
-            ],
-        )
-        .await
-        .map(|s| s.trim_start_matches(&format!("{r}/")).to_string()),
-        None => None,
+/// What the pipeline knows about the repo around `path`: where it is, and its trunk with the
+/// remote its merges land through ([`Trunk`], decided by [`crate::trunks`]).
+fn repo_info(path: &Path) -> Result<Trunk, ManagerError> {
+    trunks::resolve(path)
+        .ok_or_else(|| invalid(format!("Not a git repository: {}", path.display())))
+}
+
+/// The full commit id `rev` names in `dir` (`^{commit}`, so a tag or a tree goes to its commit),
+/// `None` when it names nothing there.
+async fn commit_at(dir: &Path, rev: &str) -> Option<String> {
+    git::read(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )
+    .await
+    .filter(|s| !s.is_empty())
+}
+
+/// The pure part of the `--base` check, from what git answered about the base: `commit` is the
+/// full id `<rev>` resolved to (`None` when it resolves to nothing here), `on_trunk` and
+/// `on_allowed` whether that commit is an ancestor of, or equal to, the trunk tip and one of
+/// `allowed`.
+///
+/// `Ok` is the full id to create the worktree from; `Err` why the base is refused.
+fn base_decision(
+    rev: &str,
+    repo: &str,
+    trunk_ref: &str,
+    allowed: &[&str],
+    commit: Option<&str>,
+    on_trunk: bool,
+    on_allowed: bool,
+) -> Result<String, String> {
+    let Some(commit) = commit else {
+        return Err(format!("base {rev} is not a commit in {repo}"));
     };
-    let default = match default {
-        Some(d) => d,
-        None if git::branch_exists(&root, "main").await => "main".into(),
-        None if git::branch_exists(&root, "master").await => "master".into(),
-        None => "main".into(),
-    };
-    // `.lucina/pipeline.toml` on the default branch may name another trunk.
-    let at = match &remote {
-        Some(r) => format!("{r}/{default}"),
-        None => default.clone(),
-    };
-    let trunk = git::read(&root, &["show", &format!("{at}:{}", pipeline::repo::FILE)])
-        .await
-        .and_then(|t| Rules::parse(&t).ok())
-        .and_then(|r| r.trunk)
-        .unwrap_or(default);
-    Ok(RepoInfo {
-        root,
-        name,
-        remote,
-        trunk,
-    })
+    if on_trunk || on_allowed {
+        return Ok(commit.to_string());
+    }
+    Err(format!(
+        "base {} is not on {trunk_ref} nor on an allowed base of {repo}; allowed: {}",
+        &commit[..commit.len().min(10)],
+        if allowed.is_empty() {
+            "none".to_string()
+        } else {
+            allowed.join(", ")
+        }
+    ))
+}
+
+/// `lagent task start --base <rev>`: the commit the worktree is to be created from, resolved in
+/// the repository and checked against the trunk tip and [`Trunk::allowed_bases`] before anything
+/// is created. An allowed base the checkout does not have is skipped and logged: the row is the
+/// owner's, not a promise about what every machine has fetched.
+async fn requested_base(repo: &Trunk, rev: &str) -> Result<String, ManagerError> {
+    let trunk_ref = repo.base_ref();
+    let allowed = repo.allowed_bases();
+    let commit = commit_at(&repo.root, rev).await;
+    let mut on_trunk = false;
+    let mut on_allowed = false;
+    if let Some(commit) = &commit {
+        on_trunk = git::merged_into(&repo.root, commit, &trunk_ref).await;
+        for &name in allowed {
+            let Some(tip) = commit_at(&repo.root, name).await else {
+                tracing::warn!(repo = %repo.name, base = %name, "allowed base does not resolve");
+                continue;
+            };
+            if git::merged_into(&repo.root, commit, &tip).await {
+                on_allowed = true;
+                break;
+            }
+        }
+    }
+    base_decision(
+        rev,
+        &repo.name,
+        &trunk_ref,
+        allowed,
+        commit.as_deref(),
+        on_trunk,
+        on_allowed,
+    )
+    .map_err(invalid)
 }
 
 fn slug(title: &str) -> String {
@@ -250,7 +272,7 @@ impl Manager {
         if req.title.trim().is_empty() {
             return Err(invalid("A task needs a title"));
         }
-        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo))).await?;
+        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo)))?;
         if let Some(r) = &repo.remote {
             git::must(&repo.root, &["fetch", "-q", r])
                 .await
@@ -264,6 +286,13 @@ impl Manager {
         if branch.is_empty() {
             return Err(invalid("Give the task a --branch"));
         }
+        // `--base` names a commit to start from instead of the trunk tip; nothing is created
+        // before it has been resolved and checked, and without it the base is the trunk tip.
+        let base = match &req.base {
+            Some(rev) => Some(requested_base(&repo, rev).await?),
+            None => None,
+        };
+        let start = base.clone().unwrap_or_else(|| repo.base_ref());
         let (w, _) = self
             .create_workspace(CreateWorkspace {
                 isolation: "worktree".into(),
@@ -271,7 +300,7 @@ impl Manager {
                 title: Some(req.title.trim().to_string()),
                 mode: Some("branch-off".into()),
                 new_branch: Some(branch),
-                base: Some(repo.base_ref()),
+                base: Some(start),
                 ..CreateWorkspace::default()
             })
             .await?;
@@ -280,7 +309,9 @@ impl Manager {
             title: req.title.trim().to_string(),
             repo: repo.root.display().to_string(),
             branch: w.branch.clone().unwrap_or_default(),
-            trunk: repo.trunk,
+            trunk: repo.branch,
+            base,
+            base_ref: req.base,
             owner: req.owner,
             session: req.session,
             flaw: req.flaw,
@@ -305,7 +336,7 @@ impl Manager {
         req: AdoptTask,
     ) -> Result<(Task, WorkspaceRecord), ManagerError> {
         let dir = git::canon(Path::new(&req.path));
-        let repo = repo_info(&dir).await?;
+        let repo = repo_info(&dir)?;
         let w = match self.workspaces().find_by_cwd(&dir.display().to_string()) {
             Some(w) => w,
             None => {
@@ -338,7 +369,9 @@ impl Manager {
                 .unwrap_or_else(|| w.display_name.clone()),
             repo: repo.root.display().to_string(),
             branch: w.branch.clone().unwrap_or_default(),
-            trunk: repo.trunk,
+            trunk: repo.branch,
+            base: None,
+            base_ref: None,
             owner: req.owner,
             session: req.session,
             flaw: None,
@@ -414,11 +447,11 @@ impl Manager {
             .branch
             .or(w.branch.clone())
             .ok_or_else(|| invalid("The workspace is on a detached HEAD; check out its branch"))?;
-        let repo = repo_info(&dir).await?;
-        if branch == repo.trunk {
+        let repo = repo_info(&dir)?;
+        if branch == repo.branch {
             return Err(invalid(format!(
                 "The workspace is on {} itself",
-                repo.trunk
+                repo.branch
             )));
         }
         if git::is_dirty(&dir).await {
@@ -455,7 +488,7 @@ impl Manager {
             job_id: id.clone(),
             kind: JobKind::Merge,
             repo: repo.root.display().to_string(),
-            trunk: repo.trunk.clone(),
+            trunk: repo.branch.clone(),
             remote: repo.remote.clone(),
             work_root: self
                 .pipeline()
@@ -481,6 +514,7 @@ impl Manager {
             force: false,
             full: req.full,
             ledger: Some(self.ledger_path()),
+            requested_by: req.requested_by.clone(),
         };
         let job = Job {
             job_id: id.clone(),
@@ -521,7 +555,7 @@ impl Manager {
         {
             return Err(invalid(format!("Invalid runtime: {runtime}")));
         }
-        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo))).await?;
+        let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo)))?;
         if let Some(j) = self.pipeline().active_jobs().into_iter().find(|j| {
             j.kind == JobKind::Deploy
                 && j.runtime.as_deref() == Some(runtime.as_str())
@@ -534,7 +568,7 @@ impl Manager {
             job_id: id.clone(),
             kind: JobKind::Deploy,
             repo: repo.root.display().to_string(),
-            trunk: repo.trunk.clone(),
+            trunk: repo.branch.clone(),
             remote: repo.remote.clone(),
             work_root: self
                 .pipeline()
@@ -560,6 +594,7 @@ impl Manager {
             force: req.force,
             full: false,
             ledger: Some(self.ledger_path()),
+            requested_by: None,
         };
         let job = Job {
             job_id: id,
@@ -915,7 +950,7 @@ impl Manager {
             .archive_workspace(
                 ws,
                 Trigger::Merged,
-                Some(format!("merged into main by {}", job.job_id)),
+                Some(format!("merged into {} by {}", job.spec.trunk, job.job_id)),
             )
             .await
         {
@@ -1045,7 +1080,13 @@ impl Manager {
                 .iter()
                 .find(|j| j.workspace_id.as_deref() == Some(w.workspace_id.as_str()));
             let dirty = git::is_dirty(&dir).await;
-            let base = w.base_ref.clone().unwrap_or_else(|| "origin/main".into());
+            // With no stored base (a worktree made by hand), the repo's own trunk; a directory
+            // that is not a repo has none, and `ahead` stays unknown as before.
+            let base = w.base_ref.clone().unwrap_or_else(|| {
+                repo_info(&dir)
+                    .map(|r| r.base_ref())
+                    .unwrap_or_else(|_| "origin/main".into())
+            });
             let ahead = git::ahead_behind(&dir, &base).await;
             let idle = idle_secs(&dir).await;
             let underway = git::in_progress(&dir).await;
@@ -1267,5 +1308,79 @@ async fn stop_runner(runner: &str) {
             .args(["--user", "stop", runner])
             .status()
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full commit id, as `rev-parse --verify --quiet <rev>^{commit}` answers it.
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// The check asks nothing of git: it is the two ancestor questions, answered.
+    fn verdict(
+        rev: &str,
+        allowed: &[&str],
+        commit: Option<&str>,
+        on_trunk: bool,
+        on_allowed: bool,
+    ) -> Result<String, String> {
+        base_decision(
+            rev,
+            "LucinaNet-servo",
+            "lucinanet",
+            allowed,
+            commit,
+            on_trunk,
+            on_allowed,
+        )
+    }
+
+    #[test]
+    fn a_base_on_the_trunk_is_accepted() {
+        assert_eq!(
+            verdict("v1.2.3", &[], Some(COMMIT), true, false),
+            Ok(COMMIT.into())
+        );
+    }
+
+    #[test]
+    fn a_base_on_an_allowed_base_is_accepted() {
+        assert_eq!(
+            verdict(
+                COMMIT,
+                &["upstream-56", "servo-53.1a"],
+                Some(COMMIT),
+                false,
+                true
+            ),
+            Ok(COMMIT.into())
+        );
+    }
+
+    /// The refusal says which commit the base resolved to, what it was measured against, and
+    /// what else this repo's row would have allowed.
+    #[test]
+    fn a_base_on_neither_the_trunk_nor_an_allowed_base_is_refused() {
+        assert_eq!(
+            verdict("side-work", &[], Some(COMMIT), false, false).unwrap_err(),
+            "base 0123456789 is not on lucinanet nor on an allowed base of LucinaNet-servo; allowed: none"
+        );
+        assert_eq!(
+            verdict("side-work", &["upstream-56", "servo-53.1a"], Some(COMMIT), false, false)
+                .unwrap_err(),
+            "base 0123456789 is not on lucinanet nor on an allowed base of LucinaNet-servo; allowed: upstream-56, servo-53.1a"
+        );
+    }
+
+    /// A base that names no commit here is refused before anything is measured, in the caller's
+    /// own words.
+    #[test]
+    fn a_base_that_is_not_a_commit_is_refused() {
+        assert_eq!(
+            verdict("not-a-rev", &["upstream-56"], None, false, false).unwrap_err(),
+            "base not-a-rev is not a commit in LucinaNet-servo"
+        );
     }
 }

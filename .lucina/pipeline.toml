@@ -12,6 +12,15 @@ timeout_min = 45
 # Standalone crates (tools/*, crates/secretary-{instagram,pixiv}, firmware/lucinavoice-core, ...) are
 # built through --manifest-path when touched. These use other toolchains and are left alone:
 skip = ["firmware/lucinavoice"]
+# The worker sandbox (docs/design/agents-sandbox.md): its policy, its generator and their tests. Loosening any of them
+# is a gate change.
+gate_files = [
+    "deploy/lucina-agentd/sandbox-policy.toml",
+    "crates/lucina-agents/src/sandbox.rs",
+    "crates/lucina-agents/src/sandbox/",
+    "crates/lucina-agents/tests/sandbox_host.rs",
+    "crates/lucina-delegate/tests/sandbox_parity.rs",
+]
 
 # The Verus proofs run on GitHub Actions, one proof unit per runner (docs/ci/VERUS.md). A branch that reaches a proof unit must be
 # pushed (git push origin <branch>) and have verus-gate green on its exact commit; one that reaches none passes. Never reruns proofs.
@@ -28,6 +37,15 @@ name = "fast local check"
 paths = []
 run = "bash scripts/check-fast --base HEAD^1 --merge-gate"
 timeout_min = 12
+
+# The deploy scripts' own tests (deploy/**/test-*.sh): a stub systemctl and curl, nothing installed,
+# started or stopped. check-fast shellchecks those files but runs no test, so without this a watchdog
+# rule that no longer watches anything merges green. The launcher refuses when it finds no test at all.
+[[gate]]
+name = "deploy shell tests"
+paths = ["deploy/", "scripts/check-deploy-sh.sh"]
+run = "sh scripts/check-deploy-sh.sh"
+timeout_min = 5
 
 # `lagent deploy <runtime>`: from main's tip, inside the merge lock, between deploy-guard check and record.
 # Runtimes without a recipe still deploy by hand (docs/repo-workflow.md, "Deploying").

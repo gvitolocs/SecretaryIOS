@@ -337,7 +337,7 @@ fn atx_heading(line: &str) -> Option<(u8, &str)> {
 }
 fn setext_level(line: &str) -> Option<u8> {
     let t = line.trim();
-    if t.len() >= 1 && t.chars().all(|c| c == '=') {
+    if !t.is_empty() && t.chars().all(|c| c == '=') {
         Some(1)
     } else if t.len() >= 2 && t.chars().all(|c| c == '-') {
         Some(2)

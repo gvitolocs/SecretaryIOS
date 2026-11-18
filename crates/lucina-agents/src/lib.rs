@@ -44,6 +44,9 @@
 //!   `protocol/schedule/*`), [`envelope`] (messages between agents and finish
 //!   notices; `agent-messages/envelope.js`, `finish-subscriptions/internal/notification.js`)
 //!   and [`text_match`] (typo-tolerant search ranking; `protocol/search/text-match.js`).
+//! - Lucina only: [`sandbox`] (the worker sandbox policy and its bubblewrap arguments;
+//!   `docs/design/agents-sandbox.md`). Its `sandbox::host` is the one module here that reads the
+//!   file system (it resolves bind sources); everything else stays pure.
 //!
 //! String lengths and cuts follow JavaScript (UTF-16 code units, JS whitespace;
 //! see [`jsstr`]), so truncated texts match Paseo's byte for byte.
@@ -61,6 +64,7 @@ pub mod events;
 pub mod external;
 pub mod fork_context;
 pub mod handoff;
+pub mod ids;
 pub mod jsstr;
 pub mod lifecycle;
 pub mod notification;
@@ -69,6 +73,7 @@ pub mod permission_gate;
 pub mod projection;
 pub mod rewind;
 pub mod run_gate;
+pub mod sandbox;
 pub mod schedule;
 pub mod stream;
 pub mod subagent;

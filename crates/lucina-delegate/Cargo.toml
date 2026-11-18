@@ -22,6 +22,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# tests/sandbox_parity.rs: the shared worker sandbox must hide what this crate's sandbox hides.
+lucina-agents = { path = "../lucina-agents" }
 tempfile = "3"
 wiremock = "0.6"
 # Stateright model of the daily budget (tests/budget_model.rs), checked by `cargo test`.
