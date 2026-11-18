@@ -368,6 +368,29 @@ fn wait_state(d: &Daemon, id: &str, state: &str) -> Value {
     })
 }
 
+/// [`wait_state`] with a budget of its own. A run becomes `lost` only after three misses, so
+/// three poll intervals are the least it takes, and a loaded host spends those slowly: the 20
+/// seconds of `wait_for` are not enough for it.
+fn wait_state_within(d: &Daemon, id: &str, state: &str, limit: Duration) -> Value {
+    let deadline = Instant::now() + limit;
+    loop {
+        let job = show(d, id);
+        if job["state"] == state {
+            return job;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waiting for {state}: still {job}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// How long a run is given to be found `lost`.
+fn lost_budget() -> Duration {
+    Duration::from_secs(90)
+}
+
 fn lead_of<'a>(list: &'a Value, lead: &str) -> Option<&'a Value> {
     list["leads"]
         .as_array()
@@ -1339,7 +1362,7 @@ fn a_run_lane_does_not_know_is_lost() {
         .unwrap()
         .to_string();
     // No status file: `lane status` exits 2.
-    let job = wait_state(&d, &id, "lost");
+    let job = wait_state_within(&d, &id, "lost", lost_budget());
     assert_eq!(job["note"], "lane has no record of this run");
     assert!(job["endedAt"].is_string());
     assert_eq!(lagent(&d, &["work", "wait", &id, "--timeout", "5"]).code, 9);
@@ -1387,8 +1410,19 @@ fn a_lane_run_that_fails_marks_the_job_failed_with_its_stderr() {
     );
     assert!(job["endedAt"].is_string());
     let id = job["id"].as_str().unwrap();
-    // It stays failed: no later poll turns it into anything else.
-    std::thread::sleep(Duration::from_millis(2500));
+    // It stays failed: no later poll turns it into anything else. A failed run is never asked
+    // about, so the proof that a poll pass has gone by is a second job of the same daemon:
+    // `run-fail` goes, the second run starts, and its first `lane status` is counted.
+    let _ = std::fs::remove_file(f.data().join("run-fail"));
+    let second = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&second, &lane_status(&second, "running", json!({})));
+    let calls = f.data().join(format!("{second}.status-calls"));
+    wait_for(&d, id, "waiting for a poll pass", |_| {
+        std::fs::metadata(&calls).is_ok_and(|m| m.len() > 0)
+    });
     assert_eq!(show(&d, id)["state"], "failed");
 }
 
@@ -1486,7 +1520,7 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
         .as_str()
         .unwrap()
         .to_string();
-    wait_state(&d, &id, "lost");
+    wait_state_within(&d, &id, "lost", lost_budget());
     f.status(&id, &lane_status(&id, "running", json!({})));
     let job = wait_state(&d, &id, "running");
     assert!(job["endedAt"].is_null(), "{job}");
@@ -1626,7 +1660,7 @@ fn an_unreadable_status_breaks_the_streak_of_misses() {
     // The stand-in exits 2 on every call but its third, which prints garbage and exits 0.
     let seq = f.data().join(format!("{id}.seq"));
     std::fs::write(&seq, "0\n").unwrap();
-    let job = wait_state(&d, &id, "lost");
+    let job = wait_state_within(&d, &id, "lost", lost_budget());
     assert_eq!(job["note"], "lane has no record of this run", "{job}");
     // Three misses in a row are needed; the readable exit 0 in the middle broke the streak, so
     // the lost came no earlier than the sixth call.
