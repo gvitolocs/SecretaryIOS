@@ -827,9 +827,35 @@ impl Manager {
                 })
             })
             .collect();
+        // A line that gives a state the same file already gave under another title stays the
+        // row it is, but the change of words is worth a line of its own in the summary.
+        let mut titled: HashMap<(String, String, String), (usize, String)> = HashMap::new();
+        let mut title_edits: Vec<Value> = Vec::new();
+        for l in plan.iter().filter(|l| !l.is_annotation()) {
+            if l.row.title.is_empty() {
+                continue;
+            }
+            let key = (l.source.file.clone(), l.row.id.clone(), l.row.state.clone());
+            let earlier = titled
+                .get(&key)
+                .map(|(line, title)| (l.row.title != *title, *line));
+            match earlier {
+                Some((true, line)) => title_edits.push(json!({
+                    "file": l.source.file,
+                    "line": l.source.line,
+                    "id": l.row.id,
+                    "earlierLine": line,
+                })),
+                Some((false, _)) => {}
+                None => {
+                    titled.insert(key, (l.source.line, l.row.title.clone()));
+                }
+            }
+        }
         Ok(json!({
             "imported": plan.len(),
             "annotations": annotations,
+            "titleEdits": title_edits,
             "skipped": skipped,
         }))
     }

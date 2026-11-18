@@ -619,7 +619,8 @@ pub async fn ids(client: &Client, cmd: &IdCommand) -> Result<Output, CmdError> {
 }
 
 /// The summary of an import: the counts, then every line the rules kept as an annotation, then
-/// every line skipped, each with the file and line it came from.
+/// every line that gives a state the same file already gave under another title, then every line
+/// skipped, each with the file and line it came from.
 fn import_text(v: &Value, dry_run: bool) -> String {
     let list = |key: &str| -> Vec<&Value> {
         v[key]
@@ -640,6 +641,15 @@ fn import_text(v: &Value, dry_run: bool) -> String {
             a["line"].as_u64().unwrap_or(0),
             text(&a["id"]),
             text(&a["reason"])
+        ));
+    }
+    for e in list("titleEdits") {
+        out.push(format!(
+            "{}:{}  {}  same state as line {}, other title",
+            text(&e["file"]),
+            e["line"].as_u64().unwrap_or(0),
+            text(&e["id"]),
+            e["earlierLine"].as_u64().unwrap_or(0)
         ));
     }
     for s in list("skipped") {
