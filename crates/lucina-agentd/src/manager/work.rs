@@ -472,6 +472,11 @@ fn age_secs(rfc3339: &str) -> Option<i64> {
     )
 }
 
+/// The note of an end row the store would not take: the job keeps it until the row is in.
+fn refused_end_row_note(error: &str) -> String {
+    format!("the id store refused the end row: {error}")
+}
+
 /// Whether a stored or direct job still belongs in the default list. The wall clock's own
 /// answer, for a row that comes straight from `lane ls`; a stored job is measured by
 /// [`Work::shown`], which counts the day as this daemon counts it.
@@ -875,27 +880,16 @@ impl Manager {
         let saved = {
             let mut jobs = self.work().jobs();
             jobs.push(job.clone());
-            let saved = self.work().persist_saved(&jobs);
-            if saved.is_err() {
-                jobs.retain(|j| j.id != id);
-            }
-            saved
+            self.work().persist_saved(&jobs)
         };
         if let Err(e) = saved {
             // Nothing on disk follows this run, so the run must not begin: a start that only
             // lived in memory would leave a `direct:` row and a job nobody knows.
             let _ = std::fs::remove_dir_all(&run_dir);
             self.work().unlaunch(&id);
-            if let Err(id_err) = self.append_run_row(
-                &run_id,
-                IdRow {
-                    state: "failed".into(),
-                    result: e.clone(),
-                    ..IdRow::default()
-                },
-            ) {
-                tracing::error!(run = %run_id, error = %id_err, "cannot write the run's id row");
-            }
+            // The store is asked for the run's `failed` row before the job leaves memory: a
+            // start that could not be saved and whose row was refused too is still a job.
+            self.end_a_start_that_was_not_saved(job, &e);
             return Err(ManagerError::Invalid(e));
         }
 
@@ -1319,9 +1313,48 @@ impl Manager {
         }
     }
 
+    /// The end of a start whose job never reached `jobs.json`: the store is asked for the run's
+    /// `failed` row first, and only a store that took it lets the job out of memory. A store
+    /// that refuses keeps the job, `failed` with the refusal as its note, which is what the
+    /// poller's owed-end path looks for and asks again with.
+    fn end_a_start_that_was_not_saved(&self, job: WorkJob, why: &str) {
+        let mut failed = WorkJob {
+            state: WorkState::Failed,
+            ended_at: Some(now_iso()),
+            note: Some(why.to_string()),
+            ..job
+        };
+        let refused = match &failed.run_id {
+            Some(run_id) => self
+                .append_run_row(
+                    run_id,
+                    IdRow {
+                        state: "failed".into(),
+                        result: why.to_string(),
+                        ..IdRow::default()
+                    },
+                )
+                .err()
+                .map(|e| e.to_string()),
+            // A job with no run id has no row to owe.
+            None => None,
+        };
+        let mut jobs = self.work().jobs();
+        jobs.retain(|j| j.id != failed.id);
+        match refused {
+            None => {}
+            Some(error) => {
+                tracing::error!(job = %failed.id, error = %error, "cannot write the run's id row");
+                failed.note = Some(refused_end_row_note(&error));
+                jobs.push(failed);
+                self.work().persist(&jobs);
+            }
+        }
+    }
+
     /// The note of an end row the store would not take, saved with the job.
     fn note_refused_end_row(&self, id: &str, error: &str) {
-        let note = format!("the id store refused the end row: {error}");
+        let note = refused_end_row_note(error);
         let mut jobs = self.work().jobs();
         if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
             if j.note.as_deref() != Some(note.as_str()) {
@@ -1960,6 +1993,113 @@ deep-codex = ["qoder", "codex-a"]
         assert!(
             work.shown(&failed(at(-30))),
             "a step forward drops a run that is a day old only to the clock"
+        );
+    }
+
+    /// A start that never reached `jobs.json` is not a start that never was: its run's `failed`
+    /// row is in the id store before the job leaves memory, and a store that will not take the
+    /// row keeps the job — `failed`, listed, and owed its row until it takes it.
+    #[tokio::test]
+    async fn a_start_that_was_not_saved_is_kept_until_the_store_has_its_row() {
+        use crate::manager::Options;
+        use crate::store::Store;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let work_dir = state.join("work");
+        let ids_path = state.join("ids").join(super::super::ids::FILE);
+        let options = Options {
+            work: WorkConfig {
+                dir: work_dir.clone(),
+                lane: Some(PathBuf::from("/bin/false")),
+                poll: Duration::from_secs(1),
+                lost_after: Duration::from_secs(1),
+                scope: ScopeMode::Off,
+            },
+            pipeline: crate::pipeline::Config::from_env(&state.join("pipeline")),
+            ..Options::default()
+        };
+        let m = Manager::open_with(
+            Store::open(&state).unwrap(),
+            Vec::new(),
+            LaneConfig::default(),
+            options,
+        )
+        .unwrap();
+        // The run is on record before the save is tried, the way `work start` has it.
+        m.inner
+            .ids
+            .issue(Kind::Lead, "LA", None, "test", |_| IdRow {
+                title: "the lead".into(),
+                ..IdRow::default()
+            })
+            .unwrap();
+        let run = m
+            .inner
+            .ids
+            .issue(Kind::Run, "LA", None, "test", |_| IdRow {
+                state: "started".into(),
+                title: "a run that could not be saved".into(),
+                ..IdRow::default()
+            })
+            .unwrap();
+        let job = WorkJob {
+            id: "wk-1".into(),
+            lead: "LA".into(),
+            state: WorkState::Starting,
+            run_id: Some(run.id.clone()),
+            ..WorkJob::default()
+        };
+        // Neither file takes a word: a directory stands where jobs.json is renamed in, and the
+        // id store is closed for writing.
+        std::fs::create_dir_all(&work_dir).unwrap();
+        std::fs::create_dir_all(work_dir.join("jobs.json")).unwrap();
+        std::fs::set_permissions(&ids_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let why = {
+            let mut jobs = m.work().jobs();
+            jobs.push(job.clone());
+            m.work()
+                .persist_saved(&jobs)
+                .expect_err("a directory is no jobs file")
+        };
+        assert!(why.contains("cannot write the job file"), "{why}");
+        m.end_a_start_that_was_not_saved(job.clone(), &why);
+        let kept = m
+            .work_get("wk-1")
+            .expect("the start that could not be saved is gone from memory");
+        assert_eq!(kept.state, WorkState::Failed);
+        let note = kept.note.clone().unwrap_or_default();
+        assert!(
+            note.starts_with("the id store refused the end row: "),
+            "{note}"
+        );
+        assert!(note.contains("cannot write the id store"), "{note}");
+        assert_eq!(
+            m.work_list(None, false, false)
+                .await
+                .jobs
+                .iter()
+                .map(|j| j.id.as_str())
+                .collect::<Vec<_>>(),
+            ["wk-1"],
+            "a start whose row was refused too is not listed"
+        );
+        assert!(
+            m.end_rows_owed().iter().any(|id| id == "wk-1"),
+            "the poller is not left to ask the store again"
+        );
+        // The store takes writing again: the row it owed arrives, and it is not owed twice.
+        std::fs::set_permissions(&ids_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(m.owed_end_row_state(&kept), Some("failed"));
+        m.write_end_row(&kept);
+        assert_eq!(
+            m.inner.ids.latest_state(&run.id).as_deref(),
+            Some("failed"),
+            "the row the store owed never arrived"
+        );
+        assert!(
+            m.end_rows_owed().is_empty(),
+            "a row that is in is owed a second time"
         );
     }
 
