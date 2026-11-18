@@ -104,17 +104,25 @@ pub(super) struct Work {
     launching: Mutex<HashSet<String>>,
     /// An unreadable `jobs.json` could not be moved aside: nothing is written over it.
     blocked: AtomicBool,
+    /// How long one `lane status` call may take. `LUCINA_AGENTD_WORK_STATUS_SECS` (default 20).
+    /// A call that does not answer in time says nothing of the run: it is neither an answer nor
+    /// a miss.
+    status_limit: Duration,
 }
 
 impl Work {
     pub(super) fn open(cfg: WorkConfig) -> Self {
         let (jobs, blocked) = load_checked(&cfg.dir);
+        let status_secs = std::env::var("LUCINA_AGENTD_WORK_STATUS_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok());
         Work {
             cfg,
             jobs: Mutex::new(jobs),
             misses: Mutex::new(HashMap::new()),
             launching: Mutex::new(HashSet::new()),
             blocked: AtomicBool::new(blocked),
+            status_limit: Duration::from_secs(status_secs.unwrap_or(QUERY_LIMIT.as_secs()).max(1)),
         }
     }
 
@@ -783,7 +791,7 @@ impl Manager {
         let id = job.id.clone();
         let failure = run_lane(&lane_bin, &job, &run_dir).await.err();
         let status = match &failure {
-            Some(_) => match query_status(&lane_bin, &id).await {
+            Some(_) => match query_status(&lane_bin, &id, self.work().status_limit).await {
                 StatusReply::Status(v) => Some(v),
                 _ => None,
             },
@@ -1016,8 +1024,9 @@ impl Manager {
     /// One `lane status` read for one job. An answer that exits 0 but is not readable JSON is
     /// not a miss: the job never becomes `lost` from it and its state does not change. It
     /// goes through [`status_unreadable`] (a note and a count) and the job is saved when
-    /// that changed it. A final job that is followed only owes its end row: the store is
-    /// asked again and `lane` is left alone.
+    /// that changed it. A call that never answers (it did not start, or it timed out) is not a
+    /// miss either: state and miss count stay as they are. A final job that is followed only
+    /// owes its end row: the store is asked again and `lane` is left alone.
     async fn poll_one(&self, bin: &Path, id: &str) {
         let Some(job) = self.stored_job(id) else {
             return;
@@ -1030,7 +1039,7 @@ impl Manager {
             }
             return;
         }
-        let reply = query_status(bin, id).await;
+        let reply = query_status(bin, id, self.work().status_limit).await;
         let Some(mut job) = self.stored_job(id) else {
             return;
         };
@@ -1058,6 +1067,11 @@ impl Manager {
                 if !status_unreadable(&mut job, &e) {
                     return;
                 }
+            }
+            StatusReply::Stalled => {
+                // The call said nothing of the run; only the wall clock is at fault. State and
+                // miss count stay as they are and the same status is asked again next tick.
+                return;
             }
             StatusReply::Miss if job.state == WorkState::Lost => return,
             StatusReply::Miss => {
@@ -1268,19 +1282,21 @@ async fn git_facts(workspace: &str) -> GitFacts {
     }
 }
 
-/// What `lane status <id>` gave. A start failure, a timeout and a non-zero exit all count as a miss.
+/// What `lane status <id>` gave. Only a non-zero exit is a miss: a call that did not start or
+/// did not answer in time says nothing of the run, and is [`StatusReply::Stalled`].
 enum StatusReply {
     Status(Value),
     BadJson(String),
+    Stalled,
     Miss,
 }
 
-async fn query_status(bin: &Path, id: &str) -> StatusReply {
+async fn query_status(bin: &Path, id: &str, limit: Duration) -> StatusReply {
     let mut cmd = lane_command(bin);
     cmd.args(["status", id])
         .stdin(Stdio::null())
         .stderr(Stdio::null());
-    match tokio::time::timeout(QUERY_LIMIT, cmd.output()).await {
+    match tokio::time::timeout(limit, cmd.output()).await {
         Ok(Ok(o)) if o.status.success() => match serde_json::from_slice::<Value>(&o.stdout) {
             Ok(v) => StatusReply::Status(v),
             Err(e) => StatusReply::BadJson(e.to_string()),
@@ -1288,11 +1304,11 @@ async fn query_status(bin: &Path, id: &str) -> StatusReply {
         Ok(Ok(_)) => StatusReply::Miss,
         Ok(Err(e)) => {
             tracing::warn!(job = id, error = %e, "lane status did not start");
-            StatusReply::Miss
+            StatusReply::Stalled
         }
         Err(_) => {
             tracing::warn!(job = id, "lane status timed out");
-            StatusReply::Miss
+            StatusReply::Stalled
         }
     }
 }

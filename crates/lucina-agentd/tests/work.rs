@@ -43,6 +43,8 @@ const FAKE_LANE: &str = r#"#!/bin/sh
 D="$(dirname "$0")/data"
 cmd="$1"
 shift
+# A `lane status` that never answers, for the poller's own timeout. exec leaves no child behind.
+if [ "$cmd" = status ] && [ -f "$D/$1.hang" ]; then exec sleep 30; fi
 case "$cmd" in
 run)
   id=""
@@ -1319,7 +1321,7 @@ fn a_lost_run_follows_lane_again_when_it_shows_up() {
 }
 
 #[test]
-fn a_lane_status_that_cannot_start_counts_as_a_miss() {
+fn a_lane_status_that_cannot_start_is_not_a_miss() {
     let f = Fixture::new();
     let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
     let ws = f.repo("ws");
@@ -1330,8 +1332,55 @@ fn a_lane_status_that_cannot_start_counts_as_a_miss() {
     f.status(&id, &lane_status(&id, "running", json!({})));
     wait_state(&d, &id, "running");
     std::fs::remove_file(f.root.path().join("lane/lane")).unwrap();
-    let job = wait_state(&d, &id, "lost");
-    assert_eq!(job["note"], "lane has no record of this run");
+    // The daemon says so, and the job is none the worse for it.
+    let log = d.dir.path().join("agentd.log");
+    wait_for(&d, &id, "waiting for a status that did not start", |_| {
+        read(&log).contains("lane status did not start")
+    });
+    // A job this old would be lost on three misses; five calls that cannot start are not
+    // misses, so state and note stay as they are.
+    std::thread::sleep(Duration::from_secs(5));
+    let job = show(&d, &id);
+    assert_eq!(job["state"], "running", "{job}");
+    assert!(job["note"].is_null(), "{job}");
+    // `lane` is back: its next answer moves the run on, as nothing had been counted.
+    common::write_exec(&f.root.path().join("lane/lane"), FAKE_LANE);
+    f.status(&id, &lane_status(&id, "verified", json!({})));
+    let job = wait_state(&d, &id, "verified");
+    assert!(job["endedAt"].is_string(), "{job}");
+}
+
+#[test]
+fn a_lane_status_that_never_answers_is_dropped_and_is_not_a_miss() {
+    let f = Fixture::new();
+    let d = f.daemon(&[
+        ("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string()),
+        ("LUCINA_AGENTD_WORK_STATUS_SECS", "2".to_string()),
+    ]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    wait_state(&d, &id, "running");
+    // From now on `lane status` hangs: the poller drops it after two seconds.
+    std::fs::write(f.data().join(format!("{id}.hang")), "").unwrap();
+    let log = d.dir.path().join("agentd.log");
+    wait_for(&d, &id, "waiting for a status that was dropped", |_| {
+        read(&log).contains("lane status timed out")
+    });
+    // Three of those in a row would have been lost before; a call that never answers says
+    // nothing of the run, so the job keeps waiting for one that does.
+    std::thread::sleep(Duration::from_secs(6));
+    let job = show(&d, &id);
+    assert_eq!(job["state"], "running", "{job}");
+    assert!(job["note"].is_null(), "{job}");
+    // The hang ends: the answer is applied.
+    std::fs::remove_file(f.data().join(format!("{id}.hang"))).unwrap();
+    f.status(&id, &lane_status(&id, "reported_done", json!({})));
+    let job = wait_state(&d, &id, "done");
+    assert!(job["endedAt"].is_string(), "{job}");
 }
 
 #[test]
