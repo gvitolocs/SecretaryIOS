@@ -580,6 +580,22 @@ pub async fn calendar_turn(
     // 12:30"); one the event parser cannot complete goes on to the planner.
     let parsed = cal::parse_create(message, now, tz)
         .or_else(|| cal::parse_event(message, now, tz).filter(Result::is_ok));
+    // A create whose name is the owner's whole sentence (a correction of one hour for another)
+    // names no event: the rule cannot tell the event from the words around it, so the planner,
+    // which sees the recent turns, is asked for the name.
+    let parsed = match parsed {
+        Some(Ok(c))
+            if ev::title_is_sentence(c.event["title"].as_str().unwrap_or(""), message) =>
+        {
+            tracing::info!(
+                target: "lucina_chat::calendar",
+                event = "title_replan",
+                words = message.split_whitespace().count()
+            );
+            None
+        }
+        p => p,
+    };
     if let Some(parsed) = parsed {
         if *caller == CalendarCaller::Guarded {
             return Some(Err("calendar.create"));
