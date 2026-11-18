@@ -1,0 +1,98 @@
+# Worker sandbox policy for nezopt (LA-C010 / LA-C013).
+#
+# What this file is: the data `crates/lucina-agents/src/sandbox.rs` turns into a bubblewrap argument list for
+# one worker run (design: docs/design/agents-sandbox.md). It says what the fence lets IN: the system paths,
+# the toolchains and caches, the shim directory, and per lane its own sign-in home and its network.
+# What the fence keeps OUT is not in this file: the hidden paths (the home as a whole, ~/.ssh, ~/.config,
+# ~/.claude, agentd's state, other lanes' homes, /run/user, ...) are a fixed list in the code, and the
+# generator refuses a policy that asks for one of them.
+#
+# Loosening this file is a gate change: it is listed in `.lucina/pipeline.toml` `gate_files`, so a merge
+# that changes it needs `lagent merge --allow gate-change="why"`.
+#
+# Paths: `~/...` is the run's home (the caller passes it); system paths are absolute and never under
+# /home or /root. A system path that does not exist is simply not bound.
+#
+# Limits: bubblewrap is a building block, not a security boundary: the boundary is this policy plus the
+# kernel's namespaces, and a kernel namespace bug defeats it. A worker inside the fence can still do
+# anything to its own workspace. Network stays open for lanes marked `host`, so what a worker can read it
+# can send. The Mac's mount of this host is outside the fence.
+
+version = 1
+
+[system]
+# Read-only, at the same path; only /usr and /etc are accepted (the code's SYSTEM_RO_ROOTS). /usr holds
+# the toolchain's system half (git, sh, the C linker, libraries); /etc what they read at start (nss,
+# ld.so.cache, ssl/certs, hosts). Assumption: secrets in /etc and /usr are at modes the owner's user
+# cannot read (/etc/shadow, host keys, netplan). A world-readable file with a secret there IS readable
+# inside the fence.
+ro = ["/usr", "/etc"]
+# Ubuntu's merged /usr: these are symlinks on the host too.
+symlinks = [
+    { target = "usr/bin", link = "/bin" },
+    { target = "usr/sbin", link = "/sbin" },
+    { target = "usr/lib", link = "/lib" },
+    { target = "usr/lib64", link = "/lib64" },
+]
+# Bound only for a lane whose network is `host`, each must be a file: /etc/resolv.conf points at the
+# stub file (systemd-resolved). The two files, NOT the directory /run/systemd/resolve: that directory
+# also holds the resolver's Varlink sockets (mode 0666), reachable with the host network.
+net_ro = ["/run/systemd/resolve/stub-resolv.conf", "/run/systemd/resolve/resolv.conf"]
+# PATH after the shim directory (which always comes first).
+path = ["~/.cargo/bin", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin"]
+
+[home]
+# Read-only toolchains. NOT ~/.cargo as a whole: it holds credentials.toml and config.toml (tokens).
+toolchains_ro = ["~/.rustup", "~/.cargo/bin"]
+# Read-write caches shared by every run.
+caches_rw = ["~/.cargo/registry", "~/.cargo/git", "~/.cache/bq"]
+# Bound read-write for a build run only (a light run cannot build).
+check_target = "~/.cache/lucina-check-target"
+# The shim directory (lucina-shim: cargo through bq, refusals for proof tools and Python). Read-only,
+# first on PATH. It must exist when a run starts, and hold an empty file named `empty` (bound read-only
+# over a worktree's config.worktree when that file does not exist, so it cannot be created inside).
+shims = "~/.local/lib/lucina-shims"
+
+# A lane not named below: no network, and a sign-in home of its own (`{lane}` is the lane's name).
+[default]
+home = "~/.local/share/lane-homes/{lane}"
+network = "none"
+
+# Each lane's own sign-in home holds only that lane's sign-in files (a copy of the minimal token files,
+# not the tool's whole directory: for Qoder NOT `projects/` with every run's transcript). The directory
+# need not exist yet: a missing home is simply not bound. A lane's API token that a tool needs in its
+# environment is read by agentd outside the fence and passed as an environment variable; its file is
+# never bound.
+
+[lanes.qoder]
+home = "~/.local/share/lane-homes/qoder"
+network = "host"
+
+# The OpenCode Zen lanes (zen-deepseek-flash, zen-glm-flash, zen-beam): one opencode sign-in.
+[lanes."zen-*"]
+home = "~/.local/share/lane-homes/zen"
+network = "host"
+
+# Mistral Vibe (the owner's sign-in; never an API key).
+[lanes."mistral-*"]
+home = "~/.local/share/lane-homes/mistral"
+network = "host"
+
+[lanes.zcode]
+home = "~/.local/share/lane-homes/zcode"
+network = "host"
+
+# Local Qwen: the worker is a client that talks to the model server over loopback; the server runs
+# outside the fence. So: network `host` (the host's loopback) and NO device nodes (no /dev/dri, no
+# /dev/kfd). If the roll-out shows the client needs a device, that is a later policy change, not a default.
+[lanes.qwen]
+home = "~/.local/share/lane-homes/qwen"
+network = "host"
+
+[lanes."cursor-*"]
+home = "~/.local/share/lane-homes/cursor"
+network = "host"
+
+[lanes."claude-*"]
+home = "~/.local/share/lane-homes/claude"
+network = "host"

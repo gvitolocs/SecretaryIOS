@@ -10,5 +10,7 @@ regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# The sandbox policy file (src/sandbox.rs); the workspace's version, parse + serde only.
+toml = { version = "=1.1.6", default-features = false, features = ["parse", "serde"] }
 
 [dev-dependencies]

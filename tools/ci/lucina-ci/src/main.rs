@@ -756,12 +756,16 @@ fn main() -> ExitCode {
 
 /// One step of `check-fast` under its own scope. Returns (passed, seconds). `waived` are the lead's
 /// waivers taken for this step: counted on its line, each one printed under it.
+/// `gate_limit` is the merge-gate limit actually enforced on this step: `Some` prints it beside the measured time
+/// (`ok   clippy   97.3s / 240s`) and `near-limit` when the step used more than 80% of it. The columns before it are exactly
+/// what they were, so nothing that reads the line has to change.
 #[allow(clippy::too_many_arguments)]
 fn fast_step(
     name: &str,
     command: &str,
     kind: &str,
     timeout_s: u64,
+    gate_limit: Option<u64>,
     b: &runner::Budget,
     tc: &runner::Toolchain,
     out: &str,
@@ -780,15 +784,20 @@ fn fast_step(
     let code = runner::run_unit(&s)?;
     let secs = t.elapsed().as_secs_f64();
     let ok = code == 0;
-    println!(
-        "{} {name:<28} {secs:>6.1}s{}",
-        if ok { "ok  " } else { "FAIL" },
-        if waived.is_empty() {
-            String::new()
-        } else {
-            format!("  ({} waived)", waived.len())
-        }
+    let mut line = format!(
+        "{} {name:<28} {secs:>6.1}s",
+        if ok { "ok  " } else { "FAIL" }
     );
+    if let Some(l) = gate_limit {
+        line.push_str(&format!(" / {l}s"));
+        if ok && secs > MERGE_NEAR_LIMIT_SHARE * l as f64 {
+            line.push_str("  near-limit");
+        }
+    }
+    if !waived.is_empty() {
+        line.push_str(&format!("  ({} waived)", waived.len()));
+    }
+    println!("{line}");
     for w in waived {
         println!("    waived: {w}");
     }
@@ -811,18 +820,96 @@ fn tool_exists(t: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-/// The most a step may run at the merge gate, in seconds. The default is 180; `LUCINA_CHECK_FAST_MERGE_CAP_S` lets a test inject a
-/// small one (never a real 180 s sleep in the suite).
+/// The merge-gate limit of one step, in seconds, beside the default of 180. Two steps do not fit 180 s on a loaded nezopt, and
+/// a gate that fails on the clock while the tests pass teaches no one anything, so each is named here with the room it needs and
+/// the measurement that set it. A limit is `ceil(p95 x 1.5)` over the completed merge-gate runs of that step, applied as a
+/// floor-raiser only: it goes up where measurement asks for more, and a number measurement does not argue against stays.
+/// The week of merges 2026-11-11..17 on nezopt, read-only (finding GATE-02, `/home/nez/scratch/proof-workflow/gate-02-step-times.md`
+/// §3, §5, §6): `clippy` p95 151.6 s on 27 completed runs, slowest clean run 162.2 s, 3 kills at the fatal column and 3 at the
+/// skipped one; `unit-tests` p95 154.5 s on 23 completed runs, slowest 179.9 s, 4 and 5 kills. Every kill is recorded at
+/// 180.5-180.7 s, which is the wall and says nothing about what lies past it, while all 50 completed runs of the two steps are
+/// under 240 s. So 240 is 1.58x / 1.55x the measured p95, 1.48x / 1.33x the slowest clean run, and still 60 s below the step's
+/// own timeout: the merge limit fires before the step's own timeout does.
+/// A limit never lifts a step above its own timeout (the `t` of its `step(...)` call): it only ever cuts. `clippy` and
+/// `unit-tests` are built with 300 s (`fast::cargo_steps`), so the 240 is a real cut and takes effect; a step of its own 60 s,
+/// `fmt` or `diffgate`, keeps printing 60 whatever the table or the override says.
+const MERGE_STEP_LIMITS: &[(&str, u64)] = &[
+    ("clippy", 240),     // measured p95 151.6 s, merges 2026-11-11..17, GATE-02
+    ("unit-tests", 240), // measured p95 154.5 s, merges 2026-11-11..17, GATE-02
+];
+/// The limit of a step named in no table and no override.
+const MERGE_STEP_LIMIT_DEFAULT: u64 = 180;
+/// A step that used more than this share of its limit prints `near-limit`, so the next raise of a number comes from a line in
+/// the log rather than from a merge that failed.
+const MERGE_NEAR_LIMIT_SHARE: f64 = 0.8;
+
+/// `LUCINA_CHECK_FAST_MERGE_CAP_S`: the gate's own override of every limit above.
+/// A plain number is the limit of EVERY step (the semantics since 2026-11-12, and what a test injects so it never sleeps a real
+/// 180 s); `step=SECONDS` entries separated by commas give one step another limit and win over a plain number beside them, which
+/// is how a test drives a step the table names. Tokens that are neither are ignored.
+#[derive(Default)]
+struct MergeCaps {
+    plain: Option<u64>,
+    per_step: Vec<(String, u64)>,
+}
+
+impl MergeCaps {
+    /// The override as read from the environment.
+    fn from_env() -> Self {
+        Self::parse(&std::env::var("LUCINA_CHECK_FAST_MERGE_CAP_S").unwrap_or_default())
+    }
+
+    fn parse(text: &str) -> Self {
+        let mut c = MergeCaps::default();
+        for tok in text.split(',') {
+            let tok = tok.trim();
+            if let Some((name, secs)) = tok.split_once('=') {
+                if let Ok(s) = secs.trim().parse::<u64>() {
+                    c.per_step.push((name.trim().to_string(), s));
+                }
+            } else if let Ok(s) = tok.parse::<u64>() {
+                c.plain = Some(s);
+            }
+        }
+        c
+    }
+
+    /// The most `name` may run at the merge gate: its own `step=SECONDS` override, then the override of every step, then the
+    /// table, then `default`. Unlike LucinaOS this tree has no list of required steps, so nothing escapes the limit; the limit
+    /// only ever cuts, so a step of its own shorter timeout is never lifted to these numbers.
+    fn limit_of(&self, name: &str, default: u64) -> u64 {
+        if let Some((_, s)) = self.per_step.iter().find(|(n, _)| n == name) {
+            return *s;
+        }
+        if let Some(p) = self.plain {
+            return p;
+        }
+        if let Some((_, s)) = MERGE_STEP_LIMITS.iter().find(|(n, _)| *n == name) {
+            return *s;
+        }
+        default
+    }
+}
+
+/// The merge-gate limit of one step: what `LUCINA_CHECK_FAST_MERGE_CAP_S` says, else the table, else 180.
+/// The clock is the step's OWN run time: `scripts/check-fast` takes its queue slot (`bq run --class short --max-wait ...`) before
+/// this binary starts, so a step's limit starts after the wait.
+fn merge_step_limit(name: &str) -> u64 {
+    MergeCaps::from_env().limit_of(name, merge_step_cap())
+}
+
+/// The default merge-gate limit: `LUCINA_CHECK_FAST_MERGE_CAP_S` when it is one plain number, else 180. It is what a step no
+/// override and no table row names gets; `merge_step_limit` resolves a named one.
 fn merge_step_cap() -> u64 {
-    std::env::var("LUCINA_CHECK_FAST_MERGE_CAP_S")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(180)
+    MergeCaps::from_env()
+        .plain
+        .unwrap_or(MERGE_STEP_LIMIT_DEFAULT)
 }
 
 /// One step of `check-fast`, with the merge-gate limit applied. `Some(entry)` is a failure. At the merge gate a step past its limit
-/// is a failure that says so (`past its N s limit at merge`), never a skip. This tree has no list of required steps, so the cap
-/// applies to every step, as it did before.
+/// is a failure that says so (`past its N s limit at merge`), never a skip: the limit is `merge_step_limit` for the step — 180 by
+/// default, more for the two steps of `MERGE_STEP_LIMITS`, anything the override sets — and it never lifts the step above its own
+/// timeout. This tree has no list of required steps, so the limit applies to every step, as it did before.
 #[allow(clippy::too_many_arguments)]
 fn gated_step(
     name: &str,
@@ -830,14 +917,29 @@ fn gated_step(
     kind: &str,
     t: u64,
     merge_gate: bool,
-    cap: u64,
     b: &runner::Budget,
     tc: &runner::Toolchain,
     out: &str,
     waived: &[String],
 ) -> Result<Option<String>, String> {
-    let t = if merge_gate { t.min(cap) } else { t };
-    if fast_step(name, cmd, kind, t, b, tc, out, waived)?.0 {
+    let t = if merge_gate {
+        t.min(merge_step_limit(name))
+    } else {
+        t
+    };
+    if fast_step(
+        name,
+        cmd,
+        kind,
+        t,
+        merge_gate.then_some(t),
+        b,
+        tc,
+        out,
+        waived,
+    )?
+    .0
+    {
         return Ok(None);
     }
     let json =
@@ -1313,7 +1415,6 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     // At `lagent merge` a step that runs past its limit FAILS the merge: a gate that reports "0 failed" for tests it did not run is
     // not a gate (2026-11-12: unit-tests skipped at the merge gate under load, job_b6094541ca4c). docs/ci/SHIFT-LEFT.md.
     let merge_gate = a.has("--merge-gate");
-    let cap = merge_step_cap();
     let step = |name: &str,
                 cmd: &str,
                 kind: &str,
@@ -1322,7 +1423,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 waived: &[String],
                 failed: &mut Vec<String>|
      -> Result<(), String> {
-        if let Some(f) = gated_step(name, cmd, kind, t, merge_gate, cap, &b, tc, &out, waived)? {
+        if let Some(f) = gated_step(name, cmd, kind, t, merge_gate, &b, tc, &out, waived)? {
             failed.push(f);
         }
         Ok(())
@@ -1582,7 +1683,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                     } else {
                         "script"
                     };
-                    if !fast_step(&unit_name, &cmd, kind, 120, &b, &tc, &out, &[])?.0 {
+                    if !fast_step(&unit_name, &cmd, kind, 120, None, &b, &tc, &out, &[])?.0 {
                         let json = fs::read_to_string(
                             Path::new(&out).join(format!("fast__{unit_name}.json")),
                         )
@@ -2290,5 +2391,79 @@ mod tests {
             summary,
             "diffgate waivers: 1 forwarded (skipped-test: 3:three variants), 1 not forwarded (tmp-write)"
         );
+    }
+
+    #[test]
+    fn merge_step_cap_defaults_to_180_seconds() {
+        if std::env::var_os("LUCINA_CHECK_FAST_MERGE_CAP_S").is_none() {
+            assert_eq!(merge_step_cap(), 180);
+        }
+    }
+
+    /// The two cargo steps have the room the week of merges measured; every other step is at 180.
+    #[test]
+    fn merge_limits_are_per_step_with_an_180_default() {
+        let no_override = MergeCaps::default();
+        let limit = |n: &str| no_override.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
+        assert_eq!(limit("clippy"), 240);
+        assert_eq!(limit("unit-tests"), 240);
+        assert_eq!(limit("diffgate"), 180);
+        assert_eq!(limit("inventory"), 180);
+        assert_eq!(limit("unit-tests-tools-ci-lucina-ci"), 180);
+        assert_eq!(limit("secrets"), 180);
+    }
+
+    /// A limit only ever cuts, never lifts: what the gate enforces is the step's own timeout or its limit, whichever is smaller.
+    /// The two cargo steps are built with 300 s (`fast::cargo_steps`), so the table's 240 takes effect; `fmt` and `diffgate` are
+    /// built with 60 and a step no table names keeps the 180 rather than the 300 it could run.
+    #[test]
+    fn a_merge_limit_cuts_a_step_s_own_timeout_and_never_lifts_it() {
+        let no_override = MergeCaps::default();
+        for (name, own, enforced) in [
+            ("clippy", 300_u64, 240_u64),
+            ("unit-tests", 300, 240),
+            ("unit-tests-tools-ci-lucina-ci", 300, 180),
+            ("fmt", 60, 60),
+            ("diffgate", 60, 60),
+            ("inventory", 30, 30),
+        ] {
+            let at_gate = own.min(no_override.limit_of(name, MERGE_STEP_LIMIT_DEFAULT));
+            assert_eq!(at_gate, enforced, "{name} at the merge gate");
+        }
+    }
+
+    /// The override replaces every table limit with one number, and a `step=SECONDS` entry gives one step its own.
+    #[test]
+    fn the_override_replaces_all_the_step_limits() {
+        let c = MergeCaps {
+            plain: Some(7),
+            per_step: vec![("clippy".to_string(), 40)],
+        };
+        let l = |n: &str| c.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
+        assert_eq!(l("clippy"), 40);
+        assert_eq!(l("unit-tests"), 7, "7 beats the table's 240");
+        assert_eq!(l("secrets"), 7);
+        assert_eq!(l("diffgate"), 7, "the override is every step");
+        let nine = MergeCaps::parse("9");
+        assert_eq!(nine.limit_of("clippy", MERGE_STEP_LIMIT_DEFAULT), 9);
+        assert_eq!(nine.limit_of("inventory", MERGE_STEP_LIMIT_DEFAULT), 9);
+    }
+
+    /// The forms `LUCINA_CHECK_FAST_MERGE_CAP_S` is read in: a plain number, a per-step list, both together, junk ignored.
+    #[test]
+    fn the_override_is_read_as_a_number_a_list_or_both() {
+        for (text, plain, steps) in [
+            ("7", Some(7), vec![]),
+            ("a=3", None, vec![("a", 3)]),
+            ("5,a=3,b=4", Some(5), vec![("a", 3), ("b", 4)]),
+            (" a = 3 ,, junk= , x", None, vec![("a", 3)]),
+            ("nonsense", None, vec![]),
+            ("", None, vec![]),
+        ] {
+            let c = MergeCaps::parse(text);
+            assert_eq!(c.plain, plain, "{text}");
+            let got: Vec<(&str, u64)> = c.per_step.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+            assert_eq!(got, steps, "{text}");
+        }
     }
 }
