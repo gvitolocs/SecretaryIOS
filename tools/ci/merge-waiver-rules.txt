@@ -9,3 +9,4 @@
 # Only rule names diffgate knows. `gate-change` and `spec-change` are the merge tool's own decisions, not diffgate rules, and
 # forwarding one would fail the call ("--allow: unknown rule"), so they stay out and their waivers are reported as not forwarded.
 skipped-test
+tmp-write

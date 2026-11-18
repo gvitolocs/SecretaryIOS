@@ -656,3 +656,30 @@ fn outside_the_merge_gate_the_waivers_file_is_ignored_and_says_so() {
         "a file the step does not read is not reported as forwarded:\n{out}"
     );
 }
+
+/// `tmp-write` joins the forwarding list (PF-C022, the coordinator's allow of 2026-11-17): the counted waiver of the
+/// seven sandbox test lines that name `/tmp` travels to diffgate exactly as the list holds it, count, colons and
+/// parentheses included. This is the entry of `tools/ci/merge-waiver-rules.txt` itself, so the case runs the real list.
+#[test]
+fn tmp_write_is_on_the_list_and_travels_as_the_list_holds_it() {
+    let list = the_list();
+    assert!(
+        list.iter().any(|r| r == "tmp-write"),
+        "{FORWARD_LIST} does not hold tmp-write: {list:?}"
+    );
+    let reason = "7:seven sandbox test lines name /tmp on purpose (six assert it is refused or unused, one writes inside the fence private tmpfs); coordinator allow 2026-11-17";
+    let c = Case::setup("tmp-write", None);
+    c.write_lines(&[wline("tmp-write", reason)]);
+    let out = c.run(Some(&c.waivers));
+    assert_eq!(
+        c.argv().expect("diffgate ran"),
+        forwarded(&c.base, &[&format!("tmp-write={reason}")]),
+        "the whole counted allow, unchanged, as one argument\n{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "diffgate waivers: 1 forwarded (tmp-write: {reason}), 0 not forwarded"
+        )),
+        "the step says it forwarded it:\n{out}"
+    );
+}
