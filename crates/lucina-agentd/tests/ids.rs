@@ -1772,6 +1772,70 @@ fn a_lead_code_must_differ_from_every_area_code() {
     assert_eq!(read(&ids_file(&d)), before, "the import wrote nothing");
 }
 
+/// `areas.tsv:54` gives an area the code `PV`, which a lead already holds. The line registers
+/// nothing, but it is not allowed to refuse the file either: the areas around it are real, and
+/// every finding of theirs would be skipped for a line that means nothing to them.
+#[test]
+fn an_areas_line_of_a_code_a_lead_holds_is_listed_and_the_file_imports() {
+    let d = Daemon::start();
+    for lead in ["LA", "LB", "PV"] {
+        lead_add(&d, lead);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_ledger(
+        dir.path(),
+        "areas.tsv",
+        "code\tlead\tcovers\n\
+         GC\tLA\tLucinaJS garbage collector\n\
+         PV\tPV\tPoko video\n\
+         BQ\tLB\tbq build queue\n",
+    );
+    let why = "\"PV\" is a lead code: an area code must differ from every lead code";
+    let skip = format!("areas.tsv:3  skipped: {why}");
+
+    // The dry run takes the two lines that are areas, lists the one that is not, and writes
+    // nothing.
+    let before = read(&ids_file(&d));
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--areas", "--dry-run"]),
+        format!("would import 2 rows (0 as annotations)\n{skip}")
+    );
+    assert_eq!(read(&ids_file(&d)), before, "a dry run writes nothing");
+    let j = lagent_json(&d, &["id", "import", &path, "--areas", "--dry-run"]);
+    assert_eq!(j["skipped"].as_array().unwrap().len(), 1, "{j}");
+    assert_eq!(j["skipped"][0]["file"], "areas.tsv");
+    assert_eq!(j["skipped"][0]["line"], 3);
+    assert_eq!(j["skipped"][0]["reason"], why);
+
+    // The import: the same lists, GC and BQ registered, and nothing of the PV line kept.
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--areas"]),
+        format!("imported 2 rows (0 as annotations)\n{skip}")
+    );
+    assert_eq!(view(&d, "GC")["kind"], "area");
+    assert_eq!(view(&d, "GC")["by"], "LA", "GC came from the file");
+    assert_eq!(view(&d, "BQ")["by"], "LB");
+    assert_eq!(view(&d, "PV")["kind"], "lead", "PV stayed a lead");
+    assert_eq!(
+        view(&d, "PV")["annotations"],
+        json!([]),
+        "nothing was kept of the line"
+    );
+
+    // The file again: both areas are present, so nothing is taken, and the skip is still listed.
+    assert_eq!(
+        ok(&d, &["id", "import", &path, "--areas"]),
+        format!("imported 0 rows (0 as annotations)\n{skip}")
+    );
+
+    // The single area route is untouched: it still refuses a code a lead holds.
+    let e = refused(
+        &d,
+        &["id", "area", "add", "PV", "--lead", "PV", "poko video"],
+    );
+    assert!(e.contains(why), "{e}");
+}
+
 #[test]
 fn a_lost_run_that_ends_failed_again_gets_a_second_failed_row() {
     let f = Fixture::new();
