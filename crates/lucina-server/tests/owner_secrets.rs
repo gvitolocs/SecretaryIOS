@@ -407,7 +407,11 @@ fn saved_answer(name: &str) -> Value {
 
 impl Env {
     fn request_cards(&self) -> Vec<Value> {
-        self.h.timeline_lines().into_iter().filter(|l| l["meta"]["kind"] == "secret_request").collect()
+        self.h
+            .timeline_lines()
+            .into_iter()
+            .filter(|l| l["meta"]["kind"] == "secret_request")
+            .collect()
     }
 
     async fn queue(&self) -> Value {
@@ -441,12 +445,18 @@ async fn requests_come_one_card_at_a_time_and_the_value_goes_nowhere() {
     *env.broker.answer.lock().unwrap() = saved_answer("FIRST_KEY");
     let (s, saved) = env
         .h
-        .post("/secrets/grant", json!({"grant": "g1.p.s", "value": REQUESTED, "request": a["data"]["requestId"]}))
+        .post(
+            "/secrets/grant",
+            json!({"grant": "g1.p.s", "value": REQUESTED, "request": a["data"]["requestId"]}),
+        )
         .await;
     assert_eq!(s, 200, "{saved}");
     assert_eq!(saved["data"]["fingerprint"], "ab12cd34");
     assert!(saved["data"]["nextItemId"].is_string());
-    assert_eq!(env.broker.seen.lock().unwrap().last().unwrap()["value"], REQUESTED);
+    assert_eq!(
+        env.broker.seen.lock().unwrap().last().unwrap()["value"],
+        REQUESTED
+    );
     assert_eq!(env.request_cards().len(), 2);
 
     let q = env.queue().await;
@@ -457,7 +467,10 @@ async fn requests_come_one_card_at_a_time_and_the_value_goes_nowhere() {
     assert_clean("the save's answer", &saved.to_string());
 
     // "Not now" on the second one closes it; nothing is left open.
-    let path = format!("/secrets/requests/{}/dismiss", b["data"]["requestId"].as_str().unwrap());
+    let path = format!(
+        "/secrets/requests/{}/dismiss",
+        b["data"]["requestId"].as_str().unwrap()
+    );
     let (s, d) = env.h.post(&path, json!({})).await;
     assert_eq!(s, 200, "{d}");
     assert_eq!(d["data"]["status"], "dismissed");
@@ -490,27 +503,46 @@ async fn a_request_carrying_a_value_is_refused_and_leaves_no_card() {
 #[tokio::test]
 async fn salva_un_segreto_opens_a_card_before_the_model() {
     let env = setup().await;
-    let d = env.chat("salva il segreto GBGO_WIFI_PSK in lucinaos/prod").await;
+    let d = env
+        .chat("salva il segreto GBGO_WIFI_PSK in lucinaos/prod")
+        .await;
     assert_eq!(d["action"], "secret_request");
-    assert!(env.h.fake.requests().is_empty(), "decided without the model");
+    assert!(
+        env.h.fake.requests().is_empty(),
+        "decided without the model"
+    );
     assert!(d["userItemId"].is_string(), "his words are in the chat");
     assert_eq!(d["format"], "v1", "the card comes with the answer");
     assert_eq!(d["actions"][0]["payload"]["name"], "GBGO_WIFI_PSK");
     let q = env.queue().await;
     let e = &q["requests"][0];
-    assert_eq!((e["name"].as_str(), e["project"].as_str(), e["environment"].as_str()), (Some("GBGO_WIFI_PSK"), Some("lucinaos"), Some("prod")));
+    assert_eq!(
+        (
+            e["name"].as_str(),
+            e["project"].as_str(),
+            e["environment"].as_str()
+        ),
+        (Some("GBGO_WIFI_PSK"), Some("lucinaos"), Some("prod"))
+    );
     assert_eq!(q["active"], e["id"]);
     assert_eq!(d["lucinaItemId"], e["itemId"]);
 
     // A second one while that card is open: it waits, and the reply has its own item.
-    let d2 = env.chat("add a secret called OTHER_ONE in lucinaos/prod").await;
+    let d2 = env
+        .chat("add a secret called OTHER_ONE in lucinaos/prod")
+        .await;
     assert_eq!(d2["action"], "secret_request");
     assert!(d2["lucinaItemId"].is_string());
     assert!(d2.get("format").is_none());
     assert_eq!(env.queue().await["queued"], 1);
 
     // Without a name or a place: the card asks for them.
-    env.h.post(&format!("/secrets/requests/{}/dismiss", e["id"].as_str().unwrap()), json!({})).await;
+    env.h
+        .post(
+            &format!("/secrets/requests/{}/dismiss", e["id"].as_str().unwrap()),
+            json!({}),
+        )
+        .await;
     let d3 = env.chat("salva un segreto").await;
     assert_eq!(d3["action"], "secret_request");
     let q = env.queue().await;
@@ -524,7 +556,9 @@ async fn a_value_typed_after_the_name_is_not_recorded_anywhere() {
     let env = setup().await;
     // Not token-shaped, so nothing masks it: only the words path keeps it from every sink.
     const PLAIN: &str = "correct-horse-battery";
-    let d = env.chat(&format!("salva il segreto WIFI_PSK {PLAIN}")).await;
+    let d = env
+        .chat(&format!("salva il segreto WIFI_PSK {PLAIN}"))
+        .await;
     assert_eq!(d["action"], "secret_request");
     assert!(d["userItemId"].is_null(), "not recorded");
     assert!(!d["reply"].as_str().unwrap().contains(PLAIN));
@@ -555,14 +589,34 @@ async fn lucina_asks_in_her_own_turn_by_name_only() {
         |c| c.planner = lucina_server::PlannerMode::Tools,
     )
     .await;
-    let (s, b) = h.post("/chat", json!({"message": "serve la password del wifi", "sessionId": "test", "channel": "web"})).await;
+    let (s, b) = h
+        .post(
+            "/chat",
+            json!({"message": "serve la password del wifi", "sessionId": "test", "channel": "web"}),
+        )
+        .await;
     assert_eq!(s, 200, "{b}");
-    let cards: Vec<Value> = h.timeline_lines().into_iter().filter(|l| l["meta"]["kind"] == "secret_request").collect();
+    let cards: Vec<Value> = h
+        .timeline_lines()
+        .into_iter()
+        .filter(|l| l["meta"]["kind"] == "secret_request")
+        .collect();
     assert_eq!(cards.len(), 1, "{:?}", h.timeline_lines());
-    assert_eq!(cards[0]["meta"]["actions"][0]["payload"]["name"], "GBGO_WIFI_PSK");
-    assert!(cards[0]["text"].as_str().unwrap().contains("Lucina asks for the secret"));
+    assert_eq!(
+        cards[0]["meta"]["actions"][0]["payload"]["name"],
+        "GBGO_WIFI_PSK"
+    );
+    assert!(cards[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Lucina asks for the secret"));
     // A tool call with a value is refused by the schema: no card, and the queue has one entry.
-    let (s, b) = h.post("/chat", json!({"message": "apri la porta", "sessionId": "test", "channel": "web"})).await;
+    let (s, b) = h
+        .post(
+            "/chat",
+            json!({"message": "apri la porta", "sessionId": "test", "channel": "web"}),
+        )
+        .await;
     assert_eq!(s, 200, "{b}");
     let (_, q) = h.get("/secrets/requests").await;
     assert_eq!(q["data"]["requests"].as_array().unwrap().len(), 1);
@@ -573,7 +627,12 @@ async fn lucina_asks_in_her_own_turn_by_name_only() {
 async fn an_mcp_turn_gets_no_secret_cards() {
     let env = setup().await;
     assert!(env.h.state.mcp_registry.get("secret_request").is_none());
-    assert!(env.h.state.trusted_mcp_registry.get("secret_request").is_none());
+    assert!(env
+        .h
+        .state
+        .trusted_mcp_registry
+        .get("secret_request")
+        .is_none());
     assert!(env.h.state.registry.get("secret_request").is_some());
 }
 
