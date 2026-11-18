@@ -1633,6 +1633,13 @@ fn a_status_that_is_json_but_not_an_object_is_unreadable() {
         .as_str()
         .unwrap()
         .to_string();
+    // The stand-in writes its `runner_lost` line into the status of a run it has a runner
+    // record for, the way `lane` carries the field inside the object it prints: with the record
+    // gone the answer reaches the daemon as it is. The runner is stopped before its record goes,
+    // so nothing of this fixture is left behind.
+    std::fs::write(f.data().join(format!("{id}.stop")), "").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    std::fs::remove_file(f.data().join(format!("{id}.runner"))).unwrap();
     // An array is valid JSON and no status: it is unreadable like a line of text.
     f.status(&id, "[1,2,3]");
     let job = wait_for(&d, &id, "waiting for the unreadable note", |j| {
