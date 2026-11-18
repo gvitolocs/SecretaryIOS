@@ -826,7 +826,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 .and_then(|fi| meta.files.iter().find(|f| f.index == fi))
                 .and_then(|f| f.taken_at.clone());
             let bytes = part.attachment.bytes.unwrap_or_default();
-            let library = timing.begin("library", false);
+            let library = timing.begin("library", true);
             store_in_library(&st, &id, i, &source, &note, part, taken_at).await;
             library.finish(Outcome::Ok, Sizes::bytes(bytes));
         } else if part.attachment.kind == "link" {
@@ -914,15 +914,16 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     let manifest = timing.begin("manifest", false);
     let saved = save(&dir, &job).await;
     manifest.finish(Outcome::of(&saved), Sizes::NONE);
-    if saved.is_err() {
-        // The share fails here, with no worker to say so: its summary line is what is left.
-        timing.log_total(Outcome::Error);
-    }
+    // A share that fails here has no worker to say what it spent its time on: the collector of the
+    // share ends with this return, and its end writes the one summary line.
     saved?;
     // status.json says processing now: the share must be processed even if
     // the append fails here (`process` appends it again). Returning an error
     // without spawning left it stuck until a restart (Stateright SH6).
-    if let Err(e) = ensure_user(&st, &job) {
+    let user = timing.begin("ensure_user", true);
+    let appended = ensure_user(&st, &job);
+    user.finish(Outcome::of(&appended), Sizes::NONE);
+    if let Err(e) = appended {
         tracing::warn!(share_id = %job.share_id, error = %e, "share user item not appended yet; processing retries it");
     }
     let response = job.public(false);
@@ -1437,7 +1438,7 @@ pub(crate) async fn read_local_file(
             None,
             "",
             true,
-            &ShareTiming::silent(),
+            ShareTiming::silent(),
         ),
     )
     .await
@@ -1478,7 +1479,11 @@ pub(crate) fn turn_message(note: &str, _device_lang: &str, content: &str) -> Str
 
 async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()> {
     let timing = job.timing.clone();
-    ensure_user(st, job)?;
+    // The timeline append is synchronous: a disk that takes its time holds the whole task here.
+    let user = timing.begin("ensure_user", true);
+    let ready = ensure_user(st, job);
+    user.finish(Outcome::of(&ready), Sizes::NONE);
+    ready?;
     if let Some((id, text)) = existing_reply(st, &job.session, &job.user_item.id) {
         job.status = "done".into();
         job.stage = "done".into();
@@ -1488,8 +1493,9 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
     }
     job.stage = "reading".into();
     let manifest = timing.begin("manifest", false);
-    save(dir, job).await?;
-    manifest.finish(Outcome::Ok, Sizes::NONE);
+    let saved = save(dir, job).await;
+    manifest.finish(Outcome::of(&saved), Sizes::NONE);
+    saved?;
     let mut content = String::new();
     let mut voice_transcripts = Vec::new();
     // A voice note whose recording was silent (peak under -60 dBFS): it gets its own reply, not "I couldn't hear you".
@@ -1510,8 +1516,11 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 READ_LIMIT_SECS
             };
         job.parts[i].state = "reading".into();
-        save(dir, job).await?;
-        let read = timing.begin("read", false);
+        let manifest = timing.begin("manifest", false);
+        let saved = save(dir, job).await;
+        manifest.finish(Outcome::of(&saved), Sizes::NONE);
+        saved?;
+        let read = timing.begin("read", true);
         let original = job.parts[i].path.clone();
         if let Some(p) = &original {
             job.parts[i].path = Some(work_path(dir, i, p).await?);
@@ -1609,12 +1618,16 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             }
         }
         content.push_str(&section(i + 1, part, &x, &mut budget));
-        save(dir, job).await?;
+        let manifest = timing.begin("manifest", false);
+        let saved = save(dir, job).await;
+        manifest.finish(Outcome::of(&saved), Sizes::NONE);
+        saved?;
     }
     job.stage = "thinking".into();
     let manifest = timing.begin("manifest", false);
-    save(dir, job).await?;
-    manifest.finish(Outcome::Ok, Sizes::NONE);
+    let saved = save(dir, job).await;
+    manifest.finish(Outcome::of(&saved), Sizes::NONE);
+    saved?;
     let voice_meta = Meta {
         transcript: has_voice
             .then(|| {
