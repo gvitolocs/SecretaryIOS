@@ -566,10 +566,11 @@ impl Ledger {
 /// columns may be missing. A line whose id parses but whose kind or state the rules of that kind
 /// do not allow, or that has fewer columns than required, becomes an annotation row; a line with
 /// no usable id is skipped and listed. Reading a file cannot fail: nothing is refused.
+/// A line ends where `\n` ends it, so the kept line of a CRLF file holds its carriage return too.
 pub fn parse_tsv(file: &str, text: &str) -> Ledger {
     let mut out = Ledger::default();
     let mut seen_first = false;
-    for (i, raw) in text.lines().enumerate() {
+    for (i, raw) in text.split('\n').enumerate() {
         let n = i + 1;
         let line = raw.trim_end_matches('\r');
         if line.trim().is_empty() {
@@ -586,7 +587,7 @@ pub fn parse_tsv(file: &str, text: &str) -> Ledger {
         let at = || Annotation {
             file: file.to_string(),
             line: n,
-            raw: line.to_string(),
+            raw: raw.to_string(),
         };
         let id = col(0);
         let declared = Kind::parse(col(2));
@@ -646,7 +647,7 @@ pub fn parse_areas_tsv(file: &str, text: &str) -> Ledger {
     let mut out = Ledger::default();
     let mut seen_first = false;
     let mut taken: HashSet<String> = HashSet::new();
-    for (i, raw) in text.lines().enumerate() {
+    for (i, raw) in text.split('\n').enumerate() {
         let n = i + 1;
         let line = raw.trim_end_matches('\r');
         if line.trim().is_empty() {
@@ -663,7 +664,7 @@ pub fn parse_areas_tsv(file: &str, text: &str) -> Ledger {
         let at = || Annotation {
             file: file.to_string(),
             line: n,
-            raw: line.to_string(),
+            raw: raw.to_string(),
         };
         let code = col(0);
         if !valid_area(code) {
