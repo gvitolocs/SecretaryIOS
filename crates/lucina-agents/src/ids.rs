@@ -737,12 +737,45 @@ fn present(row: &IdRow) -> Present {
 /// The incoming lines that are not present yet: an ordinary row by its id, time and state, an
 /// annotation row by its id and the file and line it came from, in order. A line repeated inside
 /// `incoming` counts once.
+///
+/// A line that gives a state an imported row of the same id already carries under another title
+/// is not a second meaning of the same row: it is kept as an annotation of that id, verbatim.
+/// Two lines of one import are never held against each other, and neither are rows the store got
+/// by hand or the daemon wrote, since those did not come from a ledger.
 pub fn import_plan(existing: &[IdRow], incoming: Vec<LedgerRow>) -> Vec<LedgerRow> {
     let mut have: HashSet<Present> = existing.iter().map(present).collect();
-    incoming
-        .into_iter()
-        .filter(|l| have.insert(present(&l.row)))
-        .collect()
+    let titled: HashMap<(String, String), Vec<String>> =
+        existing.iter().fold(HashMap::new(), |mut m, r| {
+            if !r.is_annotation()
+                && r.declared_by.as_deref() == Some("import")
+                && !r.title.is_empty()
+            {
+                m.entry((r.id.clone(), r.state.clone()))
+                    .or_default()
+                    .push(r.title.clone());
+            }
+            m
+        });
+    let mut plan = Vec::new();
+    for l in incoming {
+        if have.contains(&present(&l.row)) {
+            continue;
+        }
+        let clash = !l.is_annotation()
+            && titled
+                .get(&(l.row.id.clone(), l.row.state.clone()))
+                .is_some_and(|ts| ts.iter().any(|t| *t != l.row.title));
+        let l = if clash {
+            let why = format!("id {} already has another row with another title", l.row.id);
+            LedgerRow::annotated(&l.row.id, l.row.kind, l.source.clone(), why)
+        } else {
+            l
+        };
+        if have.insert(present(&l.row)) {
+            plan.push(l);
+        }
+    }
+    plan
 }
 
 /// One id near the subject, and how it is related.
