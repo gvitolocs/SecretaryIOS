@@ -266,6 +266,64 @@ async fn the_next_lecture_is_a_card() {
     assert_eq!(d["actions"][0]["label"], "Navigate");
 }
 
+/// 17 Nov 2026, the owner correcting one hour for another: the direct rule reads his whole
+/// sentence as the event name and files it with that title. The sentence names no event, so the
+/// planner — which sees the recent turns — is the one asked to name it.
+#[tokio::test]
+async fn a_correction_of_one_hour_lets_the_planner_name_the_event() {
+    let server = servers().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/calendar/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "lucina:c1", "title": "Call with the clinic", "start": at(9).to_rfc3339(),
+            "end": at(10).to_rfc3339(), "allDay": false, "source": "lucina"
+        })))
+        .mount(&server)
+        .await;
+    // Tomorrow (in the owner's zone) at 10:00, as the planner is told to put it.
+    let day = (Utc::now().with_timezone(&TZ) + Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let plan = format!(
+        "{{\"action\":\"calendar_event\",\"title\":\"Call with the clinic\",\"start\":\"{day}T10:00\"}}"
+    );
+    let h = lucina(
+        &server,
+        json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"calendar_event\",\"confidence\":0.95,\"reply_mode\":\"direct\",\"needs_tools\":false}"},
+            {"kind": "plan", "content": plan}
+        ], "default": {"content": "{\"action\":\"reply\",\"text\":\"WRONG: the model answered this turn.\"}"}}),
+        false,
+    )
+    .await;
+    let correction =
+        "That is the hour of the chat, not of the meeting, the meeting is tomorrow at 10";
+    let d = h.chat(correction).await;
+    let asked = server.received_requests().await.unwrap_or_default();
+    let post = asked
+        .iter()
+        .find(|r| r.method.as_str() == "POST" && r.url.path() == "/v1/calendar/events")
+        .unwrap_or_else(|| panic!("no event created: {d}"));
+    let body: Value = serde_json::from_slice(&post.body).unwrap();
+    let title = body["title"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        !title.contains("hour of the chat"),
+        "the sentence became the event name: {body}"
+    );
+    assert_eq!(
+        title, "Call with the clinic",
+        "the planner named it: {body}"
+    );
+    assert!(
+        body["start"].as_str().unwrap_or_default().starts_with(&day),
+        "{body}"
+    );
+    assert!(
+        !d["reply"].as_str().unwrap_or_default().contains(correction),
+        "{d}"
+    );
+}
+
 #[tokio::test]
 async fn an_event_the_calendar_does_not_have_goes_to_the_planner_with_that_fact() {
     let server = servers().await;
