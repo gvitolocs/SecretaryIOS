@@ -136,6 +136,9 @@ pub struct ImportArgs {
     /// The file lists areas (`code`, `lead`, `covers`) instead of ids
     #[arg(long)]
     pub areas: bool,
+    /// Say what the import would take, and write nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -596,19 +599,58 @@ pub async fn ids(client: &Client, cmd: &IdCommand) -> Result<Output, CmdError> {
         IdCommand::Import(a) => {
             let tsv = read_file(&a.file)?;
             let v = client
-                .post("/ids/import", &json!({"tsv": tsv, "areas": a.areas}))
+                .post(
+                    "/ids/import",
+                    &json!({
+                        "tsv": tsv,
+                        "areas": a.areas,
+                        "file": a.file,
+                        "dryRun": a.dry_run,
+                    }),
+                )
                 .await
                 .map_err(api)?;
             Ok(Output {
-                text: format!(
-                    "imported {}, skipped {}",
-                    v["imported"].as_u64().unwrap_or(0),
-                    v["skipped"].as_u64().unwrap_or(0)
-                ),
+                text: import_text(&v, a.dry_run),
                 json: Some(v),
             })
         }
     }
+}
+
+/// The summary of an import: the counts, then every line the rules kept as an annotation, then
+/// every line skipped, each with the file and line it came from.
+fn import_text(v: &Value, dry_run: bool) -> String {
+    let list = |key: &str| -> Vec<&Value> {
+        v[key]
+            .as_array()
+            .map(|a| a.iter().collect())
+            .unwrap_or_default()
+    };
+    let mut out = vec![format!(
+        "{} {} rows ({} as annotations)",
+        if dry_run { "would import" } else { "imported" },
+        v["imported"].as_u64().unwrap_or(0),
+        list("annotations").len()
+    )];
+    for a in list("annotations") {
+        out.push(format!(
+            "{}:{}  {}  annotation: {}",
+            text(&a["file"]),
+            a["line"].as_u64().unwrap_or(0),
+            text(&a["id"]),
+            text(&a["reason"])
+        ));
+    }
+    for s in list("skipped") {
+        out.push(format!(
+            "{}:{}  skipped: {}",
+            text(&s["file"]),
+            s["line"].as_u64().unwrap_or(0),
+            text(&s["reason"])
+        ));
+    }
+    out.join("\n")
 }
 
 pub async fn trace(client: &Client, a: &TraceArgs) -> Result<Output, CmdError> {
