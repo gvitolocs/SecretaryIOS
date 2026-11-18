@@ -177,6 +177,13 @@ pub async fn classify(
                     .filter(|r| crate::jev_route::deterministic_rule(r) && r.intent != c.intent)
                     .map(|r| r.intent.clone())
                     .unwrap_or_default();
+                // Such a rule is beaten only by a question (`jev_beats_rule_from`), so the intent that
+                // won never starts something: this is the same fact from the other side.
+                debug_assert!(
+                    !crate::jev_route::acts(&c.intent) || overrode_rule.is_empty(),
+                    "an acting intent overrode the rule {}",
+                    overrode_rule
+                );
                 tracing::info!(target: "lucina_jev::route", event = "jev_first", used = true,
                     intent = %c.intent, confidence, tier0 = ?rule.as_ref().map(|r| r.intent.as_str()),
                     overrode_rule = %overrode_rule, guard, "jev_first");
