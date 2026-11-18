@@ -582,10 +582,12 @@ pub async fn calendar_turn(
         .or_else(|| cal::parse_event(message, now, tz).filter(Result::is_ok));
     // A create whose name is the owner's whole sentence (a correction of one hour for another)
     // names no event: the rule cannot tell the event from the words around it, so the planner,
-    // which sees the recent turns, is asked for the name.
+    // which sees the recent turns, is asked for the name. A guarded caller is refused here, as
+    // below, and never costs a planner call.
     let parsed = match parsed {
         Some(Ok(c))
-            if ev::title_is_sentence(c.event["title"].as_str().unwrap_or(""), message) =>
+            if *caller != CalendarCaller::Guarded
+                && ev::title_is_sentence(c.event["title"].as_str().unwrap_or(""), message) =>
         {
             tracing::info!(
                 target: "lucina_chat::calendar",

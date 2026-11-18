@@ -2507,8 +2507,7 @@ async fn json_turn_planner(
         )
     };
     let (mut plan, action) = if action == "calendar_event"
-        && (plan["start"].as_str().is_none_or(|v| v.trim().is_empty())
-            || title_is_sentence(&plan))
+        && (plan["start"].as_str().is_none_or(|v| v.trim().is_empty()) || title_is_sentence(&plan))
     {
         replan(t, memory, plan, action).await
     } else {
