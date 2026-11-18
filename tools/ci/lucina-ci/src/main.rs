@@ -1181,6 +1181,28 @@ fn diffgate_command(base: &str, allows: &[Waiver]) -> String {
     cmd
 }
 
+/// The first waiver of a rule the list marks `counted` whose reason is not in counted form, as the rule name. The condition
+/// is on the rule, whichever source brought the waiver: `LAGENT_ALLOW` travels unfiltered, so an uncounted entry there for a
+/// counted rule would hand diffgate exactly the form the coordinator ruled out and, one allow per rule, crowd out the counted
+/// one the file holds.
+fn uncounted_waiver<'a>(waivers: &'a [Waiver], rules: &[ForwardRule]) -> Option<&'a str> {
+    waivers
+        .iter()
+        .find(|w| {
+            rules
+                .iter()
+                .any(|r| r.rule == w.rule && r.counted_only && !counted_reason(&w.reason))
+        })
+        .map(|w| w.rule.as_str())
+}
+
+/// The step's refusal of an uncounted waiver of a rule the list forwards in counted form only.
+fn counted_waiver_refusal(rule: &str) -> String {
+    format!(
+        "diffgate waivers: {rule} is forwarded in counted form only: write --allow {rule}=N:<reason> with N the exact number of refusals"
+    )
+}
+
 /// The `--allow` entries the job's waivers file adds to the diffgate call, the reason the step must not run diffgate at all
 /// (`Some`, when a waiver breaks a condition the list puts on its rule) and the one line the step prints about them.
 /// Only a rule of the forwarding list travels, and its reason unchanged; the quotes are the shell's problem (`shell_quote`),
@@ -1196,17 +1218,7 @@ fn file_waiver_allows(
 ) -> (Vec<Waiver>, Option<String>, String) {
     let listed = |rule: &str| rules.iter().any(|r| r.rule == rule);
     let (fwd, kept): (Vec<&Waiver>, Vec<&Waiver>) = waivers.iter().partition(|w| listed(&w.rule));
-    let halt = fwd
-        .iter()
-        .find(|w| {
-            rules
-                .iter()
-                .any(|r| r.rule == w.rule && r.counted_only && !counted_reason(&w.reason))
-        })
-        .map(|w| format!(
-            "diffgate waivers: {} is forwarded in counted form only: write --allow {}=N:<reason> with N the exact number of refusals",
-            w.rule, w.rule
-        ));
+    let halt = uncounted_waiver(waivers, rules).map(counted_waiver_refusal);
     let added: Vec<Waiver> = if halt.is_some() {
         // The step does not run diffgate at all, so nothing is added: a refusal cannot be read as a partial list.
         Vec::new()
@@ -1338,30 +1350,44 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 Ok(list) => allows = list,
                 Err(bad) => refused = bad,
             }
-            // With no LAGENT_WAIVERS_FILE this is the plain command the step has always run.
-            match merge_waivers() {
-                Ok(None) => {}
-                Ok(Some(ws)) => match forwarded_waiver_rules(&root) {
+            // With neither a waivers file nor an entry of `LAGENT_ALLOW` this is the plain command the step has always run:
+            // the list is read only when there is a waiver to route, so a list line this step cannot read never fails a merge
+            // that waives nothing.
+            let file = match merge_waivers() {
+                Ok(v) => v,
+                // A waivers file this step cannot read exactly is not a reason to waive nothing quietly: the step fails,
+                // diffgate never runs, and the message says which line of which file is what.
+                Err(e) => {
+                    halt = Some(format!(
+                        "diffgate waivers: {e}: refusing, nothing is waived"
+                    ));
+                    None
+                }
+            };
+            if halt.is_none() && (file.is_some() || !allows.is_empty()) {
+                match forwarded_waiver_rules(&root) {
                     Err(e) => {
                         halt = Some(format!(
                             "diffgate waivers: {e}: refusing, nothing is waived"
                         ))
                     }
                     Ok(list) => {
-                        let (added, stop, s) = file_waiver_allows(&ws, &list, &allows);
-                        summary = Some(s);
-                        match stop {
-                            Some(m) => halt = Some(m),
-                            None => allows.extend(added),
+                        // The condition a counted rule carries holds for the lead's typed entry as well: `LAGENT_ALLOW`
+                        // is not filtered by the list, and an uncounted allow there would else reach diffgate anyway.
+                        if let Some(rule) = uncounted_waiver(&allows, &list) {
+                            halt = Some(counted_waiver_refusal(rule));
+                        }
+                        if let Some(ws) = file
+                            && halt.is_none()
+                        {
+                            let (added, stop, s) = file_waiver_allows(&ws, &list, &allows);
+                            summary = Some(s);
+                            match stop {
+                                Some(m) => halt = Some(m),
+                                None => allows.extend(added),
+                            }
                         }
                     }
-                },
-                // A waivers file this step cannot read exactly is not a reason to waive nothing quietly: the step fails,
-                // diffgate never runs, and the message says which line of which file is what.
-                Err(e) => {
-                    halt = Some(format!(
-                        "diffgate waivers: {e}: refusing, nothing is waived"
-                    ))
                 }
             }
         } else {
@@ -2149,6 +2175,30 @@ mod tests {
         let w = parse_waiver_line(&waiver_line("tmp-write", "0:nothing was refused")).unwrap();
         let (_cmd, halt, _summary) = dg_all("abc123", &[], &[w], &list);
         assert!(halt.is_some(), "N is at least 1: 0: is not a count");
+    }
+
+    /// The condition travels with the rule, not with the source: `LAGENT_ALLOW` is unfiltered, so its entry is checked here.
+    #[test]
+    fn the_counted_condition_holds_for_the_lead_s_typed_entry_too() {
+        let list = counted_list(&["tmp-write"]);
+        let bad = lead_waivers("tmp-write=seven sandbox lines").unwrap();
+        assert_eq!(uncounted_waiver(&bad, &list), Some("tmp-write"));
+        assert_eq!(
+            counted_waiver_refusal("tmp-write"),
+            "diffgate waivers: tmp-write is forwarded in counted form only: write --allow tmp-write=N:<reason> with N the exact number of refusals"
+        );
+        let good = lead_waivers("tmp-write=7:seven sandbox lines").unwrap();
+        assert_eq!(
+            uncounted_waiver(&good, &list),
+            None,
+            "the counted form is allowed"
+        );
+        let other = lead_waivers("guard-deleted=the lead read it").unwrap();
+        assert_eq!(
+            uncounted_waiver(&other, &list),
+            None,
+            "a rule the list does not mark is untouched"
+        );
     }
 
     /// The refusal is of the whole step, not of one entry: a list that holds a waiver in the wrong form does not run

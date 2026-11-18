@@ -723,6 +723,38 @@ fn an_uncounted_waiver_of_a_counted_rule_fails_the_step_and_diffgate_does_not_ru
     assert!(!out.contains("waived:"), "nothing is waived:\n{out}");
 }
 
+/// The same condition on the other source of a waiver: `LAGENT_ALLOW` carries the lead's typed entry and is not filtered by
+/// the list, so an uncounted `tmp-write` there is refused too — else the counted rule would reach diffgate in exactly the
+/// form the coordinator ruled out, and its counted entry would crowd the file's out (one allow per rule).
+#[test]
+fn an_uncounted_lead_waiver_of_a_counted_rule_fails_the_step_too() {
+    let c = Case::setup("allow-uncounted", None);
+    let out = c.run_with(None, "tmp-write=seven sandbox test lines name /tmp");
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "the typed entry broke the condition and was not refused: {}\n{out}",
+        step_line(&out, "diffgate")
+    );
+    assert!(
+        out.contains("diffgate waivers: tmp-write is forwarded in counted form only: write --allow tmp-write=N:<reason> with N the exact number of refusals"),
+        "the message does not say what to write:\n{out}"
+    );
+    assert!(c.argv().is_none(), "diffgate did not run:\n{out}");
+}
+
+/// The counted form of the lead's typed entry travels, as the plain rules' does.
+#[test]
+fn a_counted_lead_waiver_of_a_counted_rule_travels() {
+    let reason = "7:seven sandbox test lines name /tmp on purpose; coordinator allow 2026-11-18";
+    let c = Case::setup("allow-counted", None);
+    let out = c.run_with(None, &format!("tmp-write={reason}"));
+    assert_eq!(
+        c.argv().expect("diffgate ran"),
+        forwarded(&c.base, &[&format!("tmp-write={reason}")]),
+        "the typed entry, unchanged\n{out}"
+    );
+}
+
 /// A counted waiver of the same rule beside the uncounted one changes nothing: the step refuses the file as a whole rather
 /// than run diffgate with the entry it liked.
 #[test]
