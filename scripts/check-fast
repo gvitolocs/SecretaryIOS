@@ -12,5 +12,19 @@ export LUCINA_CI_CPU_QUOTA=${LUCINA_CI_CPU_QUOTA:-400%}
 free=$(df --output=avail -BG "$HOME" | tail -1 | tr -dc 0-9)
 [ "$free" -ge 20 ] || { echo "check-fast: only ${free} GiB free; refusing to build" >&2; exit 2; }
 tool=${SECRETARY_CI_TOOL_TARGET:-$HOME/.cache/secretary-ci-tool}
-CARGO_TARGET_DIR=$tool cargo build --quiet --release --locked --manifest-path "$root/tools/ci/lucina-ci/Cargo.toml"
+# The tool is built apart from where it is installed, and reaches $tool/release/lucina-ci only through rename(2): a
+# check-fast that is already running was started from that name, and a build that wrote it in place would take it away from
+# under the steps it starts (GATE-06: "Failed to find executable .../release/lucina-ci (deleted)", merge job
+# job_fc4fabf8e6fe). The copy is a new file, so a run whose build died leaves the installed tool exactly as it was and no
+# half-written one behind. The name is not keyed by the source it was built from: a merge and its own lane build the same
+# source and would still replace each other, and the run in flight is what has to survive either way — it copies the binary
+# it started from into its own per-run directory and starts every step from that copy (cmd_check_fast, src/main.rs).
+build=${SECRETARY_CI_TOOL_BUILD:-${tool}-build}
+CARGO_TARGET_DIR=$build cargo build --quiet --release --locked --manifest-path "$root/tools/ci/lucina-ci/Cargo.toml"
+mkdir -p "$tool/release"
+tmp=$tool/release/lucina-ci.tmp.$$
+trap 'rm -f "$tmp"' EXIT
+cp "$build/release/lucina-ci" "$tmp"
+chmod 0755 "$tmp"
+mv -f "$tmp" "$tool/release/lucina-ci"
 exec "$tool/release/lucina-ci" check-fast "$@"
