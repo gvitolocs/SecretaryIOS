@@ -154,17 +154,38 @@ impl Work {
         Some(e.1.saturating_add(u64::try_from(e.0.elapsed().as_secs()).unwrap_or(u64::MAX) as i64))
     }
 
+    /// Lets go of one counted age: the window it measures is over and its key will not come
+    /// again, so it should not stay in the clock's memory.
+    fn forget(&self, key: &str) {
+        self.seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
+    }
+
+    /// The key of the lost follow-window: the window belongs to this ending, not to the job.
+    /// A run `lane` showed again and is lost a second time has a new `ended_at` and counts from
+    /// that; one key for the job would spend the first episode's day on the second and leave
+    /// a run that is alive out of the poll list for good.
+    fn lost_key(job: &WorkJob) -> String {
+        format!(
+            "{}#lost#{}",
+            job.id,
+            job.ended_at.as_deref().unwrap_or_default()
+        )
+    }
+
     /// Whether the poller still asks `lane` about this job: [`pollable`], and for a run agentd
-    /// lost itself the day it is followed again counted as this daemon counts it. The wall
-    /// clock stays the upper bound of [`pollable`]: a job is never followed for more than a
-    /// day of wall time after it ended.
+    /// lost itself the day it is followed again counted as this daemon counts it, from the
+    /// ending this lost episode has. The wall clock stays the upper bound of [`pollable`]: a
+    /// job is never followed for more than a day of wall time after it ended.
     fn follows(&self, job: &WorkJob) -> bool {
         if !pollable(job) {
             return false;
         }
         match job.state {
             WorkState::Lost => self
-                .age_of(&format!("{}#lost", job.id), job.ended_at.as_deref())
+                .age_of(&Self::lost_key(job), job.ended_at.as_deref())
                 .is_some_and(|a| a < DAY),
             _ => true,
         }
@@ -1124,7 +1145,9 @@ impl Manager {
     /// goes through [`status_unreadable`] (a note and a count) and the job is saved when
     /// that changed it. A call that never answers (it did not start, or it timed out) is not a
     /// miss either: state and miss count stay as they are. A final job that is followed only
-    /// owes its end row: the store is asked again and `lane` is left alone.
+    /// owes its end row: the store is asked again and `lane` is left alone. A window that closes
+    /// while a call is out takes the answer that says the run is going and writes the row the
+    /// store owes for every other one; none of them is dropped in silence.
     async fn poll_one(&self, bin: &Path, id: &str) {
         let Some(job) = self.stored_job(id) else {
             return;
@@ -1142,7 +1165,20 @@ impl Manager {
             return;
         };
         if !self.work().follows(&job) {
-            return;
+            // The window closed while the call was out, and the answer is not thrown away. A
+            // lost run that is past its window is the one job `lane` can still contradict: a
+            // status is `lane`'s own word, and one that shows the run going takes it back from
+            // under the closed window, with an ending of its own to count from. Anything else,
+            // and any job that ended in the meantime, leaves the answer aside and gives the
+            // store the row it owes, exactly as the check before the call does.
+            let contradictable =
+                matches!(reply, StatusReply::Status(_)) && job.state == WorkState::Lost;
+            if !contradictable {
+                if self.owed_end_row_state(&job).is_some() {
+                    self.write_end_row(&job);
+                }
+                return;
+            }
         }
         let before = job.clone();
         match reply {
@@ -1153,7 +1189,10 @@ impl Manager {
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(id);
                 if job.state == WorkState::Lost {
-                    // `lane` knows the run after all: it is not lost.
+                    // `lane` knows the run after all: it is not lost. The window of the ending
+                    // that made it lost is spent with it and goes, so a second episode starts
+                    // its own.
+                    self.work().forget(&Work::lost_key(&job));
                     job.ended_at = None;
                     job.note = None;
                     job.note_from_lane = false;
@@ -1209,8 +1248,13 @@ impl Manager {
         let ended_now = job.state.is_terminal() && job.state != before.state;
         let stored = {
             let mut jobs = self.work().jobs();
-            // A start that failed in the meantime wins: only an unfinished (or lost) job takes the update.
-            match jobs.iter_mut().find(|j| j.id == id && pollable(j)) {
+            // A start that failed in the meantime wins: only an unfinished (or lost) job takes
+            // the update. A lost job past its window takes one that shows the run going: that
+            // is `lane`'s answer after the window shut, and the run is not over.
+            match jobs.iter_mut().find(|j| {
+                j.id == id
+                    && (pollable(j) || (j.state == WorkState::Lost && !job.state.is_terminal()))
+            }) {
                 Some(stored) => {
                     *stored = job.clone();
                     self.work().persist(&jobs);
@@ -1818,6 +1862,44 @@ deep-codex = ["qoder", "codex-a"]
         assert!(
             grown >= 1 && grown < DAY,
             "the age counts this daemon's time, not the clock's: {grown}"
+        );
+    }
+
+    /// The lost window belongs to an ending, not to a job: a run that is lost, shows itself
+    /// again and is lost a second time has the whole window before it a second time.
+    #[test]
+    fn a_second_lost_episode_has_its_own_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |secs: i64| (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339();
+        let mut job = WorkJob {
+            id: "wk-7".into(),
+            ..WorkJob::default()
+        };
+        // The first episode, one second short of its day, and the daemon watches that second go
+        // by: the window is spent and the run is left alone.
+        job.state = WorkState::Lost;
+        job.ended_at = Some(at(-(DAY - 1)));
+        assert!(work.follows(&job), "the first episode is followed");
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !work.follows(&job),
+            "a day of this daemon's time is over: the first episode is spent"
+        );
+        // `lane` shows the run again, and later it is lost a second time, with a new ending.
+        job.state = WorkState::Running;
+        job.ended_at = None;
+        job.state = WorkState::Lost;
+        job.ended_at = Some(at(0));
+        assert!(
+            work.follows(&job),
+            "the second episode inherits the day the first one spent"
         );
     }
 
