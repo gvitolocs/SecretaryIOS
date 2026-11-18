@@ -1083,16 +1083,70 @@ fn parse_waiver_line(line: &str) -> Result<Waiver, String> {
     })
 }
 
+/// One line of the forwarding list: a rule, and whether its waivers travel only in diffgate's counted form.
+#[derive(Debug)]
+struct ForwardRule {
+    rule: String,
+    /// The `counted` marker: diffgate takes `--allow <rule>=N:<reason>`, and only that form is forwarded.
+    counted_only: bool,
+}
+
+/// A reason in diffgate's counted form: a decimal integer of at least 1 and the colon that follows it.
+fn counted_reason(reason: &str) -> bool {
+    let digits = reason
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(reason.len());
+    digits > 0
+        && reason.as_bytes().get(digits) == Some(&b':')
+        && reason[..digits].parse::<u64>().is_ok_and(|n| n >= 1)
+}
+
+/// The list text as the step reads it: a rule name and at most one `counted` marker per line, `#` comments and blank lines
+/// ignored. `path` is only named in the message. Any other word is `Err`, because a marker this step cannot read is a
+/// condition the lead put on a waiver, and reading it as no condition would forward more than was allowed.
+fn parse_waiver_rules(text: &str, path: &Path) -> Result<Vec<ForwardRule>, String> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        let rule = words.next().unwrap_or_default().to_string();
+        let counted_only = match words.next() {
+            None => false,
+            Some("counted") => match words.next() {
+                Some(extra) => {
+                    return Err(format!(
+                        "{} line {}: {rule} carries a second marker {extra:?}: a line is a rule name and at most the word counted",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+                None => true,
+            },
+            Some(unknown) => {
+                return Err(format!(
+                    "{} line {}: unknown marker {unknown:?} after {rule}: a line is a rule name and at most the word counted",
+                    path.display(),
+                    n + 1
+                ));
+            }
+        };
+        out.push(ForwardRule { rule, counted_only });
+    }
+    Ok(out)
+}
+
 /// The rules whose waivers reach diffgate (`WAIVER_RULES_FILE`), read from the repository under test. A list that cannot be
 /// read forwards nothing, which leaves every waiver unused and every refusal refused: the safe direction for a gate.
-fn forwarded_waiver_rules(root: &Path) -> Vec<String> {
-    fs::read_to_string(root.join(WAIVER_RULES_FILE))
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_string)
-        .collect()
+fn forwarded_waiver_rules(root: &Path) -> Result<Vec<ForwardRule>, String> {
+    let path = root.join(WAIVER_RULES_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Ok(Vec::new()),
+    };
+    parse_waiver_rules(&text, &path)
 }
 
 /// The waivers this merge job was given: `None` when `LAGENT_WAIVERS_FILE` is not set, which is every run that is not a
@@ -1127,23 +1181,41 @@ fn diffgate_command(base: &str, allows: &[Waiver]) -> String {
     cmd
 }
 
-/// The `--allow` entries the job's waivers file adds to the diffgate call, and the one line the step prints about them.
+/// The `--allow` entries the job's waivers file adds to the diffgate call, the reason the step must not run diffgate at all
+/// (`Some`, when a waiver breaks a condition the list puts on its rule) and the one line the step prints about them.
 /// Only a rule of the forwarding list travels, and its reason unchanged; the quotes are the shell's problem (`shell_quote`),
 /// since the step runs its command through `bash -c`. A rule `LAGENT_ALLOW` already handed over is not handed over twice:
 /// diffgate answers a waiver with the refusals the earlier entry left, so the second copy of the same allow would report
 /// itself a failed waiver ("waiver expects exactly N refusals, found 0") on a diff this merge was allowed to pass.
+/// A rule the list marks `counted` travels only as `N:reason`: an uncounted waiver of it is refused outright, because the
+/// count is what ties the waiver to the exact refusals the lead looked at, and diffgate never runs with a partial list.
 fn file_waiver_allows(
     waivers: &[Waiver],
-    rules: &[String],
+    rules: &[ForwardRule],
     already: &[Waiver],
-) -> (Vec<Waiver>, String) {
-    let (fwd, kept): (Vec<&Waiver>, Vec<&Waiver>) =
-        waivers.iter().partition(|w| rules.contains(&w.rule));
-    let added: Vec<Waiver> = fwd
+) -> (Vec<Waiver>, Option<String>, String) {
+    let listed = |rule: &str| rules.iter().any(|r| r.rule == rule);
+    let (fwd, kept): (Vec<&Waiver>, Vec<&Waiver>) = waivers.iter().partition(|w| listed(&w.rule));
+    let halt = fwd
         .iter()
-        .filter(|w| !already.iter().any(|a| a.rule == w.rule))
-        .map(|w| (*w).clone())
-        .collect();
+        .find(|w| {
+            rules
+                .iter()
+                .any(|r| r.rule == w.rule && r.counted_only && !counted_reason(&w.reason))
+        })
+        .map(|w| format!(
+            "diffgate waivers: {} is forwarded in counted form only: write --allow {}=N:<reason> with N the exact number of refusals",
+            w.rule, w.rule
+        ));
+    let added: Vec<Waiver> = if halt.is_some() {
+        // The step does not run diffgate at all, so nothing is added: a refusal cannot be read as a partial list.
+        Vec::new()
+    } else {
+        fwd.iter()
+            .filter(|w| !already.iter().any(|a| a.rule == w.rule))
+            .map(|w| (*w).clone())
+            .collect()
+    };
     let fwd_list = if fwd.is_empty() {
         String::new()
     } else {
@@ -1171,7 +1243,7 @@ fn file_waiver_allows(
         fwd.len(),
         kept.len()
     );
-    (added, summary)
+    (added, halt, summary)
 }
 
 /// `check-fast [--base REF] [--proofs] [--all-proofs] [--mutants] [--no-build]`
@@ -1258,7 +1330,9 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         // What diffgate gets, in the order it is put on its command line.
         let mut allows: Vec<Waiver> = Vec::new();
         let mut summary: Option<String> = None;
-        let mut unreadable: Option<String> = None;
+        // Why the step fails without running diffgate: a waivers file or a list line this step cannot read, or a waiver that
+        // breaks a condition the list puts on its rule. diffgate never runs with a partial list.
+        let mut halt: Option<String> = None;
         if merge_gate {
             match lead_waivers(&raw) {
                 Ok(list) => allows = list,
@@ -1267,16 +1341,25 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             // With no LAGENT_WAIVERS_FILE this is the plain command the step has always run.
             match merge_waivers() {
                 Ok(None) => {}
-                Ok(Some(ws)) => {
-                    let (added, s) =
-                        file_waiver_allows(&ws, &forwarded_waiver_rules(&root), &allows);
-                    allows.extend(added);
-                    summary = Some(s);
-                }
+                Ok(Some(ws)) => match forwarded_waiver_rules(&root) {
+                    Err(e) => {
+                        halt = Some(format!(
+                            "diffgate waivers: {e}: refusing, nothing is waived"
+                        ))
+                    }
+                    Ok(list) => {
+                        let (added, stop, s) = file_waiver_allows(&ws, &list, &allows);
+                        summary = Some(s);
+                        match stop {
+                            Some(m) => halt = Some(m),
+                            None => allows.extend(added),
+                        }
+                    }
+                },
                 // A waivers file this step cannot read exactly is not a reason to waive nothing quietly: the step fails,
                 // diffgate never runs, and the message says which line of which file is what.
                 Err(e) => {
-                    unreadable = Some(format!(
+                    halt = Some(format!(
                         "diffgate waivers: {e}: refusing, nothing is waived"
                     ))
                 }
@@ -1298,7 +1381,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 "diffgate: LAGENT_ALLOW entry {entry:?} is not RULE=reason: nothing is waived and diffgate does not run"
             );
         }
-        if let Some(m) = unreadable {
+        if let Some(m) = halt {
             step(
                 "diffgate",
                 &format!("echo {} >&2; exit 1", shell_quote(&m)),
@@ -1684,9 +1767,12 @@ mod tests {
                               passed; the same assertions run against the in-process Fake; the ignored variants run in a \
                               scheduled non-gating job; WM-C004 / GAL-01; coordinator allow 2026-11-17";
 
-    fn rules(skipped: bool) -> Vec<String> {
+    fn rules(skipped: bool) -> Vec<ForwardRule> {
         if skipped {
-            vec!["skipped-test".to_string()]
+            vec![ForwardRule {
+                rule: "skipped-test".to_string(),
+                counted_only: false,
+            }]
         } else {
             vec![]
         }
@@ -1699,12 +1785,56 @@ mod tests {
             .to_path_buf()
     }
 
-    /// The command the step makes from the `LAGENT_ALLOW` entries plus what the file adds.
-    fn dg(base: &str, allow: &[Waiver], file: &[Waiver], listed: &[String]) -> (String, String) {
-        let (added, summary) = file_waiver_allows(file, listed, allow);
+    /// What the step makes of a waivers file, with the reason it refuses to run diffgate at all.
+    fn dg_all(
+        base: &str,
+        allow: &[Waiver],
+        file: &[Waiver],
+        listed: &[ForwardRule],
+    ) -> (String, Option<String>, String) {
+        let (added, halt, summary) = file_waiver_allows(file, listed, allow);
         let mut all = allow.to_vec();
         all.extend(added);
-        (diffgate_command(base, &all), summary)
+        (diffgate_command(base, &all), halt, summary)
+    }
+
+    /// The command the step makes from the `LAGENT_ALLOW` entries plus what the file adds, for a case the list does not refuse.
+    fn dg(
+        base: &str,
+        allow: &[Waiver],
+        file: &[Waiver],
+        listed: &[ForwardRule],
+    ) -> (String, String) {
+        let (cmd, halt, summary) = dg_all(base, allow, file, listed);
+        assert!(halt.is_none(), "the step refuses to run diffgate: {cmd}");
+        (cmd, summary)
+    }
+
+    /// A forwarding list of the given rules, every one of them plain.
+    fn plain_list(rules: &[&str]) -> Vec<ForwardRule> {
+        rules
+            .iter()
+            .map(|r| ForwardRule {
+                rule: r.to_string(),
+                counted_only: false,
+            })
+            .collect()
+    }
+
+    /// A forwarding list of the given rules, every one of them marked `counted`.
+    fn counted_list(rules: &[&str]) -> Vec<ForwardRule> {
+        rules
+            .iter()
+            .map(|r| ForwardRule {
+                rule: r.to_string(),
+                counted_only: true,
+            })
+            .collect()
+    }
+
+    /// The real list of this repository, read as the step reads it.
+    fn real_list() -> Vec<ForwardRule> {
+        forwarded_waiver_rules(&this_repo()).expect("the list of this repository is readable")
     }
 
     #[test]
@@ -1848,7 +1978,7 @@ mod tests {
             ))
             .unwrap(),
         ];
-        let (cmd, summary) = dg("abc123", &[], &ws, &forwarded_waiver_rules(&this_repo()));
+        let (cmd, summary) = dg("abc123", &[], &ws, &real_list());
         assert_eq!(
             cmd, "diffgate --repo . --base abc123",
             "the plain command, as today"
@@ -1860,22 +1990,30 @@ mod tests {
     }
 
     /// The list is data: whatever it names is forwarded, so a rule added later is covered by this test and needs no code.
+    /// The reason is counted, so a rule the list marks `counted` passes here too.
     #[test]
     fn every_rule_of_the_forwarding_list_is_forwarded() {
-        let list = forwarded_waiver_rules(&this_repo());
+        let list = real_list();
         assert!(!list.is_empty(), "{WAIVER_RULES_FILE} reads as empty");
         for r in &list {
             let reason = "5:five of them; the coordinator allow of today";
-            let w = parse_waiver_line(&waiver_line(r, reason)).unwrap();
+            let w = parse_waiver_line(&waiver_line(&r.rule, reason)).unwrap();
             let (cmd, summary) = dg("abc123", &[], &[w], &list);
             assert_eq!(
                 cmd,
-                format!("diffgate --repo . --base abc123 --allow '{r}={reason}'"),
-                "{r} is on the list but not forwarded as itself"
+                format!(
+                    "diffgate --repo . --base abc123 --allow '{}={reason}'",
+                    r.rule
+                ),
+                "{} is on the list but not forwarded as itself",
+                r.rule
             );
             assert_eq!(
                 summary,
-                format!("diffgate waivers: 1 forwarded ({r}: {reason}), 0 not forwarded")
+                format!(
+                    "diffgate waivers: 1 forwarded ({}: {reason}), 0 not forwarded",
+                    r.rule
+                )
             );
         }
     }
@@ -1883,9 +2021,7 @@ mod tests {
     #[test]
     fn the_forwarding_list_holds_skipped_test() {
         assert!(
-            forwarded_waiver_rules(&this_repo())
-                .iter()
-                .any(|r| r == "skipped-test"),
+            real_list().iter().any(|r| r.rule == "skipped-test"),
             "{WAIVER_RULES_FILE} does not name the rule the failing merge was allowed"
         );
     }
@@ -1897,12 +2033,154 @@ mod tests {
             "abc123",
             &[],
             &[w],
-            &forwarded_waiver_rules(Path::new("/nonexistent-root")),
+            &forwarded_waiver_rules(Path::new("/nonexistent-root")).unwrap(),
         );
         assert_eq!(cmd, "diffgate --repo . --base abc123");
         assert_eq!(
             summary,
             "diffgate waivers: 0 forwarded, 1 not forwarded (skipped-test)"
+        );
+    }
+
+    /// A list line is a rule name and at most the word `counted`; comments and blank lines carry no rule.
+    #[test]
+    fn a_plain_list_line_names_a_rule_with_no_marker() {
+        let list = parse_waiver_rules(
+            "# a comment\n\n  skipped-test  \n",
+            Path::new(WAIVER_RULES_FILE),
+        )
+        .unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].rule, "skipped-test");
+        assert!(
+            !list[0].counted_only,
+            "a plain line forwards both forms, as it always did"
+        );
+    }
+
+    #[test]
+    fn the_counted_marker_is_read_off_the_line() {
+        let list = parse_waiver_rules("tmp-write counted\n", Path::new(WAIVER_RULES_FILE)).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].rule, "tmp-write");
+        assert!(list[0].counted_only);
+    }
+
+    #[test]
+    fn an_unknown_marker_on_a_list_line_is_an_error() {
+        let e = parse_waiver_rules(
+            "skipped-test\ntmp-write sometimes\n",
+            Path::new(WAIVER_RULES_FILE),
+        )
+        .expect_err("a marker the step does not know is not read as no marker");
+        assert!(e.contains("line 2"), "the line is named: {e}");
+        assert!(e.contains("sometimes"), "the word is named: {e}");
+        assert!(e.contains("tmp-write"), "the rule is named: {e}");
+    }
+
+    #[test]
+    fn a_second_marker_on_a_list_line_is_an_error() {
+        let e = parse_waiver_rules("tmp-write counted once\n", Path::new(WAIVER_RULES_FILE))
+            .expect_err("a line holds at most one marker");
+        assert!(e.contains("once"), "the word is named: {e}");
+    }
+
+    /// The counted form: digits and the colon after them, of at least one refusal.
+    #[test]
+    fn the_counted_form_is_digits_then_a_colon_of_at_least_one() {
+        for r in ["7:seven lines", "1:one", "42:many"] {
+            assert!(counted_reason(r), "{r} is counted");
+        }
+        for r in [
+            "seven lines",
+            "0:none of them",
+            ":no count",
+            "7 seven",
+            " 7:leading space",
+            "seven",
+        ] {
+            assert!(!counted_reason(r), "{r} is not counted");
+        }
+    }
+
+    #[test]
+    fn a_plain_rule_travels_in_both_forms() {
+        let list = plain_list(&["skipped-test"]);
+        for reason in ["the lead checked each one", "3:three of them"] {
+            let w = parse_waiver_line(&waiver_line("skipped-test", reason)).unwrap();
+            let (cmd, halt, _summary) = dg_all("abc123", &[], &[w], &list);
+            assert!(halt.is_none(), "no condition on a plain rule: {cmd}");
+            assert!(
+                cmd.ends_with(&format!(" --allow 'skipped-test={reason}'")),
+                "{reason} travels unchanged: {cmd}"
+            );
+        }
+    }
+
+    /// The coordinator's condition on `tmp-write`, as the list holds it: the counted form only.
+    #[test]
+    fn a_counted_rule_refuses_an_uncounted_waiver() {
+        let list = counted_list(&["tmp-write"]);
+        let w = parse_waiver_line(&waiver_line("tmp-write", "seven lines name /tmp")).unwrap();
+        let (cmd, halt, _summary) = dg_all("abc123", &[], &[w], &list);
+        assert_eq!(cmd, "diffgate --repo . --base abc123", "nothing is added");
+        assert_eq!(
+            halt.expect("the step says why it will not run diffgate"),
+            "diffgate waivers: tmp-write is forwarded in counted form only: write --allow tmp-write=N:<reason> with N the exact number of refusals"
+        );
+    }
+
+    #[test]
+    fn a_counted_rule_forwards_its_counted_waiver_unchanged() {
+        let list = counted_list(&["tmp-write"]);
+        let reason = "7:seven sandbox test lines name /tmp on purpose (six assert it is refused or unused, one writes inside the fence private tmpfs); coordinator allow 2026-11-17";
+        let w = parse_waiver_line(&waiver_line("tmp-write", reason)).unwrap();
+        let (cmd, halt, _summary) = dg_all("abc123", &[], &[w], &list);
+        assert!(halt.is_none(), "the form the rule asks for");
+        assert_eq!(
+            cmd,
+            format!("diffgate --repo . --base abc123 --allow 'tmp-write={reason}'")
+        );
+    }
+
+    #[test]
+    fn a_count_of_zero_is_not_a_count() {
+        let list = counted_list(&["tmp-write"]);
+        let w = parse_waiver_line(&waiver_line("tmp-write", "0:nothing was refused")).unwrap();
+        let (_cmd, halt, _summary) = dg_all("abc123", &[], &[w], &list);
+        assert!(halt.is_some(), "N is at least 1: 0: is not a count");
+    }
+
+    /// The refusal is of the whole step, not of one entry: a list that holds a waiver in the wrong form does not run
+    /// diffgate with the others it did like.
+    #[test]
+    fn one_uncounted_waiver_stops_the_whole_list() {
+        let list = counted_list(&["tmp-write"]);
+        let bad = parse_waiver_line(&waiver_line("tmp-write", "seven lines")).unwrap();
+        let good = parse_waiver_line(&waiver_line("tmp-write", "7:seven lines")).unwrap();
+        let (_cmd, halt, _summary) = dg_all("abc123", &[], &[good, bad], &list);
+        assert!(halt.is_some(), "the uncounted entry is refused: {halt:?}");
+    }
+
+    /// The data of this repository, as commit 3 leaves it: `tmp-write` travels only in counted form, `skipped-test` as before.
+    #[test]
+    fn the_real_list_marks_tmp_write_counted_and_skipped_test_plain() {
+        let list = real_list();
+        let tmp = list
+            .iter()
+            .find(|r| r.rule == "tmp-write")
+            .unwrap_or_else(|| panic!("{WAIVER_RULES_FILE} does not name tmp-write: {list:?}"));
+        assert!(
+            tmp.counted_only,
+            "tmp-write is on the list without its marker"
+        );
+        let skipped = list
+            .iter()
+            .find(|r| r.rule == "skipped-test")
+            .unwrap_or_else(|| panic!("{WAIVER_RULES_FILE} does not name skipped-test"));
+        assert!(
+            !skipped.counted_only,
+            "skipped-test keeps both forms: the waiver of job_4ee819df2427 is uncounted"
         );
     }
 

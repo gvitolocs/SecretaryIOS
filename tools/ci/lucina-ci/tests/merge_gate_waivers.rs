@@ -259,14 +259,26 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
 
-/// The repo's own forwarding list, as the step reads it.
+/// The repo's own forwarding list, as the step reads it: the rule name of each line, its marker left out.
 fn the_list() -> Vec<String> {
     fs::read_to_string(repo_root().join(FORWARD_LIST))
         .unwrap_or_else(|e| panic!("{} is not readable from the test: {e}", FORWARD_LIST))
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_string)
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// The rules the list marks `counted`, whose waivers travel only as `N:reason`.
+fn counted_rules() -> Vec<String> {
+    fs::read_to_string(repo_root().join(FORWARD_LIST))
+        .unwrap_or_else(|e| panic!("{} is not readable from the test: {e}", FORWARD_LIST))
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| l.split_whitespace().nth(1) == Some("counted"))
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
         .collect()
 }
 
@@ -682,4 +694,104 @@ fn tmp_write_is_on_the_list_and_travels_as_the_list_holds_it() {
         )),
         "the step says it forwarded it:\n{out}"
     );
+}
+
+/// The condition the coordinator put on `tmp-write` (LA-C013, allow of 2026-11-18): the rule is forwarded in counted form
+/// only. An uncounted waiver of it is refused — the step fails with what to write instead, and diffgate never runs, so a
+/// waiver that waives nothing cannot slip past on the strength of the other entries.
+#[test]
+fn an_uncounted_waiver_of_a_counted_rule_fails_the_step_and_diffgate_does_not_run() {
+    let c = Case::setup("uncounted-counted-rule", None);
+    c.write_lines(&[wline(
+        "tmp-write",
+        "seven sandbox test lines name /tmp on purpose",
+    )]);
+    let out = c.run(Some(&c.waivers));
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "the uncounted waiver of a counted rule was not a refusal: {}\n{out}",
+        step_line(&out, "diffgate")
+    );
+    assert!(
+        out.contains("diffgate waivers: tmp-write is forwarded in counted form only: write --allow tmp-write=N:<reason> with N the exact number of refusals"),
+        "the message does not say what to write:\n{out}"
+    );
+    assert!(
+        c.argv().is_none(),
+        "diffgate ran, and so took a partial list of waivers\n{out}"
+    );
+    assert!(!out.contains("waived:"), "nothing is waived:\n{out}");
+}
+
+/// A counted waiver of the same rule beside the uncounted one changes nothing: the step refuses the file as a whole rather
+/// than run diffgate with the entry it liked.
+#[test]
+fn one_uncounted_waiver_stops_a_counted_rule_from_running_diffgate_at_all() {
+    let c = Case::setup("counted-and-uncounted", None);
+    c.write_lines(&[
+        wline(
+            "tmp-write",
+            "7:seven sandbox test lines name /tmp on purpose",
+        ),
+        wline("tmp-write", "the lead counted them by hand"),
+    ]);
+    let out = c.run(Some(&c.waivers));
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "the file still holds a waiver in the wrong form: {}\n{out}",
+        step_line(&out, "diffgate")
+    );
+    assert!(c.argv().is_none(), "diffgate did not run:\n{out}");
+}
+
+/// `skipped-test` is a plain line, so either form travels: the uncounted reason of the merge that failed
+/// (job_4ee819df2427) and a counted one, each unchanged.
+#[test]
+fn a_rule_the_list_leaves_plain_travels_in_both_forms() {
+    let marked = counted_rules();
+    assert!(
+        !marked.iter().any(|r| r == "skipped-test"),
+        "{FORWARD_LIST} marks skipped-test counted, so its uncounted waiver of job_4ee819df2427 would be refused: {marked:?}"
+    );
+    for (tag, reason) in [
+        ("plain-uncounted", GAL_REASON),
+        ("plain-counted", "3:three ignored tests, each one read"),
+    ] {
+        let c = Case::setup(tag, None);
+        c.write_lines(&[wline("skipped-test", reason)]);
+        let out = c.run(Some(&c.waivers));
+        assert_eq!(
+            c.argv().expect("diffgate ran"),
+            forwarded(&c.base, &[&format!("skipped-test={reason}")]),
+            "{reason} travels as it stands\n{out}"
+        );
+    }
+}
+
+/// A word after the rule name that is not `counted` is a marker this step cannot read: it fails the step and names the line,
+/// rather than silently forwarding a rule the lead meant to restrict.
+#[test]
+fn an_unknown_marker_on_a_list_line_fails_the_step() {
+    let c = Case::setup("unknown-marker", None);
+    fs::write(
+        c.repo.join(FORWARD_LIST),
+        "# a test-only list, written by unknown-marker\nskipped-test\ntmp-write sometimes\n",
+    )
+    .unwrap();
+    c.write_lines(&[wline("skipped-test", GAL_REASON)]);
+    let out = c.run(Some(&c.waivers));
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "a marker the step does not know was not a refusal: {}\n{out}",
+        step_line(&out, "diffgate")
+    );
+    assert!(
+        out.contains("unknown marker \"sometimes\" after tmp-write"),
+        "the message does not name the word and the rule:\n{out}"
+    );
+    assert!(
+        c.argv().is_none(),
+        "diffgate ran on a list this step cannot read\n{out}"
+    );
+    assert!(!out.contains("waived:"), "nothing is waived:\n{out}");
 }
