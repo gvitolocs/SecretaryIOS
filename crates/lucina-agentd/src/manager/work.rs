@@ -109,8 +109,45 @@ pub(super) struct Work {
     /// a miss.
     status_limit: Duration,
     /// The age of a job's saved times as this daemon counts them: the instant it first looked
-    /// and what the clock said then, per key (not kept over a restart).
-    seen: Mutex<HashMap<String, (Instant, i64)>>,
+    /// and what the clock said then, per key, tied to the saved time it was counted from (not
+    /// kept over a restart).
+    seen: Mutex<HashMap<String, Counted>>,
+}
+
+/// One saved time as this daemon counts it: the age the clock gave at the first look, and the
+/// time this daemon has lived since.
+struct Counted {
+    /// The saved time this age belongs to. A key whose time moves later counts another ending,
+    /// not a step of the clock, and its window starts over; a step leaves the time where it is
+    /// and the window with it.
+    stamp: String,
+    at: Instant,
+    wall: i64,
+}
+
+impl Counted {
+    fn new(stamp: &str, wall: i64) -> Counted {
+        Counted {
+            stamp: stamp.to_string(),
+            at: Instant::now(),
+            wall,
+        }
+    }
+
+    /// The seconds since the first look, as the time this daemon has lived.
+    fn age(&self) -> i64 {
+        self.wall
+            .saturating_add(i64::try_from(self.at.elapsed().as_secs()).unwrap_or(i64::MAX))
+    }
+}
+
+/// Whether `a` names a later time than `b`. A time that does not read is never later than
+/// anything: the age it belongs to is counted by the wall, as it always was.
+fn stamp_is_later(a: &str, b: &str) -> bool {
+    match (utc_time(a), utc_time(b)) {
+        (Some(x), Some(y)) => x > y,
+        _ => false,
+    }
 }
 
 impl Work {
@@ -144,14 +181,21 @@ impl Work {
     /// The age of `stamp` in seconds as this daemon counts it: what the clock said the first
     /// time it looked at this key, plus the monotonic time since. A window measured this way
     /// neither closes early nor freezes when the wall clock steps, and a stamp from
-    /// `jobs.json` that lies in the future (a step back over it) starts at zero.
+    /// `jobs.json` that lies in the future (a step back over it) starts at zero. A key whose
+    /// stamp moves later than the one it was counted from holds a saved time this daemon has
+    /// not seen before: only an ending can be later than the ending it replaces, so the window
+    /// starts over with it.
     fn age_of(&self, key: &str, stamp: Option<&str>) -> Option<i64> {
-        let wall = age_secs(stamp?)?;
+        let text = stamp?;
+        let wall = age_secs(text)?;
         let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
         let e = seen
             .entry(key.to_string())
-            .or_insert((Instant::now(), wall));
-        Some(e.1.saturating_add(i64::try_from(e.0.elapsed().as_secs()).unwrap_or(i64::MAX)))
+            .or_insert_with(|| Counted::new(text, wall));
+        if stamp_is_later(text, &e.stamp) {
+            *e = Counted::new(text, wall);
+        }
+        Some(e.age())
     }
 
     /// Lets go of one counted age: the window it measures is over and its key will not come
@@ -161,6 +205,14 @@ impl Work {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(key);
+    }
+
+    /// The key of the listing day: the day a finished run stays in the list nobody asked a
+    /// length for. The age counted under it belongs to the ending it was first measured from,
+    /// starts over when the job names a later one, and is let go of when the run is brought
+    /// back.
+    fn ended_key(job: &WorkJob) -> String {
+        format!("{}#ended", job.id)
     }
 
     /// The key of the lost follow-window: the window belongs to this ending, not to the job.
@@ -186,9 +238,11 @@ impl Work {
     /// ended is counted as this daemon counts it, the way the lost window and the lost time are.
     /// A clock that steps forward by more than a day after the first look at a finished run
     /// would otherwise drop runs that only just ended, and a job saved with a stamp this daemon
-    /// has never looked at is measured by the wall once and by its own time from then on.
+    /// has never looked at is measured by the wall once and by its own time from then on. A run
+    /// that ended, was brought back and ended again has a later ending and the whole day before
+    /// it a second time.
     fn shown(&self, job: &WorkJob) -> bool {
-        let age = self.age_of_secs(&format!("{}#ended", job.id), job.ended_at.as_deref());
+        let age = self.age_of_secs(&Self::ended_key(job), job.ended_at.as_deref());
         recent_at(job.state, age)
     }
 
@@ -1208,8 +1262,10 @@ impl Manager {
                 if job.state == WorkState::Lost {
                     // `lane` knows the run after all: it is not lost. The window of the ending
                     // that made it lost is spent with it and goes, so a second episode starts
-                    // its own.
+                    // its own — and so does the day the second ending is listed for, which
+                    // otherwise still holds the age of the first one.
                     self.work().forget(&Work::lost_key(&job));
+                    self.work().forget(&Work::ended_key(&job));
                     job.ended_at = None;
                     job.note = None;
                     job.note_from_lane = false;
@@ -2099,6 +2155,46 @@ deep-codex = ["qoder", "codex-a"]
         assert!(
             m.end_rows_owed().is_empty(),
             "a row that is in is owed a second time"
+        );
+    }
+
+    /// The day a run is listed for belongs to an ending, not to the job: a run that ended, was
+    /// brought back by `lane` and ended again has the whole day before it a second time. The
+    /// first ending spent its day as this daemon counted it, and its stamp stands where it was;
+    /// the second is later than it, which is the one thing a step of the clock does not do.
+    #[test]
+    fn a_second_ending_has_its_own_listing_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::open(WorkConfig {
+            dir: dir.path().join("work"),
+            lane: None,
+            poll: Duration::from_secs(1),
+            lost_after: Duration::from_secs(1),
+            scope: ScopeMode::Off,
+        });
+        let at = |secs: i64| (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339();
+        let failed = |stamp: String| WorkJob {
+            id: "wk-8".into(),
+            state: WorkState::Failed,
+            ended_at: Some(stamp),
+            ..WorkJob::default()
+        };
+        // The first ending, one second short of its day, and the daemon watches that second go
+        // by: the listing day is spent and the run is out of the default list.
+        let first = at(-(DAY - 1));
+        assert!(
+            work.shown(&failed(first.clone())),
+            "the first ending is a second short of its day"
+        );
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !work.shown(&failed(first.clone())),
+            "a day of this daemon's time is over: the first ending is out of the list"
+        );
+        // `lane` shows the run again, and some time later it ends a second time.
+        assert!(
+            work.shown(&failed(at(0))),
+            "the second ending inherits the day the first one spent"
         );
     }
 
