@@ -2,7 +2,7 @@
 //!
 //! | Method | Path | Body / query | Returns |
 //! |---|---|---|---|
-//! | POST | `/work` | `{lead, priority?, cost?, lane \| chain, workspace, verify?, expect?, title?, spec}` | job (owner only) |
+//! | POST | `/work` | `{lead, change, priority?, cost?, lane \| chain, workspace, verify?, expect?, title?, name?, session?, spec}` | job (owner only) |
 //! | GET | `/work` | `?lead=&direct=&old=` | `{jobs, leads, warning}` |
 //! | GET | `/work/{id}` | | job |
 //! | POST | `/work/{id}/wait` | `{timeoutSecs}` | job (final, or current when the time is up) |
