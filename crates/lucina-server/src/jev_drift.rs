@@ -1075,10 +1075,11 @@ mod tests {
         }
     }
 
-    /// `score_from` with every `LUCINA_JEV_*` value at its default: no replay test reads the
-    /// process environment.
+    /// `score_from` with the policy the replay tests judge named here, not inherited from the
+    /// process environment: the override over a deterministic route on, and Jev trusted from `0.9`
+    /// up. The other two values are what the code defaults them to (`None`).
     fn scored(rows: &[Routed]) -> Replay {
-        score_from(rows, None, None, None, None)
+        score_from(rows, Some("0.9"), None, Some("1"), None)
     }
 
     #[test]
@@ -1257,6 +1258,29 @@ mod tests {
             Some("grocery.expense.query"),
         );
         let r = scored(&[kept]);
+        for (th, t) in r.policy {
+            assert_eq!((th, t), (th, Tally { n: 1, right: 0 }), "{th}");
+        }
+    }
+
+    /// TURN-01: the replay scores the same precedence the router uses. An answer that acts never
+    /// takes the turn from a deterministic route, so even at `0.99` the rule keeps it — and a sample
+    /// whose true label is that acting intent is wrong at every threshold, while Jev's own answer is
+    /// still judged right on its own.
+    #[test]
+    fn an_acting_jev_intent_leaves_the_turn_to_the_rule_at_every_threshold() {
+        let row = routed(
+            "grocery.shopping_list.add",
+            Some(("grocery.shopping_list.add", 0.99)),
+            "grocery.expense.query",
+            Some("grocery.expense.query"),
+        );
+        let r = scored(&[row]);
+        assert_eq!(
+            r.jev,
+            Tally { n: 1, right: 1 },
+            "Jev's intent was not the acting one it was scored as"
+        );
         for (th, t) in r.policy {
             assert_eq!((th, t), (th, Tally { n: 1, right: 0 }), "{th}");
         }
