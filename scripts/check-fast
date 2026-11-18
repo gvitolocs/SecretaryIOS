@@ -5,9 +5,20 @@
 # inventory. Verus runs on GitHub; --proofs runs the affected proofs here.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-# One shared Cargo target for every worktree (the same one LucinaOS uses), so the loop adds no new large target directories on
-# nezopt. The launcher itself builds apart, in its own small target, because LucinaOS's launcher has the same package name.
-export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/.cache/lucina-check-target}
+# One Cargo target PER WORKTREE, all under one cache root (the same cache LucinaOS sweeps, so one sweep covers both). Cargo gives a
+# workspace member the same artifact hash in every worktree, so a target shared by worktrees on different commits let one overwrite
+# the others' rlibs and test binaries; and the shared root's `debug/` is exactly the folder `lucina-ci sweep-target` classed never-used
+# and stripped first, taking a live check's binaries with it (finding GATE-09). Building into a per-worktree `wt-<hash>/` keeps this
+# worktree's artifacts out of that strippable root and lets the sweep age them by use. The launcher itself still builds apart, in its
+# own small target, because LucinaOS's launcher has the same package name. An explicitly set CARGO_TARGET_DIR is used as-is, as before.
+cache_root=${LUCINA_CHECK_CACHE:-$HOME/.cache/lucina-check-target}
+wt_id=wt-$(printf '%s' "$root" | sha1sum | cut -c1-10)
+if [ -n "${CARGO_TARGET_DIR:-}" ] && [ "${CARGO_TARGET_DIR#"$cache_root"/}" = "$CARGO_TARGET_DIR" ] && [ "${LUCINA_CHECK_ALLOW_TARGET:-}" != 1 ]; then
+    echo "check-fast: warning: CARGO_TARGET_DIR=$CARGO_TARGET_DIR (inherited) is outside $cache_root; a target shared with other worktrees can hold another commit's artifacts. lucina-ci also refuses a binary whose sources differ from this tree (set LUCINA_CHECK_ALLOW_TARGET=1 to silence this)." >&2
+fi
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$cache_root/$wt_id}
+mkdir -p "$CARGO_TARGET_DIR"
+touch "$CARGO_TARGET_DIR/.last-used"
 export LUCINA_CI_CPU_QUOTA=${LUCINA_CI_CPU_QUOTA:-400%}
 free=$(df --output=avail -BG "$HOME" | tail -1 | tr -dc 0-9)
 [ "$free" -ge 20 ] || { echo "check-fast: only ${free} GiB free; refusing to build" >&2; exit 2; }
