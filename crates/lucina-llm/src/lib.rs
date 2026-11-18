@@ -30,6 +30,9 @@ pub const DEFAULT_MODEL: &str = "deepseek-flash";
 pub const PRO_MODEL: &str = "deepseek-v4-pro";
 pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 pub const MISTRAL_MODEL: &str = "mistral-small-latest";
+/// A llama-server on another machine, reached over the tailnet.
+pub const RAFFY_BASE_URL: &str = "http://100.74.158.126:8080/v1";
+pub const RAFFY_MODEL: &str = "qwen3-4b";
 
 // ---------------------------------------------------------------- wire types
 
@@ -442,6 +445,18 @@ impl DeepSeekConfig {
             ..Self::default()
         }
         .with_env("MISTRAL", get)
+    }
+
+    /// The same settings under `RAFFY_*`: a llama-server started with `--jinja`, so the plain OpenAI
+    /// rules ([`Dialect::DeepSeek`]) apply and only the base URL and the model differ. Without a key
+    /// the client exists but every call is [`LlmError::NoKey`].
+    pub fn raffy_from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        Self {
+            base_url: RAFFY_BASE_URL.into(),
+            model: RAFFY_MODEL.into(),
+            ..Self::default()
+        }
+        .with_env("RAFFY", get)
     }
 
     fn with_env(mut self, prefix: &str, get: impl Fn(&str) -> Option<String>) -> Self {
