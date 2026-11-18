@@ -120,7 +120,9 @@ pub fn cargo_steps(owners: &BTreeSet<Owner>, changed: &[String]) -> Vec<(String,
         steps.push((
             "unit-tests".to_string(),
             format!("cargo test --quiet --locked {p} --lib"),
-            300,
+            // 480 s, not the 300 s of `clippy` above: a table limit never lifts a step above its own timeout, so the 480 of the
+            // `unit-tests` row of `MERGE_STEP_LIMITS` (`main.rs`) takes effect only here. TEMPORARY until LB-C027's bq gate slot.
+            480,
         ));
     }
     for o in owners {
