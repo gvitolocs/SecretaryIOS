@@ -227,6 +227,15 @@ impl AppState {
                 "LUCINA_MODEL_PROVIDER=mistral but Mistral has no key: DeepSeek answers"
             );
         }
+        let raffy = Some(Arc::new(DeepSeek::new(cfg.raffy.clone())?)).filter(|m| m.has_key());
+        if raffy.is_none() {
+            tracing::info!("raffy: no key");
+        }
+        if cfg.model_provider == ModelProvider::Raffy {
+            tracing::error!(
+                "LUCINA_MODEL_PROVIDER=raffy does not answer turns: the tailnet llama-server is reached by name, DeepSeek answers"
+            );
+        }
         let (model, usage, has_key): (Arc<dyn ChatModel>, Option<Arc<UsageTotals>>, KeyProbe) =
             match (
                 model,
@@ -255,6 +264,7 @@ impl AppState {
         let named_models = model_try::NamedModels {
             deepseek: Arc::new(secrets::RedactingModel(deepseek)),
             mistral: mistral.map(|m| Arc::new(secrets::RedactingModel(m)) as Arc<dyn ChatModel>),
+            raffy: raffy.map(|m| Arc::new(secrets::RedactingModel(m)) as Arc<dyn ChatModel>),
         };
         let known = secrets::register_bootstrap(&cfg);
         tracing::info!(

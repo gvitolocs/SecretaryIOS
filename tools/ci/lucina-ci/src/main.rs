@@ -802,10 +802,7 @@ fn fast_step(
         println!("    waived: {w}");
     }
     if !ok {
-        let t = fs::read_to_string(
-            Path::new(out).join(format!("fast__{}.log", name.replace('/', "__"))),
-        )
-        .unwrap_or_default();
+        let t = step_log(out, name);
         for l in t.lines().rev().take(30).collect::<Vec<_>>().iter().rev() {
             println!("    {l}");
         }
@@ -833,16 +830,18 @@ fn tool_exists(t: &str) -> bool {
 /// A limit never lifts a step above its own timeout (the `t` of its `step(...)` call): it only ever cuts. `clippy` is built with
 /// 300 s (`fast::cargo_steps`), so its 240 is a real cut and takes effect; a step of its own 60 s, `fmt` or `diffgate`, keeps
 /// printing 60 whatever the table or the override says.
-/// `unit-tests` at 480 s is TEMPORARY and steps outside both rules above: it is not `ceil(p95 x 1.5)` of a measured week, and the
-/// step's own timeout was raised to 480 s with it (`fast::cargo_steps`), because a table limit of 480 on a step of its own 300
-/// still cuts at 300 and would have changed nothing. 480 s until LB-C027's bq gate slot is installed and proven, then the limit
-/// is re-measured in the slot and set so the slowest step uses at most 60 % of it. The reason is `lucina-server`: a root workspace
-/// member, so the plain `unit-tests` step is what the gate runs for it, and its 556 tests take 128 s at load 8 while at load in
-/// the high twenties they run over 240 s; three merges (JD-C018, LM-C008, CO-C003) failed or wait on this step, JD-C018 three
-/// times. Coordinator allow 2026-11-18 (GATE-02).
+/// `unit-tests` was one step doing two jobs until finding GATE-08 split it (merge job job_24cf4973dd74): `cargo test` builds and
+/// links the test binaries of the touched crates before it runs any of them, and that build was the wait — JD-C018 measured
+/// `cargo test` for `lucina-server` at 8 m 45 s under a 1-minute load of 24.59, with 40 s of tests in it
+/// (`/home/nez/scratch/platform-tools/jd-c018-tests.log`). So the temporary 480 s of GATE-02 is gone and the step is two rows:
+/// `unit-tests-build` at 1200 s, because a slow build is not a test failure and the room has to be somewhere, and `unit-tests`
+/// at the 240 s the measured week asks for, now timed alone. A build that runs past its 1200 s still fails the gate, so no merge
+/// lands unbuilt, but it is reported as `build too slow at load <1-min load average>: not a test verdict` (`gated_step`) rather
+/// than as a late test. Coordinator allow 2026-11-18 (GATE-08).
 const MERGE_STEP_LIMITS: &[(&str, u64)] = &[
-    ("clippy", 240),     // measured p95 151.6 s, merges 2026-11-11..17, GATE-02
-    ("unit-tests", 480), // TEMPORARY until LB-C027's bq gate slot; coordinator allow 2026-11-18, GATE-02
+    ("clippy", 480), // 480 s holds until the merge job warm-up runs clippy (GATE-13); then the limit is measured again and goes back to 240 s; coordinator allow 2026-11-18, GATE-13
+    ("unit-tests-build", 1200), // 20 min, a slow build is not a test failure: coordinator allow 2026-11-18, GATE-08
+    ("unit-tests", 240),        // the run, timed alone since GATE-08: coordinator allow 2026-11-18
 ];
 /// The limit of a step named in no table and no override.
 const MERGE_STEP_LIMIT_DEFAULT: u64 = 180;
@@ -915,8 +914,10 @@ fn merge_step_cap() -> u64 {
 
 /// One step of `check-fast`, with the merge-gate limit applied. `Some(entry)` is a failure. At the merge gate a step past its limit
 /// is a failure that says so (`past its N s limit at merge`), never a skip: the limit is `merge_step_limit` for the step — 180 by
-/// default, more for the two steps of `MERGE_STEP_LIMITS`, anything the override sets — and it never lifts the step above its own
+/// default, more for the steps of `MERGE_STEP_LIMITS`, anything the override sets — and it never lifts the step above its own
 /// timeout. This tree has no list of required steps, so the limit applies to every step, as it did before.
+/// The two steps of the split tests (GATE-08) are said in their own words: a build that ran out of its 1200 s is not a test that
+/// failed, and a run cut at its limit names the tests it was in the middle of.
 #[allow(clippy::too_many_arguments)]
 fn gated_step(
     name: &str,
@@ -953,13 +954,84 @@ fn gated_step(
         fs::read_to_string(Path::new(out).join(format!("fast__{}.json", name.replace('/', "__"))))
             .unwrap_or_default();
     if merge_gate && runner::report_field(&json, "outcome").as_deref() == Some("timeout") {
+        if name.starts_with("unit-tests-build") {
+            // Out of time, not out of failures: no test of this change ran at all. It still counts as the failure it is,
+            // because a merge must not land on binaries nobody built — the wording is only there so the reader does not
+            // go looking for a broken test.
+            let m = format!(
+                "{name}: build too slow at load {}: not a test verdict",
+                load_avg_1min()
+            );
+            println!("    {m}");
+            return Ok(Some(m));
+        }
         let m = format!(
             "{name}: past its {t} s limit at merge: the machine is loaded; retry when it is quieter, or run scripts/check-fast in the worktree"
         );
         println!("    {m}");
+        // The run step has been timed alone since GATE-08, so a cut here is a test that hangs or crawls and not a loaded
+        // machine building something: say which test the machine was busy with.
+        if name.starts_with("unit-tests") {
+            for l in running_tests(out, name) {
+                println!("    at the cut: {l}");
+            }
+        }
         return Ok(Some(m));
     }
     Ok(Some(name.to_string()))
+}
+
+/// The 1-minute load average, the figure a step that ran out of time is reported with: at load in the high twenties a build
+/// of 40 s of tests crosses 480 s (GATE-08, JD-C018), and the number is what tells that loaded machine from a hung test.
+/// `/proc/loadavg` is what `top` and `bq` read; where it cannot be read the message says so instead of guessing.
+fn load_avg_1min() -> String {
+    fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|t| t.split_whitespace().next().map(str::to_string))
+        .unwrap_or_else(|| "an unreadable load".to_string())
+}
+
+/// The log one `check-fast` step wrote: its own stdout and stderr, kept by the runner under the step's name.
+fn step_log(out: &str, name: &str) -> String {
+    fs::read_to_string(Path::new(out).join(format!("fast__{}.log", name.replace('/', "__"))))
+        .unwrap_or_default()
+}
+
+/// How many lines of the cut run step are printed: enough to name the hang, few enough to sit beside the 30 log lines
+/// `fast_step` already prints under a step that failed.
+const RUNNING_TESTS_LINES: usize = 5;
+
+/// What `cargo test` was in the middle of when the gate cut it. The harness writes
+/// `test <name> has been running for over 60 seconds` for every test still going when the minute is up, and the last lines
+/// that name a test or a test binary show how far the run had got, so a machine that was crawling through a crate and a
+/// crate with one hung test do not read the same.
+fn running_tests(out: &str, name: &str) -> Vec<String> {
+    let log = step_log(out, name);
+    let lines: Vec<&str> = log
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let warned: Vec<String> = lines
+        .iter()
+        .filter(|l| l.contains("has been running for"))
+        .take(RUNNING_TESTS_LINES)
+        .map(|l| l.to_string())
+        .collect();
+    let mut last: Vec<String> = lines
+        .iter()
+        .filter(|l| {
+            !l.contains("has been running for")
+                && (l.starts_with("test ")
+                    || l.starts_with("Running ")
+                    || l.starts_with("running "))
+        })
+        .rev()
+        .take(RUNNING_TESTS_LINES)
+        .map(|l| l.to_string())
+        .collect();
+    last.reverse();
+    warned.into_iter().chain(last).collect()
 }
 
 /// lagent's own `--allow` rules: they waive something of lagent's (a pipeline file, a spec
@@ -2407,29 +2479,34 @@ mod tests {
         }
     }
 
-    /// The two cargo steps have the room of their table row — `clippy` the week of merges measured, `unit-tests` the temporary
-    /// 480 of GATE-02; every other step is at 180.
+    /// The cargo steps have the room of their table row — `clippy` the week of merges measured, the split tests of GATE-08
+    /// 20 min to build and the 240 s the same week measured to run; every other step is at 180.
     #[test]
     fn merge_limits_are_per_step_with_an_180_default() {
         let no_override = MergeCaps::default();
         let limit = |n: &str| no_override.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
-        assert_eq!(limit("clippy"), 240);
-        assert_eq!(limit("unit-tests"), 480);
+        assert_eq!(limit("clippy"), 480);
+        assert_eq!(limit("unit-tests-build"), 1200);
+        assert_eq!(limit("unit-tests"), 240);
         assert_eq!(limit("diffgate"), 180);
         assert_eq!(limit("inventory"), 180);
+        // A per-crate step is named after its crate and by no row, split or not (GATE-08).
+        assert_eq!(limit("unit-tests-build-tools-ci-lucina-ci"), 180);
         assert_eq!(limit("unit-tests-tools-ci-lucina-ci"), 180);
         assert_eq!(limit("secrets"), 180);
     }
 
     /// A limit only ever cuts, never lifts: what the gate enforces is the step's own timeout or its limit, whichever is smaller.
-    /// The two cargo steps are built with 300 s and 480 s (`fast::cargo_steps`), so each table number takes effect; `fmt` and
+    /// The cargo steps are built with the timeouts of `fast::cargo_steps`, so each table number takes effect; `fmt` and
     /// `diffgate` are built with 60 and a step no table names keeps the 180 rather than the 300 it could run.
     #[test]
     fn a_merge_limit_cuts_a_step_s_own_timeout_and_never_lifts_it() {
         let no_override = MergeCaps::default();
         for (name, own, enforced) in [
-            ("clippy", 300_u64, 240_u64),
-            ("unit-tests", 480, 480),
+            ("clippy", 480_u64, 480_u64),
+            ("unit-tests-build", 1200, 1200),
+            ("unit-tests", 300, 240),
+            ("unit-tests-build-tools-ci-lucina-ci", 1200, 180),
             ("unit-tests-tools-ci-lucina-ci", 300, 180),
             ("fmt", 60, 60),
             ("diffgate", 60, 60),
@@ -2449,7 +2526,8 @@ mod tests {
         };
         let l = |n: &str| c.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
         assert_eq!(l("clippy"), 40);
-        assert_eq!(l("unit-tests"), 7, "7 beats the table's 480");
+        assert_eq!(l("unit-tests"), 7, "7 beats the table's 240");
+        assert_eq!(l("unit-tests-build"), 7, "7 beats the table's 1200");
         assert_eq!(l("secrets"), 7);
         assert_eq!(l("diffgate"), 7, "the override is every step");
         let nine = MergeCaps::parse("9");
