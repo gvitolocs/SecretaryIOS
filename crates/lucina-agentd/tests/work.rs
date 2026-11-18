@@ -569,6 +569,62 @@ fn an_expect_reached_through_a_symlink_is_not_the_file_the_run_left_behind() {
     assert_eq!(job["empty"], true, "a link is not the file: {job}");
 }
 
+/// The job must be on disk before `lane run` begins.
+#[test]
+fn a_job_that_cannot_be_saved_does_not_start_the_run() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    // What the job file's own temp name should be is a directory: the write cannot land.
+    let work = d.state().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let tmp = format!("jobs.json.tmp-{}", d.guard.pid());
+    std::fs::create_dir(work.join(&tmp)).unwrap();
+    let change = change_for(&d, "LA");
+    let spec = f.spec();
+    let r = lagent(
+        &d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "LA",
+            "--change",
+            &change,
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+            "--cost",
+            "build",
+        ],
+    );
+    assert_eq!(r.code, 1, "stdout {} | stderr {}", r.stdout, r.stderr);
+    assert!(
+        r.stderr.contains("cannot write the job file"),
+        "{}",
+        r.stderr
+    );
+    // `lane run` was not called: no run left its arguments behind.
+    assert!(
+        !std::fs::read_dir(f.data())
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with(".args")),
+        "the run started although its job is not saved"
+    );
+    // The spec directory the start made is gone with it.
+    let left: Vec<String> = std::fs::read_dir(&work)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n != &tmp && n != "jobs.json")
+        .collect();
+    assert!(left.is_empty(), "the failed start left {left:?}");
+}
+
 #[test]
 fn a_light_job_runs_with_cost_light_and_needs_an_expected_file() {
     let f = Fixture::new();

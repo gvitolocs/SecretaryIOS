@@ -137,15 +137,25 @@ impl Work {
         self.jobs.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Writes `jobs.json` through a temp file in the same directory and a rename.
-    fn persist(&self, jobs: &[WorkJob]) {
+    /// Writes `jobs.json` through a temp file in the same directory and a rename. Err: why the
+    /// file is not there, including an unreadable one that could not be moved aside.
+    fn persist_saved(&self, jobs: &[WorkJob]) -> Result<(), String> {
         if self.blocked.load(Ordering::Relaxed) {
-            tracing::error!(dir = %self.cfg.dir.display(), "work jobs are not saved: the unreadable jobs.json could not be moved aside");
-            return;
+            let why = "the unreadable jobs.json could not be moved aside";
+            tracing::error!(dir = %self.cfg.dir.display(), "work jobs are not saved: {why}");
+            return Err(why.into());
         }
         if let Err(e) = write_jobs(&self.cfg.dir, jobs) {
+            let why = format!("cannot write the job file: {e}");
             tracing::error!(error = %e, dir = %self.cfg.dir.display(), "cannot write work jobs");
+            return Err(why);
         }
+        Ok(())
+    }
+
+    /// The same, for the paths where nothing turns on the file being written.
+    fn persist(&self, jobs: &[WorkJob]) {
+        let _ = self.persist_saved(jobs);
     }
 }
 
@@ -766,7 +776,7 @@ impl Manager {
             created_at: now_iso(),
             base_head,
             state: WorkState::Starting,
-            run_id: Some(run_id),
+            run_id: Some(run_id.clone()),
             change: Some(change),
             session,
             scope,
@@ -777,10 +787,31 @@ impl Manager {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id.clone());
-        {
+        let saved = {
             let mut jobs = self.work().jobs();
             jobs.push(job.clone());
-            self.work().persist(&jobs);
+            let saved = self.work().persist_saved(&jobs);
+            if saved.is_err() {
+                jobs.retain(|j| j.id != id);
+            }
+            saved
+        };
+        if let Err(e) = saved {
+            // Nothing on disk follows this run, so the run must not begin: a start that only
+            // lived in memory would leave a `direct:` row and a job nobody knows.
+            let _ = std::fs::remove_dir_all(&run_dir);
+            self.work().unlaunch(&id);
+            if let Err(id_err) = self.append_run_row(
+                &run_id,
+                IdRow {
+                    state: "failed".into(),
+                    result: e.clone(),
+                    ..IdRow::default()
+                },
+            ) {
+                tracing::error!(run = %run_id, error = %id_err, "cannot write the run's id row");
+            }
+            return Err(ManagerError::Invalid(e));
         }
 
         // The launch runs to its end even when the caller goes away.
