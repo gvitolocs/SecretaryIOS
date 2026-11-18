@@ -1064,6 +1064,12 @@ impl Manager {
             }
             StatusReply::BadJson(e) => {
                 tracing::warn!(job = id, error = %e, "lane status printed bad JSON");
+                // The streak of non-zero exits is broken: an exit 0 of any kind says something.
+                self.work()
+                    .misses
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(id);
                 if !status_unreadable(&mut job, &e) {
                     return;
                 }
@@ -1298,7 +1304,11 @@ async fn query_status(bin: &Path, id: &str, limit: Duration) -> StatusReply {
         .stderr(Stdio::null());
     match tokio::time::timeout(limit, cmd.output()).await {
         Ok(Ok(o)) if o.status.success() => match serde_json::from_slice::<Value>(&o.stdout) {
-            Ok(v) => StatusReply::Status(v),
+            Ok(v @ Value::Object(_)) => StatusReply::Status(v),
+            Ok(v) => StatusReply::BadJson(format!(
+                "the answer is {}, not a status object",
+                json_kind(&v)
+            )),
             Err(e) => StatusReply::BadJson(e.to_string()),
         },
         Ok(Ok(_)) => StatusReply::Miss,
@@ -1310,6 +1320,18 @@ async fn query_status(bin: &Path, id: &str, limit: Duration) -> StatusReply {
             tracing::warn!(job = id, "lane status timed out");
             StatusReply::Stalled
         }
+    }
+}
+
+/// What a JSON value is, in the note of a status that is not an object.
+fn json_kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "a null",
+        Value::Bool(_) => "a true or false",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 

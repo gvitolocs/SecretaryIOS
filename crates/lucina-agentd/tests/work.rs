@@ -45,6 +45,15 @@ cmd="$1"
 shift
 # A `lane status` that never answers, for the poller's own timeout. exec leaves no child behind.
 if [ "$cmd" = status ] && [ -f "$D/$1.hang" ]; then exec sleep 30; fi
+# A `lane status` that counts its own calls: exit 2, but the third call prints garbage and
+# exits 0. The number in the file is how many calls the run has had.
+if [ "$cmd" = status ] && [ -f "$D/$1.seq" ]; then
+  n=$(cat "$D/$1.seq")
+  n=$((n + 1))
+  echo "$n" > "$D/$1.seq"
+  if [ "$n" -eq 3 ]; then echo "this is not json"; exit 0; fi
+  exit 2
+fi
 case "$cmd" in
 run)
   id=""
@@ -1404,6 +1413,53 @@ fn a_status_that_is_not_json_changes_nothing_until_it_is_valid() {
     let job = wait_state(&d, &id, "running");
     assert!(job["note"].is_null(), "{job}");
     assert_eq!(job["statusErrors"], 0, "{job}");
+}
+
+#[test]
+fn a_status_that_is_json_but_not_an_object_is_unreadable() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // An array is valid JSON and no status: it is unreadable like a line of text.
+    f.status(&id, "[1,2,3]");
+    let job = wait_for(&d, &id, "waiting for the unreadable note", |j| {
+        j["note"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("lane status could not be read:"))
+    });
+    assert!(job["note"].as_str().unwrap().contains("an array"), "{job}");
+    assert_eq!(job["state"], "starting", "{job}");
+    assert!(job["statusErrors"].as_u64().unwrap() > 0, "{job}");
+    f.status(&id, &lane_status(&id, "running", json!({})));
+    let job = wait_state(&d, &id, "running");
+    assert!(job["note"].is_null(), "{job}");
+}
+
+#[test]
+fn an_unreadable_status_breaks_the_streak_of_misses() {
+    let f = Fixture::new();
+    let d = f.daemon(&[("LUCINA_AGENTD_WORK_LOST_AFTER_SECS", "1".to_string())]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The stand-in exits 2 on every call but its third, which prints garbage and exits 0.
+    let seq = f.data().join(format!("{id}.seq"));
+    std::fs::write(&seq, "0\n").unwrap();
+    let job = wait_state(&d, &id, "lost");
+    assert_eq!(job["note"], "lane has no record of this run", "{job}");
+    // Three misses in a row are needed; the readable exit 0 in the middle broke the streak, so
+    // the lost came no earlier than the sixth call.
+    let asked: u64 = read(&seq).trim().parse().unwrap();
+    assert!(
+        asked >= 6,
+        "lost after {asked} polls, of which three were misses in a row"
+    );
 }
 
 /// The base head of a run and a status that ends on `after` in its last attempt.
