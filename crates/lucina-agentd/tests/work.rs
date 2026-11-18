@@ -1733,6 +1733,42 @@ fn a_status_with_no_note_of_its_own_clears_the_note_lane_gave() {
     assert!(job["note"].is_null(), "{job}");
 }
 
+/// The note came from `lane` before the daemon went down; the job that comes back from
+/// `jobs.json` still knows that, and a status that says it has no note takes the note away.
+#[test]
+fn a_note_lane_gave_is_cleared_after_a_restart_too() {
+    let f = Fixture::new();
+    let mut d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let id = start(&d, &f, "LA", &ws, &["--cost", "build"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.status(
+        &id,
+        &lane_status(&id, "running", json!({"note": "thinking hard"})),
+    );
+    let job = wait_for(&d, &id, "waiting for lane's note", |j| {
+        j["note"] == "thinking hard"
+    });
+    assert_eq!(job["state"], "running", "{job}");
+
+    assert_eq!(
+        d.guard.terminate(Duration::from_secs(5)),
+        Some(0),
+        "clean exit on SIGTERM"
+    );
+    d.guard = common::spawn_daemon_env(d.dir.path(), &f.env(&[]));
+    // The note came over the restart, and with it the word that it is lane's own.
+    let job = show(&d, &id);
+    assert_eq!(job["note"], "thinking hard", "{job}");
+
+    // A status that says it has no note: what lane gave before the restart it takes back after.
+    f.status(&id, &lane_status(&id, "verified", json!({"note": null})));
+    let job = wait_state(&d, &id, "verified");
+    assert!(job["note"].is_null(), "{job}");
+}
+
 /// The base head of a run and a status that ends on `after` in its last attempt.
 fn done_with_after_head(
     d: &Daemon,
