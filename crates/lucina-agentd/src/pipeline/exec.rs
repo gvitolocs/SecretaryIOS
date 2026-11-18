@@ -82,10 +82,6 @@ const KILL_GRACE: Duration = Duration::from_secs(30);
 /// one that is not fails at once.
 const SCOPE_PROBE_CAP: Duration = Duration::from_secs(10);
 
-/// The sequence behind a step's command file: one per step this process runs, so two steps of one
-/// job — or two jobs of one test thread — never write the same file.
-static STEP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// What the host answers to the one question every step asks: can it have a transient systemd
 /// scope of its own, or is the process group all there is. Asked once per job, by asking and not by
 /// guessing from the environment (finding GATE-05: the group alone is the route a nested scope
@@ -344,12 +340,16 @@ impl Exec {
         scope
     }
 
-    /// Ask the host: run `/bin/true` in a transient scope under a probe's own unit name, bounded,
-    /// with its noise kept out of the job log (a refusal says nothing a job needs to read twice —
-    /// the reason is the exit). It goes through `systemd-run --user --scope` exactly as a step
-    /// does, and gets the environment a step gets, because those two are what the question is
-    /// about: whether this user has a manager to make the unit and whether the step's environment
-    /// can reach its bus (`$XDG_RUNTIME_DIR/bus`).
+    /// Ask the host: run `/bin/true` in a transient scope under a probe's own unit name, bounded, with
+    /// its noise kept out of the job log (a refusal says nothing a job needs to read twice — the reason
+    /// is the exit). It goes through [`Exec::step_argv`], the very argv a step gets, and the environment
+    /// a step gets, because those are what the question is about: whether this user has a manager that
+    /// will make *this* unit from *this* command line. A host or a wrapper that takes the scope but not
+    /// one of its options answers the probe yes and every step no, and that is the failure this asks its
+    /// way out of (finding LA-R059, PROBE-01: the lane's shim for `systemd-run` allows
+    /// `--user --scope --quiet --collect --unit` and refuses any option it does not list, so
+    /// `--expand-environment=no` — which a step carries and the probe did not — made the probe answer
+    /// yes and 23 gate steps exit 79).
     fn probe_scope(&self, program: &Path, built: &[(OsString, OsString)]) -> Scope {
         // A user manager is the bus, and the bus is named by this one variable. Without it there
         // is nobody to ask and `systemd-run` says so by failing at once.
@@ -359,18 +359,13 @@ impl Exec {
                     .to_string(),
             );
         }
+        let Some(bash) = self.resolve("bash") else {
+            return Scope::NoUserManager("bash is not on the job's PATH".to_string());
+        };
         let unit = kill::probe_name();
+        let (program, argv) = Self::step_argv(&bash, Some(program), Some(&unit), "/bin/true");
         let mut child = match Command::new(program)
-            .args([
-                "--user",
-                "--scope",
-                "--quiet",
-                "--collect",
-                "--unit",
-                unit.as_str(),
-                "--",
-            ])
-            .arg("/bin/true")
+            .args(argv)
             .current_dir(&self.dir)
             .env_clear()
             .envs(built.iter().cloned())
@@ -388,7 +383,7 @@ impl Exec {
         };
         // The probe asks the scope question, so it must not also be what the question is about: it
         // gets the process group alone, which is enough to end a `/bin/true`.
-        let ended = Step::new(child.id(), None).run_to_end(
+        let ended = Step::new(child.id(), None, None).run_to_end(
             &mut child,
             SCOPE_PROBE_CAP,
             Duration::from_millis(200),
@@ -452,6 +447,51 @@ impl Exec {
                 && matches!(c.next(), Some(std::path::Component::Normal(second)) if second == "tmp"))
     }
 
+    /// The step's command line as [`Exec::sh_run`] starts it, both routes in one place so that what a step is
+    /// *handed* is testable without a host to ask: the program to start and the arguments that follow it.
+    /// `bash -c <cmd> bash` is the step whichever way the scope went — the word after the command is the name
+    /// bash reads into `$0` — so a gate that asks its own shell what it was called hears `bash`, what
+    /// `timeout … bash -c` gave and a script file of the step's own took away (finding LA-R059, item 2).
+    /// The braced `${…}` of the command text is what `systemd-run` would expand in an argv it is given — the one
+    /// reason a script file looked necessary — and `--expand-environment=no` (systemd 254; this host runs 259)
+    /// turns that off, so the command reaches `bash` as the repo wrote it and no file is left in the job
+    /// directory at all.
+    fn step_argv(
+        bash: &Path,
+        systemd_run: Option<&Path>,
+        unit: Option<&str>,
+        cmd: &str,
+    ) -> (PathBuf, Vec<std::ffi::OsString>) {
+        // `-c <cmd>` and then the name bash reads into `$0` for it — the argument after the command string,
+        // which bash calls its own `argv[0]`. That name is what item 2 is about: `timeout … bash -c` gave a
+        // gate a `$0` of `bash`, a script file of the step's own gave it the file's path, and the program
+        // here stays the absolute path this job resolved, so the step depends on no lookup but the one
+        // above.
+        let step = vec![
+            std::ffi::OsString::from("-c"),
+            std::ffi::OsString::from(cmd),
+            std::ffi::OsString::from("bash"),
+        ];
+        match (unit, systemd_run) {
+            (Some(u), Some(program)) => {
+                let mut argv = vec![
+                    std::ffi::OsString::from("--user"),
+                    std::ffi::OsString::from("--scope"),
+                    std::ffi::OsString::from("--quiet"),
+                    std::ffi::OsString::from("--collect"),
+                    std::ffi::OsString::from("--unit"),
+                    std::ffi::OsString::from(u),
+                    std::ffi::OsString::from("--expand-environment=no"),
+                    std::ffi::OsString::from("--"),
+                    bash.to_path_buf().into(),
+                ];
+                argv.extend(step);
+                (program.to_path_buf(), argv)
+            }
+            _ => (bash.to_path_buf(), step),
+        }
+    }
+
     /// [`Exec::sh`]'s worker, and the warm-up's: `bash` over `cmd` in `cwd`, under the step's own
     /// deadline (`cap`, reported with the phrase `timed_out`), with output into the job log, leading
     /// a process group of its own and — where the host takes one ([`Exec::user_scope`]) — standing in
@@ -504,59 +544,30 @@ impl Exec {
         let systemd_run = self.resolve("systemd-run");
         let scope = self.user_scope(&built, systemd_run.as_deref());
         let unit = (scope == Scope::Takes).then(|| kill::unit_name(&self.spec.job_id));
-        // The command goes to the step in a file of its own, never in the command line that
-        // `systemd-run` is given: systemd-run expands the braced form `${…}` in what it is handed as
-        // the payload, so a gate whose command tests `[ -n "${LAGENT_WAIVERS_FILE+x}" ]` would
-        // arrive at its shell with the test already answered (`${VAR+x}` is not a name systemd
-        // recognises, and what it does not recognise it replaces with nothing). A file keeps the
-        // command text exactly as the repo wrote it, for both routes — and it goes when the step
-        // does, so a job leaves no step script behind either.
-        // The job dir canonicalized because the step runs in the worktree: a relative one would
-        // name the file somewhere else from there.
-        let script = {
-            let dir = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
-            dir.join(format!(
-                "step-{}.sh",
-                STEP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ))
-        };
-        if let Err(e) = std::fs::write(&script, format!("{cmd}\n")) {
-            self.say(&format!(
-                "cannot run: the step's command could not be written to {}: {e}",
-                script.display()
-            ));
-            return Some("cannot run: the step's command could not be written".to_string());
-        }
+        // The command goes to the step as `bash -c <cmd>`, exactly as it did under `timeout(1)`, so that `$0`
+        // inside a gate is still `bash`: a script file of its own would make it the path of that file, and a
+        // gate that reads `dirname "$0"` or `BASH_SOURCE` would then act on the job directory (finding
+        // LA-R059, item 2). What made the file tempting is that `systemd-run` expands the braced form `${…}`
+        // in the payload argv it is handed, so a gate whose own text tests
+        // `[ -n "${LAGENT_WAIVERS_FILE+x}" ]` would arrive at its shell with the test already answered; that is
+        // what `--expand-environment=no` turns off (systemd 254, and this host runs 259), and nothing of the
+        // command text is rewritten on the way in.
         // The step's own transient scope, the way `manager/work.rs` starts a lane runner:
         // `systemd-run --scope` execs its payload into the unit it made, so the step's pid leads
         // the process group *and* is the only member of the scope. Where there is no user manager,
-        // the group is what there is, and the job says so once per step rather than failing it.
-        let mut command = match (&unit, &systemd_run) {
-            (Some(u), Some(program)) => {
-                self.say(&format!("scope: {u}"));
-                let mut c = Command::new(program);
-                c.args([
-                    "--user",
-                    "--scope",
-                    "--quiet",
-                    "--collect",
-                    "--unit",
-                    u.as_str(),
-                    "--",
-                ]);
-                c.arg(&bash);
-                c
-            }
-            _ => {
-                self.say(&format!(
-                    "scope: none ({}): the step has its process group alone",
-                    scope.reason()
-                ));
-                Command::new(&bash)
-            }
-        };
+        // the group is what there is, and the job says so once per step rather than failing it. A scope that
+        // was asked for is only said of once it has been *seen* (`kill::Sighting`).
+        let systemctl = self.resolve("systemctl");
+        let (program, argv) = Self::step_argv(&bash, systemd_run.as_deref(), unit.as_deref(), cmd);
+        if unit.is_none() {
+            self.say(&format!(
+                "scope: none ({}): the step has its process group alone",
+                scope.reason()
+            ));
+        }
+        let mut command = Command::new(program);
         command
-            .arg(&script)
+            .args(argv)
             .current_dir(cwd)
             // The group the deadline and every signal after it works on (`super::kill`), and the
             // group a step's own `fork` work stays in unless it leaves on purpose.
@@ -589,16 +600,18 @@ impl Exec {
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
-                let _ = std::fs::remove_file(&script);
                 self.say(&format!("cannot run: {e}"));
                 return Some(format!("cannot run: {e}"));
             }
         };
         // The two routes to every process this step started, the deadline, and the sweep after it.
         let grace = self.kill_grace;
-        let ended = Step::new(child.id(), unit).run_to_end(&mut child, cap, grace);
-        // Read and gone: the step is over, and its command file was only ever for it.
-        let _ = std::fs::remove_file(&script);
+        let ended = Step::new(child.id(), unit, systemctl).run_to_end(&mut child, cap, grace);
+        // Only now is the scope a fact: the unit was seen as the step's control group, or it never was and
+        // the step is worked by its process group alone whatever the name at its start said.
+        if let Some(line) = ended.scope.line() {
+            self.say(&line);
+        }
         if !ended.miss.is_empty() {
             self.say(&ended.miss.line());
         }
@@ -2723,6 +2736,34 @@ mod tests {
         })
     }
 
+    /// The same proof as [`read_recorded_pid`], for the `setsid` straggler, which records its process
+    /// group beside its pid: a test of the control-group route means nothing unless it can say that the
+    /// child it killed had really left the group the group signal reaches.
+    fn read_recorded_pids(path: &Path) -> (u32, u32) {
+        let raw = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!(
+                "proof file {} was never written: the straggler did not start ({e})",
+                path.display()
+            )
+        });
+        let mut f = raw.split_whitespace();
+        let (Some(pid), Some(pgid)) = (f.next(), f.next()) else {
+            panic!(
+                "proof file {} holds no pid and pgid (read {raw:?})",
+                path.display()
+            );
+        };
+        let parse = |w: &str, what: &str| {
+            w.parse::<u32>().unwrap_or_else(|e| {
+                panic!(
+                    "proof file {} holds no {what} (read {raw:?}): {e}",
+                    path.display()
+                )
+            })
+        };
+        (parse(pid, "pid"), parse(pgid, "pgid"))
+    }
+
     /// Whether the cap has ended this run's recorded `pid`: gone from `/proc`, or present only as a
     /// zombie still carrying this run's marker (by `comm`, or by argv before a zombie's command line
     /// empties). A process still running and carrying the marker is the survivor the cap failed to
@@ -3026,6 +3067,11 @@ mod tests {
     /// `kind` is `group` (a plain background job), `setsid` (out of the step's process group, which
     /// is what leaves only the control group as a route to it) or `lock` (an exclusive `flock` on a
     /// file in the step's `CARGO_TARGET_DIR`, held for the same five minutes).
+    ///
+    /// `setsid` records two more things, because a test that only knows the child is gone cannot tell
+    /// whether it ever watched the right process: the child writes its own process group beside its
+    /// pid, and the step writes its group to `<proof>-step`. Those two numbers differing is the proof
+    /// that the child really left the group, which is the whole premise of the control-group route.
     fn straggler_gate_script(kind: &str, copy: &Path, marker: &str, proof: &Path) -> String {
         let proof = proof.display();
         let copy = copy.display();
@@ -3034,9 +3080,21 @@ mod tests {
         } else {
             ""
         };
-        let inner = format!(
-            "trap \"\" TERM; {take}printf \"%s\\n\" $$ > '{proof}.tmp' && mv -f '{proof}.tmp' '{proof}'; while :; do sleep 300; done"
-        );
+        // `pid (comm) state ppid pgid …`, and `comm` may hold `)` of its own: cut from the last one.
+        // Double quotes across all of the inner text, which is handed over inside one pair of single ones:
+        // a nested `'` does not quote what it looks like it quotes — it closes the outer pair, and the
+        // `)` of the `sed` script lands where the shell reads it as a token (the step then dies at exit 2
+        // before any process is left behind, which is what a lane never sees because it skips this test).
+        let own_pgid = "sed \"s/^.*) //\" /proc/self/stat | cut -d\" \" -f3";
+        let left_the_group = if kind == "setsid" {
+            format!(
+                "pgid=$({own_pgid}); [ -n \"$pgid\" ] || {{ echo \"no pgid for the straggler\" >&2; exit 9; }}; \
+                 printf \"%s %s\\n\" \"$$\" \"$pgid\" > \"{proof}.tmp\" && mv -f \"{proof}.tmp\" \"{proof}\""
+            )
+        } else {
+            format!("printf \"%s\\n\" $$ > \"{proof}.tmp\" && mv -f \"{proof}.tmp\" \"{proof}\"")
+        };
+        let inner = format!("trap \"\" TERM; {take}{left_the_group}; while :; do sleep 300; done");
         let spawn = match kind {
             // `setsid`: the child takes a new session and a new process group, so the group signal
             // is not a route to it at all. The marker is its `argv[0]`. Backgrounded, like the
@@ -3048,12 +3106,17 @@ mod tests {
         };
         let head = if kind == "lock" {
             "test -n \"$CARGO_TARGET_DIR\" || { echo 'the step was given no CARGO_TARGET_DIR' >&2; exit 9; }\nmkdir -p \"$CARGO_TARGET_DIR\" || exit 9\nLOCK=\"$CARGO_TARGET_DIR/lucina-c024-gate.lock\"\n"
+        } else if kind == "setsid" {
+            // The step's own group, before anything is left behind: the leader of the group the
+            // signal is aimed at is this shell, and the number is what the test compares.
+            "pgid=$(sed 's/^.*) //' /proc/self/stat | cut -d' ' -f3)\n[ -n \"$pgid\" ] || { echo 'no pgid for the step' >&2; exit 9; }\nprintf '%s\\n' \"$pgid\" > 'STEP-PGID'\n"
         } else {
             ""
         };
         format!(
             "#!/bin/bash\n{head}{spawn}\nfor _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e '{proof}' ] && exit 0; sleep 0.1; done\necho 'the straggler never recorded its own pid' >&2\nexit 9\n"
         )
+            .replace("STEP-PGID", &format!("{proof}-step"))
     }
 
     /// A trunk whose only gate is `run`, and a topic branch to merge onto it.
@@ -3106,6 +3169,22 @@ mod tests {
         })
     }
 
+    /// The directory the lane's refusing shims live in: `systemd-run`, `sudo`, `docker` and the rest, each
+    /// of which answers a request with a recorded refusal instead of doing the thing (HOST-08). A worker
+    /// may not edit PATH to get around one, and a test may not either, so this is how a test that needs the
+    /// real program says that it cannot run here (finding FENCE-09).
+    const LANE_SHIM_DIR: &str = "/scratch/offload/lane-shim";
+
+    /// Whether the `systemd-run` this process would find is the lane's shim: one PATH element in the shim
+    /// directory, or the program itself resolving into it. `None` when there is no PATH to ask, which is
+    /// not the same as no shim — the test then runs on the real thing or fails saying it could not tell.
+    fn lane_refuses_systemd_run() -> bool {
+        let Ok(path) = std::env::var("PATH") else {
+            return false;
+        };
+        std::env::split_paths(&path).any(|d| d.to_string_lossy().contains(LANE_SHIM_DIR))
+    }
+
     #[test]
     fn a_gate_step_leaves_no_grandchild_that_ignores_sigterm() {
         let root = tempfile::tempdir().unwrap();
@@ -3151,8 +3230,21 @@ mod tests {
         assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
     }
 
+    /// The control-group route: a step that stands in a transient systemd scope of its own reaches a child
+    /// that `setsid` away from its process group, and a step without that scope reaches nothing of it. This
+    /// is therefore a test of the host's `systemd-run`, and **it cannot run inside a lane run**: the lane's
+    /// shim for that program refuses the request by design (HOST-08), and getting at the real one from here
+    /// would mean editing PATH, which a worker must never do (FENCE-09). So in a lane it prints exactly
+    /// `SKIPPED: needs the real systemd-run; lane workers are refused it by design (HOST-08); this test runs
+    /// at the merge gate` and returns — those same words below, and no `#[ignore]`, which would bury this in
+    /// a count of ignored tests instead of saying what was never reached. The merge gate — a `lagent-job`
+    /// unit, with the host's own `systemd-run` on its PATH — is where this proves anything at all.
     #[test]
     fn a_gate_step_leaves_no_grandchild_that_left_its_process_group() {
+        if lane_refuses_systemd_run() {
+            println!("SKIPPED: needs the real systemd-run; lane workers are refused it by design (HOST-08); this test runs at the merge gate");
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         let (tag, marker, copy) = survivor_names(root);
@@ -3174,31 +3266,34 @@ mod tests {
         let out = x.merge();
         let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
         assert!(out.ok, "{out:?}\nLOG:\n{log}");
-        let fallback = scope_fallback_line(&log);
-        if let Some(line) = &fallback {
-            // No systemd user manager on this host, so the step had its process group alone — and a
-            // child that left that group is then out of reach of everything the job can do. Say so
-            // loudly, and hold the fallback itself to its word: it must be in the log (the step did
-            // not fail for the missing scope), and it must not be a probe that hung, which is a bug
-            // and not a host without systemd.
-            assert!(
-                !line.contains("did not answer"),
-                "the scope probe did not answer: {line}\nLOG:\n{log}"
-            );
-            assert!(
-                out.ok,
-                "the step failed for want of a scope: {out:?}\nLOG:\n{log}"
-            );
-            println!("NOT PROVED (no systemd user manager here, so no control group to kill through): {line}");
-            return;
+        // A scope that was not had is not a host to blame here: outside the lane's shim this process has a
+        // user manager, and a step that got no unit is the code failing to ask for one. Say what the probe
+        // answered, and fail — an early return on this path was the hole the review found.
+        if let Some(line) = scope_fallback_line(&log) {
+            panic!("the step got no scope, so the control-group route was never taken: {line}\nLOG:\n{log}");
         }
-        // The scope route, which is what this test is for: the step stood in a control group of its
-        // own, and the child that left the process group died of it.
+        // The step stands in a unit of its own, and it is the seeing of that unit that makes the route real:
+        // a scope only named, whose control group was never read from anything, sweeps the group alone and
+        // leaves exactly the child this test started.
+        let sight = log
+            .lines()
+            .find(|l| l.contains("scope: lucina-gate-"))
+            .unwrap_or_else(|| panic!("the step neither got a scope nor said why not:\n{log}"));
         assert!(
-            log.contains("scope: lucina-gate-"),
-            "the step neither got a scope nor said why not:\n{log}"
+            !sight.contains("was never seen"),
+            "the scope was asked for and never seen, so a child outside the process group was out of reach: {sight}\nLOG:\n{log}"
         );
-        let pid = read_recorded_pid(&proof);
+        // And that child was the one the control group reached: its recorded process group is not the step's
+        // own, which is what puts it outside every group signal this job can send. Read from the proof the
+        // two wrote while they were alive — a test that only knows the pid is gone proves nothing about the
+        // route that removed it.
+        let (pid, pgid) = read_recorded_pids(&proof);
+        let step_group = read_recorded_pid(&root.join("setsid-pid-step"));
+        assert_ne!(
+            pgid, step_group,
+            "the straggler never left the step's process group (child pgid {pgid}, step pgid {step_group}), \
+             so it is the group signal and not the control group that this watched\nLOG:\n{log}"
+        );
         assert!(
             pid_ended_by_cap(pid, &marker, &tag),
             "the step left its `setsid` grandchild (pid {pid}) alive: outside the process group, \
@@ -3317,6 +3412,211 @@ mod tests {
         assert!(!log.contains("when the killing gave up"), "{log}");
     }
 
+    /// LA-R059, item 6, as a decision and not an accident: `timeout(1)` returned 124 for its own deadline, so a
+    /// command that exits 124 by itself used to read as a timeout. This runner's deadline says `timed out after
+    /// <N> min` and an exit says its number, whichever number that is.
+    #[test]
+    fn a_gate_step_that_exits_124_reports_an_exit_not_a_timeout() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exit124 = bin.join("exits-124");
+        write_exec(
+            &exit124,
+            "#!/bin/sh\necho 'the step leaves of itself' >&2\nexit 124\n",
+        );
+        let (_origin, repo, head) = one_gate_repo(root, &exit124.display().to_string());
+        let dir = root.join("job-step-124");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(!out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "GATE_FAILED", "{log}");
+        assert!(log.contains("failed: exit 124"), "{log}");
+        assert!(!log.contains("timed out"), "{log}");
+    }
+
+    /// LA-R059, item 2, from the inside: the step's command line, both routes, as [`Exec::step_argv`] builds
+    /// it. `bash` `-c` `<cmd>` is what either route ends up starting — the program and its arguments on the plain
+    /// one, the last three arguments of `systemd-run` on the scope one — so `$0` in the gate's own text is `bash`,
+    /// what `timeout … bash -c` gave and a script file of the step's own took away. The scope route carries the
+    /// one flag that makes such a file unnecessary in front of it.
+    #[test]
+    fn the_step_is_handed_bash_dash_c_on_both_routes() {
+        let bash = Path::new("/bin/bash");
+        let run = Path::new("/usr/bin/systemd-run");
+        let cmd = "test -n \"${LAGENT_WAIVERS_FILE+x}\" && printf '%s\\n' \"$0\"";
+        // The step: bash at the path it was resolved to, the command, and the name for `$0`.
+        let want_step = vec![
+            std::ffi::OsString::from("/bin/bash"),
+            std::ffi::OsString::from("-c"),
+            std::ffi::OsString::from(cmd),
+            std::ffi::OsString::from("bash"),
+        ];
+        // The command line as the process sees it: the program `Exec::sh_run` starts, then what follows it.
+        let whole = |program: &Path, argv: &[std::ffi::OsString]| {
+            let mut line = vec![std::ffi::OsString::from(program)];
+            line.extend_from_slice(argv);
+            line
+        };
+
+        let (program, argv) = Exec::step_argv(bash, None, None, cmd);
+        assert_eq!(
+            program, bash,
+            "the step without a scope runs the bash this job resolved"
+        );
+        assert_eq!(
+            whole(&program, &argv),
+            want_step,
+            "the step without a scope is `bash -c <cmd> bash`, so its `$0` is bash"
+        );
+
+        let (program, argv) = Exec::step_argv(bash, Some(run), None, cmd);
+        assert_eq!(
+            program, bash,
+            "a host with the program but no unit asked for is the plain route still"
+        );
+        assert_eq!(
+            whole(&program, &argv),
+            want_step,
+            "and the plain route is unchanged"
+        );
+
+        let (program, argv) = Exec::step_argv(bash, Some(run), Some("lucina-gate-job-1"), cmd);
+        assert_eq!(program, run, "the scope route starts at systemd-run");
+        assert_eq!(
+            argv[argv.len() - 4..],
+            want_step[..],
+            "the scope route hands the same `bash -c <cmd> bash` to systemd-run, so `$0` is bash there too: {argv:?}"
+        );
+        let flags: Vec<String> = argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            flags.contains(&"--expand-environment=no".to_string()),
+            "systemd-run expands the braced dollar-brace form of a payload argv it is handed unless this says otherwise, \
+             which is the only reason the step had a file of its own: {flags:?}"
+        );
+        let unit_at = flags
+            .iter()
+            .position(|f| f == "--unit")
+            .expect("the scope route names its unit");
+        assert_eq!(
+            flags[unit_at + 1],
+            "lucina-gate-job-1",
+            "the unit is the one this step made"
+        );
+    }
+
+    /// LA-R059, item 2, from the outside: a gate that asks its own shell what it was called, and gets `bash`.
+    /// This is the route the job takes on a host without a user manager; [`the_step_is_handed_bash_dash_c_on_both_routes`]
+    /// pins the other one, where `systemd-run` stands in front, because the lane cannot make a scope
+    /// (HOST-08) and a worker must not reach around the shim that refuses it (FENCE-09).
+    #[test]
+    fn a_gate_command_sees_bash_as_its_argv_zero() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        // The gate is shell text, not the path of a script: `bash -c /some/thing` is a single simple command,
+        // and bash answers that by replacing itself with the thing, whose `$0` is its own path and says
+        // nothing about how it was reached. The `;` is what keeps bash running the printf itself, and the
+        // `\"` is for the TOML string the rule is written in.
+        let gate = r#"printf %s \"$0\" > argv0.txt; : the second statement keeps bash doing the printf itself"#;
+        let (_origin, repo, head) = one_gate_repo(root, gate);
+        let dir = root.join("job-argv-zero");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        let seen = std::fs::read_to_string(root.join("wt/.landing/argv0.txt"))
+            .unwrap_or_else(|e| panic!("the step wrote no argv0.txt: {e}\nLOG:\n{log}"));
+        assert_eq!(
+            seen.trim(),
+            "bash",
+            "the step's `$0` is what it was handed as, and a gate that reads `dirname \"$0\"` acts on that"
+        );
+        // And no step script is left in the job directory, because there is no such file to leave.
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("step-") && n.ends_with(".sh"))
+            .collect();
+        assert!(left.is_empty(), "the job kept a step script {left:?}");
+    }
+
+    /// The scope question has to be asked with the command line the answer is about. A probe that is
+    /// narrower than a step answers yes on a host that will refuse every step of the job: the lane's
+    /// shim for `systemd-run` allows `--user --scope --quiet --collect --unit` and refuses any option it
+    /// does not list, so `--expand-environment=no` — which a step carries since item 2 and the probe did
+    /// not — left this crate's own tests with 23 gate steps exiting 79 (finding PROBE-01). The stand-in
+    /// here is the shim's rule: an option it does not know is a refusal.
+    #[test]
+    fn the_scope_probe_is_asked_with_the_argv_a_step_gets() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let calls = root.join("systemd-run-calls");
+        let run = bin.join("systemd-run");
+        write_exec(
+            &run,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nfor a in \"$@\"; do case \"$a\" in --expand-environment*) exit 79;; esac; done\nexit 0\n",
+                calls.display()
+            ),
+        );
+        let gate = bin.join("says-hello");
+        write_exec(&gate, "#!/bin/sh\necho 'hello from the step'\n");
+        let (_origin, repo, head) = one_gate_repo(root, &gate.display().to_string());
+        let dir = root.join("job-probe-argv");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        let path = x.path.clone();
+        let runtime = root.display().to_string();
+        // A manager to ask is the one thing the probe looks for before it forks, and the stand-in needs
+        // no real bus behind the name.
+        x.source_env = crate::testutil::env_source(&[
+            ("PATH", &path),
+            ("HOME", "/home/fake"),
+            ("XDG_RUNTIME_DIR", runtime.as_str()),
+        ]);
+        let out = x.merge();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        let asked = std::fs::read_to_string(&calls).unwrap_or_else(|e| {
+            panic!("the job never asked the host about a scope: {e}\nLOG:\n{log}")
+        });
+        assert!(
+            asked.contains("--expand-environment=no"),
+            "the probe was asked without the option a step is handed, so a host that refuses it says \
+             yes to the job and no to every gate: {asked}"
+        );
+        assert!(
+            asked.contains("bash -c /bin/true"),
+            "and it is asked through the same payload form, so `$0` and the expansion of the text mean \
+             the same thing in the answer and in the step: {asked}"
+        );
+        assert_eq!(
+            asked.lines().count(),
+            1,
+            "one question per job, whatever the answer: {asked}"
+        );
+        // The refusal is the fallback, not the failure: the gate runs as a plain step and the merge lands.
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        assert!(log.contains("hello from the step"), "{log}");
+        let line = log
+            .lines()
+            .find(|l| l.contains("scope: none (the lucina-gate-probe-"))
+            .unwrap_or_else(|| panic!("the probe's refusal never reached the log:\n{log}"));
+        assert!(line.contains("probe exited 79)"), "{line}");
+        assert!(!log.contains("was never seen"), "{log}");
+    }
+
     #[test]
     fn a_gate_step_writes_its_temporary_files_outside_tmp() {
         // FENCE-08: everything here runs with `TMPDIR=/tmp`, and the host sandbox that
@@ -3333,7 +3633,22 @@ mod tests {
             "#!/bin/bash\nprintf %s \"$TMPDIR\" > tmpdir-seen.txt\nmkdir -p \"$TMPDIR/sub\" || { echo \"cannot make a directory in $TMPDIR\" >&2; exit 9; }\nprintf 'written\\n' > \"$TMPDIR/sub/written.txt\" || exit 9\ntest -s \"$TMPDIR/sub/written.txt\"\n",
         );
         let (origin, repo, head) = one_gate_repo(root, &script.display().to_string());
-        let dir = root.join("job-tmpdir");
+        // LA-R059, item 5: the job directory of a real run is `<state>/pipeline/jobs/<id>`, which is on
+        // the owner's home and in neither of the machine-wide temporary directories. The scratch hangs
+        // from it, so a job directory built from `tempfile::tempdir()` — under `/tmp` on the machine's
+        // own default, as `TMPDIR` says — proves the equality below and nothing about where the files
+        // land: the scratch of such a job is itself somewhere under `/tmp/<random>/job-tmpdir/tmp`.
+        // Built out of the scratch tree the owner's rules name, by name, and removed with the test.
+        let home = PathBuf::from(format!(
+            "/home/nez/scratch/tmp/lucina-agentd-tests/a-gate-step-tmpdir-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+        let dir = home.join("job");
         std::fs::create_dir_all(&dir).unwrap();
         let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
         // The failure condition, as this host gives it: an inherited `TMPDIR` under `/tmp`.
@@ -3349,16 +3664,47 @@ mod tests {
         assert!(out.ok, "{out:?}\nLOG:\n{log}");
         assert_eq!(out.code, "MERGED", "{log}");
         let seen = std::fs::read_to_string(root.join("wt/.landing/tmpdir-seen.txt")).unwrap();
-        // Pinned exactly, which is the whole contract: the scratch is `<job dir>/tmp`, so it is
-        // neither of the machine-wide directories the owner's rule names, and the step wrote its
-        // file inside it (the script exits 9 when it cannot).
+        let seen = Path::new(seen.trim());
+        // Pinned exactly, which is the contract: the scratch is `<job dir>/tmp`, and the step wrote
+        // its file inside it (the script exits 9 when it cannot).
         let want = std::fs::canonicalize(&dir).unwrap().join("tmp");
-        assert_eq!(Path::new(seen.trim()), want.as_path(), "{log}");
-        // And the scratch was the job's, not the machine's: it went when the job did.
+        assert_eq!(seen, want.as_path(), "{log}");
         assert!(
-            !Path::new(&seen).exists(),
-            "the job left its scratch {seen} behind\nLOG:\n{log}"
+            !seen.exists(),
+            "the job left its scratch {} behind\nLOG:\n{log}",
+            seen.display()
+        );
+        // And where that puts it, which is the half the equality left unshown: the scratch is inside
+        // the job directory, that directory is under the owner's home and so in neither of the
+        // machine-wide temporary directories, and it is not under the directory this very process
+        // uses for its own temporaries — which on this host is the first of them, and is what let the
+        // old version of this test pass with a job directory built out of it.
+        assert!(
+            seen.starts_with(home.join("job")),
+            "the scratch {seen:?} is not inside the job directory {}",
+            home.join("job").display()
+        );
+        assert!(
+            seen.starts_with("/home/"),
+            "the scratch {seen:?} is not under the owner's home, so the job directory it hangs from \
+             is not the one a real run gets"
+        );
+        // The two machine-wide temporary directories, named as the guard in [`Exec::sh_run`] names them,
+        // because that is the whole of FENCE-08: a file under either is refused by the host sandbox. Not
+        // `std::env::temp_dir()` — on this host that is the scratch tree the owner's rules send the test's
+        // own job directory to, so it would refuse the very layout asked for and let the old vacuous one
+        // through: `tempfile::tempdir()` follows whatever `TMPDIR` says, and where this runs on the
+        // machine's default it put the job directory, and so the scratch, under `/tmp/<random>`.
+        assert!(
+            !seen.starts_with("/tmp"),
+            "the scratch {seen:?} is under the machine-wide /tmp, which is where a job directory of a real \
+             run is never built\nLOG:\n{log}"
+        );
+        assert!(
+            !seen.starts_with("/var/tmp"),
+            "the scratch {seen:?} is under the machine-wide /var/tmp\nLOG:\n{log}"
         );
         assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

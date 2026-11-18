@@ -25,7 +25,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::AtomicU64;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -107,28 +107,94 @@ fn stat_after_comm(t: &str) -> impl Iterator<Item = &str> + '_ {
 
 /// This process's parent and its own process group, from `/proc/self/stat`: forking `ps` to ask
 /// is the thing a starved scope cannot do, and these two are what the screen below refuses. They
-/// cannot change while this process lives, so the read is kept.
+/// cannot change while this process lives, so a read that worked is kept — and only one that worked.
+/// A failure kept here is a screen with nothing drawn on it, and then every pid that cannot be
+/// proved to be this process's group or parent passes (finding LA-R059, item 4): ask again.
 fn own_ids() -> Option<(u32, u32)> {
-    static IDS: OnceLock<Option<(u32, u32)>> = OnceLock::new();
-    *IDS.get_or_init(|| {
-        let t = fs::read_to_string("/proc/self/stat").ok()?;
-        let mut f = stat_after_comm(&t);
-        let _state = f.next()?;
-        let ppid = f.next()?.parse().ok()?;
-        let pgid = f.next()?.parse().ok()?;
-        Some((ppid, pgid))
-    })
+    if blind_to_own_ids() {
+        return None;
+    }
+    static IDS: OnceLock<(u32, u32)> = OnceLock::new();
+    if let Some(ids) = IDS.get() {
+        return Some(*ids);
+    }
+    let t = fs::read_to_string("/proc/self/stat").ok()?;
+    let mut f = stat_after_comm(&t);
+    let _state = f.next()?;
+    let ppid = f.next()?.parse().ok()?;
+    let pgid = f.next()?.parse().ok()?;
+    let _ = IDS.set((ppid, pgid));
+    Some(*IDS.get()?)
+}
+
+// The seam of [`own_ids`]: with it on, this process cannot read its own ids, which is the only way
+// a test can stand in the way of a screen instead of reading the real ones.
+#[cfg(test)]
+thread_local! {
+    static NO_OWN_IDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(not(test))]
+fn blind_to_own_ids() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn blind_to_own_ids() -> bool {
+    NO_OWN_IDS.with(|b| b.get())
+}
+
+#[cfg(test)]
+pub(crate) fn refuse_own_ids(on: bool) {
+    NO_OWN_IDS.with(|b| b.set(on));
+}
+
+// The seam of [`Step::look_for_cgroup`]: with it on, a step's own `/proc` entry names the cgroup it is
+// in to nobody, which is the only way a test can stand in the gap that opens when `systemd-run` has
+// started the unit but not yet exec'd into it.
+#[cfg(test)]
+thread_local! {
+    static NO_CGROUP_SIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(not(test))]
+fn blind_to_cgroups() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn blind_to_cgroups() -> bool {
+    NO_CGROUP_SIGHT.with(|b| b.get())
+}
+
+#[cfg(test)]
+pub(crate) fn refuse_cgroup_sight(on: bool) {
+    NO_CGROUP_SIGHT.with(|b| b.set(on));
+}
+
+/// The screen a pid *list* can apply by itself: 0, 1 and this process are refused whether or not the
+/// two inherited ids are known, and the two that need them are applied again, with the refusal they
+/// carry, at the moment a signal is actually aimed. A list that held this process's own group is
+/// thus never signalled by holding it: it is signalled by nothing.
+fn listable(target: u32) -> bool {
+    target > 1 && target != std::process::id()
 }
 
 /// Whether a signal may be aimed at `target`: never pid 0 (which `kill` reads as *this* process's
 /// group), never pid 1, never this process (it has a job log and a `result.json` to finish), never
 /// this process's group (the daemon, the test binary, and every other step of the job) and never
-/// its parent. Everything a step's group or scope names besides those is the step's own.
-fn signalable(target: u32) -> bool {
-    target > 1
-        && target != std::process::id()
-        && Some(target) != own_ids().map(|(_, pgid)| pgid)
-        && Some(target) != own_ids().map(|(ppid, _)| ppid)
+/// its parent. Everything a step's group or scope names besides those is the step's own — and when
+/// this process does not know its own ids, nothing is its own: the screen is the only thing between
+/// a `cgroup.procs` list and the process reading it, so an unscreenable target is a target left
+/// alone, and said.
+fn signalable(target: u32, miss: &mut Miss) -> bool {
+    let Some((ppid, pgid)) = own_ids() else {
+        miss.add_process(format!(
+            "this process's own ids could not be read; {target} was not signalled"
+        ));
+        return false;
+    };
+    listable(target) && Some(target) != Some(pgid) && Some(target) != Some(ppid)
 }
 
 /// What the last round of a kill could not deliver. A kill whose failure is thrown away is a kill
@@ -190,7 +256,7 @@ fn refused(e: Errno) -> Option<String> {
 }
 
 fn signal_pid(pid: u32, sig: Signal, miss: &mut Miss) {
-    if !signalable(pid) {
+    if !signalable(pid, miss) {
         return;
     }
     // The screen refused 0, so the conversion cannot fail.
@@ -205,7 +271,7 @@ fn signal_pid(pid: u32, sig: Signal, miss: &mut Miss) {
 }
 
 fn signal_group(pgid: u32, sig: Signal, miss: &mut Miss) {
-    if !signalable(pgid) {
+    if !signalable(pgid, miss) {
         return;
     }
     let Some(p) = Pid::from_raw(pgid as i32) else {
@@ -241,7 +307,7 @@ pub(crate) fn group_pids(pgid: u32) -> Vec<u32> {
         let Ok(pid) = e.file_name().to_str().unwrap_or_default().parse::<u32>() else {
             continue;
         };
-        if !signalable(pid) {
+        if !listable(pid) {
             continue;
         }
         // `/proc/<pid>/stat`: `pid (comm) state ppid pgid …`, and `comm` may hold spaces.
@@ -278,7 +344,7 @@ fn cgroup_pids(cg: &Path) -> Vec<u32> {
             dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
         }
     }
-    out.retain(|p| signalable(*p) && !is_zombie(*p));
+    out.retain(|p| listable(*p) && !is_zombie(*p));
     out.sort_unstable();
     out.dedup();
     out
@@ -309,20 +375,29 @@ fn kill_cgroup_tree(cg: &Path, miss: &mut Miss) {
 /// in. `cg` stays `None` until the step is *seen* there: `systemd-run` connects to the bus and
 /// creates the unit before it execs, so the pid's own `/proc` entry names the manager's cgroup
 /// for a moment first, and a cgroup that is not the one this name asked for is never signalled.
+/// When the step ended inside that moment there is no live pid left to read it from, and the
+/// manager is asked for the unit's `ControlGroup` instead ([`Step::control_group_from_manager`]).
 pub(crate) struct Step {
     pgid: u32,
     unit: Option<String>,
     cg: Option<PathBuf>,
+    /// `systemctl`, as the job's PATH found it: `None` is no manager to ask, which the step reports
+    /// rather than guesses at.
+    ctl: Option<PathBuf>,
+    /// Whether the manager has already been asked for this step's unit, so that one ask is enough.
+    asked: bool,
 }
 
 impl Step {
     /// The step whose direct child is `pid`, asked into unit `unit` (`None`: no scope, the group
-    /// alone is what this step owns).
-    pub(crate) fn new(pgid: u32, unit: Option<String>) -> Self {
+    /// alone is what this step owns), with `ctl` the `systemctl` the job can ask.
+    pub(crate) fn new(pgid: u32, unit: Option<String>, ctl: Option<PathBuf>) -> Self {
         Step {
             pgid,
             unit,
             cg: None,
+            ctl,
+            asked: false,
         }
     }
 
@@ -340,6 +415,11 @@ impl Step {
         let Some(want) = self.unit.as_ref().map(|u| format!("{u}.scope")) else {
             return;
         };
+        // The seam of the scope look: with it on, the step's own `/proc` entry names nothing, which is
+        // how a test stands in the gap between `systemd-run` starting and its exec into the unit.
+        if blind_to_cgroups() {
+            return;
+        }
         let Ok(t) = fs::read_to_string(format!("/proc/{pid}/cgroup")) else {
             return;
         };
@@ -352,6 +432,55 @@ impl Step {
                 return;
             }
         }
+    }
+
+    /// The unit's control group as the user manager names it, for the step whose direct child was gone
+    /// before any read of its `/proc` entry saw the scope: a script that does `setsid … &` and exits
+    /// inside the moment `systemd-run` takes to move into its unit leaves no live pid to read the
+    /// answer from, and the child it started is out of reach of the group alone. Asked of the unit
+    /// *this* step named and no other — the control group of somebody else's unit is not this step's
+    /// tree to sweep.
+    fn control_group_from_manager(&self) -> Option<PathBuf> {
+        let (unit, program) = match (&self.unit, &self.ctl) {
+            (Some(u), Some(p)) => (u.clone(), p.clone()),
+            _ => return None,
+        };
+        let out = Command::new(program)
+            .args([
+                "--user",
+                "show",
+                "-p",
+                "ControlGroup",
+                "--value",
+                &format!("{unit}.scope"),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let cg = String::from_utf8(out.stdout).ok()?;
+        let cg = cg.trim();
+        // The same screen the `/proc` route applies, and for the same reason: a control group is
+        // about to be walked and killed, so it is only ever the one this step's unit ends in. An
+        // alias, a template, or a manager that answers with something broader is no answer at all.
+        if !cg.starts_with('/') || Path::new(cg).file_name()?.to_str()? != format!("{unit}.scope") {
+            return None;
+        }
+        Some(PathBuf::from(format!("/sys/fs/cgroup{cg}")))
+    }
+
+    /// That the step's control group is known, by either route: it is asked of the manager once, and
+    /// never again for a step that has already been answered or already failed to be answered there.
+    fn recover_control_group(&mut self) {
+        if self.cg.is_some() || self.unit.is_none() || self.asked {
+            return;
+        }
+        self.asked = true;
+        self.cg = self.control_group_from_manager();
     }
 
     /// Every process the step still holds: its group's members, and its scope tree's.
@@ -439,6 +568,8 @@ pub(crate) struct Ended {
     pub(crate) miss: Miss,
     /// How many of the step's processes were still there when the signals gave up.
     pub(crate) left: usize,
+    /// Whether the unit it was asked into was ever seen, and what the job therefore says about it.
+    pub(crate) scope: Sighting,
 }
 
 impl Step {
@@ -462,6 +593,11 @@ impl Step {
                 break Some(s);
             }
             let e = start.elapsed();
+            // The window in which the step's own `/proc` entry could still have named the unit is over and
+            // it named nothing: ask the manager, whose answer does not need a live process of the step.
+            if !looked && !self.cgroup_known() {
+                self.recover_control_group();
+            }
             if e >= cap && !timed_out {
                 timed_out = true;
                 miss = self.terminate();
@@ -481,7 +617,10 @@ impl Step {
         if status.is_some() {
             // Ours is reaped, so nothing of the step is left to wait for — but what it forked may
             // be, and that is what the sweep is for. Its refusals are the last word on this step,
-            // so they are what gets reported.
+            // so they are what gets reported. A step that ended before its scope was ever seen gives
+            // the manager its one ask first: without that tree the sweep reaches the group alone, and a
+            // child that `setsid` away from the group is not in it.
+            self.recover_control_group();
             let (sweep_miss, still_there) = self.reap(grace);
             if !sweep_miss.is_empty() {
                 miss = sweep_miss;
@@ -493,6 +632,378 @@ impl Step {
             timed_out,
             miss,
             left,
+            scope: match &self.unit {
+                None => Sighting::NoUnit,
+                Some(u) if self.cg.is_some() => Sighting::Seen(u.clone()),
+                Some(u) => Sighting::NeverSeen(u.clone()),
+            },
         }
+    }
+}
+
+/// What became of the scope a step was asked into, which is what [`super::exec`] says about it. A unit
+/// named is a fact about the step's processes only once its control group has been read, from the live
+/// child or from the manager; before that the job says nothing, and a step that ends with the group
+/// still naming the manager's own cgroup says that a child which left it was out of reach (finding
+/// LA-R059, item 3).
+#[derive(Debug)]
+pub(crate) enum Sighting {
+    /// No unit was asked for, so the line said at the step's start already told the whole of it.
+    NoUnit,
+    Seen(String),
+    NeverSeen(String),
+}
+
+impl Sighting {
+    /// The log line the step's end gets, or `None` for the case with nothing further to say.
+    pub(crate) fn line(&self) -> Option<String> {
+        match self {
+            Sighting::NoUnit => None,
+            Sighting::Seen(u) => Some(format!("scope: {u}")),
+            Sighting::NeverSeen(u) => Some(format!(
+                "scope: {u} was never seen; a child that left the process group was not reachable"
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The bookkeeping of the two routes, apart from a job: what a step does when a signal cannot be
+    //! screened, and where its control group comes from when its own `/proc` entry never named it.
+    //!
+    //! Every process here is one the test started and holds the pid of, and no signal in this file
+    //! goes anywhere else.
+
+    use super::*;
+    use crate::testutil::write_exec;
+
+    /// Ends `child` and reaps it, whatever the test below did or failed to do before it got there.
+    struct Reap(Child);
+
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// The screen of [`signal_pid`] and [`signal_group`] is read from this process's own `/proc`
+    /// entry: without it there is nothing to tell a step's grandchild apart from the daemon's group,
+    /// and between those two lies a `kill` and the process holding the job (finding LA-R059, item 4).
+    /// So an unscreenable target is left alone and the round says so — and a failed read is not kept
+    /// as a permanent screen, or one unreadable moment would end the killing for every step after it.
+    #[test]
+    fn a_signal_that_cannot_be_screened_is_not_aimed() {
+        let child = Command::new("/bin/sleep")
+            .arg("300")
+            .spawn()
+            .expect("sleep starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        let mut miss = Miss::default();
+        refuse_own_ids(true);
+        signal_pid(pid, Signal::TERM, &mut miss);
+        signal_group(pid, Signal::TERM, &mut miss);
+        refuse_own_ids(false);
+
+        assert!(
+            child.0.try_wait().expect("waitpid works").is_none(),
+            "pid {pid} ended, so a signal the screen was meant to hold back went through"
+        );
+        let line = miss.line();
+        assert_eq!(miss.processes, 2, "both rounds should have refused: {line}");
+        assert!(
+            line.contains("this process's own ids could not be read"),
+            "the refusal does not say why nothing was signalled: {line}"
+        );
+        assert!(line.contains(&format!("{pid} was not signalled")), "{line}");
+
+        // Not cached as this process's screen: the ids are asked again, and the group this process
+        // stands in is refused once more. A predicate only — nothing is aimed here, because a screen
+        // that has forgotten its own group is a `kill` aimed at the test binary and everything else
+        // in the job.
+        let own = rustix::process::getpgrp().as_raw_pid() as u32;
+        let mut screen = Miss::default();
+        assert!(
+            !signalable(own, &mut screen),
+            "pid {own} is this process's own group: a screen still holding the failed read cannot \
+             tell it from a step's process, and would signal it"
+        );
+        assert!(
+            screen.is_empty(),
+            "the own group answered with a refusal of a signal that was never aimed: {}",
+            screen.line()
+        );
+
+        // With the ids readable again the same target is signalled and nothing is reported: this is
+        // the same `signal_pid` call as the one refused above.
+        let mut after = Miss::default();
+        signal_pid(pid, Signal::TERM, &mut after);
+        assert!(
+            after.is_empty(),
+            "a read that failed once screened every signal after it: {}",
+            after.line()
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(s) = child.0.try_wait().expect("waitpid works") {
+                break s;
+            }
+            if Instant::now() >= deadline {
+                panic!("pid {pid} took no notice of the SIGTERM the screen no longer holds back");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            status.code().is_none(),
+            "sleep ends on the SIGTERM, not by itself: {status}"
+        );
+    }
+
+    /// A step whose script runs `setsid … &` and exits inside the moment `systemd-run` takes to move
+    /// into its unit leaves no live process to read the unit's name from, and the group signal does
+    /// not reach a child that has left the group. The control group is still a fact the manager can
+    /// state, so it is asked — of this step's unit and of no other (finding LA-R059, item 3).
+    #[test]
+    fn a_control_group_never_read_from_proc_is_asked_of_the_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let asked = dir.path().join("asked");
+        let ctl = dir.path().join("systemctl");
+        let unit = "lucina-kill-test-unit-1";
+        write_exec(
+            &ctl,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s\\n' /lucina-kill-test-fake/{unit}.scope\n",
+                asked.display()
+            ),
+        );
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        refuse_cgroup_sight(false);
+
+        let asked = fs::read_to_string(&asked)
+            .expect("the step ended with its scope unread and never asked the manager for it");
+        let unit_scope = format!("{unit}.scope");
+        assert_eq!(
+            asked.lines().collect::<Vec<_>>(),
+            vec![
+                "--user",
+                "show",
+                "-p",
+                "ControlGroup",
+                "--value",
+                unit_scope.as_str(),
+            ],
+            "the ask is `systemctl --user show` of ControlGroup, of the unit this step named and no \
+             other, and it is one ask"
+        );
+        match &ended.scope {
+            Sighting::Seen(u) => assert_eq!(u, unit),
+            other => {
+                panic!("a scope the manager named is a seen scope, and this one reported {other:?}")
+            }
+        }
+        assert_eq!(
+            ended.scope.line().as_deref(),
+            Some(format!("scope: {unit}").as_str()),
+            "and the job says the unit as the fact it now is"
+        );
+        assert_eq!(ended.left, 0, "{:?}", ended.status);
+    }
+
+    /// The same recovery on the other side of the step's life: a step that is *still running* when the window
+    /// for reading its own `/proc` entry closes is asked of the manager then, before any signal goes out, so
+    /// the TERM and the KILL have the tree to work on and not the group alone. Which of the two happened
+    /// first is what the step's own trap and the ask write into one file, in the order they landed (finding
+    /// LA-R059, item 3).
+    #[test]
+    fn a_step_still_running_when_the_scope_look_ended_is_asked_before_any_signal() {
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("record");
+        let ctl = dir.path().join("systemctl");
+        let unit = "lucina-kill-test-unit-4";
+        write_exec(
+            &ctl,
+            &format!(
+                "#!/bin/sh\nprintf 'asked\\n' >> '{}'\nprintf '%s\\n' /lucina-kill-test-fake/{unit}.scope\n",
+                record.display()
+            ),
+        );
+        // A group of its own, so the signal at its deadline is aimed at a group that exists and reaches the
+        // trap, which writes the second record and leaves. `echo` and not `printf` with an escape: outside
+        // quotes the shell would eat the backslash and the word would land as `signalledn`.
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "trap 'echo signalled >> {}; exit' TERM; sleep 30",
+                record.display()
+            ))
+            .process_group(0)
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        // The deadline is past the two seconds for which the step's own `/proc` entry is the route, so the
+        // ask has a moment to be the thing that happens while the step is still alive.
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(3),
+            Duration::from_millis(200),
+        );
+        refuse_cgroup_sight(false);
+
+        let record = fs::read_to_string(&record).expect(
+            "the step ran past the scope look and never asked the manager for its control group",
+        );
+        let lines: Vec<&str> = record.lines().collect();
+        assert_eq!(
+            lines.first(),
+            Some(&"asked"),
+            "the manager is asked while the step is still running, and before the deadline signals it: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| **l == "asked").count(),
+            1,
+            "one ask for one step: the recovery while it runs and the one before the reap are the same \
+             question and it is asked once: {lines:?}"
+        );
+        assert!(
+            lines.contains(&"signalled"),
+            "the step's own trap never ran, so this watched nothing being signalled: {lines:?}"
+        );
+        assert!(
+            matches!(&ended.scope, Sighting::Seen(u) if u == unit),
+            "the unit asked of the manager is the scope the step is in: {:?}",
+            ended.scope
+        );
+    }
+
+    /// The manager answers with a control group, but not the one this step's unit ends in: an alias,
+    /// a template, something broader. A control group is about to be walked and killed, so an answer
+    /// that is not this unit's is no answer, and the step keeps the line that says so.
+    #[test]
+    fn an_answer_that_is_not_this_units_control_group_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("systemctl");
+        write_exec(
+            &ctl,
+            "#!/bin/sh\nprintf '%s\\n' /lucina-kill-test-fake/lucina-kill-test-unit-other.scope\n",
+        );
+        let unit = "lucina-kill-test-unit-3";
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        refuse_cgroup_sight(false);
+
+        assert!(
+            matches!(&ended.scope, Sighting::NeverSeen(u) if u == unit),
+            "a control group of somebody else's unit is not this step's tree to sweep: {:?}",
+            ended.scope
+        );
+    }
+
+    /// The other answer from the manager: no such unit, or no manager to ask. The step is worked by
+    /// its process group alone, and that is what the job has to say — not the unit's name as if it
+    /// had held the step's processes.
+    #[test]
+    fn a_scope_neither_proc_nor_the_manager_named_says_what_was_out_of_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let asks = dir.path().join("asks");
+        let ctl = dir.path().join("systemctl");
+        write_exec(
+            &ctl,
+            &format!(
+                "#!/bin/sh\nn=$(cat '{}' 2>/dev/null || echo 0)\necho $((n + 1)) > '{}'\nexit 1\n",
+                asks.display(),
+                asks.display()
+            ),
+        );
+        let unit = "lucina-kill-test-unit-2";
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        refuse_cgroup_sight(false);
+
+        let asks = fs::read_to_string(&asks).expect("the manager was never asked");
+        assert_eq!(
+            asks.trim(),
+            "1",
+            "one refusal is enough for one step; it is not asked again at every poll"
+        );
+        match &ended.scope {
+            Sighting::NeverSeen(u) => assert_eq!(u, unit),
+            other => panic!("a scope nobody named is not a scope this step had: {other:?}"),
+        }
+        assert_eq!(
+            ended.scope.line().as_deref(),
+            Some(format!(
+                "scope: {unit} was never seen; a child that left the process group was not reachable"
+            )
+            .as_str()),
+            "the line the job gets has to name the reach that is missing, not just the unit"
+        );
+    }
+
+    /// The step with no unit at all has nothing to see and nothing to ask: its group is the whole of
+    /// it, and the line said at its start already told the job so.
+    #[test]
+    fn a_step_without_a_unit_has_no_scope_to_report() {
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+        let ended = Step::new(pid, None, None).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        assert!(matches!(ended.scope, Sighting::NoUnit));
+        assert_eq!(ended.scope.line(), None);
+        assert!(
+            ended.status.is_some(),
+            "the step ended, and its status is its own"
+        );
     }
 }
