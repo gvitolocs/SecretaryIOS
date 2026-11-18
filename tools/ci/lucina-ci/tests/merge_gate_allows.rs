@@ -15,20 +15,32 @@ use std::process::{Command, Stdio};
 /// machine's RAM, so they ask for a cap every runner holds (`runner::budget`).
 const MEM_CAP_GIB: &str = "1";
 
+/// The names a lane's git config comes in with, of which `bq` takes `GIT_CONFIG_KEY_0` out of a job's environment because
+/// its name holds KEY and leaves `GIT_CONFIG_COUNT` behind — which no git can read, not the one a test runs to build its
+/// repository and not the one the spawned `check-fast` calls. Everything here runs with the trio gone.
+const LANE_GIT_CONFIG: [&str; 3] = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"];
+
+fn drop_lane_git_config(c: &mut Command) {
+    for n in LANE_GIT_CONFIG {
+        c.env_remove(n);
+    }
+}
+
+/// git, with no inherited config.
 fn git(d: &Path, args: &[&str]) {
-    let o = Command::new("git")
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .current_dir(d)
-        .output()
-        .unwrap();
+    let mut c = Command::new("git");
+    c.args([
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+    ])
+    .args(args)
+    .current_dir(d);
+    drop_lane_git_config(&mut c);
+    let o = c.output().unwrap();
     assert!(
         o.status.success(),
         "git {args:?}: {}",
@@ -136,7 +148,11 @@ impl Fixture {
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
-            .env("LAGENT_ALLOW", allow);
+            .env("LAGENT_ALLOW", allow)
+            // This file judges `LAGENT_ALLOW` alone: a job's waivers file inherited from the merge gate that runs the
+            // suite would forward from a second source and answer for a step this test did not give it.
+            .env_remove("LAGENT_WAIVERS_FILE");
+        drop_lane_git_config(&mut c);
         let o = c.output().unwrap();
         (
             o.status.code().unwrap_or(-1),
