@@ -166,6 +166,32 @@ fn read_trim(p: &Path) -> Option<String> {
     fs::read_to_string(p).ok().map(|s| s.trim().to_string())
 }
 
+/// The binary the steps of this process start from, when the check took a copy of itself before it began. Empty until
+/// `check-fast` fills it (`install_step_exe`).
+static STEP_EXE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Says which binary the steps of this run start from: the copy `check-fast` made in its own per-run directory (GATE-06).
+/// The tool lives at a path every worktree shares and the launcher installs a new build there while a check may already be
+/// running, and that rename takes the name away from the process started from it: each step of a `check-fast` is this same
+/// binary re-started as `__inner`, so a step that asked the path again died with
+/// `Failed to find executable .../release/lucina-ci (deleted)` (merge job job_fc4fabf8e6fe, four steps lost 0.1 s after
+/// `clippy`). A run of its own copy is what closes it — chosen over keying the installed binary by its source id, because
+/// the id only separates *different* sources: two runs of one source, which is what a merge and its own lane both build,
+/// still share a name and still replace each other, and a rebuild of the same source is exactly what was in flight.
+/// Unset elsewhere — a proof run on a runner, a selftest — where this process's own path is asked for, as it always was.
+pub fn install_step_exe(path: PathBuf) {
+    let _ = STEP_EXE.set(path);
+}
+
+/// The path to start `__inner` from: this run's own copy where there is one, else this process's executable.
+fn step_exe() -> Result<PathBuf, String> {
+    STEP_EXE
+        .get()
+        .cloned()
+        .or_else(|| std::env::current_exe().ok())
+        .ok_or_else(|| "cannot find this program's own executable".to_string())
+}
+
 /// `LUCINA_CI_NO_SCOPE=1`: start every step with no systemd scope at all. Production never sets it — the merge job of
 /// lucina-agentd builds its environment from an allowlist this name is not on. It is the switch the tests drive the
 /// scope-less fallback with, because the fallback is the branch GATE-03 is about and a test that waits for a machine
@@ -889,7 +915,7 @@ fn scope_prefix() -> Result<Vec<String>, String> {
 /// then what the deadline kills. It was not so before GATE-03: `scope_prefix()?` aborted the whole check instead, and the
 /// fallback that the fix adds must never be read as a way to skip a cap a machine can afford.
 pub fn run_unit(spec: &Spec) -> Result<i32, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = step_exe()?;
     let scope = if env_flag(NO_SCOPE_ENV) {
         Err(format!("{NO_SCOPE_ENV} is set, so no scope is asked for"))
     } else {
