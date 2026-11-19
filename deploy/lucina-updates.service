@@ -21,9 +21,22 @@ RestartSec=5
 UMask=0077
 Nice=5
 
-# Read-only everywhere: the store cannot be written even by a bug; no temp files of the host's.
+# Sandbox. Tested on a user manager (systemd 259) with a transient service carrying the same properties:
+# - VERIFIED: with TemporaryFileSystem=%h:ro and the two binds, the service sees only .local and data in
+#   the home, the SSH directory is hidden, the store is readable and a write to it is refused, and the
+#   bound binary is executable. The earlier ProtectHome=read-only left the whole home readable, the SSH
+#   directory included. The binary is bound as a single file: it must exist when the unit starts.
+# - VERIFIED: NoNewPrivs: 1 and Seccomp: 2 in the service's /proc status, so NoNewPrivileges,
+#   SystemCallFilter, MemoryDenyWriteExecute and RestrictAddressFamilies take effect. No individual
+#   syscall was tested.
+# - NOT ENFORCED in a user manager: IPAddressDeny and IPAddressAllow (a connection from the service to
+#   the host's own LAN address succeeded). They only take effect in a system unit and are not relied on.
+#   Network isolation rests on the program: it makes no outbound connection and refuses a non-loopback
+#   listen address.
+# - ProtectSystem=strict was not tested separately.
 ProtectSystem=strict
-ProtectHome=read-only
+TemporaryFileSystem=%h:ro
+BindReadOnlyPaths=%h/data/lucina-updates %h/.local/bin/lucina-updates
 ReadOnlyPaths=%h/data/lucina-updates
 PrivateTmp=true
 NoNewPrivileges=true
@@ -34,7 +47,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6
-# PrivateNetwork is not possible (it listens): only loopback traffic is allowed instead.
+# PrivateNetwork is not possible (it listens); see the note above on these two lines.
 IPAddressDeny=any
 IPAddressAllow=localhost
 SystemCallFilter=@system-service
