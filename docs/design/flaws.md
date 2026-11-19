@@ -46,7 +46,11 @@ reason; it never quietly dispatches on another agent. With no chain set, `LUCINA
 Triage is cheap work, so it never reaches a step below that count, however ready one is; of the steps it may use it takes
 the first whose probe says ready, walking down, and waits when none of them does. One free lane being out of quota for
 hours therefore no longer stops every new report: with 2 the second cheap step takes the triage. A count above the chain is
-the whole chain; 0 or something that isn't a number stops the server with the reason. Which step a triage agent ran on is
+the whole chain; 0, text or an empty value logs one warning at startup and the default (1) stands: a tracker setting never stops
+the server (a bad `LUCINA_FLAWS_CHAIN` still does, because it would quietly dispatch on another agent). Triage is switched off
+by `LUCINA_FLAWS_AUTO_TRIAGE=off` (the same off values as `LUCINA_FLAWS_AUTO_DISPATCH`; on by default): the loop then starts no
+triage agent, and the dispatch path is unchanged. There is no other way to start a triage agent today (no route or tool does),
+so there is no explicit start to keep working when it is off. Which step a triage agent ran on is
 stored with the flaw (`flaws.triage_step`, nothing before the chain is a step), so a triage that ends on a limit marks out
 that step's lane, not always the first one.
 

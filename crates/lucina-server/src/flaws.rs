@@ -92,11 +92,16 @@ impl FlawSettings {
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())
         };
+        let policy = Policy::from_lookup(&get, &home())?;
+        // A setting that was invalid and replaced by its default: one warning, and the server runs.
+        for note in &policy.notes {
+            tracing::warn!("flaw tracker: {note}");
+        }
         Ok(Self {
             enabled: !matches!(val("LUCINA_FLAWS").as_deref(), Some("off" | "false" | "0")),
             db: val("LUCINA_FLAWS_DB")
                 .map_or_else(|| data_dir.join("flaws").join("flaws.db"), PathBuf::from),
-            policy: Policy::from_lookup(&get, &home())?,
+            policy,
         })
     }
 }
@@ -5878,5 +5883,85 @@ mod tests {
         assert!(s.get(&f.id).unwrap().flaw.triaged_at.is_none());
         assert!(s.triage_due().unwrap().iter().any(|x| x.id == f.id));
         assert_eq!(h.ops.lock().unwrap().len(), 1);
+    }
+
+    // C and D: the triage switch, and a triage count that never stops the server.
+
+    #[test]
+    fn a_bad_triage_count_is_one_warning_and_the_servers_settings_build() {
+        for bad in ["0", "abc"] {
+            let s = FlawSettings::from_lookup(
+                |k| (k == "LUCINA_FLAWS_TRIAGE_STEPS").then(|| bad.to_owned()),
+                Path::new("/data"),
+            )
+            .expect("the server's settings build");
+            assert_eq!(s.policy.triage_steps, 1, "{bad}");
+            assert_eq!(s.policy.notes.len(), 1, "{bad}");
+        }
+        // A bad chain still stops it.
+        assert!(FlawSettings::from_lookup(
+            |k| (k == "LUCINA_FLAWS_CHAIN").then(|| "codex".to_owned()),
+            Path::new("/data"),
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn auto_triage_off_starts_no_triage_agent_on_is_as_today_and_dispatch_is_untouched() {
+        // LUCINA_FLAWS_AUTO_TRIAGE=off (the same off values as AUTO_DISPATCH, default on, read by
+        // Policy::from_lookup) is checked in the loop before it starts any triage agent.
+        let off = Policy::from_lookup(
+            |k| (k == "LUCINA_FLAWS_AUTO_TRIAGE").then(|| "off".to_owned()),
+            Path::new("/h"),
+        )
+        .unwrap();
+        assert!(!off.auto_triage);
+        for v in ["false", "0"] {
+            let p = Policy::from_lookup(
+                |k| (k == "LUCINA_FLAWS_AUTO_TRIAGE").then(|| v.to_owned()),
+                Path::new("/h"),
+            )
+            .unwrap();
+            assert!(!p.auto_triage, "{v}");
+        }
+        assert!(
+            Policy::from_lookup(|_| None, Path::new("/h"))
+                .unwrap()
+                .auto_triage,
+            "on by default"
+        );
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let wide = |p: Policy| Policy {
+            max_alive: 100,
+            max_per_lane: 100,
+            max_new_per_tick: 100,
+            ..p
+        };
+        let p = wide(off);
+        let f = report(&s, "an untriaged report");
+        let fix = due(&s, "a fix", Platform::Web, None);
+        for _ in 0..3 {
+            tick(&s, &p, &h).await;
+        }
+        let labels = h.labels.lock().unwrap().clone();
+        assert!(
+            labels.iter().all(|l| l["triage"] != "1"),
+            "with it off no triage agent starts: {labels:?}"
+        );
+        assert!(s.triage_due().unwrap().iter().any(|x| x.id == f.id));
+        assert_eq!(
+            target(&s, &fix.id, Platform::Web).status,
+            TargetStatus::Fixing,
+            "the dispatch path is unchanged"
+        );
+        // On: as today.
+        let on = Policy {
+            auto_triage: true,
+            ..p
+        };
+        let (s2, h2) = (Flaws::in_memory().unwrap(), Fake::default());
+        report(&s2, "another untriaged report");
+        tick(&s2, &on, &h2).await;
+        assert!(h2.labels.lock().unwrap().iter().any(|l| l["triage"] == "1"));
     }
 }

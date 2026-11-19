@@ -154,9 +154,13 @@ pub struct Policy {
     /// `LUCINA_FLAWS_TRIAGE_STEPS`: how many steps from the top of the chain may look at a report.
     /// Triage is the cheap work, so it never reaches a step below this count: one ([`DEFAULT_TRIAGE_STEPS`])
     /// is only the chain's first step, which is free in [`DEFAULT_CHAIN`]; more of them are there for a
-    /// first step that runs out of quota often. Past the end of the chain it is the whole chain; 0 or
-    /// not a number stops the server, the way a bad chain does.
+    /// first step that runs out of quota often. Past the end of the chain it is the whole chain; 0, text or an
+    /// empty value is said once (in [`Policy::notes`], which the server logs as a warning) and the default
+    /// stands: a tracker setting never stops the server (a bad chain still does).
     pub triage_steps: usize,
+    /// Settings that were invalid and replaced by their defaults (`LUCINA_FLAWS_TRIAGE_STEPS`):
+    /// one line each, for the caller to log. The server never stops on them.
+    pub notes: Vec<String>,
     pub effort: String,
     pub mode: String,
     /// `LUCINA_FLAWS_REPO`: server, core and every client but Juno.
@@ -210,16 +214,26 @@ impl Policy {
             None => parse_chain(DEFAULT_CHAIN)?,
         };
         // Triage's cheap end: the same kind of error as a bad chain, never a quiet default.
-        let triage_steps = match val("LUCINA_FLAWS_TRIAGE_STEPS") {
-            Some(v) => v.parse::<usize>().map_err(|_| {
-                format!("LUCINA_FLAWS_TRIAGE_STEPS: `{v}` is not a number of chain steps")
-            })?,
+        // A tracker setting must not take the whole API down: a count that is not one (0, text,
+        // empty) is said once, in `notes`, and the default stands. A bad chain still stops the
+        // server: that one would quietly dispatch on another agent.
+        let mut notes = Vec::new();
+        let triage_steps = match get("LUCINA_FLAWS_TRIAGE_STEPS") {
             None => DEFAULT_TRIAGE_STEPS,
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    notes.push(format!(
+                        "LUCINA_FLAWS_TRIAGE_STEPS: `{}` is not a number of chain steps (1 or more); \
+                         using the default, {DEFAULT_TRIAGE_STEPS}. Switch triage off with LUCINA_FLAWS_AUTO_TRIAGE=off",
+                        raw.trim()
+                    ));
+                    DEFAULT_TRIAGE_STEPS
+                }
+            },
         };
-        if triage_steps == 0 {
-            return Err("LUCINA_FLAWS_TRIAGE_STEPS: no step at all means no triage; say that with LUCINA_FLAWS_AUTO_TRIAGE=off".to_owned());
-        }
         Ok(Self {
+            notes,
             auto_dispatch: !matches!(
                 val("LUCINA_FLAWS_AUTO_DISPATCH").as_deref(),
                 Some("off" | "false" | "0")
@@ -801,15 +815,25 @@ mod tests {
             p.chain.len(),
             "clamped to the chain"
         );
-        // A count that isn't one, or none at all, stops the server: no quiet default.
-        for bad in ["0", "x"] {
-            let e = Policy::from_lookup(
+        // LA-C035 D (this used to pin the opposite): a count that isn't one, or none at all, no
+        // longer stops the server. It is said once and the default stands.
+        for bad in ["0", "abc", "", "  "] {
+            let p = Policy::from_lookup(
                 |k| (k == "LUCINA_FLAWS_TRIAGE_STEPS").then(|| bad.to_owned()),
                 Path::new("/h"),
             )
-            .unwrap_err();
-            assert!(e.contains("LUCINA_FLAWS_TRIAGE_STEPS"), "{bad}: {e}");
+            .expect("the policy builds");
+            assert_eq!(p.triage_steps, DEFAULT_TRIAGE_STEPS, "{bad:?}");
+            assert_eq!(p.notes.len(), 1, "{bad:?}: one warning, {:?}", p.notes);
+            assert!(
+                p.notes[0].contains("LUCINA_FLAWS_TRIAGE_STEPS") && p.notes[0].contains("default"),
+                "{:?}",
+                p.notes
+            );
         }
+        // A good value, or none, says nothing.
+        assert!(one("LUCINA_FLAWS_TRIAGE_STEPS", "2").notes.is_empty());
+        assert!(policy().notes.is_empty());
     }
 
     #[test]
