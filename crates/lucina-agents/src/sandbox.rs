@@ -1,10 +1,4 @@
-if !args[i + 1].starts_with('/')
-                    || show(&p) != args[i + 1]
-                    || !rw_targets.contains(&p)
-                {if !args[i + 1].starts_with('/')
-                    || show(&p) != args[i + 1]
-                    || (p != Path::new("/tmp") && p != hidden.home)
-                {//! The worker sandbox (LA-C013): a [`Policy`] read from `deploy/lucina-agentd/sandbox-policy.toml`,
+//! The worker sandbox (LA-C013): a [`Policy`] read from `deploy/lucina-agentd/sandbox-policy.toml`,
 //! [`plan`], which turns a policy and one run into a [`Plan`], and [`Plan::resolve`], the only way to
 //! the bubblewrap argument list. Design, the view a worker gets and the limits:
 //! `docs/design/agents-sandbox.md`.
@@ -1549,7 +1543,10 @@ pub fn audit(hidden: &Hidden, args: &[String]) -> Result<()> {
             "--perms" if args[i + 1] != "0700" => return refuse("--perms must be 0700".to_owned()),
             "--tmpfs" => {
                 let p = normalize(Path::new(&args[i + 1]));
-                if !args[i + 1].starts_with('/') || (p != Path::new("/tmp") && p != hidden.home) {
+                if !args[i + 1].starts_with('/')
+                    || show(&p) != args[i + 1]
+                    || (p != Path::new("/tmp") && p != hidden.home)
+                {
                     return refuse(format!(
                         "--tmpfs at position {i}: {} is not exactly /tmp or the run's home in normal form",
                         args[i + 1]
@@ -1565,7 +1562,10 @@ pub fn audit(hidden: &Hidden, args: &[String]) -> Result<()> {
             }
             "--chdir" => {
                 let p = normalize(Path::new(&args[i + 1]));
-                if !args[i + 1].starts_with('/') || !rw_targets.contains(&p) {
+                if !args[i + 1].starts_with('/')
+                    || show(&p) != args[i + 1]
+                    || !rw_targets.contains(&p)
+                {
                     return refuse(format!(
                         "--chdir at position {i}: {} is not a normal-form path the list binds read-write",
                         args[i + 1]
