@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::kill::{self, Step};
+use super::kill::{self, Grant, Step};
 use super::repo::{self, Crate, Gate, Rules};
 use super::warm;
 use super::{GateResult, JobKind, Outcome, Spec};
@@ -324,6 +324,91 @@ impl Exec {
         .is_none()
     }
 
+    /// Where `bq` is, and whether it is ours ([`BqFind`]).
+    fn find_bq(&self) -> BqFind {
+        let path = match &self.bq {
+            BqSource::Fixed(None) => return BqFind::Missing("there is no bq here".into()),
+            BqSource::Fixed(Some(p)) => p.clone(),
+            BqSource::Home => {
+                let Some(home) = passwd_home() else {
+                    return BqFind::Missing(
+                        "the home directory of this uid cannot be read from the passwd entry".into(),
+                    );
+                };
+                let p = home.join(".local/bin/bq");
+                if std::fs::symlink_metadata(&p).is_err() {
+                    return BqFind::Missing(format!("{} does not exist", p.display()));
+                }
+                p
+            }
+        };
+        if bq_prints_usage(&path) {
+            BqFind::Found(path)
+        } else {
+            BqFind::Refused(format!(
+                "{} does not print bq's usage (--class short|long|proof, --max-wait, --priority), so it is not the queue this gate can call",
+                path.display()
+            ))
+        }
+    }
+
+    /// A gate (LA-C038, WORK-26): `run` in `cwd` under the limit `cap`, said as `limit` in the
+    /// failure. With `slot`, the command is the job of a `bq run` that takes a `long` slot first, as a
+    /// gate (`--priority gate`, `--who lagent-merge-<job id>`, at most [`BQ_QUEUE_CAP_SECS`] of waiting),
+    /// and `cap` counts from the grant: the slot is taken before the clock starts. No `bq` here: the
+    /// gate runs as it always did, with a line saying why. A `bq` that is not ours: the gate fails
+    /// and nothing runs.
+    fn gate_run(
+        &mut self,
+        cwd: &Path,
+        name: &str,
+        run: &str,
+        slot: bool,
+        cap: Duration,
+        limit: &str,
+    ) -> bool {
+        let mut timed_out = format!("timed out after {limit}");
+        let mut slot_run = None;
+        if slot {
+            match self.find_bq() {
+                BqFind::Found(bq) => {
+                    self.grants += 1;
+                    let dir = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
+                    let who = format!("lagent-merge-{}", self.spec.job_id);
+                    slot_run = Some(SlotRun {
+                        name: name.to_string(),
+                        wrapper: slot_wrapper(&bq, &who, self.bq_queue_cap_secs),
+                        marker: dir.join(format!("grant-{}", self.grants)),
+                        queue_cap_secs: self.bq_queue_cap_secs,
+                    });
+                    timed_out.push_str(" (clock started at the bq grant)");
+                }
+                BqFind::Missing(why) => self.say(&format!(
+                    "gate: {name} takes no bq slot ({why}); it runs without one"
+                )),
+                BqFind::Refused(why) => {
+                    self.say(&format!("gate: {name} refused: {why}"));
+                    return false;
+                }
+            }
+        }
+        self.sh_run_slot(cwd, run, cap, &timed_out, slot_run.as_ref())
+            .is_none()
+    }
+
+    /// [`Exec::gate_run`] for a planned gate, under its `timeout_min`.
+    fn gate_sh(&mut self, cwd: &Path, g: &Gate) -> bool {
+        let mins = g.timeout_min.max(1);
+        self.gate_run(
+            cwd,
+            &g.name,
+            &g.run,
+            g.slot,
+            Duration::from_secs(mins * 60),
+            &format!("{} min", g.timeout_min),
+        )
+    }
+
     /// The step's environment as the job builds it: the allowlist from the source environment plus
     /// the deploy recipe's declared names, and how many names were kept back — a count only, never
     /// a name or a value.
@@ -526,7 +611,31 @@ impl Exec {
     /// process behind. The command's environment, PATH, `CARGO_TARGET_DIR`, log lines and outcomes
     /// are the ones `sh_run` always built.
     fn sh_run(&mut self, cwd: &Path, cmd: &str, cap: Duration, timed_out: &str) -> Option<String> {
-        self.say(&format!("$ {cmd}"));
+        self.sh_run_slot(cwd, cmd, cap, timed_out, None)
+    }
+
+    /// [`Exec::sh_run`], and with `slot` (`Some`) the command runs as the job of a `bq run` that takes
+    /// a slot first: the executor waits for the grant, and `cap` counts from the grant, not from the
+    /// start (LA-C038, WORK-26). The slot is bq's: this starts the `bq run` as the step's own process
+    /// and promises nothing about releasing it; the deadline, the kill rounds and the sweep reach the
+    /// `bq` process with everything else the step started, and bq's holder check frees the slot when
+    /// that process is gone.
+    fn sh_run_slot(
+        &mut self,
+        cwd: &Path,
+        cmd: &str,
+        cap: Duration,
+        timed_out: &str,
+        slot: Option<&SlotRun>,
+    ) -> Option<String> {
+        if let Some(s) = slot {
+            self.say(&format!(
+                "gate: {} queued for a bq slot (class long, priority gate, waits at most {} s)",
+                s.name, s.queue_cap_secs
+            ));
+        } else {
+            self.say(&format!("$ {cmd}"));
+        }
         // The command gets the built environment (the allowlist from the executor's own
         // environment, plus the deploy recipe's declared names), not what the executor
         // inherited. How many names were kept back is said by count only.
@@ -576,7 +685,14 @@ impl Exec {
         // the group is what there is, and the job says so once per step rather than failing it. A scope that
         // was asked for is only said of once it has been *seen* (`kill::Sighting`).
         let systemctl = self.resolve("systemctl");
-        let (program, argv) = Self::step_argv(&bash, systemd_run.as_deref(), unit.as_deref(), cmd);
+        // A gate that takes a slot runs as `bq run … -- <the gate command>` (the step is that `bq`, by
+        // `exec`); the gate command and the marker travel in two names that the wrapper reads and unsets.
+        let started = match slot {
+            Some(s) => s.wrapper.clone(),
+            None => cmd.to_string(),
+        };
+        let (program, argv) =
+            Self::step_argv(&bash, systemd_run.as_deref(), unit.as_deref(), &started);
         if unit.is_none() {
             self.say(&format!(
                 "scope: none ({}): the step has its process group alone",
@@ -615,6 +731,16 @@ impl Exec {
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err));
+        if let Some(s) = slot {
+            // bq sets the pair for the job it starts; one the executor was itself started under is
+            // somebody else's slot, and `bq run` would take it for its own and queue for nothing.
+            command
+                .env_remove("BQ_SLOT")
+                .env_remove("BQ_SLOT_PID")
+                .env(SLOT_COMMAND_VAR, cmd)
+                .env(SLOT_GRANT_VAR, &s.marker);
+            let _ = std::fs::remove_file(&s.marker);
+        }
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -635,9 +761,43 @@ impl Exec {
                 self.path.clone().into(),
             )))
             .collect();
-        let ended = Step::new(child.id(), unit, systemctl)
-            .with_env(step_env)
-            .run_to_end(&mut child, cap, grace);
+        let mut step = Step::new(child.id(), unit, systemctl).with_env(step_env);
+        if let Some(s) = slot {
+            // The clock starts at the grant. The grant is announced in the log the moment it is seen,
+            // with the command line after it.
+            if let Ok(mut log) = self.log.try_clone() {
+                let (name, shown) = (s.name.clone(), cmd.to_string());
+                step = step.with_grant(Grant {
+                    marker: s.marker.clone(),
+                    seen: Box::new(move |slot_name, after| {
+                        let now = chrono::Utc::now().format("%H:%M:%S");
+                        let _ = writeln!(
+                            log,
+                            "[{now}] gate: {name} got {slot_name} after {}s",
+                            after.as_secs()
+                        );
+                        let _ = writeln!(log, "[{now}] $ {shown}");
+                    }),
+                });
+            }
+        }
+        let ended = step.run_to_end(&mut child, cap, grace);
+        if let Some(s) = slot {
+            let _ = std::fs::remove_file(&s.marker);
+            // Never granted and not ended by its limit: the wait itself is what failed (bq's own
+            // `--max-wait`, or bq refusing the job), and the limit of the gate was never in play.
+            if ended.granted_after.is_none() && !ended.timed_out {
+                if let Some(code) = ended.status.filter(|s| !s.success()) {
+                    let waited = format!(
+                        "waited for a bq slot for {} s without a grant (bq exit {})",
+                        started_at.elapsed().as_secs(),
+                        code.code().map_or("signal".to_string(), |c| c.to_string())
+                    );
+                    self.say(&format!("failed: {waited}"));
+                    return Some(waited);
+                }
+            }
+        }
         // Only now is the scope a fact: the unit was seen as the step's control group, or it never was and
         // the step is worked by its process group alone whatever the name at its start said.
         if let Some(line) = ended.scope.line() {
@@ -654,6 +814,19 @@ impl Exec {
                 "{} of the step's processes were still there when the killing gave up",
                 ended.left
             ));
+        }
+        // Never granted and not ended by its limit: the wait itself is what failed (bq's own
+        // `--max-wait`, or bq refusing the job), and the limit of the gate was never in play.
+        if slot.is_some() && ended.granted_after.is_none() && !ended.timed_out {
+            if let Some(code) = ended.status.filter(|s| !s.success()) {
+                let waited = format!(
+                    "waited for a bq slot for {} s without a grant (bq exit {})",
+                    started_at.elapsed().as_secs(),
+                    code.code().map_or("signal".to_string(), |c| c.to_string())
+                );
+                self.say(&format!("failed: {waited}"));
+                return Some(waited);
+            }
         }
         if ended.timed_out {
             self.say(&format!("failed: {timed_out}"));
@@ -849,7 +1022,7 @@ impl Exec {
                 env
             };
             let t = Instant::now();
-            let mut ok = self.sh(dir, &g.run, g.timeout_min);
+            let mut ok = self.gate_sh(dir, g);
             let mut flaky = false;
             // Some tests time things or bind ports and fail when nezopt is loaded: a failed cargo
             // test runs once more, and a pass then is reported as flaky, not hidden.
@@ -858,7 +1031,7 @@ impl Exec {
                     "gate failed: {}; running it once more (flaky tests under load)",
                     g.name
                 ));
-                ok = self.sh(dir, &g.run, g.timeout_min);
+                ok = self.gate_sh(dir, g);
                 flaky = ok;
             }
             results.push(GateResult {
@@ -4084,5 +4257,487 @@ mod tests {
         );
         // One budget, not two: the clippy was cut after what the check left, not after a cap of its own.
         assert!(!log[w..].contains("failed after 2s"), "{log}");
+    }
+
+    // ---- LA-C038 (WORK-26): a gate takes its bq slot before its clock starts ----------------------
+
+    /// Ends a child and reaps it on every path out of a test, a panic included.
+    struct Reaped(std::process::Child);
+
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// The usage line a real bq prints, as far as the executor reads it.
+    const FAKE_USAGE: &str = "usage: bq run --class short|long|proof|gate|node [--who NAME] [--priority gate|normal] [--max-wait SECONDS] -- cmd args...";
+
+    /// A fake `bq` in `dir`, standing in for `<passwd home>/.local/bin/bq`. It prints its usage when
+    /// run bare; `bq run … -- cmd` appends its own arguments and the `BQ_SLOT` it was started with to
+    /// `calls`, holds the grant back for the seconds in `delay` (when that file is there), then runs
+    /// `cmd` as bq does: as its child, with `BQ_SLOT=long-0` and `BQ_SLOT_PID` its own pid. With a
+    /// `never` file it never grants: it waits out `--max-wait` and fails as bq does.
+    fn fake_bq(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let bq = dir.join("bq");
+        write_exec(
+            &bq,
+            &format!(
+                "#!/bin/sh\nd=$(dirname \"$0\")\n\
+                 if [ \"$1\" != run ]; then echo '{FAKE_USAGE}' >&2; exit 2; fi\n\
+                 echo \"$* in=$BQ_SLOT\" >> \"$d/calls\"\n\
+                 shift\nmaxwait=0\n\
+                 while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do\n\
+                 case \"$1\" in --max-wait) maxwait=$2; shift;; esac; shift\ndone\nshift\n\
+                 if [ -f \"$d/never\" ]; then sleep \"$maxwait\"; echo \"no build slot in $maxwait s: the long queue is full\" >&2; exit 1; fi\n\
+                 if [ -f \"$d/delay\" ]; then sleep \"$(cat \"$d/delay\")\"; fi\n\
+                 echo \"bq: got long-0 after the wait\" >&2\n\
+                 BQ_SLOT=long-0 BQ_SLOT_PID=$$ \"$@\"\nexit $?\n"
+            ),
+        );
+        bq
+    }
+
+    /// An executor on a fresh job directory under `root`, with `bq` (or none) as its queue.
+    fn slot_exec(root: &Path, bq: Option<PathBuf>) -> (Exec, PathBuf) {
+        let dir = root.join(format!("job-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, root, "topic", "0")).unwrap();
+        x.bq = BqSource::Fixed(bq);
+        x.kill_grace = Duration::from_millis(500);
+        x.source_env = Vec::new();
+        (x, dir)
+    }
+
+    fn slot_log(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("log")).unwrap_or_default()
+    }
+
+    /// The queue wait is longer than the gate's whole limit, and the gate passes: its clock starts at
+    /// the grant. Before this change the limit counted from the start and the gate was killed in the queue.
+    #[test]
+    fn slot_a_queue_wait_longer_than_the_limit_does_not_time_the_gate_out() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bq = fake_bq(&root.join("fake"));
+        std::fs::write(root.join("fake/delay"), "3").unwrap();
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        // Limit 2 s; the wait is 3 s; the command takes 1 s, about half the limit.
+        let ok = x.gate_run(
+            root,
+            "fast local check",
+            "sleep 1",
+            true,
+            Duration::from_secs(2),
+            "2 s",
+        );
+        let log = slot_log(&dir);
+        assert!(ok, "{log}");
+        assert!(
+            log.contains("gate: fast local check queued for a bq slot"),
+            "{log}"
+        );
+        assert!(
+            log.contains("gate: fast local check got long-0 after 3s")
+                || log.contains("gate: fast local check got long-0 after 4s"),
+            "{log}"
+        );
+        assert!(!log.contains("timed out"), "{log}");
+        // The queued line, then the grant, then the command line.
+        let (q, g, c) = (
+            log.find("queued for a bq slot").unwrap(),
+            log.find("got long-0").unwrap(),
+            log.find("$ sleep 1").unwrap(),
+        );
+        assert!(q < g && g < c, "{log}");
+        // The grant marker is gone again.
+        assert!(!dir.join("grant-1").exists());
+    }
+
+    /// A gate that really overruns after the grant is killed at its limit plus the grace, the child
+    /// that ignores TERM included, and the log says the clock started at the grant.
+    #[test]
+    fn slot_a_gate_that_overruns_after_the_grant_is_killed_at_its_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bq = fake_bq(&root.join("fake"));
+        std::fs::write(root.join("fake/delay"), "1").unwrap();
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        let pid_file = root.join("gate.pid");
+        let cmd = format!(
+            "echo $$ > {}; trap '' TERM; while :; do sleep 1; done",
+            pid_file.display()
+        );
+        let t = Instant::now();
+        let ok = x.gate_run(root, "g", &cmd, true, Duration::from_secs(2), "2 s");
+        let took = t.elapsed();
+        let log = slot_log(&dir);
+        assert!(!ok, "{log}");
+        assert!(
+            log.contains("failed: timed out after 2 s (clock started at the bq grant)"),
+            "{log}"
+        );
+        // 1 s of queue + 2 s limit + 0.5 s grace, and nothing like the 30 s of a hung kill.
+        assert!(took < Duration::from_secs(15), "{took:?}\n{log}");
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "the gate's shell is still there\n{log}"
+        );
+    }
+
+    /// A gate that is not a build or a check takes no slot: the fake bq is never called. Through a
+    /// whole merge, with the gate set the repo's own file makes.
+    #[test]
+    fn slot_a_non_build_gate_never_calls_bq_and_a_cargo_gate_does() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let fake = root.join("fake");
+        let bq = fake_bq(&fake);
+        let (_origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("cargo"), "#!/bin/sh\nexit 0\n");
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"poll\"\nrun = \"test -f b.txt\"\n[[gate]]\nname = \"sleeper\"\nrun = \"sleep 0\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let (mut x, dir) = slot_exec(root, Some(bq.clone()));
+        x.spec = spec(root, &repo, "topic", &head);
+        let out = x.merge();
+        assert_eq!(out.code, "MERGED", "{out:?}\n{}", slot_log(&dir));
+        assert!(
+            !fake.join("calls").exists(),
+            "bq was called for a gate that builds nothing"
+        );
+        assert!(!slot_log(&dir).contains("queued for a bq slot"));
+
+        // The same repo with a gate that runs cargo (shadowed by the script above): one `bq run`.
+        git(&repo, &["fetch", "-q", "origin"]);
+        git(&repo, &["checkout", "-q", "-B", "main", "origin/main"]);
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"build\"\nrun = \"cargo test --quiet\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules two"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic2"]);
+        let head = commit(&repo, "c.txt", "c\n", "add c");
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        x.spec = spec(root, &repo, "topic2", &head);
+        x.path = format!("{}:{}", bin.display(), x.path);
+        let out = x.merge();
+        assert_eq!(out.code, "MERGED", "{out:?}\n{}", slot_log(&dir));
+        let calls = std::fs::read_to_string(fake.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 1, "{calls}");
+        assert!(
+            calls.starts_with(
+                "run --class long --priority gate --max-wait 1800 --who lagent-merge-job_t -- bash -c "
+            ),
+            "{calls}"
+        );
+    }
+
+    /// No bq on the host: the gate runs as it always did, and the log says so once.
+    #[test]
+    fn slot_a_host_without_bq_runs_the_gate_as_it_did() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (mut x, dir) = slot_exec(root, None);
+        let out = root.join("ran");
+        let ok = x.gate_run(
+            root,
+            "build",
+            &format!("echo ran > {}", out.display()),
+            true,
+            Duration::from_secs(5),
+            "5 s",
+        );
+        let log = slot_log(&dir);
+        assert!(ok && out.exists(), "{log}");
+        assert_eq!(log.matches("takes no bq slot").count(), 1, "{log}");
+        assert!(log.contains("there is no bq here"), "{log}");
+        assert!(!log.contains("queued for a bq slot"), "{log}");
+    }
+
+    /// A file at bq's place that does not print bq's usage: the gate fails with a clear line and runs nothing.
+    #[test]
+    fn slot_a_bq_that_prints_no_usage_refuses_the_gate() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bq = root.join("notbq");
+        write_exec(&bq, "#!/bin/sh\necho 'this is something else'\n");
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        let out = root.join("ran");
+        let ok = x.gate_run(
+            root,
+            "build",
+            &format!("echo ran > {}", out.display()),
+            true,
+            Duration::from_secs(5),
+            "5 s",
+        );
+        let log = slot_log(&dir);
+        assert!(!ok, "{log}");
+        assert!(!out.exists(), "the gate ran\n{log}");
+        assert!(
+            log.contains("gate: build refused:") && log.contains("does not print bq's usage"),
+            "{log}"
+        );
+    }
+
+    /// A bq that never grants: the gate fails after the queue cap with "waited for a bq slot".
+    #[test]
+    fn slot_the_queue_cap_fails_the_gate_with_the_wait() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bq = fake_bq(&root.join("fake"));
+        std::fs::write(root.join("fake/never"), "").unwrap();
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        x.bq_queue_cap_secs = 1;
+        let out = root.join("ran");
+        let ok = x.gate_run(
+            root,
+            "build",
+            &format!("echo ran > {}", out.display()),
+            true,
+            Duration::from_secs(60),
+            "1 min",
+        );
+        let log = slot_log(&dir);
+        assert!(!ok && !out.exists(), "{log}");
+        assert!(
+            log.contains("failed: waited for a bq slot for ")
+                && log.contains(" s without a grant (bq exit 1)"),
+            "{log}"
+        );
+        assert!(!log.contains("timed out"), "{log}");
+        assert!(log.contains("--max-wait 1") || log.contains("waits at most 1 s"), "{log}");
+    }
+
+    /// The wrapped command sees `BQ_SLOT` and `BQ_SLOT_PID` as bq sets them, and a slot the executor
+    /// itself carried in its environment is not passed on to bq; the names the executor uses to hand
+    /// the command over are gone; a gate that takes no slot sees none of it.
+    #[test]
+    fn slot_the_wrapped_command_sees_the_slot_pair_and_nothing_else_of_ours() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let fake = root.join("fake");
+        let bq = fake_bq(&fake);
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        // A stale pair in the executor's own environment, from a slot that is not this gate's.
+        x.source_env = vec![
+            (OsString::from("BQ_SLOT"), OsString::from("stale-0")),
+            (OsString::from("BQ_SLOT_PID"), OsString::from("1")),
+        ];
+        let seen = root.join("seen");
+        let names = root.join("names");
+        let cmd = format!(
+            "printf '%s %s\\n' \"$BQ_SLOT\" \"$BQ_SLOT_PID\" > {s}; env | cut -d= -f1 | sort > {n}",
+            s = seen.display(),
+            n = names.display()
+        );
+        assert!(x.gate_run(root, "g", &cmd, true, Duration::from_secs(10), "10 s"), "{}", slot_log(&dir));
+        let seen_text = std::fs::read_to_string(&seen).unwrap();
+        assert!(seen_text.starts_with("long-0 "), "{seen_text}");
+        let pid: u32 = seen_text.split_whitespace().nth(1).unwrap().parse().unwrap();
+        assert!(pid > 1);
+        let names_text = std::fs::read_to_string(&names).unwrap();
+        for n in ["BQ_SLOT", "BQ_SLOT_PID"] {
+            assert!(names_text.lines().any(|l| l == n), "{names_text}");
+        }
+        for n in [SLOT_COMMAND_VAR, SLOT_GRANT_VAR] {
+            assert!(!names_text.lines().any(|l| l == n), "{names_text}");
+        }
+        // The stale pair was not what the fake bq started with.
+        let calls = std::fs::read_to_string(fake.join("calls")).unwrap();
+        assert!(calls.trim_end().ends_with("in="), "{calls}");
+
+        // A gate without a slot sees neither name, and nothing of ours.
+        let (mut x, dir) = slot_exec(root, Some(fake.join("bq")));
+        let names2 = root.join("names2");
+        let cmd = format!("env | cut -d= -f1 | sort > {}", names2.display());
+        assert!(x.gate_run(root, "g", &cmd, false, Duration::from_secs(10), "10 s"), "{}", slot_log(&dir));
+        let t = std::fs::read_to_string(&names2).unwrap();
+        for n in ["BQ_SLOT", "BQ_SLOT_PID", SLOT_COMMAND_VAR, SLOT_GRANT_VAR] {
+            assert!(!t.lines().any(|l| l == n), "{t}");
+        }
+    }
+
+    /// The wrapper is a plain `exec bq run …` whose quoting keeps a gate command with quotes, `$`
+    /// and braces whole: the command is not in bq's argument list at all.
+    #[test]
+    fn slot_the_wrapper_names_bq_the_class_the_priority_the_cap_and_no_gate_text() {
+        let w = slot_wrapper(Path::new("/h/it's/bq"), "lagent-merge-job_1", 1800);
+        assert!(
+            w.starts_with(
+                "exec '/h/it'\\''s/bq' run --class long --priority gate --max-wait 1800 --who 'lagent-merge-job_1' -- bash -c '"
+            ),
+            "{w}"
+        );
+        assert!(w.ends_with("' bash"), "{w}");
+        assert!(!w.contains("${"), "{w}");
+        assert!(bq_usage_is_ours(FAKE_USAGE));
+        assert!(!bq_usage_is_ours("usage: bq run --class short|long"));
+        assert!(!bq_usage_is_ours("this is something else"));
+    }
+
+    /// A gate with quotes, `$` and braces in its text reaches its shell as written, through the wrapper.
+    #[test]
+    fn slot_a_gate_text_with_quotes_and_braces_arrives_whole() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bq = fake_bq(&root.join("fake"));
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        let out = root.join("out");
+        let cmd = format!(
+            "v='a b'; [ -n \"${{v+x}}\" ] && printf '%s|%s' \"$0\" \"${{v}}\" > {}",
+            out.display()
+        );
+        assert!(x.gate_run(root, "g", &cmd, true, Duration::from_secs(10), "10 s"), "{}", slot_log(&dir));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "bash|a b");
+    }
+
+    /// The test binary, re-run as the executor of the real-bq test below: it takes the gate slot with
+    /// the real bq and waits inside it. With no `LA_C038_ROOT` it is nothing, and passes.
+    #[test]
+    fn slot_real_bq_executor_child() {
+        let Some(root) = std::env::var_os("LA_C038_ROOT").map(PathBuf::from) else {
+            return;
+        };
+        let bq = std::env::var_os("LA_C038_BQ").map(PathBuf::from).unwrap();
+        let dir = root.join("child-job");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(&root, &root, "topic", "0")).unwrap();
+        x.bq = BqSource::Fixed(Some(bq));
+        let cmd = std::fs::read_to_string(root.join("gate-command")).unwrap();
+        x.gate_run(&root, "hold", &cmd, true, Duration::from_secs(60), "1 min");
+    }
+
+    /// The REAL bq, with its state directory in the test's own directory and one `long` slot. The gate
+    /// holds the slot; the meta file names a pid that is an ancestor of the gate command, and the gate
+    /// sees `BQ_SLOT` and `BQ_SLOT_PID` for it (so `scripts/check-fast`'s `bq_slot_is_real` holds in
+    /// the wrapped command). Then the executor is killed with SIGKILL and what bq does with the
+    /// slot is measured, not assumed. Skipped, with the reason printed, where there is no bq.
+    #[test]
+    fn slot_real_bq_slot_after_the_executor_is_killed() {
+        let Some(home) = passwd_home() else {
+            eprintln!("skipped: no passwd home");
+            return;
+        };
+        let bq = home.join(".local/bin/bq");
+        if !bq_prints_usage(&bq) {
+            eprintln!("skipped: {} is missing or is not bq", bq.display());
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let state = root.join("bqstate");
+        let knobs = [
+            ("BQ_DIR", state.display().to_string()),
+            ("BQ_NO_SCOPE", "1".into()),
+            ("BQ_LONG_SLOTS", "1".into()),
+            ("BQ_NO_TOUCH", "1".into()),
+            ("BQ_FREE_FLOOR_GIB", "0".into()),
+            ("BQ_FREE_DISK_RESERVE_GIB", "0".into()),
+            ("BQ_MEM_FLOOR_GIB", "0".into()),
+            ("BQ_MEM_RESERVE_GIB", "0".into()),
+            ("BQ_LOAD_CEILING", "0".into()),
+        ];
+        // The gate: write what the wrapped command sees, then hold the slot for 6 s.
+        let seen = root.join("seen");
+        std::fs::write(
+            root.join("gate-command"),
+            format!(
+                "echo \"$$ $BQ_SLOT $BQ_SLOT_PID\" > {}; sleep 6",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "pipeline::exec::tests::slot_real_bq_executor_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("LA_C038_ROOT", root)
+        .env("LA_C038_BQ", &bq)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+        for (k, v) in &knobs {
+            cmd.env(k, v);
+        }
+        let mut executor = Reaped(cmd.spawn().unwrap());
+        // The gate has the slot when it has written what it sees.
+        let t = Instant::now();
+        while !seen.exists() || std::fs::read_to_string(&seen).unwrap_or_default().trim().is_empty() {
+            assert!(t.elapsed() < Duration::from_secs(60), "the gate never got the slot");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let seen_text = std::fs::read_to_string(&seen).unwrap();
+        let f: Vec<&str> = seen_text.split_whitespace().collect();
+        let (gate_pid, slot, holder) = (f[0], f[1], f[2]);
+        assert_eq!(slot, "long-0", "{seen_text}");
+        // bq's slot record names that pid, with a class, and the pid is an ancestor of the gate command.
+        let meta = std::fs::read_to_string(state.join("long-0.meta")).unwrap();
+        assert!(meta.lines().any(|l| l == format!("pid={holder}")), "{meta}");
+        assert!(meta.lines().any(|l| l == "class=long"), "{meta}");
+        let (mut p, mut found) = (gate_pid.to_string(), false);
+        for _ in 0..16 {
+            let stat = std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default();
+            let ppid = stat
+                .rsplit_once(')')
+                .and_then(|(_, r)| r.split_whitespace().nth(1))
+                .unwrap_or("0")
+                .to_string();
+            if ppid == holder {
+                found = true;
+                break;
+            }
+            p = ppid;
+        }
+        assert!(found, "BQ_SLOT_PID {holder} is not an ancestor of the gate command");
+
+        // The executor dies without a word.
+        executor.0.kill().unwrap();
+        executor.0.wait().unwrap();
+        let second = |wait: &str| {
+            let mut c = Command::new(&bq);
+            c.args(["run", "--class", "long", "--priority", "gate", "--max-wait", wait])
+                .args(["--who", "la-c038-second", "--", "true"])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped());
+            for (k, v) in &knobs {
+                c.env(k, v);
+            }
+            let t = Instant::now();
+            let o = c.output().unwrap();
+            (o.status.success(), t.elapsed(), String::from_utf8_lossy(&o.stderr).to_string())
+        };
+        // bq's rule is the live holder: the `bq run` the dead executor left is alive, so for as long
+        // as it is, the slot is not free. This line is what was measured, printed for the report.
+        let (got, after, err) = second("1");
+        eprintln!("second bq run right after the executor's death: got={got} after={after:?} {err}");
+        // It is free once the holder is gone: the gate ends by itself, after at most 6 s, and bq's
+        // own accounting hands the slot on, with nothing from the executor.
+        let (got, after, err) = second("40");
+        assert!(got, "the slot never came back: {err}");
+        assert!(after < Duration::from_secs(30), "{after:?}");
     }
 }
