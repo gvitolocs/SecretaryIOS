@@ -416,7 +416,7 @@ fn check_fast(s: &Scratch, r: &Path, proofs: bool, hold: bool) -> Command {
 }
 
 /// The queue the launcher finds: the launcher looks for `bq` in the passwd home of its uid, never in `$HOME`, and these tests
-/// judge the install and not the queue, so the stand-in prints our usage and runs what follows the `--` in place.
+/// judge the install and not the queue, so the stand-in prints our usage and writes the slot record bq would (the launcher believes its own marker only against it) and runs what follows the `--` in place.
 const QUEUE_STUB: &str = "#!/usr/bin/env bash
 if [ \"$#\" -eq 0 ]; then
     echo 'usage: bq run --class short|long|proof [--lock PATH] [--who NAME] [--priority gate|normal] [--max-wait SECONDS] [--keep-env NAME] -- cmd args...'
@@ -424,6 +424,10 @@ if [ \"$#\" -eq 0 ]; then
 fi
 while [ \"$1\" != \"--\" ]; do shift; done
 shift
+h=$(cd \"$(dirname \"$0\")/../..\" && pwd)
+mkdir -p \"$h/.cache/bq\"
+printf 'pid=%s\\nclass=long\\n' \"$$\" > \"$h/.cache/bq/long-0.meta\"
+export BQ_SLOT=long-0 BQ_SLOT_PID=$$
 exec \"$@\"
 ";
 

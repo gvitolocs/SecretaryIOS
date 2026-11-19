@@ -8,7 +8,8 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 # The build queue (HOST-11). Every check-fast runs as ONE job of the queue's `long` class, so that several of them at once
 # cannot stack up their steps outside the queue's slots (nezopt ran out of memory on 80 step scopes from concurrent runs). The
 # launcher always re-runs itself through `bq run --class long`, and the job's own call (the same launcher, marked with the
-# first argument --queued-by-bq, which only this launcher puts there) does the work. No environment variable decides whether a
+# first argument --queued-by-bq, which only this launcher puts there and which is ignored unless bq really holds a slot for the run)
+# does the work. No environment variable decides whether a
 # run is queued: bq itself runs a nested call of the SAME class right there, with no ticket and no second slot, and queues a
 # nested call of another class in its own pool (docs/ci/BQ.md, "Never nest"); it believes the BQ_SLOT / BQ_SLOT_PID mark only
 # against its own slot record (tools/bq/src/main.rs, ancestor_slot_class), and a launcher that read the mark itself would be
@@ -69,10 +70,52 @@ bq_find() {
     fi
     return 1
 }
+# A typed --queued-by-bq is ignored unless bq really holds a slot for this run: the inner run believes it only as bq believes its
+# own mark (tools/bq/src/main.rs, ancestor_slot_class): BQ_SLOT and BQ_SLOT_PID are set, BQ_SLOT_PID is a live ancestor of this
+# shell, and the slot's meta file in the queue's state directory (<passwd home>/.cache/bq, never $HOME or BQ_DIR) names
+# pid=<BQ_SLOT_PID> and a class bq knows. Otherwise the argument is dropped and the run queues like any other.
+bq_slot_is_real() {
+    local spid=${BQ_SLOT_PID:-} p=$$ stat rest n=0 meta
+    [ -n "${BQ_SLOT:-}" ] || return 1
+    case "$BQ_SLOT" in */* | .*) return 1 ;; esac
+    case "$spid" in '' | *[!0-9]*) return 1 ;; esac
+    [ "$spid" -gt 1 ] || return 1
+    [ -d "/proc/$spid" ] || return 1
+    meta=$qhome/.cache/bq/$BQ_SLOT.meta
+    [ -f "$meta" ] || return 1
+    grep -qx "pid=$spid" "$meta" || return 1
+    grep -qxE 'class=(gate|short|long|proof|node)' "$meta" || return 1
+    while [ "$p" -gt 1 ] && [ "$n" -lt 64 ]; do
+        [ "$p" = "$spid" ] && return 0
+        stat=$(<"/proc/$p/stat") 2>/dev/null || return 1
+        rest=${stat##*) } # after the command name, which may hold spaces and parentheses: "S ppid ..."
+        rest=${rest#* }
+        p=${rest%% *}
+        case "$p" in '' | *[!0-9]*) return 1 ;; esac
+        n=$((n + 1))
+    done
+    return 1
+}
+# The argument carries how many times this run has been through the queue (--queued-by-bq=N; a typed bare --queued-by-bq is 0). A
+# run that still finds no real slot after being queued twice stops (exit 2) instead of going round again: a queue whose state
+# directory is not the one looked up here would otherwise send the launcher through it for ever.
 queued=0
-if [ "${1:-}" = --queued-by-bq ]; then
-    queued=1
-    shift
+depth=0
+case "${1:-}" in
+    --queued-by-bq=[0-9]*)
+        depth=${1#--queued-by-bq=}
+        shift
+        case "$depth" in *[!0-9]*) depth=0 ;; esac
+        if bq_slot_is_real; then queued=1; fi
+        ;;
+    --queued-by-bq)
+        shift
+        if bq_slot_is_real; then queued=1; fi
+        ;;
+esac
+if [ "$queued" = 0 ] && [ "$depth" -ge 2 ]; then
+    echo "check-fast: queued twice and bq holds no slot for this run (no $qhome/.cache/bq/<slot>.meta naming this run); refusing to go round again" >&2
+    exit 2
 fi
 if [ "$queued" = 0 ]; then
     bqrc=0
@@ -88,7 +131,7 @@ if [ "$queued" = 0 ]; then
         done
         self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
         exec "$bqbin" run --class long --priority "$prio" --max-wait 3600 --keep-env GIT_CONFIG_COUNT \
-            --who "check-fast:$(basename "$root")" -- "$self" --queued-by-bq "$@"
+            --who "check-fast:$(basename "$root")" -- "$self" "--queued-by-bq=$((depth + 1))" "$@"
     fi
     # On stderr, so that the stdout of a run is still the check's own bytes; it is the first line the run prints.
     echo "check-fast: no bq on this host; running without the queue" >&2

@@ -16,7 +16,10 @@
 #   (8) an ours-looking bq first on PATH does not displace the home's; it is used only when the home has none;
 #   (9) LUCINA_BQ is not read;
 #   (10) $HOME decides nothing: a HOME without a bq, or none, still queues through the passwd home's bq;
-#   (11) a passwd home that cannot be resolved is a refusal with exit 2, not "no queue here".
+#   (11) a passwd home that cannot be resolved is a refusal with exit 2, not "no queue here";
+#   (13) a typed --queued-by-bq is ignored unless bq really holds a slot for the run (a live ancestor holder, and a meta file in the
+#        queue's state directory under the passwd home naming that pid): without one it queues; with a real one it runs in place;
+#   (14) a queue that never holds a real slot sends the run round at most twice, then it stops with exit 2.
 # Last line: `check-fast-queue-test: pass`.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -51,7 +54,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 nested=0
 if [ -n "${BQ_SLOT:-}" ] && [ "$BQ_SLOT" = "$class-0" ] && [ -f "$STUB_BQ_STATE/$BQ_SLOT.meta" ] &&
-    grep -qx "pid=${BQ_SLOT_PID:-}" "$STUB_BQ_STATE/$BQ_SLOT.meta" && [ -d "/proc/${BQ_SLOT_PID:-0}" ]; then
+    grep -qx "pid=${BQ_SLOT_PID:-}" "$STUB_BQ_STATE/$BQ_SLOT.meta" && grep -qx "class=$class" "$STUB_BQ_STATE/$BQ_SLOT.meta" && [ -d "/proc/${BQ_SLOT_PID:-0}" ]; then
     nested=1
 fi
 echo "@TAG@ $*" >> "$STUB_BQ_LOG"
@@ -59,7 +62,10 @@ if [ "$nested" = 1 ]; then echo "@TAG@ in-place $class" >> "$STUB_BQ_LOG"; fi
 while [ "$1" != "--" ]; do shift; done
 shift
 if [ "$nested" = 0 ]; then
-    echo "pid=$$" > "$STUB_BQ_STATE/$class-0.meta"
+    if [ -z "${STUB_NO_META:-}" ]; then
+        mkdir -p "$STUB_BQ_STATE"
+        printf 'pid=%s\nclass=%s\n' "$$" "$class" > "$STUB_BQ_STATE/$class-0.meta"
+    fi
     export BQ_SLOT="$class-0" BQ_SLOT_PID=$$
 fi
 exec "$@"
@@ -85,7 +91,7 @@ make_launcher() {
 }
 # mkhome <dir> [bq <tag> | badbq]: a home directory for a launcher copy, with the stand-in tool the launcher installs and runs.
 mkhome() {
-    mkdir -p "$1/.local/bin" "$1/tool-build/release"
+    mkdir -p "$1/.local/bin" "$1/.cache/bq" "$1/tool-build/release"
     chmod 755 "$1/tool-build" "$1/tool-build/release" # the launcher refuses a tool directory open to group or others
     printf '#!/usr/bin/env bash\necho "stub-ran $*"\n' > "$1/tool-build/release/lucina-ci"
     chmod +x "$1/tool-build/release/lucina-ci"
@@ -123,7 +129,7 @@ launch() {
     : > "$calls"
     rc=0
     env -u BQ_SLOT -u BQ_SLOT_PID -u BQ_PRIORITY -u LUCINA_BQ ${envs[@]+"${envs[@]}"} \
-        PATH="$first:/usr/bin:/bin" STUB_BQ_LOG="$calls" STUB_BQ_STATE="$tmp/state" \
+        PATH="$first:/usr/bin:/bin" STUB_BQ_LOG="$calls" STUB_BQ_STATE="$tmp/$h/.cache/bq" \
         SECRETARY_CI_TOOL_TARGET="$tmp/$h/tool" SECRETARY_CI_TOOL_BUILD="$tmp/$h/tool-build" \
         "$@" > "$tmp/$name.out" 2> "$tmp/$name.err" || rc=$?
     out=$tmp/$name.out
@@ -145,14 +151,14 @@ L=$(launcher_for home)
 # (1) a plain run: one call, byte-exact.
 launch plain home "$tmp/base" -- "$L" --base HEAD
 ran_ok plain
-want="home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq --base HEAD"
+want="home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD"
 [ "$(cat "$calls")" = "$want" ] || fail "(1) the queue call is not byte-exact: $(cat "$calls")"
 echo "ok: (1) a plain run queues once with the byte-exact call, and the job's own run does not queue again"
 
 # (2) the merge gate.
 launch gate home "$tmp/base" -- "$L" --base HEAD^1 --merge-gate
 ran_ok gate
-want="home run --class long --priority gate --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq --base HEAD^1 --merge-gate"
+want="home run --class long --priority gate --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD^1 --merge-gate"
 [ "$(cat "$calls")" = "$want" ] || fail "(2) the gate call is not byte-exact: $(cat "$calls")"
 echo "ok: (2) --merge-gate asks for priority gate"
 
@@ -166,7 +172,7 @@ ran_ok nested
 launch nested2 home "$tmp/base" -- "$home/.local/bin/bq" run --class short -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
 ran_ok nested2
 if grep -q 'in-place' "$calls"; then fail "(3) a nested call of another class ran in place: $(cat "$calls")"; fi
-grep -qxF "home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq --base HEAD" "$calls" ||
+grep -qxF "home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD" "$calls" ||
     fail "(3) the nested call of another class did not queue as class long: $(cat "$calls")"
 echo "ok: (3) nested in the same class runs in place once, in another class queues in its own slot; neither loops"
 
@@ -256,5 +262,54 @@ for h in empty gone; do
     grep -qF "cannot resolve the home directory" "$err" || fail "(11) the refusal does not say why: $(cat "$err")"
 done
 echo "ok: (11) an unresolvable passwd home is a refusal with exit 2"
+
+# (13) a typed --queued-by-bq decides nothing unless bq really holds a slot for the run. The state directory is the passwd home's
+# .cache/bq. Each case must end queued exactly once, with the check run once.
+queued_once() { # queued_once <case> [depth]: the one queue call this run made, byte for byte, and the check ran once
+    ran_ok "$1"
+    [ "$(grep -c '^home run ' "$calls")" = 1 ] || fail "($1) expected exactly one queue call: $(cat "$calls")"
+    grep -qxF "home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=${2:-1} --base HEAD" "$calls" ||
+        fail "($1) the call is not the byte-exact one: $(cat "$calls")"
+    if grep -q in-place "$calls"; then fail "($1) it ran in place: $(cat "$calls")"; fi
+}
+rm -f "$tmp/home/.cache/bq/"*.meta
+launch typed home "$tmp/base" -- "$L" --queued-by-bq --base HEAD
+queued_once typed
+launch typed1 home "$tmp/base" -- "$L" --queued-by-bq=1 --base HEAD
+queued_once typed1 2
+launch typed2 home "$tmp/base" -- "$L" --queued-by-bq=7 --base HEAD
+refused typed2 # a typed count past the second trip is stopped by the guard, never run
+grep -qF "queued twice" "$err" || fail "(13) typed2: the refusal does not say why: $(cat "$err")"
+# a slot named and a live ancestor, but no meta file
+rm -f "$tmp/home/.cache/bq/"*.meta
+launch nometa home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$$" -- "$L" --queued-by-bq --base HEAD
+queued_once nometa
+# a meta file that names another pid
+mkdir -p "$tmp/home/.cache/bq"
+printf 'pid=%s\nclass=long\n' "$dead" > "$tmp/home/.cache/bq/long-0.meta"
+launch otherpid home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$$" -- "$L" --queued-by-bq --base HEAD
+queued_once otherpid
+# a meta file for this pid but no class bq knows
+printf 'pid=%s\nclass=bogus\n' "$$" > "$tmp/home/.cache/bq/long-0.meta"
+launch noclass home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$$" -- "$L" --queued-by-bq --base HEAD
+queued_once noclass
+# a meta file in a state directory the launcher does not read (BQ_DIR, HOME) is not looked at
+mkdir -p "$tmp/elsewhere"
+printf 'pid=%s\nclass=long\n' "$$" > "$tmp/elsewhere/long-0.meta"
+launch elsewhere home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$$" BQ_DIR="$tmp/elsewhere" "HOME=$tmp" -- "$L" --queued-by-bq --base HEAD
+queued_once elsewhere
+rm -f "$tmp/home/.cache/bq/"*.meta
+# a real slot, made by the stub-bq nested run that writes the meta: the call runs in place, once
+launch real home "$tmp/base" -- "$home/.local/bin/bq" run --class long -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
+ran_ok real
+[ "$(grep -c '^home in-place long$' "$calls")" = 1 ] || fail "(13) a real nested slot did not run in place exactly once: $(cat "$calls")"
+echo "ok: (13) a typed --queued-by-bq is ignored unless bq really holds a slot for the run; a real slot runs in place"
+
+# (14) a queue that never writes a slot record: the run goes round at most twice, then stops with exit 2 and runs nothing.
+launch noslot home "$tmp/base" STUB_NO_META=1 -- "$L" --base HEAD
+refused noslot
+[ "$(grep -c '^home run ' "$calls")" = 2 ] || fail "(14) expected exactly two trips through the queue: $(cat "$calls")"
+grep -qF "queued twice" "$err" || fail "(14) the refusal does not say why: $(cat "$err")"
+echo "ok: (14) a queue that holds no real slot is gone through twice, then the run stops with exit 2"
 
 echo "check-fast-queue-test: pass"
