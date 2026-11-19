@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use clap::Parser;
 
 #[derive(Parser)]
@@ -30,12 +30,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    if !cli.addr.ip().is_loopback() {
-        bail!(
-            "--addr {}: lucina-updates listens on loopback only",
-            cli.addr
-        );
-    }
+    lucina_updates::require_loopback(cli.addr).map_err(anyhow::Error::msg)?;
     let store = match cli.store {
         Some(s) => s,
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set; pass --store")?)

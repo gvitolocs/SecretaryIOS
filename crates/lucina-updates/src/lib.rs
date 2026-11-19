@@ -36,6 +36,18 @@ use axum::Router;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
+/// The listen address must be a loopback one (`127.0.0.0/8` or `::1`): the sidecar does no
+/// authentication, so only the proxy on the same host may reach it.
+pub fn require_loopback(addr: std::net::SocketAddr) -> Result<(), String> {
+    if addr.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err(format!(
+            "--addr {addr}: lucina-updates listens on loopback only"
+        ))
+    }
+}
+
 /// A manifest bigger than this is a publisher bug and is not served.
 pub const MANIFEST_MAX: u64 = 16 * 1024;
 
@@ -437,6 +449,33 @@ async fn serve_artefact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lb(s: &str) -> Result<(), String> {
+        require_loopback(s.parse().unwrap())
+    }
+
+    #[test]
+    fn only_loopback_addresses_are_accepted() {
+        assert_eq!(lb("127.0.0.1:8811"), Ok(()));
+        assert_eq!(lb("[::1]:8811"), Ok(()));
+        // all of 127.0.0.0/8 is loopback to std, so 127.0.0.2 is accepted (behaviour as it was)
+        assert_eq!(lb("127.0.0.2:8811"), Ok(()));
+        // everything else is refused with the same message as before
+        for a in [
+            "0.0.0.0:8811",
+            "[::]:8811",
+            "192.168.1.20:8811",
+            "100.64.1.5:8811",
+        ] {
+            assert_eq!(
+                lb(a),
+                Err(format!(
+                    "--addr {a}: lucina-updates listens on loopback only"
+                )),
+                "{a}"
+            );
+        }
+    }
 
     #[test]
     fn range_selection() {
