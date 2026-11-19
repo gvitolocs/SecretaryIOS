@@ -447,10 +447,6 @@ mod tests {
                 .push((field.name().to_string(), format!("{value:?}")));
         }
 
-        fn record_display(&mut self, field: &Field, value: &dyn std::fmt::Display) {
-            self.0.push((field.name().to_string(), format!("{value}")));
-        }
-
         fn record_str(&mut self, field: &Field, value: &str) {
             self.0.push((field.name().to_string(), value.to_string()));
         }
@@ -481,7 +477,11 @@ mod tests {
 
         fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
 
-        fn record_debug(&self, _span: &tracing::span::Id, _values: &dyn std::fmt::Debug) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
 
         fn event(&self, event: &Event<'_>) {
             if event.metadata().target() != "lucina_share::timing" {
@@ -509,7 +509,10 @@ mod tests {
     }
 
     /// The captured lines of one phase, by name.
-    fn lines_of(lines: &[Vec<(String, String)>], name: &str) -> Vec<&Vec<(String, String)>> {
+    fn lines_of<'a>(
+        lines: &'a [Vec<(String, String)>],
+        name: &str,
+    ) -> Vec<&'a Vec<(String, String)>> {
         lines
             .iter()
             .filter(|line| field(line, "phase") == name)
