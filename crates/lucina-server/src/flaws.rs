@@ -2192,6 +2192,35 @@ mod tests {
     use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Mutex;
 
+    /// The tests that are about something else claim without caps; the crate has no uncapped
+    /// claim any more (LA-C035 F6).
+    trait ClaimUncapped {
+        fn claim(
+            &self,
+            id: &str,
+            p: Platform,
+            repo: &str,
+            actor: &str,
+        ) -> Result<Target, FlawError>;
+    }
+
+    impl ClaimUncapped for Flaws {
+        fn claim(
+            &self,
+            id: &str,
+            p: Platform,
+            repo: &str,
+            actor: &str,
+        ) -> Result<Target, FlawError> {
+            let none = ClaimCaps {
+                per_repo: usize::MAX,
+                total: usize::MAX,
+                per_lane: usize::MAX,
+            };
+            self.claim_capped(id, p, repo, None, &none, actor)
+        }
+    }
+
     #[derive(Default)]
     struct Fake {
         tasks: Mutex<Vec<String>>,

@@ -253,14 +253,6 @@ pub struct ClaimCaps {
     pub per_lane: usize,
 }
 
-impl ClaimCaps {
-    pub const NONE: Self = Self {
-        per_repo: usize::MAX,
-        total: usize::MAX,
-        per_lane: usize::MAX,
-    };
-}
-
 /// A failure that ended a claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
@@ -973,12 +965,7 @@ impl Flaws {
     }
 
     /// Claim a target for a new task, atomically: only one caller gets it. `affected` with a
-    /// layer, on a live flaw, held by nobody.
-    pub fn claim(&self, id: &str, p: Platform, repo: &str, actor: &str) -> Result<Target> {
-        self.claim_capped(id, p, repo, None, &ClaimCaps::NONE, actor)
-    }
-
-    /// [`Flaws::claim`] with the dispatcher's guards, all re-checked inside the claim's own
+    /// layer, on a live flaw, held by nobody, under the dispatcher's guards, all re-checked inside the claim's own
     /// transaction (`BEGIN IMMEDIATE`): the back-off, one live claim for a server or core fix, the
     /// lane breaker, and the counts of live claims per repo, in all and per lane. A refusal that
     /// is a limit and not a state of the target is [`FlawError::Busy`]: nothing was started.
@@ -2339,6 +2326,23 @@ CREATE TABLE flaw_events (
 
     use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Arc;
+
+    /// The tests that are about something else claim without caps. There is no uncapped claim in
+    /// the crate's API any more (LA-C035 F6): this is theirs alone.
+    trait ClaimUncapped {
+        fn claim(&self, id: &str, p: Platform, repo: &str, actor: &str) -> Result<Target>;
+    }
+
+    impl ClaimUncapped for Flaws {
+        fn claim(&self, id: &str, p: Platform, repo: &str, actor: &str) -> Result<Target> {
+            let none = ClaimCaps {
+                per_repo: usize::MAX,
+                total: usize::MAX,
+                per_lane: usize::MAX,
+            };
+            self.claim_capped(id, p, repo, None, &none, actor)
+        }
+    }
 
     /// A target with a layer on `p`, due.
     fn due_on(s: &Flaws, words: &str, p: Platform) -> Flaw {
