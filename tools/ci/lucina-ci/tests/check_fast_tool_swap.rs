@@ -713,3 +713,58 @@ exit 101
         "the build's own file stayed exactly as the dead build left it: nothing was renamed from it over the shared name"
     );
 }
+
+/// GATE-16: the install's temp name is `lucina-ci.tmp.<pid of the launcher's shell>`, in a directory other processes may be
+/// able to write, and a symlink planted at it before the copy must not be followed. A wrapper plants the link under its own pid
+/// and execs the launcher, which keeps that pid, so the name is the very one the launcher will use. The file the link points
+/// at keeps its bytes, and what is installed is the new build, a plain file.
+#[test]
+fn a_symlink_planted_at_the_install_temp_name_is_not_followed() {
+    let s = Scratch::new("tmplink");
+    write_exec(&s.bin().join("df"), "#!/usr/bin/env bash\necho '  999G'\n");
+    write_exec(
+        &s.bin().join("cargo"),
+        r#"#!/usr/bin/env bash
+mkdir -p "$CARGO_TARGET_DIR/release"
+printf '#!/usr/bin/env bash\necho TOOL-VERSION-built\n' > "$CARGO_TARGET_DIR/release/lucina-ci"
+chmod 0755 "$CARGO_TARGET_DIR/release/lucina-ci"
+exit 0
+"#,
+    );
+    fs::create_dir_all(s.at("tool/release")).unwrap();
+    let victim = s.at("victim");
+    fs::write(&victim, "VICTIM-BEFORE").unwrap();
+    let mut c = Command::new("bash");
+    c.args([
+        "-c",
+        "ln -s \"$VICTIM\" \"$SECRETARY_CI_TOOL_TARGET/release/lucina-ci.tmp.$$\"; exec bash \"$0\"",
+    ])
+    .arg(launcher())
+    .env("VICTIM", &victim);
+    launcher_env(&mut c, &s);
+    let o = c.output().unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(o.status.success(), "the launcher and its build: {said}");
+    assert!(said.contains("TOOL-VERSION-built"), "{said}");
+    assert_eq!(
+        read(&victim),
+        "VICTIM-BEFORE",
+        "the copy went through the planted link and wrote the file it points at"
+    );
+    let installed = s.at("tool/release/lucina-ci");
+    let m = fs::symlink_metadata(&installed).unwrap();
+    assert!(
+        m.is_file(),
+        "the installed tool is a plain file, not the link"
+    );
+    assert!(read(&installed).contains("TOOL-VERSION-built"));
+    assert_eq!(
+        names(&s.at("tool/release")),
+        vec!["lucina-ci".to_string()],
+        "the planted link did not survive beside the tool"
+    );
+}
