@@ -337,28 +337,56 @@ tokio::task_local! {
     pub static SPOKEN: bool;
     /// The spoken turn's Jev decisions and call count (absent on turns that are not spoken).
     static TRACE: Arc<Trace>;
-    /// The spoken turn's one intent verdict, shared with the context building (`context::classify`).
-    static INTENT: tokio::sync::watch::Receiver<Option<SharedIntent>>;
+    /// The spoken turn's one intent verdict, shared with the context building (`context::classify`),
+    /// and the mark of its sample.
+    static INTENT: Arc<IntentSlot>;
 }
 
 /// Jev's intent verdict in the classifier's JSON shape plus its confidence; `None`: Jev gave none.
 pub type SharedIntent = Option<(Value, f64)>;
 
+/// A spoken turn's shared verdict, with the mark of its sample (`jev_samples`): two paths can keep a
+/// spoken turn's line, the context building and the fast route that answers before it is done; the mark
+/// is what makes the second of the one line.
+pub struct IntentSlot {
+    verdict: tokio::sync::watch::Receiver<Option<SharedIntent>>,
+    sample: std::sync::atomic::AtomicBool,
+}
+
+impl IntentSlot {
+    /// What the turn's Jev call answered, once it has answered; `None`: Jev gave no verdict.
+    pub fn verdict(&self) -> SharedIntent {
+        self.verdict.borrow().clone().unwrap_or_default()
+    }
+
+    /// The turn's sample is not kept yet: `true` for the first caller only, and it keeps it.
+    fn claim_sample(&self) -> bool {
+        !self.sample.swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
 /// The channel a spoken turn's intent verdict travels on: the turn's Jev call sends once.
 pub fn intent_channel() -> (
     tokio::sync::watch::Sender<Option<SharedIntent>>,
-    tokio::sync::watch::Receiver<Option<SharedIntent>>,
+    Arc<IntentSlot>,
 ) {
-    tokio::sync::watch::channel(None)
+    let (tx, verdict) = tokio::sync::watch::channel(None);
+    (
+        tx,
+        Arc::new(IntentSlot {
+            verdict,
+            sample: std::sync::atomic::AtomicBool::new(false),
+        }),
+    )
 }
 
-/// Runs `fut` with `rx` as the turn's shared intent verdict (none: the classifier asks Jev itself).
+/// Runs `fut` with `slot` as the turn's shared intent verdict (none: the classifier asks Jev itself).
 pub async fn with_intent<F: std::future::Future>(
-    rx: Option<tokio::sync::watch::Receiver<Option<SharedIntent>>>,
+    slot: Option<Arc<IntentSlot>>,
     fut: F,
 ) -> F::Output {
-    match rx {
-        Some(rx) => INTENT.scope(rx, fut).await,
+    match slot {
+        Some(slot) => INTENT.scope(slot, fut).await,
         None => fut.await,
     }
 }
@@ -366,13 +394,19 @@ pub async fn with_intent<F: std::future::Future>(
 /// The spoken turn's intent verdict, waiting for the turn's own Jev call (capped by the caller): `Some(None)`
 /// when it gave none, `None` when this turn has no such call (the classifier then makes its own).
 pub async fn shared_intent() -> Option<SharedIntent> {
-    let mut rx = INTENT.try_with(Clone::clone).ok()?;
+    let mut rx = INTENT.try_with(|slot| slot.verdict.clone()).ok()?;
     let verdict = rx.wait_for(Option::is_some).await.map(|v| v.clone());
     match verdict {
         Ok(v) => v,
         // The call's task is gone without a word (a panic): no verdict.
         Err(_) => Some(None),
     }
+}
+
+/// This turn's sample, if it has one to keep, is not kept yet: `true` for the first caller only. A turn
+/// with no shared verdict is not spoken, and nothing else writes its line: always `true`.
+pub fn claim_sample() -> bool {
+    INTENT.try_with(|slot| slot.claim_sample()).unwrap_or(true)
 }
 
 /// Runs `fut` with `trace` as the spoken turn's trace (none: no change).
