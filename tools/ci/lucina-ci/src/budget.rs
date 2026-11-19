@@ -7,7 +7,8 @@
 
 use super::{
     ACTIONLINT_STEP_TIMEOUT_S, DIFFGATE_STEP_TIMEOUT_S, INVENTORY_STEP_TIMEOUT_S,
-    MERGE_STEP_LIMIT_DEFAULT, MergeCaps, SECRETS_STEP_TIMEOUT_S, SHELLCHECK_STEP_TIMEOUT_S, fast,
+    MERGE_GATE_BUDGET_STEP_TIMEOUT_S, MERGE_STEP_LIMIT_DEFAULT, MergeCaps, SECRETS_STEP_TIMEOUT_S,
+    SHELLCHECK_STEP_TIMEOUT_S, fast,
 };
 use std::collections::BTreeSet;
 
@@ -17,7 +18,9 @@ pub const ASSUMED_STANDALONE_CRATES: usize = 2;
 /// Seconds the gate may wait for its slot in the build queue before check-fast starts. The gate takes bq's reserved gate slot,
 /// so the wait is short; the gate's timer starts when lagent starts the command, so the wait counts against the outer limit.
 pub const BQ_WAIT_ALLOWANCE_S: u64 = 300;
-/// Seconds of margin on top of every step running to its limit: process start, the copy of the binary, `git`, the final report.
+/// Seconds of margin on top of every step running to its limit. It covers what happens inside the queue slot before the first step:
+/// the launcher's `cargo build --release` of the CI tool, its install copy, and the run's own self-copy of the binary; then `git`
+/// and the final report.
 pub const MARGIN_S: u64 = 300;
 /// The name of the gate in `.lucina/pipeline.toml`.
 pub const GATE_NAME: &str = "fast local check";
@@ -30,7 +33,7 @@ fn at_gate(name: &str, own: u64) -> u64 {
 /// The parts of the worst case, as (what, seconds).
 ///
 /// Counted: the workspace steps (`fmt`, `clippy`, `unit-tests-build`, `unit-tests`) once, the four per-crate steps for
-/// `ASSUMED_STANDALONE_CRATES` standalone crates, `diffgate`, `shellcheck`, `actionlint`, `secrets` and `inventory` once each,
+/// `ASSUMED_STANDALONE_CRATES` standalone crates, `diffgate`, `shellcheck`, `actionlint`, `secrets`, `inventory` and `merge-gate-budget` once each,
 /// then the queue wait and the margin. Not counted: the proofs `--proofs` runs (the merge gate does not pass it).
 pub fn merge_gate_parts() -> Vec<(String, u64)> {
     let mut owners: BTreeSet<fast::Owner> = BTreeSet::new();
@@ -53,6 +56,7 @@ pub fn merge_gate_parts() -> Vec<(String, u64)> {
         ("actionlint", ACTIONLINT_STEP_TIMEOUT_S),
         ("secrets", SECRETS_STEP_TIMEOUT_S),
         ("inventory", INVENTORY_STEP_TIMEOUT_S),
+        ("merge-gate-budget", MERGE_GATE_BUDGET_STEP_TIMEOUT_S),
     ] {
         parts.push((name.to_string(), at_gate(name, own)));
     }
@@ -61,18 +65,23 @@ pub fn merge_gate_parts() -> Vec<(String, u64)> {
     parts
 }
 
+/// Whether a change edits the pipeline file, which makes check-fast run the `merge-gate-budget` step at the merge gate.
+pub fn pipeline_changed(changed: &std::collections::BTreeSet<String>) -> bool {
+    changed.contains(".lucina/pipeline.toml")
+}
+
 /// The longest a `--merge-gate` check-fast run can legitimately take, in seconds.
 pub fn merge_gate_worst_case_secs() -> u64 {
     merge_gate_parts().iter().map(|(_, s)| s).sum()
 }
 
 /// The `timeout_min` of the gate named `name` in a pipeline file: the first `timeout_min` after its `name = "..."` line and before
-/// the next `[[gate]]`.
+/// the next table header.
 pub fn gate_timeout_min(toml: &str, name: &str) -> Option<u64> {
     let mut in_gate = false;
     for l in toml.lines() {
         let t = l.trim();
-        if t.starts_with("[[") {
+        if t.starts_with('[') {
             in_gate = false;
         } else if t.starts_with("name") && t.contains('=') {
             in_gate = t.split_once('=')?.1.trim().trim_matches('"') == name;
@@ -107,8 +116,9 @@ pub fn cmd_merge_gate_budget() -> Result<i32, String> {
     }
     let worst = merge_gate_worst_case_secs();
     println!(
-        "{worst:>6} s  total = {} min (round up to the next 5 for timeout_min)",
-        worst.div_ceil(60)
+        "{worst:>6} s  total = {} min; timeout_min to write: {}",
+        worst.div_ceil(60),
+        worst.div_ceil(60).div_ceil(5) * 5
     );
     let root = super::repo_root()?;
     let toml =
@@ -168,7 +178,12 @@ mod tests {
         .unwrap();
         let r = check_pipeline(&std::fs::read_to_string(&f).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(r.is_err());
+        let e = r.expect_err("12 minutes is below the worst case");
+        assert!(
+            e.contains("timeout_min = 12")
+                && e.contains(&format!("{} s", merge_gate_worst_case_secs())),
+            "{e}"
+        );
     }
 
     #[test]
@@ -186,7 +201,8 @@ mod tests {
         assert_eq!(get("unit-tests"), 240);
         let standalone = parts.iter().filter(|(k, _)| k.contains("budget-")).count();
         assert_eq!(standalone, 4 * ASSUMED_STANDALONE_CRATES);
-        assert_eq!(merge_gate_worst_case_secs(), 3990);
+        assert_eq!(get("merge-gate-budget"), 30);
+        assert_eq!(merge_gate_worst_case_secs(), 4020);
     }
 
     /// The wait the launcher gives the gate and the allowance the budget counts are one number: the shell literal is read here.
@@ -194,11 +210,19 @@ mod tests {
     fn the_launcher_waits_for_the_gate_slot_no_longer_than_the_budget_allows() {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/check-fast");
         let sh = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-        let lits: Vec<u64> = sh
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("maxwait="))
-            .map(|v| v.parse().expect("maxwait= is a number"))
-            .collect();
+        assert!(
+            sh.contains(r#"--max-wait "$maxwait""#),
+            "the launcher's bq call no longer passes --max-wait \"$maxwait\""
+        );
+        let mut lits: Vec<u64> = Vec::new();
+        for v in sh.lines().filter_map(|l| l.trim().strip_prefix("maxwait=")) {
+            match v.parse() {
+                Ok(n) => lits.push(n),
+                Err(_) => {
+                    panic!("scripts/check-fast: `maxwait={v}` is not a plain number of seconds")
+                }
+            }
+        }
         assert_eq!(
             lits.len(),
             2,
@@ -210,6 +234,24 @@ mod tests {
             "scripts/check-fast gives the merge gate --max-wait {} but budget.rs counts BQ_WAIT_ALLOWANCE_S = {BQ_WAIT_ALLOWANCE_S}: change both",
             lits[1]
         );
+    }
+
+    #[test]
+    fn only_a_change_to_the_pipeline_file_selects_the_budget_step() {
+        let only: BTreeSet<String> = [".lucina/pipeline.toml".to_string()].into();
+        let other: BTreeSet<String> = [
+            "scripts/check-fast".to_string(),
+            ".lucina/other.toml".to_string(),
+        ]
+        .into();
+        assert!(pipeline_changed(&only));
+        assert!(!pipeline_changed(&other));
+    }
+
+    #[test]
+    fn a_later_table_does_not_lend_its_timeout_to_the_gate() {
+        let t = "[[gate]]\nname = \"fast local check\"\n[other]\ntimeout_min = 99\n";
+        assert_eq!(gate_timeout_min(t, GATE_NAME), None);
     }
 
     #[test]

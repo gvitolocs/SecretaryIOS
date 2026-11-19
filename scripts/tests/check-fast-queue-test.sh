@@ -160,7 +160,7 @@ launch gate home "$tmp/base" -- "$L" --base HEAD^1 --merge-gate
 ran_ok gate
 want="home run --class long --priority gate --max-wait 300 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD^1 --merge-gate"
 [ "$(cat "$calls")" = "$want" ] || fail "(2) the gate call is not byte-exact: $(cat "$calls")"
-echo "ok: (2) --merge-gate asks for priority gate"
+echo "ok: (2) --merge-gate asks for priority gate and a 300 s wait, byte-exact"
 
 # (3) nested. The outer stub call stands for a worker's `bq run -- scripts/check-fast`; `bash -c '...; exit'` keeps bash from
 # exec'ing the launcher, so the slot's holder is an ancestor of it. Same class: the launcher's own call runs in place (once), and

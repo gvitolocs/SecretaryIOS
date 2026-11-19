@@ -855,6 +855,8 @@ const SHELLCHECK_STEP_TIMEOUT_S: u64 = 30;
 const ACTIONLINT_STEP_TIMEOUT_S: u64 = 30;
 const SECRETS_STEP_TIMEOUT_S: u64 = 60;
 const INVENTORY_STEP_TIMEOUT_S: u64 = 30;
+/// `merge-gate-budget`, run when a change edits `.lucina/pipeline.toml` (`budget::pipeline_changed`).
+const MERGE_GATE_BUDGET_STEP_TIMEOUT_S: u64 = 30;
 /// A step that used more than this share of its limit prints `near-limit`, so the next raise of a number comes from a line in
 /// the log rather than from a merge that failed.
 const MERGE_NEAR_LIMIT_SHARE: f64 = 0.8;
@@ -1819,6 +1821,16 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         .iter()
         .filter_map(|p| fast::owner_of(&root, &members, p))
         .collect();
+    let standalone = owners
+        .iter()
+        .filter(|o| matches!(o, fast::Owner::Standalone(_)))
+        .count();
+    if merge_gate && standalone > budget::ASSUMED_STANDALONE_CRATES {
+        println!(
+            "check-fast: this change touches {standalone} standalone crates; the merge-gate budget (`lucina-ci merge-gate-budget`, outer limit timeout_min in .lucina/pipeline.toml) assumes {}, so the gate may be killed by the outer limit",
+            budget::ASSUMED_STANDALONE_CRATES
+        );
+    }
     for o in &owners {
         if let fast::Owner::Other(d) = o {
             skipped.push(format!(
@@ -1894,6 +1906,18 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         skipped.push("secret scan: gitleaks not installed here".into());
     }
 
+    // A merge that edits the pipeline file is checked against the budget the gate's outer limit must hold (GATE-19).
+    if merge_gate && budget::pipeline_changed(&changed) {
+        step(
+            "merge-gate-budget",
+            &format!("{exe} merge-gate-budget"),
+            "script",
+            MERGE_GATE_BUDGET_STEP_TIMEOUT_S,
+            &none,
+            &[],
+            &mut failed,
+        )?;
+    }
     // The proofs the change reaches. Inventory first: a new proof must be listed.
     if root.join(inventory::INVENTORY).exists() {
         step(
