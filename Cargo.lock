@@ -3974,6 +3974,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-updates"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "libc",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lucina-upstream"
 version = "0.1.0"
 dependencies = [
