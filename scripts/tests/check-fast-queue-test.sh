@@ -86,6 +86,7 @@ make_launcher() {
 # mkhome <dir> [bq <tag> | badbq]: a home directory for a launcher copy, with the stand-in tool the launcher installs and runs.
 mkhome() {
     mkdir -p "$1/.local/bin" "$1/tool-build/release"
+    chmod 755 "$1/tool-build" "$1/tool-build/release" # the launcher refuses a tool directory open to group or others
     printf '#!/usr/bin/env bash\necho "stub-ran $*"\n' > "$1/tool-build/release/lucina-ci"
     chmod +x "$1/tool-build/release/lucina-ci"
     case "${2:-}" in
