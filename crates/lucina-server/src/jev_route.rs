@@ -17,7 +17,10 @@
 //!   route ([`deterministic_intent`]) keeps the turn against an answer Jev is not sure of, has no
 //!   option for, or that would start something ([`acts`]); a sure question of Jev's own intents wins
 //!   over it from [`JEV_OVER_RULE_MIN`] up (`LUCINA_JEV_OVER_RULE`, `LUCINA_JEV_OVER_RULE_MIN`).
-//!   Each decision is one `event="jev_first"` log line. `POST /api/secretary/jev/route` replays a
+//!   Each decision is one `event="jev_first"` log line, which says where its text came from
+//!   (`source`: `"turn"` of the owner's, `"replay"` from the replay endpoint below) — the drift report
+//!   counts live traffic from a turn alone.
+//!   `POST /api/secretary/jev/route` replays a
 //!   text through the same path. The weekly check is `lucina-rs jev drift-report`
 //!   (`docs/lucina-rust/JEV-ROUTING.md`); it only suggests new thresholds.
 
@@ -445,14 +448,36 @@ pub fn jev_first_from(
     over_rule: Option<&str>,
     over_rule_min: Option<&str>,
 ) -> Result<(), &'static str> {
+    jev_first_rule_from(
+        jev,
+        rule.map(|r| r.intent.as_str()),
+        first_min,
+        first_intent_min,
+        over_rule,
+        over_rule_min,
+    )
+}
+
+/// [`jev_first_from`] with the tier-0 rule as its intent name, the way [`deterministic_intent`] is
+/// the rule's own test by name. The decision is the same one - the rule enters it only through
+/// whether it is deterministic and what it is called - so the drift report's replay takes it from the
+/// response's `tier0` string without rebuilding a classification it has no text for.
+pub fn jev_first_rule_from(
+    jev: Option<(&str, f64)>,
+    rule: Option<&str>,
+    first_min: Option<&str>,
+    first_intent_min: Option<&str>,
+    over_rule: Option<&str>,
+    over_rule_min: Option<&str>,
+) -> Result<(), &'static str> {
     let Some((intent, confidence)) = jev else {
         return Err("jev_unavailable");
     };
-    if let Some(r) = rule.filter(|r| deterministic_rule(r)) {
+    if let Some(r) = rule.filter(|r| deterministic_intent(r)) {
         if !jev_beats_rule_from(
             intent,
             confidence,
-            &r.intent,
+            r,
             over_rule,
             over_rule_min,
             first_min,
@@ -468,6 +493,34 @@ pub fn jev_first_from(
         return Err("below_threshold");
     }
     Ok(())
+}
+
+/// The one `event="jev_first"` line of a turn JEV-first routed. `source` is the caller's word for
+/// what the text was, passed the way the `jev_yesno` line's is (`"turn"`, `"replay"`):
+/// [`crate::jev_drift`] counts live traffic from a turn alone.
+pub fn log_jev_first_used(
+    source: &'static str,
+    intent: &str,
+    confidence: f64,
+    tier0: Option<&str>,
+    overrode_rule: &str,
+    guard: &str,
+) {
+    tracing::info!(target: "lucina_jev::route", event = "jev_first", source, used = true,
+        intent = %intent, confidence, tier0 = ?tier0, overrode_rule = %overrode_rule, guard,
+        "jev_first");
+}
+
+/// The one `event="jev_first"` line of a turn JEV-first did not route; `reason` is [`jev_first`]'s.
+pub fn log_jev_first_fallback(
+    source: &'static str,
+    reason: &'static str,
+    jev: Option<(&str, f64)>,
+    tier0: Option<&str>,
+) {
+    tracing::info!(target: "lucina_jev::route", event = "jev_first", source, used = false, reason,
+        intent = ?jev.map(|p| p.0), confidence = ?jev.map(|p| p.1), tier0 = ?tier0,
+        "jev_first fallback");
 }
 
 /// Jev's sure answer replaces the tier-0 rule's.
@@ -956,6 +1009,57 @@ mod tests {
         );
     }
 
+    /// TURN-11: deciding by the rule's name is the same decision the turn path makes, on every shape
+    /// a replay response can carry.
+    #[test]
+    fn jev_first_by_the_rules_name_is_the_same_decision() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let args = [
+            (None, None, None, None),
+            (Some("0.95"), None, None, None),
+            (None, None, Some("off"), None),
+            (None, None, None, Some("0.95")),
+        ];
+        for (first_min, first_intent_min, over_rule, over_rule_min) in args {
+            for rule_intent in [
+                None,
+                Some("grocery.expense.query"),
+                Some("computer_task"),
+                Some("schedule_reminder"),
+                Some("chat"),
+            ] {
+                let rule = rule_intent.map(|t| {
+                    lucina_intent::tier0::from_model_json(
+                        &json!({"intent": t, "confidence": 1.0}),
+                        "x",
+                        "",
+                        &s,
+                    )
+                });
+                assert_eq!(
+                    rule.as_ref().map(|r| r.intent.as_str()),
+                    rule_intent,
+                    "the rule reaches the decision by its name only"
+                );
+                for jev in [
+                    None,
+                    Some(("", 0.99)),
+                    Some(("unknown", 0.99)),
+                    Some(("chat", 0.99)),
+                    Some(("computer_task", 0.99)),
+                    Some(("grocery.shopping_list.query", 0.95)),
+                    Some(("grocery.shopping_list.query", 0.8)),
+                ] {
+                    assert_eq!(
+                        jev_first_from(jev, rule.as_ref(), first_min, first_intent_min, over_rule, over_rule_min),
+                        jev_first_rule_from(jev, rule_intent, first_min, first_intent_min, over_rule, over_rule_min),
+                        "{jev:?} against {rule_intent:?} with {first_min:?} {first_intent_min:?} {over_rule:?} {over_rule_min:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn only_deterministic_rules_survive_an_unsure_jev() {
         let s = lucina_intent::heuristics::Settings::default();
@@ -1017,6 +1121,65 @@ mod tests {
             "reads stay"
         );
         assert!(!mcp_falls_back_to_chat(&rule("chat"), "cursor_task"));
+    }
+
+    /// The lines logged inside `run`, captured on this thread only so a parallel test cannot fill
+    /// the buffer.
+    fn logged(run: impl FnOnce()) -> String {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct W(Arc<Mutex<Vec<u8>>>);
+        impl Write for W {
+            fn write(&mut self, d: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(d);
+                Ok(d.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let w = W(buf.clone());
+        let sub = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, run);
+        let logged = buf.lock().unwrap().clone();
+        String::from_utf8_lossy(&logged).to_string()
+    }
+
+    /// TURN-11: a turn and a replay of the same text both log a `jev_first` line, and each says which
+    /// it was — the field `jev_drift` reads to keep the labelled replay out of the live count.
+    #[test]
+    fn the_jev_first_line_says_whether_a_turn_or_a_replay_wrote_it() {
+        let text = logged(|| {
+            log_jev_first_used("turn", "chat", 0.9, Some("schedule_reminder"), "", "");
+            log_jev_first_fallback(
+                "replay",
+                "below_threshold",
+                Some(("chat", 0.6)),
+                Some("schedule_reminder"),
+            );
+        });
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains(r#"event="jev_first""#))
+            .collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        let turn = crate::jev_drift::parse_log_line(lines[0]).expect("the turn line");
+        let replay = crate::jev_drift::parse_log_line(lines[1]).expect("the replay line");
+        assert_eq!((turn.source.as_deref(), turn.used), (Some("turn"), true));
+        assert_eq!(turn.tier0.as_deref(), Some("schedule_reminder"));
+        assert_eq!(
+            (replay.source.as_deref(), replay.used),
+            (Some("replay"), false)
+        );
+        assert_eq!(replay.reason.as_deref(), Some("below_threshold"));
+        assert_eq!(replay.confidence, Some(0.6));
     }
 
     #[test]
