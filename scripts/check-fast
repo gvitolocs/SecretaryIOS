@@ -11,9 +11,10 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 # BQ_SLOT_PID names a live process that is an ANCESTOR of this shell (bq sets both on the job's command, every descendant
 # inherits them, and nothing else clears them; BQ_PRIORITY is NOT consulted: a queue change that strips it from a job's
 # children must not make the steps of a gate lose their slot). A BQ_SLOT set by hand, with no such ancestor, counts for
-# nothing, and no other variable skips the queue. Without any `bq` of ours (GitHub's runners, the Mac) the check runs directly
-# and says so first. A `bq` found is used only when it prints our own usage (`--class short|long|proof`): PATH holds the
-# Google Cloud SDK's BigQuery `/usr/bin/bq` on GitHub's runners.
+# nothing, and no other variable skips the queue (none names the queue either). The queue is $HOME/.local/bin/bq; if that file
+# exists and does not print our usage the check FAILS, it never runs directly. A `bq` on PATH is used only when it does not
+# exist, and only if it prints our usage: PATH holds the Google Cloud SDK's BigQuery `/usr/bin/bq` on GitHub's runners. With no
+# `bq` of ours anywhere (GitHub, the Mac) the check runs directly and says so first.
 bq_is_ours() {
     local bq_usage
     [ -x "$1" ] || return 1
@@ -38,14 +39,23 @@ bq_is_ours() {
     esac
     return 0
 }
+# 0: found, printed. 1: no bq of ours anywhere. 2: $HOME/.local/bin/bq exists and is not ours. Order: $HOME/.local/bin/bq FIRST,
+# and if that file exists it must be ours, else the check fails (never a direct run); a `bq` on PATH only when it does not
+# exist. No environment variable names a queue.
 bq_find() {
-    local c
-    for c in "$(command -v bq 2>/dev/null || true)" "$HOME/.local/bin/bq"; do
-        if [ -n "$c" ] && bq_is_ours "$c"; then
-            printf '%s\n' "$c"
+    local home_bq=$HOME/.local/bin/bq c
+    if [ -e "$home_bq" ] || [ -L "$home_bq" ]; then
+        if bq_is_ours "$home_bq"; then
+            printf '%s\n' "$home_bq"
             return 0
         fi
-    done
+        return 2
+    fi
+    c=$(command -v bq 2>/dev/null || true)
+    if [ -n "$c" ] && bq_is_ours "$c"; then
+        printf '%s\n' "$c"
+        return 0
+    fi
     return 1
 }
 bq_inside_job() {
@@ -66,7 +76,13 @@ bq_inside_job() {
     return 1
 }
 if ! bq_inside_job; then
-    if bqbin=$(bq_find); then
+    bqrc=0
+    bqbin=$(bq_find) || bqrc=$?
+    if [ "$bqrc" -eq 2 ]; then
+        echo "check-fast: $HOME/.local/bin/bq exists but is not our build queue (its usage does not offer --class short|long|proof, --max-wait, --priority and --keep-env); refusing to run without the queue" >&2
+        exit 2
+    fi
+    if [ "$bqrc" -eq 0 ]; then
         prio=normal
         for arg in "$@"; do
             if [ "$arg" = "--merge-gate" ]; then prio=gate; fi
