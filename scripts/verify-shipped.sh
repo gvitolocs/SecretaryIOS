@@ -11,6 +11,13 @@
 # Run one file only: FILES=crates/secretary-server/src/voice_rules.rs scripts/verify-shipped.sh
 set -euo pipefail
 
+# GATE-12 / PF-C046: proofs run on GitHub; a lane worker starts none.
+. "$(dirname "$0")/lib/in-lane-worker.sh" || exit 75
+if in_lane_worker; then
+    echo "verify-shipped.sh: refused inside a lane worker (proofs run on GitHub)" >&2
+    exit 75
+fi
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 verus=${VERUS:-/home/nez/tools/verus/verus-x86-linux/verus}
 files=(crates/lucina-vault/src/sync_rules.rs crates/secretary-server/src/voice_rules.rs)
