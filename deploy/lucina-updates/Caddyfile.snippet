@@ -1,11 +1,15 @@
+# The sidecar authenticates nobody by itself. Its upstream must stay on the loopback address and be
+# reachable only through the proxy that runs the device-check subrequest. Never forward, bridge or
+# expose it on another interface or on the tailnet.
+#
 # PROPOSAL (JD-C008), not applied. p1 (getsecretary.tech), inside the site block, BEFORE the catch-all
 # `handle`. lucina-updates (crates/lucina-updates) serves the signed manifest and the artefacts of each
 # product channel, read-only and keyless; a device verifies everything itself, so this block only
 # keeps the code private (device auth) and delivers big files cheaply.
 #
 # The sidecar listens on loopback of nezopt (127.0.0.1:8811), not on the tailnet address like
-# lucina-media, so p1 needs a path to it (the coordinator's choice: a tailnet-only second listener,
-# or a forward). UPDATES_UPSTREAM below is that address.
+# lucina-media, so the proxy needs a path to it. The way the proxy reaches the sidecar is decided at deploy and must
+# keep the sidecar unreachable by anything but the proxy. UPDATES_UPSTREAM below is that address.
 @updates path /v1/updates/*
 handle @updates {
 	route {

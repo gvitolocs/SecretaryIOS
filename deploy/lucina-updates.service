@@ -1,3 +1,7 @@
+# The sidecar authenticates nobody by itself. Its upstream must stay on the loopback address and be
+# reachable only through the proxy that runs the device-check subrequest. Never forward, bridge or
+# expose it on another interface or on the tailnet.
+#
 # PROPOSAL (JD-C008), not installed. lucina-updates: the read-only update channel server
 # (crates/lucina-updates). It serves manifest and artefact bytes from ~/data/lucina-updates, holds no
 # key, signs and verifies nothing, and writes nothing. User unit on nezopt:
