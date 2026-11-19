@@ -896,5 +896,8 @@ async fn a_shopping_sentence_with_several_products_is_split_by_the_slots_layer()
     assert_eq!(route["fast"], true);
     assert_eq!(layer(&route["layers"], "slots").unwrap()["used"], false);
     assert!(!listed.to_lowercase().contains("latte e uova"), "{listed}");
-    assert!(listed.contains("Latte") && listed.contains("Uova"), "{listed}");
+    assert!(
+        listed.contains("Latte") && listed.contains("Uova"),
+        "{listed}"
+    );
 }
