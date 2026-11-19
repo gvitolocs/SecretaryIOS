@@ -51,9 +51,9 @@ RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6
-# PrivateNetwork is not possible (it listens); see the note above on these two lines.
-IPAddressDeny=any
-IPAddressAllow=localhost
+# PrivateNetwork is not possible (it listens). The two lines below are INERT under a user manager (see the sandbox note above); they are kept commented as what a system unit would enable.
+# IPAddressDeny=any
+# IPAddressAllow=localhost
 SystemCallFilter=@system-service
 SystemCallArchitectures=native
 
