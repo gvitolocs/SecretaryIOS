@@ -745,7 +745,7 @@ mod tests {
         assert!(kept.chars().count() <= 60, "{kept}");
         assert!(long.chars().count() > 90, "{long}");
         assert_eq!(
-            long.chars().skip(kept.chars().count()).next(),
+            long.chars().nth(kept.chars().count()),
             Some(' '),
             "cut at a word, not inside one: {kept}"
         );
