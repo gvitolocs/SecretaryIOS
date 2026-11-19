@@ -2013,3 +2013,41 @@ fn a_run_lane_calls_lost_is_final_and_is_never_asked_again() {
     lagent_json(&d, &["work", "ls"]);
     assert_eq!(asked(), asked_before, "the poller asked a final run");
 }
+
+/// AGENT-01: the create caps count agents, never work runs. A caller that holds six live work
+/// runs (more than the per-caller cap of 4) can still create an agent through the same socket.
+#[test]
+fn a_caller_holding_six_live_work_runs_can_still_create_an_agent() {
+    let f = Fixture::new();
+    let d = f.daemon(&[]);
+    let ws = f.repo("ws");
+    let mut ids = Vec::new();
+    for n in 0..6 {
+        let title = format!("run{n}");
+        let job = start(&d, &f, "LA", &ws, &["--cost", "build", "--title", &title]);
+        ids.push(job["id"].as_str().unwrap().to_string());
+    }
+    for id in &ids {
+        f.status(id, &lane_status(id, "running", json!({"final_lane": "qoder"})));
+        wait_state(&d, id, "running");
+    }
+    let list = lagent_json(&d, &["work", "ls"]);
+    assert_eq!(lead_of(&list, "LA").unwrap()["running"], 6, "{list}");
+
+    let body = format!(r#"{{"provider":"mock","cwd":"{ws}"}}"#);
+    let out = common::run(Command::new("curl").args([
+        "-s",
+        "-w",
+        "\n%{http_code}",
+        "--unix-socket",
+        &d.socket().display().to_string(),
+        "-X",
+        "POST",
+        "-H",
+        "content-type: application/json",
+        "-d",
+        &body,
+        "http://x/agents",
+    ]));
+    assert!(out.stdout.ends_with("\n200"), "create refused: {}", out.stdout);
+}

@@ -581,39 +581,125 @@ fn a_dispatcher_burst_of_29_creates_gets_4_agents_and_25_refusals() {
     assert_eq!((ok, limited), (4, 25), "{codes:?}");
 }
 
+/// `lagent <args>` with a deadline: `(exit code, elapsed, stdout, stderr)`; a command still
+/// running at the deadline is killed and reports no exit code.
+fn lagent_within(
+    d: &common::Daemon,
+    args: &[&str],
+    limit: Duration,
+) -> (Option<i32>, Duration, String, String) {
+    use std::process::Stdio;
+    let t = Instant::now();
+    let mut c = std::process::Command::new(common::LAGENT)
+        .args(args)
+        .env("LUCINA_AGENTD_SOCKET", d.socket())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    loop {
+        if let Some(st) = c.try_wait().unwrap() {
+            let o = c.wait_with_output().unwrap();
+            return (
+                st.code(),
+                t.elapsed(),
+                String::from_utf8_lossy(&o.stdout).into(),
+                String::from_utf8_lossy(&o.stderr).into(),
+            );
+        }
+        if t.elapsed() > limit {
+            let _ = c.kill();
+            let _ = c.wait();
+            return (None, t.elapsed(), String::new(), String::new());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The original daemon form: `lagent run` against the mock provider's auth failure. (The 600 s
+/// this once took came from the mock's default model, `five-minute-stream`, whose turn
+/// really runs five minutes: the hello runs use `e2e-fast-stream`.)
 #[test]
 fn providers_clear_reopens_a_provider_after_a_login_failure_through_the_daemon() {
     let d = common::Daemon::start();
     let work = git_dir();
     let cwd = work.path().display().to_string();
-    let first = d.lagent(&[
-        "run",
-        "--provider",
-        "mock",
-        "--cwd",
-        &cwd,
-        "emit synthetic auth failure",
-    ]);
-    assert!(first.stdout.contains("error"), "{}", first.stdout);
-    // The breaker is tripped once the turn failed.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let refused = loop {
-        let r = d.lagent(&["run", "--provider", "mock", "--cwd", &cwd, "hello"]);
-        if r.code != 0 && r.stderr.contains("providers clear mock") {
-            break r;
+    let few = Duration::from_secs(10);
+    let fast = |provider: &'static str| {
+        move |d: &common::Daemon, cwd: &str| {
+            lagent_within(
+                d,
+                &[
+                    "run",
+                    "--provider",
+                    provider,
+                    "--model",
+                    "e2e-fast-stream",
+                    "--cwd",
+                    cwd,
+                    "hello",
+                ],
+                Duration::from_secs(30),
+            )
         }
-        assert!(
-            Instant::now() < deadline,
-            "never refused: {} {}",
-            r.stdout,
-            r.stderr
-        );
-        std::thread::sleep(Duration::from_millis(100));
     };
-    assert!(refused.stderr.contains("mock"), "{}", refused.stderr);
-    // Creates only (a `run` waits for the turn): another provider is untouched.
-    assert_eq!(post_create(&d.socket(), work.path(), "mock-alt"), "200");
-    let clear = d.lagent(&["providers", "clear", "mock"]);
-    assert_eq!(clear.code, 0, "{}", clear.stderr);
-    assert_eq!(post_create(&d.socket(), work.path(), "mock"), "200");
+
+    // A failed turn returns at once, with the failure shown; the agent has released its processes.
+    let (code, took, out, err) = lagent_within(
+        &d,
+        &[
+            "run",
+            "--provider",
+            "mock",
+            "--cwd",
+            &cwd,
+            "emit synthetic auth failure",
+        ],
+        few,
+    );
+    assert!(code.is_some() && took < few, "run did not return: {took:?}");
+    assert!(out.contains("error"), "{out} {err}");
+    let id = out
+        .lines()
+        .nth(1)
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap()
+        .to_string();
+
+    // `wait` and a `send` that waits return at once too, with the error text.
+    let (code, took, out, err) = lagent_within(&d, &["wait", &id], few);
+    assert!(
+        code.is_some() && took < few,
+        "wait did not return: {took:?} {out} {err}"
+    );
+    let (code, took, out, err) =
+        lagent_within(&d, &["send", &id, "emit synthetic auth failure"], few);
+    assert!(
+        code.is_some() && took < few,
+        "send did not return: {took:?} {out} {err}"
+    );
+    assert!(out.contains("Failed to authenticate"), "{out} {err}");
+
+    // The breaker refuses a create for that provider, naming it and how to clear it.
+    let (code, _, out, err) = lagent_within(
+        &d,
+        &["run", "--provider", "mock", "--cwd", &cwd, "hello"],
+        few,
+    );
+    assert!(code.is_some_and(|c| c != 0), "{out}");
+    assert!(
+        err.contains("mock") && err.contains("providers clear mock"),
+        "{err}"
+    );
+
+    // Another provider is untouched.
+    let (code, took, out, err) = fast("mock-alt")(&d, &cwd);
+    assert_eq!(code, Some(0), "{took:?} {out} {err}");
+
+    // Cleared by hand, the provider works again.
+    let (code, _, out, err) = lagent_within(&d, &["providers", "clear", "mock"], few);
+    assert_eq!(code, Some(0), "{out} {err}");
+    let (code, took, out, err) = fast("mock")(&d, &cwd);
+    assert_eq!(code, Some(0), "{took:?} {out} {err}");
 }
