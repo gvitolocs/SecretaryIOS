@@ -1265,6 +1265,11 @@ fn scope_on_starts_lane_through_systemd_run() {
         "--collect",
         "--unit",
         &unit,
+        "--slice=build.slice",
+        "-p",
+        "CPUQuota=400%",
+        "-p",
+        "MemoryMax=12G",
         "--",
         &lane,
         "run",
@@ -2050,4 +2055,139 @@ fn a_caller_holding_six_live_work_runs_can_still_create_an_agent() {
         "http://x/agents",
     ]));
     assert!(out.stdout.ends_with("\n200"), "create refused: {}", out.stdout);
+}
+
+/// A stand-in `systemctl` in the daemon's tool directory: it appends its arguments to
+/// `systemctl.args`, then runs `body`.
+fn add_systemctl(bin: &str, body: &str) {
+    common::write_exec(
+        &Path::new(bin).join("systemctl"),
+        &format!(
+            "#!/bin/sh\nD=\"${{0%/*}}\"\nprintf '%s\\n' \"$@\" >> \"$D/systemctl.args\"\n{body}\n"
+        ),
+    );
+}
+
+/// A daemon with the scope on and the stand-ins of `tool_dir` on its `PATH`.
+fn scoped_daemon(f: &Fixture, bin: &str) -> Daemon {
+    f.daemon(&[
+        ("LUCINA_AGENTD_WORK_SCOPE", "on".to_string()),
+        ("XDG_RUNTIME_DIR", f.root.path().display().to_string()),
+        ("PATH", bin.to_string()),
+    ])
+}
+
+/// `lagent work start` with the defaults of these tests, not checked.
+fn start_unchecked(d: &Daemon, f: &Fixture, ws: &str) -> Run {
+    let spec = f.spec();
+    let change = change_for(d, "LA");
+    lagent(
+        d,
+        &[
+            "work",
+            "start",
+            "--lead",
+            "LA",
+            "--change",
+            &change,
+            "--lane",
+            "qoder",
+            "--workspace",
+            ws,
+            "--spec",
+            &spec,
+            "--cost",
+            "build",
+        ],
+    )
+}
+
+/// The start was refused with the slice message and nothing was started or stored.
+fn assert_refused_for_the_slice(d: &Daemon, f: &Fixture, bin: &str, r: &Run) {
+    assert_ne!(r.code, 0, "{}", r.stdout);
+    assert!(
+        r.stderr
+            .contains("build.slice is not loaded in the user manager"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("LUCINA_AGENTD_WORK_SCOPE=off"),
+        "{}",
+        r.stderr
+    );
+    let called: Vec<_> = std::fs::read_dir(f.data())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(called.is_empty(), "lane ran: {called:?}");
+    assert!(
+        !Path::new(bin).join("systemd-run.args").exists(),
+        "systemd-run ran"
+    );
+    let list = lagent_json(d, &["work", "ls"]);
+    assert!(list["jobs"].as_array().unwrap().is_empty(), "{list}");
+}
+
+#[test]
+fn a_scoped_start_without_build_slice_is_refused_before_anything_runs() {
+    let f = Fixture::new();
+    let bin = tool_dir(&f, true);
+    add_systemctl(&bin, "echo not-found");
+    let d = scoped_daemon(&f, &bin);
+    let ws = f.repo("ws");
+    let r = start_unchecked(&d, &f, &ws);
+    assert_refused_for_the_slice(&d, &f, &bin, &r);
+    let asked = read(&Path::new(&bin).join("systemctl.args"));
+    assert_eq!(asked, "--user\nshow\nbuild.slice\n-p\nLoadState\n--value\n");
+}
+
+#[test]
+fn a_scoped_start_with_build_slice_loaded_starts_as_before() {
+    let f = Fixture::new();
+    let bin = tool_dir(&f, true);
+    add_systemctl(&bin, "echo loaded");
+    let d = scoped_daemon(&f, &bin);
+    let ws = f.repo("ws");
+    let job = start(&d, &f, "LA", &ws, &["--cost", "build"]);
+    let id = job["id"].as_str().unwrap().to_string();
+    assert_ne!(job["state"], "failed", "{job}");
+    assert_eq!(job["scope"], format!("lucina-work-{id}").as_str(), "{job}");
+    assert!(Path::new(&bin).join("systemd-run.args").exists());
+    // The answer is kept: a second start does not ask again.
+    let _ = start(&d, &f, "LA", &ws, &["--cost", "build"]);
+    let asked = read(&Path::new(&bin).join("systemctl.args"));
+    assert_eq!(asked.matches("build.slice").count(), 1, "{asked}");
+}
+
+#[test]
+fn a_systemctl_that_does_not_answer_in_time_refuses_the_start() {
+    let f = Fixture::new();
+    let bin = tool_dir(&f, true);
+    add_systemctl(&bin, "exec sleep 30");
+    let d = scoped_daemon(&f, &bin);
+    let ws = f.repo("ws");
+    let began = Instant::now();
+    let r = start_unchecked(&d, &f, &ws);
+    let took = began.elapsed();
+    assert_refused_for_the_slice(&d, &f, &bin, &r);
+    assert!(took < Duration::from_secs(7), "refused after {took:?}");
+}
+
+#[test]
+fn scope_off_never_asks_systemctl() {
+    let f = Fixture::new();
+    let bin = tool_dir(&f, true);
+    add_systemctl(&bin, "echo not-found");
+    let d = f.daemon(&[
+        ("LUCINA_AGENTD_WORK_SCOPE", "off".to_string()),
+        ("XDG_RUNTIME_DIR", f.root.path().display().to_string()),
+        ("PATH", bin.clone()),
+    ]);
+    let ws = f.repo("ws");
+    let job = start(&d, &f, "LA", &ws, &["--cost", "build"]);
+    assert_ne!(job["state"], "failed", "{job}");
+    assert!(!Path::new(&bin).join("systemctl.args").exists());
+    assert!(!Path::new(&bin).join("systemd-run.args").exists());
 }

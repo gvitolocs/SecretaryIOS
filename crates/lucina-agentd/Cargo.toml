@@ -29,8 +29,9 @@ chrono = { workspace = true }
 chrono-tz = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
-rustix = { version = "1", features = ["process"] }
 reqwest = { workspace = true, features = ["stream"] }
+# kill(2) without a fork, as `#![forbid(unsafe_code)]` requires: see `pipeline::kill`.
+rustix = { version = "1", features = ["process"] }
 base64 = "0.22"
 portable-pty = "0.9"
 vt100 = "0.15"

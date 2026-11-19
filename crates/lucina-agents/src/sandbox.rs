@@ -1472,6 +1472,8 @@ fn audit_fence_env(hidden: &Hidden, name: &str, value: &str) -> Result<()> {
 /// - a bind whose source or target is hidden, or a read-write bind whose source is not its target;
 /// - a read-write bind after a read-only bind of the same path or of a path inside it (it would
 ///   undo a lock: `<common>/hooks`, `config`, `info`, `objects/info`, `commondir`, ...);
+/// - a `--tmpfs` that is not `/tmp` or the run home, or that comes after a bind at or under its path;
+///   a `--chdir` that is not a read-write bind target;
 /// - a symlink pointing into a hidden path; `--perms` other than `0700`;
 /// - `--clearenv` after a `--setenv`, a `--setenv` before `--clearenv`, a variable set twice, a
 ///   variable a caller may not pass, a fence variable with a wrong value, a hidden path in a value;
@@ -1480,6 +1482,8 @@ pub fn audit(hidden: &Hidden, args: &[String]) -> Result<()> {
     let mut i = 0;
     let mut seen: Vec<&str> = Vec::new();
     let mut ro_targets: Vec<PathBuf> = Vec::new();
+    let mut bind_targets: Vec<PathBuf> = Vec::new();
+    let mut rw_targets: Vec<PathBuf> = Vec::new();
     let mut env_names: Vec<&str> = Vec::new();
     let mut ended = false;
     let refuse = |m: String| Err(SandboxError::Args(m));
@@ -1523,8 +1527,12 @@ pub fn audit(hidden: &Hidden, args: &[String]) -> Result<()> {
                     ));
                 }
             } else {
-                ro_targets.push(dst);
+                ro_targets.push(dst.clone());
             }
+            if is_rw_bind(f) {
+                rw_targets.push(dst.clone());
+            }
+            bind_targets.push(dst);
         }
         match f {
             "--cap-drop" if args[i + 1] != "ALL" => {
@@ -1533,6 +1541,37 @@ pub fn audit(hidden: &Hidden, args: &[String]) -> Result<()> {
             "--proc" if args[i + 1] != "/proc" => return refuse("--proc must be /proc".to_owned()),
             "--dev" if args[i + 1] != "/dev" => return refuse("--dev must be /dev".to_owned()),
             "--perms" if args[i + 1] != "0700" => return refuse("--perms must be 0700".to_owned()),
+            "--tmpfs" => {
+                let p = normalize(Path::new(&args[i + 1]));
+                if !args[i + 1].starts_with('/')
+                    || show(&p) != args[i + 1]
+                    || (p != Path::new("/tmp") && p != hidden.home)
+                {
+                    return refuse(format!(
+                        "--tmpfs at position {i}: {} is not exactly /tmp or the run's home in normal form",
+                        args[i + 1]
+                    ));
+                }
+                if let Some(b) = bind_targets.iter().find(|b| b.starts_with(&p)) {
+                    return refuse(format!(
+                        "--tmpfs at position {i}: {} would hide the earlier bind of {}",
+                        show(&p),
+                        show(b)
+                    ));
+                }
+            }
+            "--chdir" => {
+                let p = normalize(Path::new(&args[i + 1]));
+                if !args[i + 1].starts_with('/')
+                    || show(&p) != args[i + 1]
+                    || !rw_targets.contains(&p)
+                {
+                    return refuse(format!(
+                        "--chdir at position {i}: {} is not a normal-form path the list binds read-write",
+                        args[i + 1]
+                    ));
+                }
+            }
             "--symlink" => {
                 let link = normalize(Path::new(&args[i + 2]));
                 hidden.check("the symlink", &link)?;
