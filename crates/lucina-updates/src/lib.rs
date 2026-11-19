@@ -477,6 +477,26 @@ mod tests {
         }
     }
 
+    // std treats only `::1` as an IPv6 loopback, so a mapped address is refused even when it maps to
+    // 127.0.0.1; that is the safe direction, and this test keeps anyone from switching to
+    // `to_canonical()` without noticing.
+    #[test]
+    fn ipv4_mapped_ipv6_addresses_are_refused() {
+        for a in [
+            "[::ffff:127.0.0.1]:8811",
+            "[::ffff:192.168.0.1]:8811",
+            "[::ffff:0.0.0.0]:8811",
+        ] {
+            assert_eq!(
+                lb(a),
+                Err(format!(
+                    "--addr {a}: lucina-updates listens on loopback only"
+                )),
+                "{a}"
+            );
+        }
+    }
+
     #[test]
     fn range_selection() {
         assert_eq!(select_range("bytes=0-9", 100), RangeSel::Part(0, 9));
