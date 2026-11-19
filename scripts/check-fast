@@ -179,6 +179,9 @@ fi
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$cache_root/$wt_id}
 mkdir -p "$CARGO_TARGET_DIR"
 touch "$CARGO_TARGET_DIR/.last-used"
+# No incremental compilation: the caches rarely get reused and were nearly half the old shared target's size (40 of 89 GiB on 2026-11-11,
+# when nezopt's disk ran short). A caller that sets CARGO_INCREMENTAL keeps its value.
+export CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-0}
 export LUCINA_CI_CPU_QUOTA=${LUCINA_CI_CPU_QUOTA:-400%}
 free=$(df --output=avail -BG "$qhome" | tail -1 | tr -dc 0-9)
 [ "$free" -ge 20 ] || { echo "check-fast: only ${free} GiB free; refusing to build" >&2; exit 2; }

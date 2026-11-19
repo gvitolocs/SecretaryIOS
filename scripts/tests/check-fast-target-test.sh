@@ -7,6 +7,7 @@
 #   (2) the target exists and holds `.last-used`; nothing is said on stderr about the target;
 #   (3) an inherited CARGO_TARGET_DIR outside the cache is kept and warned about; inside the cache it is kept silently;
 #   (4) LUCINA_CHECK_ALLOW_TARGET=1 silences the warning, the target is still kept.
+#   (5) the child sees CARGO_INCREMENTAL=0, and an explicitly inherited value is kept.
 # Last line: `check-fast-target-test: pass`.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -20,7 +21,7 @@ home=$tmp/home
 cache=$tmp/cache
 mkdir -p "$home/tool-build/release" "$cache" "$tmp/bin"
 chmod 755 "$home" "$home/tool-build" "$home/tool-build/release"
-printf '#!/usr/bin/env bash\necho "target=$CARGO_TARGET_DIR"\n' > "$home/tool-build/release/lucina-ci"
+printf '#!/usr/bin/env bash\necho "target=$CARGO_TARGET_DIR\nincremental=${CARGO_INCREMENTAL-unset}"\n' > "$home/tool-build/release/lucina-ci"
 printf '#!/usr/bin/env bash\necho Avail\necho 999G\n' > "$tmp/bin/df"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/cargo"
 chmod +x "$home/tool-build/release/lucina-ci" "$tmp/bin/df" "$tmp/bin/cargo"
@@ -43,12 +44,13 @@ run_in() {
     local r=$1
     shift
     rc=0
-    env -u CARGO_TARGET_DIR -u LUCINA_CHECK_ALLOW_TARGET ${@+"$@"} \
+    env -u CARGO_TARGET_DIR -u CARGO_INCREMENTAL -u LUCINA_CHECK_ALLOW_TARGET ${@+"$@"} \
         PATH="$tmp/bin:/usr/bin:/bin" LUCINA_CHECK_CACHE="$cache" \
         SECRETARY_CI_TOOL_TARGET="$home/tool" SECRETARY_CI_TOOL_BUILD="$home/tool-build" \
         "$tmp/$r/scripts/check-fast" > "$tmp/out" 2> "$tmp/err" || rc=$?
     [ "$rc" -eq 0 ] || fail "$r: exit $rc: $(cat "$tmp/err")"
     out=$(grep '^target=' "$tmp/out" | head -1 | cut -d= -f2-)
+    inc=$(grep '^incremental=' "$tmp/out" | head -1 | cut -d= -f2-)
     [ -n "$out" ] || fail "$r: the launcher printed no target: $(cat "$tmp/out")"
 }
 no_target_warning() { if grep -q 'CARGO_TARGET_DIR=' "$tmp/err"; then fail "$1: unexpected warning: $(cat "$tmp/err")"; fi; }
@@ -85,5 +87,10 @@ no_target_warning "inside the cache"
 run_in wt-a CARGO_TARGET_DIR="$tmp/elsewhere2" LUCINA_CHECK_ALLOW_TARGET=1
 [ "$out" = "$tmp/elsewhere2" ] || fail "the allowed target was not kept: $out"
 no_target_warning "allowed"
+
+# (5) incremental compilation is off unless the caller says otherwise
+[ "$inc" = 0 ] || fail "CARGO_INCREMENTAL is not 0 by default: $inc"
+run_in wt-a CARGO_INCREMENTAL=1
+[ "$inc" = 1 ] || fail "an inherited CARGO_INCREMENTAL was not kept: $inc"
 
 echo "check-fast-target-test: pass"
