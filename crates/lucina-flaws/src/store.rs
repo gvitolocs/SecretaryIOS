@@ -67,6 +67,26 @@ CREATE TABLE IF NOT EXISTS flaw_events (
     at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS flaw_events_flaw ON flaw_events(flaw_id, seq);
+-- Why a claim ended: `task` (the agent provably worked and it did not fix it, counted toward
+-- `blocked`) or `lane` (the lane or provider failed; never counted).
+CREATE TABLE IF NOT EXISTS flaw_failures (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    flaw_id TEXT NOT NULL REFERENCES flaws(id),
+    platform TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    agent TEXT,
+    error TEXT,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS flaw_failures_target ON flaw_failures(flaw_id, platform, at);
+-- The dispatcher's lane breaker, one row per lane that ever failed. A missing row is closed.
+CREATE TABLE IF NOT EXISTS lane_breakers (
+    lane TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    opened_at TEXT,
+    reason TEXT,
+    until TEXT
+);
 CREATE TRIGGER IF NOT EXISTS flaw_events_no_update BEFORE UPDATE ON flaw_events
     BEGIN SELECT RAISE(ABORT, 'flaw_events is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS flaw_events_no_delete BEFORE DELETE ON flaw_events
@@ -185,8 +205,134 @@ pub struct Target {
     pub attempts: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claimed_at: Option<String>,
+    /// Counts every claim ever taken on this target and never goes back, so one claim can be told
+    /// from the next even inside a second.
+    #[serde(default)]
+    pub claim_seq: i64,
+    /// The lane (breaker key) the live claim runs on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    /// Not before this time: the back-off after a task failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_try_at: Option<String>,
+    /// How the last claim ended, when it ended on an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
     pub updated_at: String,
 }
+
+impl Target {
+    /// What a caller read of this target's live claim: a release or give-back that carries it only
+    /// takes effect while the claim is still that one.
+    pub fn claim_ref(&self) -> ClaimRef {
+        ClaimRef {
+            agent: self.agent.clone(),
+            claimed_at: self.claimed_at.clone(),
+            seq: self.claim_seq,
+        }
+    }
+}
+
+/// A live claim as it was read: its agent, its time and its sequence number.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaimRef {
+    pub agent: Option<String>,
+    pub claimed_at: Option<String>,
+    pub seq: i64,
+}
+
+/// The counts a claim re-checks inside its own transaction, so a second process on the same
+/// database (the `lucina-rs flaws` CLI, a second server) cannot take the claim past them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimCaps {
+    /// Live claims in one repo.
+    pub per_repo: usize,
+    /// Live claims and triage agents, in all.
+    pub total: usize,
+    /// Live claims on one lane.
+    pub per_lane: usize,
+}
+
+/// A failure that ended a claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub kind: String,
+    pub agent: Option<String>,
+    pub error: Option<String>,
+    pub at: String,
+}
+
+/// A blocked target with what the restore command needs to judge it.
+#[derive(Debug, Clone)]
+pub struct BlockedLook {
+    pub flaw: Flaw,
+    pub target: Target,
+    /// Agents the dispatcher started on it since the time asked.
+    pub agents: Vec<String>,
+    /// Failures recorded on it since then (the new dispatcher records them).
+    pub failures: Vec<Failure>,
+}
+
+/// How a lane breaker stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+impl LaneState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LaneState::Closed => "closed",
+            LaneState::Open => "open",
+            LaneState::HalfOpen => "half_open",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            "open" => LaneState::Open,
+            "half_open" => LaneState::HalfOpen,
+            _ => LaneState::Closed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneBreaker {
+    pub lane: String,
+    pub state: LaneState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Not half-open before this time: the back-off after a trial agent failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Trial agents that failed in a row since it last closed.
+    pub fails: i64,
+    /// How many times it has opened, ever.
+    pub opens: i64,
+    /// The claim (`flaw:platform:claim number`) that is its one trial agent, while half-open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trial: Option<String>,
+}
+
+/// Lane failures of one target inside the window after which it is `blocked` for a lead. A lane
+/// failure still costs no attempt: the second backs the target off 5 minutes, the third needs a
+/// lead.
+pub const LANE_FAILURES_BEFORE_LEAD: usize = 3;
+
+/// The minutes a target waits after its `n`th task failure (1-based) in the window: 5, doubling,
+/// at most two hours.
+pub fn backoff_minutes(n: usize) -> i64 {
+    let n = n.max(1) as u32;
+    (5i64 << (n - 1).min(10)).min(120)
+}
+
+/// How far back task failures count toward `blocked`.
+pub const FAILURE_WINDOW_HOURS: i64 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
@@ -297,8 +443,13 @@ pub struct Outcome {
     pub target: Target,
 }
 
+/// The time source of the guards that depend on it (back-off, the failure window). Real time
+/// unless a test sets its own.
+type Clock = std::sync::Arc<dyn Fn() -> chrono::DateTime<Utc> + Send + Sync>;
+
 pub struct Flaws {
     conn: Mutex<Connection>,
+    clock: Mutex<Option<Clock>>,
 }
 
 fn parse_opt<T>(v: Option<String>, f: impl Fn(&str) -> Result<T>) -> Option<T> {
@@ -343,6 +494,10 @@ fn target_row(r: &Row<'_>) -> rusqlite::Result<Target> {
         build: r.get("build")?,
         attempts: r.get("attempts")?,
         claimed_at: r.get("claimed_at")?,
+        claim_seq: r.get("claim_seq")?,
+        lane: r.get("lane")?,
+        next_try_at: r.get("next_try_at")?,
+        last_error: r.get("last_error")?,
         updated_at: r.get("updated_at")?,
     })
 }
@@ -388,6 +543,17 @@ fn target_of(c: &Connection, id: &str, p: Platform) -> Result<Target> {
     .ok_or(FlawError::NotFound)
 }
 
+fn lane_state_of(c: &Connection, lane: &str) -> Result<LaneState> {
+    let s: Option<String> = c
+        .query_row(
+            "SELECT state FROM lane_breakers WHERE lane = ?1",
+            [lane],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(s.as_deref().map_or(LaneState::Closed, LaneState::parse))
+}
+
 /// A flaw's state follows from its targets, unless it is a duplicate or dismissed. `resolved`
 /// needs every target closed, and each closed target went through the evidence rule.
 fn recompute_state(c: &Connection, id: &str, actor: &str) -> Result<()> {
@@ -430,13 +596,40 @@ fn words_of(s: &str) -> HashSet<String> {
 /// A database from before the chain: `CREATE TABLE IF NOT EXISTS` never changes a table that is
 /// already there, so the step a triage agent ran on is added here. Nothing in it is a step yet.
 fn migrate(c: &Connection) -> Result<()> {
-    let has = c
-        .prepare("SELECT 1 FROM pragma_table_info('flaws') WHERE name = 'triage_step'")?
-        .exists([])?;
-    if !has {
-        c.execute("ALTER TABLE flaws ADD COLUMN triage_step INTEGER", [])?;
-    }
+    add_column(c, "flaws", "triage_step", "INTEGER")?;
+    // The dispatcher's guards (LA-C035): back-off, the lane a claim runs on, the claim's
+    // sequence number and the last error. Rows from before keep working: they read as 0 / NULL.
+    add_column(c, "flaw_targets", "next_try_at", "TEXT")?;
+    add_column(c, "flaw_targets", "lane", "TEXT")?;
+    add_column(c, "flaw_targets", "claim_seq", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column(c, "flaw_targets", "last_error", "TEXT")?;
+    // The lane breaker's own memory: failed trials in a row (the back-off), how many times it ever
+    // opened (the ops record's key), and the claim that is its one trial agent.
+    add_column(c, "lane_breakers", "fails", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column(c, "lane_breakers", "opens", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column(c, "lane_breakers", "trial", "TEXT")?;
     Ok(())
+}
+
+/// `ALTER TABLE .. ADD COLUMN` when the column is not there yet. Two processes opening one file
+/// at once may both try; the one that loses the race finds the column and goes on.
+fn add_column(c: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let has = c
+        .prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{column}'"
+        ))?
+        .exists([])?;
+    if has {
+        return Ok(());
+    }
+    match c.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+        [],
+    ) {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("duplicate column") => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 impl Flaws {
@@ -459,7 +652,30 @@ impl Flaws {
         migrate(&c)?;
         Ok(Self {
             conn: Mutex::new(c),
+            clock: Mutex::new(None),
         })
+    }
+
+    /// Use this clock for the guards that depend on time (a test's fake clock).
+    pub fn set_clock(&self, f: impl Fn() -> chrono::DateTime<Utc> + Send + Sync + 'static) {
+        *self.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(f));
+    }
+
+    /// The time the guards go by.
+    pub fn clock_now(&self) -> chrono::DateTime<Utc> {
+        match self
+            .clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            Some(f) => f(),
+            None => Utc::now(),
+        }
+    }
+
+    fn at(&self) -> String {
+        self.clock_now().to_rfc3339_opts(SecondsFormat::Secs, true)
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -767,8 +983,19 @@ impl Flaws {
     }
 
     /// Claim a target for a new task, atomically: only one caller gets it. `affected` with a
-    /// layer, on a live flaw, held by nobody.
-    pub fn claim(&self, id: &str, p: Platform, repo: &str, actor: &str) -> Result<Target> {
+    /// layer, on a live flaw, held by nobody, under the dispatcher's guards, all re-checked inside the claim's own
+    /// transaction (`BEGIN IMMEDIATE`): the back-off, one live claim for a server or core fix, the
+    /// lane breaker, and the counts of live claims per repo, in all and per lane. A refusal that
+    /// is a limit and not a state of the target is [`FlawError::Busy`]: nothing was started.
+    pub fn claim_capped(
+        &self,
+        id: &str,
+        p: Platform,
+        repo: &str,
+        lane: Option<&str>,
+        caps: &ClaimCaps,
+        actor: &str,
+    ) -> Result<Target> {
         self.tx(|c| {
             let f = flaw_of(c, id)?;
             if matches!(f.state, FlawState::Duplicate | FlawState::Dismissed) {
@@ -781,23 +1008,89 @@ impl Flaws {
             if t.layer.is_none() {
                 return Err(FlawError::NotClaimable(format!("{id} on {p} has no layer yet (server, core or client)")));
             }
-            let at = now();
+            let at = self.at();
+            if let Some(next) = t.next_try_at.as_deref() {
+                if next > at.as_str() {
+                    return Err(FlawError::Busy(format!("back-off: {id} on {p} waits until {next} after its last failed try")));
+                }
+            }
+            // One fix covers every client of a server or core layer: a sibling at work holds it.
+            if matches!(t.layer, Some(Layer::Server | Layer::Core)) {
+                let sibling: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM flaw_targets WHERE flaw_id=?1 AND platform<>?2 AND layer=?3 AND status='fixing')",
+                    params![id, p.as_str(), t.layer.map(|l| l.as_str())],
+                    |r| r.get(0),
+                )?;
+                if sibling {
+                    return Err(FlawError::NotClaimable(format!("{id}: one fix on the {} layer is already at work", t.layer.map_or("", |l| l.as_str()))));
+                }
+            }
+            let count = |sql: &str, arg: Option<&str>| -> Result<usize> {
+                let n: i64 = match arg {
+                    Some(a) => c.query_row(sql, [a], |r| r.get(0))?,
+                    None => c.query_row(sql, [], |r| r.get(0))?,
+                };
+                Ok(n.max(0) as usize)
+            };
+            let mut trial_lane: Option<&str> = None;
+            if let Some(l) = lane {
+                let state = lane_state_of(c, l)?;
+                if state == LaneState::HalfOpen {
+                    trial_lane = Some(l);
+                }
+                let on_lane = count(
+                    "SELECT count(*) FROM flaw_targets WHERE status='fixing' AND session IS NULL AND lane=?1",
+                    Some(l),
+                )?;
+                match state {
+                    LaneState::Open => return Err(FlawError::Busy(format!("lane {l} is open (it failed; a probe has to pass first)"))),
+                    // Exactly one agent on a half-open lane: the one that shows it works again.
+                    LaneState::HalfOpen if on_lane > 0 => {
+                        return Err(FlawError::Busy(format!("lane {l} is half-open: its one trial agent is at work")))
+                    }
+                    _ => {}
+                }
+                if on_lane >= caps.per_lane {
+                    return Err(FlawError::Busy(format!("{} agents already run on lane {l}", caps.per_lane)));
+                }
+            }
+            let in_repo = count(
+                "SELECT count(*) FROM flaw_targets WHERE status='fixing' AND session IS NULL AND repo=?1",
+                Some(repo),
+            )?;
+            if in_repo >= caps.per_repo {
+                return Err(FlawError::Busy(format!("{} tasks already run in this repo", caps.per_repo)));
+            }
+            let all = count("SELECT count(*) FROM flaw_targets WHERE status='fixing' AND session IS NULL", None)?
+                + count("SELECT count(*) FROM flaws WHERE triage_agent IS NOT NULL AND triaged_at IS NULL", None)?;
+            if all >= caps.total {
+                return Err(FlawError::Busy(format!("{} agents already run in all", caps.total)));
+            }
             let n = c.execute(
-                "UPDATE flaw_targets SET status='fixing', repo=?1, claimed_at=?2, attempts=attempts+1, updated_at=?2
+                "UPDATE flaw_targets SET status='fixing', repo=?1, lane=?5, claimed_at=?2, claim_seq=claim_seq+1,
+                    attempts=attempts+1, next_try_at=NULL, updated_at=?2
                  WHERE flaw_id=?3 AND platform=?4 AND status='affected' AND agent IS NULL AND session IS NULL",
-                params![repo, at, id, p.as_str()],
+                params![repo, at, id, p.as_str(), lane],
             )?;
             if n == 0 {
                 return Err(FlawError::NotClaimable(format!("{id} on {p} is held already")));
             }
-            event(c, id, Some(p), "claimed", actor, json!({"repo": repo, "attempt": t.attempts + 1}))?;
+            if let Some(l) = trial_lane {
+                // The one claim a half-open lane lets through is its trial agent.
+                c.execute(
+                    "UPDATE lane_breakers SET trial=?1 WHERE lane=?2",
+                    params![format!("{id}:{p}:{}", t.claim_seq + 1), l],
+                )?;
+            }
+            event(c, id, Some(p), "claimed", actor, json!({"repo": repo, "lane": lane, "attempt": t.attempts + 1}))?;
             recompute_state(c, id, actor)?;
             target_of(c, id, p)
         })
     }
 
     /// The task and agent a claim turned into, and which step of the chain runs it: his history
-    /// says what the work was done with.
+    /// says what the work was done with. It lands only on a claim still held with no agent: a
+    /// claim released in the meantime is not the agent's any more.
     pub fn attach(
         &self,
         id: &str,
@@ -808,10 +1101,17 @@ impl Flaws {
         actor: &str,
     ) -> Result<Target> {
         self.tx(|c| {
-            c.execute(
-                "UPDATE flaw_targets SET workspace=?1, agent=?2, updated_at=?3 WHERE flaw_id=?4 AND platform=?5",
+            // An empty workspace leaves the one the row has.
+            let n = c.execute(
+                "UPDATE flaw_targets SET workspace=COALESCE(NULLIF(?1,''), workspace), agent=?2, updated_at=?3
+                 WHERE flaw_id=?4 AND platform=?5 AND status='fixing' AND agent IS NULL",
                 params![workspace, agent, now(), id, p.as_str()],
             )?;
+            if n == 0 {
+                return Err(FlawError::NotClaimable(format!(
+                    "{id} on {p} is not a claim waiting for its agent any more"
+                )));
+            }
             let started_by = json!({"workspace": workspace, "agent": agent, "provider": run.provider, "model": run.model, "probe_lane": run.probe_lane});
             event(c, id, Some(p), "started", actor, started_by)?;
             target_of(c, id, p)
@@ -819,7 +1119,8 @@ impl Flaws {
     }
 
     /// A claimed task ended without a fix: back to `affected` for another try, or `blocked`
-    /// after `max_attempts`.
+    /// after `max_attempts`. Unconditional and counting every claim: the dispatcher uses
+    /// [`Flaws::fail_task_if`] and [`Flaws::give_back_if`], which carry the claim they read.
     pub fn release(
         &self,
         id: &str,
@@ -835,7 +1136,7 @@ impl Flaws {
             }
             let to = if t.attempts >= max_attempts { TargetStatus::Blocked } else { TargetStatus::Affected };
             c.execute(
-                "UPDATE flaw_targets SET status=?1, agent=NULL, session=NULL, workspace=NULL, claimed_at=NULL, updated_at=?2
+                "UPDATE flaw_targets SET status=?1, agent=NULL, session=NULL, workspace=NULL, claimed_at=NULL, lane=NULL, updated_at=?2
                  WHERE flaw_id=?3 AND platform=?4",
                 params![to.as_str(), now(), id, p.as_str()],
             )?;
@@ -846,7 +1147,8 @@ impl Flaws {
     }
 
     /// The task never got to work (agentd down, the lane out of quota): the claim goes back and
-    /// the try doesn't count, so an outage can't block a flaw.
+    /// the try doesn't count, so an outage can't block a flaw. Unconditional; the dispatcher uses
+    /// [`Flaws::give_back_if`].
     pub fn give_back(&self, id: &str, p: Platform, why: &str, actor: &str) -> Result<Target> {
         self.tx(|c| {
             let t = target_of(c, id, p)?;
@@ -854,7 +1156,7 @@ impl Flaws {
                 return Ok(t);
             }
             c.execute(
-                "UPDATE flaw_targets SET status='affected', agent=NULL, workspace=NULL, claimed_at=NULL, attempts=MAX(attempts-1,0), updated_at=?1
+                "UPDATE flaw_targets SET status='affected', agent=NULL, workspace=NULL, claimed_at=NULL, lane=NULL, attempts=MAX(attempts-1,0), updated_at=?1
                  WHERE flaw_id=?2 AND platform=?3",
                 params![now(), id, p.as_str()],
             )?;
@@ -862,6 +1164,318 @@ impl Flaws {
             recompute_state(c, id, actor)?;
             target_of(c, id, p)
         })
+    }
+
+    /// Is this the claim the caller read: still `fixing`, the same agent, the same time and the
+    /// same sequence number?
+    fn holds(t: &Target, claim: &ClaimRef) -> bool {
+        t.status == TargetStatus::Fixing
+            && t.session.is_none()
+            && t.agent == claim.agent
+            && t.claimed_at == claim.claimed_at
+            && t.claim_seq == claim.seq
+    }
+
+    /// [`Flaws::give_back`] for the claim the caller read, and only that one. `lane_failure`: the
+    /// lane or provider failed, which is recorded as such; the try is not counted either way.
+    /// `None`: the claim is not that one any more (a newer claim, another actor), and nothing
+    /// was touched.
+    pub fn give_back_if(
+        &self,
+        id: &str,
+        p: Platform,
+        claim: &ClaimRef,
+        why: &str,
+        lane_failure: bool,
+        actor: &str,
+    ) -> Result<Option<Target>> {
+        let now_dt = self.clock_now();
+        let at = now_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let since = (now_dt - chrono::Duration::hours(FAILURE_WINDOW_HOURS))
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        self.tx(|c| {
+            let t = target_of(c, id, p)?;
+            if !Self::holds(&t, claim) {
+                return Ok(None);
+            }
+            c.execute(
+                "UPDATE flaw_targets SET status='affected', agent=NULL, workspace=NULL, claimed_at=NULL, lane=NULL,
+                    attempts=MAX(attempts-1,0), last_error=?1, updated_at=?2
+                 WHERE flaw_id=?3 AND platform=?4",
+                params![clip(why, 400), at, id, p.as_str()],
+            )?;
+            if lane_failure {
+                c.execute(
+                    "INSERT INTO flaw_failures (flaw_id, platform, kind, agent, error, at) VALUES (?1,?2,'lane',?3,?4,?5)",
+                    params![id, p.as_str(), claim.agent, clip(why, 400), at],
+                )?;
+                // A flaw whose agents keep ending on lane failures must not go round the
+                // half-open slot for ever: the first is free (the walk below the lane takes it),
+                // the second waits 5 minutes, the third needs a lead.
+                let n: i64 = c.query_row(
+                    "SELECT count(*) FROM flaw_failures WHERE flaw_id=?1 AND platform=?2 AND kind='lane' AND at>=?3",
+                    params![id, p.as_str(), since],
+                    |r| r.get(0),
+                )?;
+                let n = n.max(1) as usize;
+                if n >= LANE_FAILURES_BEFORE_LEAD {
+                    c.execute(
+                        "UPDATE flaw_targets SET status='blocked', next_try_at=NULL WHERE flaw_id=?1 AND platform=?2",
+                        params![id, p.as_str()],
+                    )?;
+                    event(c, id, Some(p), "released", actor, json!({"to": "blocked", "why": "needs a lead", "lane_failures": n, "error": clip(why, 200)}))?;
+                } else if n >= 2 {
+                    let next = (now_dt + chrono::Duration::minutes(backoff_minutes(n - 1)))
+                        .to_rfc3339_opts(SecondsFormat::Secs, true);
+                    c.execute(
+                        "UPDATE flaw_targets SET next_try_at=?1 WHERE flaw_id=?2 AND platform=?3",
+                        params![next, id, p.as_str()],
+                    )?;
+                }
+            }
+            let kind = if lane_failure { "lane_failure" } else { "not_started" };
+            event(c, id, Some(p), kind, actor, json!({"why": why, "agent": claim.agent}))?;
+            recompute_state(c, id, actor)?;
+            Ok(Some(target_of(c, id, p)?))
+        })
+    }
+
+    /// The agent provably worked and the claim ended without a fix: a counted task failure, for
+    /// the claim the caller read. The target waits [`backoff_minutes`] (5, doubling, at most two
+    /// hours) and, with `max_failures` of them inside [`FAILURE_WINDOW_HOURS`], is `blocked`
+    /// until a lead looks. `None`: the claim is not that one any more.
+    pub fn fail_task_if(
+        &self,
+        id: &str,
+        p: Platform,
+        claim: &ClaimRef,
+        error: &str,
+        max_failures: usize,
+        actor: &str,
+    ) -> Result<Option<Target>> {
+        let now_dt = self.clock_now();
+        let at = now_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let since = (now_dt - chrono::Duration::hours(FAILURE_WINDOW_HOURS))
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        self.tx(|c| {
+            let t = target_of(c, id, p)?;
+            if !Self::holds(&t, claim) {
+                return Ok(None);
+            }
+            c.execute(
+                "INSERT INTO flaw_failures (flaw_id, platform, kind, agent, error, at) VALUES (?1,?2,'task',?3,?4,?5)",
+                params![id, p.as_str(), claim.agent, clip(error, 400), at],
+            )?;
+            let n: i64 = c.query_row(
+                "SELECT count(*) FROM flaw_failures WHERE flaw_id=?1 AND platform=?2 AND kind='task' AND at>=?3",
+                params![id, p.as_str(), since],
+                |r| r.get(0),
+            )?;
+            let n = n.max(1) as usize;
+            let (to, next, why) = if n >= max_failures {
+                (TargetStatus::Blocked, None, "needs a lead".to_owned())
+            } else {
+                let next = (now_dt + chrono::Duration::minutes(backoff_minutes(n)))
+                    .to_rfc3339_opts(SecondsFormat::Secs, true);
+                (TargetStatus::Affected, Some(next), clip(error, 200))
+            };
+            c.execute(
+                "UPDATE flaw_targets SET status=?1, agent=NULL, session=NULL, workspace=NULL, claimed_at=NULL, lane=NULL,
+                    next_try_at=?2, last_error=?3, updated_at=?4
+                 WHERE flaw_id=?5 AND platform=?6",
+                params![to.as_str(), next, clip(error, 400), at, id, p.as_str()],
+            )?;
+            event(c, id, Some(p), "released", actor, json!({"to": to, "why": why, "error": clip(error, 200), "failures": n, "next_try_at": next, "attempts": t.attempts}))?;
+            recompute_state(c, id, actor)?;
+            Ok(Some(target_of(c, id, p)?))
+        })
+    }
+
+    /// Task failures in the window that counts toward `blocked`.
+    pub fn task_failures(&self, id: &str, p: Platform) -> Result<usize> {
+        let since = (self.clock_now() - chrono::Duration::hours(FAILURE_WINDOW_HOURS))
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        let c = self.lock();
+        let n: i64 = c.query_row(
+            "SELECT count(*) FROM flaw_failures WHERE flaw_id=?1 AND platform=?2 AND kind='task' AND at>=?3",
+            params![id, p.as_str(), since],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as usize)
+    }
+
+    /// The failures recorded on a target since `since` (RFC 3339), oldest first.
+    pub fn failures_since(&self, id: &str, p: Platform, since: &str) -> Result<Vec<Failure>> {
+        let c = self.lock();
+        let mut s = c.prepare(
+            "SELECT kind, agent, error, at FROM flaw_failures WHERE flaw_id=?1 AND platform=?2 AND at>=?3 ORDER BY seq",
+        )?;
+        let out = s
+            .query_map(params![id, p.as_str(), since], |r| {
+                Ok(Failure {
+                    kind: r.get(0)?,
+                    agent: r.get(1)?,
+                    error: r.get(2)?,
+                    at: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    /// Blocked targets with the agents started on them and the failures recorded on them since
+    /// `since` (RFC 3339): what `restore-lane-failures` judges.
+    pub fn blocked_since(&self, since: &str) -> Result<Vec<BlockedLook>> {
+        let mut out = Vec::new();
+        for (flaw, target) in self.pairs("t.status = 'blocked'")? {
+            let agents = {
+                let c = self.lock();
+                let mut s = c.prepare(
+                    "SELECT detail FROM flaw_events WHERE flaw_id=?1 AND platform=?2 AND kind='started' AND at>=?3 ORDER BY seq",
+                )?;
+                let rows = s
+                    .query_map(params![flaw.id, target.platform.as_str(), since], |r| {
+                        r.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows.iter()
+                    .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+                    .filter_map(|v| v["agent"].as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            };
+            let failures = self.failures_since(&flaw.id, target.platform, since)?;
+            out.push(BlockedLook {
+                flaw,
+                target,
+                agents,
+                failures,
+            });
+        }
+        Ok(out)
+    }
+
+    /// A blocked target the restore command judged a victim of its lane: no tries, back to
+    /// `affected`, no back-off.
+    pub fn restore_target(&self, id: &str, p: Platform, why: &str, actor: &str) -> Result<Target> {
+        self.tx(|c| {
+            let t = target_of(c, id, p)?;
+            if t.status != TargetStatus::Blocked {
+                return Err(FlawError::NotClaimable(format!(
+                    "{id} on {p} is {}, not blocked",
+                    t.status
+                )));
+            }
+            c.execute(
+                "UPDATE flaw_targets SET status='affected', attempts=0, next_try_at=NULL, agent=NULL, session=NULL, workspace=NULL,
+                    claimed_at=NULL, lane=NULL, told_status=NULL, updated_at=?1 WHERE flaw_id=?2 AND platform=?3",
+                params![now(), id, p.as_str()],
+            )?;
+            event(c, id, Some(p), "restored", actor, json!({"why": why, "attempts": t.attempts}))?;
+            recompute_state(c, id, actor)?;
+            target_of(c, id, p)
+        })
+    }
+
+    // ------------------------------------------------------------ the lane breaker
+
+    /// A lane's breaker: closed unless it has a row saying otherwise.
+    pub fn lane_state(&self, lane: &str) -> Result<LaneState> {
+        lane_state_of(&self.lock(), lane)
+    }
+
+    /// Every lane with a breaker row.
+    pub fn lanes(&self) -> Result<Vec<LaneBreaker>> {
+        let c = self.lock();
+        let mut s = c.prepare(
+            "SELECT lane, state, opened_at, reason, until, fails, opens, trial FROM lane_breakers ORDER BY lane",
+        )?;
+        let out = s
+            .query_map([], |r| {
+                Ok(LaneBreaker {
+                    lane: r.get(0)?,
+                    state: LaneState::parse(&r.get::<_, String>(1)?),
+                    opened_at: r.get(2)?,
+                    reason: r.get(3)?,
+                    until: r.get(4)?,
+                    fails: r.get(5)?,
+                    opens: r.get(6)?,
+                    trial: r.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    /// The first lane failure opens the lane, whatever was cached about it being ready. `true`:
+    /// it was not open before (closed, or half-open and failed again): the one time an incident
+    /// is recorded. `false`: it was open already.
+    pub fn lane_open(&self, lane: &str, reason: &str) -> Result<bool> {
+        let now_dt = self.clock_now();
+        let at = now_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
+        self.tx(|c| {
+            let prev: Option<(String, i64, i64)> = c
+                .query_row(
+                    "SELECT state, fails, opens FROM lane_breakers WHERE lane = ?1",
+                    [lane],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let (state, fails, opens) = prev.unwrap_or_else(|| ("closed".to_owned(), 0, 0));
+            if state == "open" {
+                return Ok(false);
+            }
+            // A trial agent that failed: the lane stays shut for longer each time (5 minutes,
+            // doubling), so a failing lane costs an agent per back-off step, not one a tick.
+            let fails = if state == "half_open" { fails + 1 } else { 0 };
+            let until = (fails > 0).then(|| {
+                (now_dt + chrono::Duration::minutes(backoff_minutes(fails as usize)))
+                    .to_rfc3339_opts(SecondsFormat::Secs, true)
+            });
+            c.execute(
+                "INSERT INTO lane_breakers (lane, state, opened_at, reason, until, fails, opens, trial)
+                 VALUES (?1,'open',?2,?3,?4,?5,?6,NULL)
+                 ON CONFLICT(lane) DO UPDATE SET state='open', opened_at=?2, reason=?3, until=?4, fails=?5, opens=?6, trial=NULL",
+                params![lane, at, clip(reason, 400), until, fails, opens + 1],
+            )?;
+            Ok(true)
+        })
+    }
+
+    /// A probe passed: exactly one agent may try the lane, unless the back-off of a failed trial
+    /// has not passed. `true`: it was open and is half-open now.
+    pub fn lane_half_open(&self, lane: &str) -> Result<bool> {
+        let at = self.at();
+        self.tx(|c| {
+            let n = c.execute(
+                "UPDATE lane_breakers SET state='half_open' WHERE lane=?1 AND state='open' AND (until IS NULL OR until <= ?2)",
+                params![lane, at],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// The trial agent's first turn succeeded, or a lead cleared it. `true`: it was not closed.
+    pub fn lane_close(&self, lane: &str) -> Result<bool> {
+        self.tx(|c| {
+            let n = c.execute(
+                "UPDATE lane_breakers SET state='closed', until=NULL, fails=0, trial=NULL WHERE lane=?1 AND state<>'closed'",
+                [lane],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// The claim (`flaw:platform:claim number`) that is the trial agent of a half-open lane.
+    pub fn lane_trial(&self, lane: &str) -> Result<Option<String>> {
+        let c = self.lock();
+        let t: Option<Option<String>> = c
+            .query_row(
+                "SELECT trial FROM lane_breakers WHERE lane = ?1",
+                [lane],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(t.flatten())
     }
 
     /// `lagent merge` landed: the commit, and `fixed` if it was being worked on. Repeats are fine.
@@ -937,10 +1551,14 @@ impl Flaws {
         Ok(out)
     }
 
-    /// Targets ready for a task: affected, with a layer, held by nobody, on a live flaw.
+    /// Targets ready for a task: affected, with a layer, held by nobody, on a live flaw, and past
+    /// the back-off a failed try left.
     pub fn due(&self) -> Result<Vec<(Flaw, Target)>> {
-        self.pairs("t.status = 'affected' AND t.layer IS NOT NULL AND t.agent IS NULL AND t.session IS NULL AND f.state IN ('open','fixing') \
-             AND NOT (t.layer IN ('server','core') AND EXISTS (SELECT 1 FROM flaw_targets o WHERE o.flaw_id = t.flaw_id AND o.layer = t.layer AND o.status = 'fixing'))")
+        // The time is ours (an RFC 3339 literal), never a caller's text.
+        let at = self.at();
+        self.pairs(&format!("t.status = 'affected' AND t.layer IS NOT NULL AND t.agent IS NULL AND t.session IS NULL AND f.state IN ('open','fixing') \
+             AND (t.next_try_at IS NULL OR t.next_try_at <= '{at}') \
+             AND NOT (t.layer IN ('server','core') AND EXISTS (SELECT 1 FROM flaw_targets o WHERE o.flaw_id = t.flaw_id AND o.layer = t.layer AND o.status = 'fixing'))"))
     }
 
     /// Everything being worked on, by agents and by sessions.
@@ -1795,5 +2413,632 @@ CREATE TABLE flaw_events (
         assert!(!valid_id("fl-0123ABCD"));
         assert!(!valid_id("fl-0123abc"));
         assert!(!valid_id("x"));
+    }
+
+    // ------------------------------------------------------------ LA-C035: the dispatch guards
+
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::Arc;
+
+    /// The tests that are about something else claim without caps. There is no uncapped claim in
+    /// the crate's API any more (LA-C035 F6): this is theirs alone.
+    trait ClaimUncapped {
+        fn claim(&self, id: &str, p: Platform, repo: &str, actor: &str) -> Result<Target>;
+    }
+
+    impl ClaimUncapped for Flaws {
+        fn claim(&self, id: &str, p: Platform, repo: &str, actor: &str) -> Result<Target> {
+            let none = ClaimCaps {
+                per_repo: usize::MAX,
+                total: usize::MAX,
+                per_lane: usize::MAX,
+            };
+            self.claim_capped(id, p, repo, None, &none, actor)
+        }
+    }
+
+    /// A target with a layer on `p`, due.
+    fn due_on(s: &Flaws, words: &str, p: Platform) -> Flaw {
+        let f = report(s, words, &[p]);
+        layer(s, &f.id, p);
+        f
+    }
+
+    /// A store whose clock a test moves, in minutes from a fixed start.
+    fn with_clock(s: &Flaws) -> Arc<AtomicI64> {
+        let minutes = Arc::new(AtomicI64::new(0));
+        let m = minutes.clone();
+        let start = chrono::DateTime::parse_from_rfc3339("2026-11-19T00:43:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        s.set_clock(move || start + chrono::Duration::minutes(m.load(Ordering::SeqCst)));
+        minutes
+    }
+
+    const CAPS: ClaimCaps = ClaimCaps {
+        per_repo: 2,
+        total: 3,
+        per_lane: 1,
+    };
+
+    #[test]
+    fn the_claim_rechecks_the_caps_in_sql_across_two_handles() {
+        // DISP-01 R10 and store-policy interleaving 1: two processes on one file each saw an
+        // empty repo; the claim, not the caller's snapshot, has the last word.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("flaws.db");
+        let (a, b) = (Flaws::open(&p).unwrap(), Flaws::open(&p).unwrap());
+        let fs: Vec<Flaw> = (0..5)
+            .map(|i| due_on(&a, &format!("flaw number {i}"), Platform::Web))
+            .collect();
+        // Per repo: two lanes, two claims, the third refused whichever handle asks.
+        a.claim_capped(&fs[0].id, Platform::Web, "/r", Some("l1"), &CAPS, "a")
+            .unwrap();
+        b.claim_capped(&fs[1].id, Platform::Web, "/r", Some("l2"), &CAPS, "b")
+            .unwrap();
+        let e = a
+            .claim_capped(&fs[2].id, Platform::Web, "/r", Some("l3"), &CAPS, "a")
+            .unwrap_err();
+        assert_eq!(e.code(), "busy", "{e}");
+        let e = b
+            .claim_capped(&fs[2].id, Platform::Web, "/r", Some("l3"), &CAPS, "b")
+            .unwrap_err();
+        assert_eq!(e.code(), "busy", "{e}");
+        assert_eq!(a.in_progress().unwrap().len(), 2);
+        // Per lane: one.
+        let e = a
+            .claim_capped(&fs[2].id, Platform::Web, "/other", Some("l1"), &CAPS, "a")
+            .unwrap_err();
+        assert_eq!(e.code(), "busy", "{e}");
+        // In all: three, whatever the repo.
+        a.claim_capped(&fs[2].id, Platform::Web, "/other", Some("l3"), &CAPS, "a")
+            .unwrap();
+        let e = b
+            .claim_capped(&fs[3].id, Platform::Web, "/third", Some("l4"), &CAPS, "b")
+            .unwrap_err();
+        assert_eq!(e.code(), "busy", "{e}");
+        // A refused claim left the target as it was.
+        let t = b.get(&fs[3].id).unwrap().targets;
+        let t = t.iter().find(|t| t.platform == Platform::Web).unwrap();
+        assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0));
+    }
+
+    #[test]
+    fn a_triage_agent_counts_toward_the_total() {
+        let s = Flaws::in_memory().unwrap();
+        for i in 0..3 {
+            let f = report(&s, &format!("report {i}"), &[]);
+            s.start_triage(&f.id, &format!("ag{i}"), false, Some(0), "d")
+                .unwrap();
+        }
+        let f = due_on(&s, "a fix", Platform::Web);
+        let e = s
+            .claim_capped(&f.id, Platform::Web, "/r", None, &CAPS, "d")
+            .unwrap_err();
+        assert_eq!(e.code(), "busy", "{e}");
+    }
+
+    #[test]
+    fn one_server_fix_is_one_claim_across_two_handles() {
+        // Store-policy interleaving 6: both read `due` before either claimed; the claim checks
+        // the sibling too.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("flaws.db");
+        let (a, b) = (Flaws::open(&p).unwrap(), Flaws::open(&p).unwrap());
+        let f = report(&a, "x", &[Platform::Web, Platform::Ios]);
+        for pl in [Platform::Web, Platform::Ios] {
+            a.set_target(
+                &f.id,
+                pl,
+                TargetUpdate {
+                    layer: Some(Layer::Server),
+                    ..TargetUpdate::default()
+                },
+                "t",
+            )
+            .unwrap();
+        }
+        assert_eq!(a.due().unwrap().len(), 2);
+        a.claim(&f.id, Platform::Web, "/r", "a").unwrap();
+        let e = b.claim(&f.id, Platform::Ios, "/r", "b").unwrap_err();
+        assert_eq!(e.code(), "not_claimable", "{e}");
+    }
+
+    #[test]
+    fn an_open_lane_takes_no_claim_and_a_half_open_one_takes_one() {
+        let s = Flaws::in_memory().unwrap();
+        let (a, b) = (
+            due_on(&s, "one", Platform::Web),
+            due_on(&s, "two", Platform::Web),
+        );
+        assert!(s.lane_open("claude-sonnet", "sign-in refused").unwrap());
+        let e = s
+            .claim_capped(
+                &a.id,
+                Platform::Web,
+                "/r",
+                Some("claude-sonnet"),
+                &CAPS,
+                "d",
+            )
+            .unwrap_err();
+        assert_eq!(e.code(), "busy", "{e}");
+        // Another lane is unaffected: one lane failing says nothing about another.
+        s.claim_capped(&a.id, Platform::Web, "/r", Some("zen"), &CAPS, "d")
+            .unwrap();
+        s.give_back_if(
+            &a.id,
+            Platform::Web,
+            &s.get(&a.id).unwrap().targets[0].claim_ref(),
+            "x",
+            false,
+            "d",
+        )
+        .unwrap();
+        // A passing probe: exactly one agent.
+        assert!(s.lane_half_open("claude-sonnet").unwrap());
+        let wide = ClaimCaps {
+            per_lane: 9,
+            ..CAPS
+        };
+        s.claim_capped(
+            &a.id,
+            Platform::Web,
+            "/r",
+            Some("claude-sonnet"),
+            &wide,
+            "d",
+        )
+        .unwrap();
+        let e = s
+            .claim_capped(
+                &b.id,
+                Platform::Web,
+                "/r",
+                Some("claude-sonnet"),
+                &wide,
+                "d",
+            )
+            .unwrap_err();
+        assert_eq!(e.code(), "busy", "{e}");
+        assert!(e.to_string().contains("half-open"), "{e}");
+    }
+
+    #[test]
+    fn the_breaker_opens_once_and_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("flaws.db");
+        let s = Flaws::open(&p).unwrap();
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Closed);
+        assert!(
+            s.lane_open("claude-sonnet", "Failed to authenticate")
+                .unwrap(),
+            "the first failure opens it"
+        );
+        assert!(
+            !s.lane_open("claude-sonnet", "Failed to authenticate again")
+                .unwrap(),
+            "open already: nothing new to say"
+        );
+        drop(s);
+        // A new process: the lane is still open.
+        let s = Flaws::open(&p).unwrap();
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+        let lanes = s.lanes().unwrap();
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].reason.as_deref(), Some("Failed to authenticate"));
+        assert!(lanes[0].opened_at.is_some());
+        // Open to half-open to closed, and a lead's clear from anywhere.
+        assert!(s.lane_half_open("claude-sonnet").unwrap());
+        assert!(!s.lane_half_open("claude-sonnet").unwrap());
+        assert!(s.lane_close("claude-sonnet").unwrap());
+        assert!(!s.lane_close("claude-sonnet").unwrap());
+        // Half-open that fails opens again, which is a new open.
+        assert!(s.lane_open("claude-sonnet", "again").unwrap());
+        assert!(s.lane_half_open("claude-sonnet").unwrap());
+        assert!(s.lane_open("claude-sonnet", "failed the trial").unwrap());
+        assert!(s.lane_close("claude-sonnet").unwrap());
+    }
+
+    #[test]
+    fn an_attach_never_lands_on_a_released_row() {
+        // Store-policy interleaving 2: the create was slow, the claim was let go meanwhile.
+        let s = Flaws::in_memory().unwrap();
+        let f = due_on(&s, "x", Platform::Web);
+        let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+        s.give_back_if(
+            &f.id,
+            Platform::Web,
+            &t.claim_ref(),
+            "stale",
+            false,
+            "sweep",
+        )
+        .unwrap()
+        .unwrap();
+        let step = Step::new("opencode", None, None);
+        let e = s
+            .attach(&f.id, Platform::Web, "w", "late-agent", &step, "d")
+            .unwrap_err();
+        assert_eq!(e.code(), "not_claimable", "{e}");
+        let t = s.get(&f.id).unwrap().targets[0].clone();
+        assert_eq!((t.status, t.agent), (TargetStatus::Affected, None));
+        // And it never lands on a newer claim that has its agent already.
+        let t2 = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+        s.attach(&f.id, Platform::Web, "w2", "agent-2", &step, "d")
+            .unwrap();
+        assert!(s
+            .attach(&f.id, Platform::Web, "w3", "late-agent", &step, "d")
+            .is_err());
+        assert_eq!(
+            s.get(&f.id).unwrap().targets[0].agent.as_deref(),
+            Some("agent-2")
+        );
+        assert_ne!(t.claim_seq, t2.claim_seq);
+    }
+
+    #[test]
+    fn a_release_that_carries_an_older_claim_changes_nothing() {
+        // Server-loop R4: reconcile read the claim, a new one was taken, then it let go.
+        let s = Flaws::in_memory().unwrap();
+        let f = due_on(&s, "x", Platform::Web);
+        let step = Step::new("opencode", None, None);
+        let first = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+        s.attach(&f.id, Platform::Web, "w", "ag0", &step, "d")
+            .unwrap();
+        let read = s.get(&f.id).unwrap().targets[0].claim_ref();
+        // Meanwhile: the claim ends and a newer one is taken, in the same second.
+        s.give_back_if(&f.id, Platform::Web, &read, "ended", true, "d")
+            .unwrap()
+            .unwrap();
+        let second = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+        s.attach(&f.id, Platform::Web, "w2", "ag1", &step, "d")
+            .unwrap();
+        assert_ne!(first.claim_seq, second.claim_seq);
+        // The late release of the first claim: neither flavour touches the second.
+        assert!(s
+            .give_back_if(&f.id, Platform::Web, &read, "late", false, "d")
+            .unwrap()
+            .is_none());
+        assert!(s
+            .fail_task_if(&f.id, Platform::Web, &read, "late", 3, "d")
+            .unwrap()
+            .is_none());
+        let t = s.get(&f.id).unwrap().targets[0].clone();
+        assert_eq!(
+            (t.status, t.agent.as_deref()),
+            (TargetStatus::Fixing, Some("ag1"))
+        );
+        assert_eq!(s.task_failures(&f.id, Platform::Web).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_lane_failure_is_not_an_attempt_but_backs_the_target_off_and_then_needs_a_lead() {
+        // LA-C035 condition 1 changed what this pinned. A lane failure still costs no attempt, but
+        // the second one on a target inside a day backs it off 5 minutes and the third needs a
+        // lead: a flaw whose agents keep ending on a healthy-looking lane must not go round the
+        // half-open slot for ever (before, five of them in a row were fine).
+        let s = Flaws::in_memory().unwrap();
+        let clock = with_clock(&s);
+        let f = due_on(&s, "x", Platform::Web);
+        let end = || {
+            let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+            s.give_back_if(
+                &f.id,
+                Platform::Web,
+                &t.claim_ref(),
+                "Failed to authenticate: OAuth session expired",
+                true,
+                "d",
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let t = end();
+        assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0));
+        assert!(
+            t.next_try_at.is_none(),
+            "the first is free: the walk below takes it"
+        );
+        let t = end();
+        assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0));
+        assert!(t.next_try_at.is_some(), "the second waits");
+        assert!(s.due().unwrap().is_empty());
+        assert_eq!(
+            s.claim(&f.id, Platform::Web, "/r", "d").unwrap_err().code(),
+            "busy"
+        );
+        clock.fetch_add(5, Ordering::SeqCst);
+        let t = end();
+        assert_eq!(t.status, TargetStatus::Blocked, "the third needs a lead");
+        assert_eq!(t.attempts, 0, "and none of it was an attempt");
+        let d = s.get(&f.id).unwrap();
+        let e = d
+            .events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "released")
+            .unwrap();
+        assert_eq!(e.detail["why"], "needs a lead");
+        assert_eq!(e.detail["lane_failures"], 3);
+        assert_eq!(s.untold().unwrap().len(), 1, "he is told once");
+        assert_eq!(s.task_failures(&f.id, Platform::Web).unwrap(), 0);
+        let fails = s
+            .failures_since(&f.id, Platform::Web, "2000-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(fails.len(), 3);
+        assert!(fails.iter().all(|x| x.kind == "lane"));
+        assert_eq!(s.get(&f.id).unwrap().targets[0].claim_seq, 3);
+        // A day later the count starts again.
+        let g = due_on(&s, "y", Platform::Web);
+        for _ in 0..2 {
+            let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
+            s.give_back_if(&g.id, Platform::Web, &t.claim_ref(), "x", true, "d")
+                .unwrap();
+            clock.fetch_add(25 * 60, Ordering::SeqCst);
+        }
+        let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
+        let t = s
+            .give_back_if(&g.id, Platform::Web, &t.claim_ref(), "x", true, "d")
+            .unwrap()
+            .unwrap();
+        assert!(t.next_try_at.is_none() && t.status == TargetStatus::Affected);
+    }
+
+    #[test]
+    fn a_failed_trial_keeps_the_lane_shut_for_five_then_ten_minutes_and_only_the_trial_is_known() {
+        let s = Flaws::in_memory().unwrap();
+        let clock = with_clock(&s);
+        let (a, b) = (
+            due_on(&s, "one", Platform::Web),
+            due_on(&s, "two", Platform::Web),
+        );
+        assert!(s.lane_open("l", "sign-in").unwrap());
+        assert!(s.lane_half_open("l").unwrap());
+        // The one claim a half-open lane lets through is its trial.
+        let wide = ClaimCaps {
+            per_lane: 9,
+            ..CAPS
+        };
+        let t = s
+            .claim_capped(&a.id, Platform::Web, "/r", Some("l"), &wide, "d")
+            .unwrap();
+        assert_eq!(
+            s.lane_trial("l").unwrap().as_deref(),
+            Some(format!("{}:web:{}", a.id, t.claim_seq).as_str())
+        );
+        assert!(s
+            .claim_capped(&b.id, Platform::Web, "/r", Some("l"), &wide, "d")
+            .is_err());
+        // It fails: shut again, and this time for 5 minutes.
+        assert!(s.lane_open("l", "failed the trial").unwrap());
+        assert_eq!(s.lane_trial("l").unwrap(), None);
+        assert!(!s.lane_half_open("l").unwrap(), "not before the back-off");
+        clock.fetch_add(4, Ordering::SeqCst);
+        assert!(!s.lane_half_open("l").unwrap());
+        clock.fetch_add(1, Ordering::SeqCst);
+        assert!(s.lane_half_open("l").unwrap());
+        // The next failed trial: ten minutes.
+        assert!(s.lane_open("l", "again").unwrap());
+        clock.fetch_add(9, Ordering::SeqCst);
+        assert!(!s.lane_half_open("l").unwrap());
+        clock.fetch_add(1, Ordering::SeqCst);
+        assert!(s.lane_half_open("l").unwrap());
+        let l = &s.lanes().unwrap()[0];
+        assert_eq!((l.opens, l.fails), (3, 2));
+        // Closing forgets the failures: the next opening is free again.
+        assert!(s.lane_close("l").unwrap());
+        assert!(s.lane_open("l", "new").unwrap());
+        assert!(s.lane_half_open("l").unwrap());
+        assert_eq!(s.lanes().unwrap()[0].opens, 4);
+    }
+    #[test]
+    fn a_task_failure_backs_off_five_then_ten_then_twenty_up_to_two_hours() {
+        assert_eq!(
+            (1..=8).map(backoff_minutes).collect::<Vec<_>>(),
+            vec![5, 10, 20, 40, 80, 120, 120, 120]
+        );
+        let s = Flaws::in_memory().unwrap();
+        let clock = with_clock(&s);
+        let f = due_on(&s, "x", Platform::Web);
+        let mut waited = Vec::new();
+        for n in 1..=7usize {
+            let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+            let t = s
+                .fail_task_if(&f.id, Platform::Web, &t.claim_ref(), "tests fail", 20, "d")
+                .unwrap()
+                .unwrap();
+            assert_eq!(t.status, TargetStatus::Affected);
+            let next = chrono::DateTime::parse_from_rfc3339(t.next_try_at.as_deref().unwrap())
+                .unwrap()
+                .with_timezone(&Utc);
+            waited.push((next - s.clock_now()).num_minutes());
+            // Not due until the back-off has passed, and a claim is refused with busy.
+            assert!(s.due().unwrap().is_empty(), "failure {n}");
+            let e = s.claim(&f.id, Platform::Web, "/r", "d").unwrap_err();
+            assert_eq!(e.code(), "busy", "{e}");
+            let wait = *waited.last().unwrap();
+            clock.fetch_add(wait - 1, Ordering::SeqCst);
+            assert!(s.due().unwrap().is_empty(), "a minute early");
+            clock.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(s.due().unwrap().len(), 1, "after {wait} minutes");
+        }
+        assert_eq!(waited, vec![5, 10, 20, 40, 80, 120, 120]);
+    }
+
+    #[test]
+    fn three_task_failures_in_a_day_block_it_for_a_lead_and_lane_failures_never_count() {
+        let s = Flaws::in_memory().unwrap();
+        let clock = with_clock(&s);
+        let f = due_on(&s, "x", Platform::Web);
+        let end = |kind_lane: bool, minutes: i64| {
+            clock.fetch_add(minutes, Ordering::SeqCst);
+            let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+            if kind_lane {
+                s.give_back_if(&f.id, Platform::Web, &t.claim_ref(), "sign-in", true, "d")
+                    .unwrap()
+                    .unwrap()
+            } else {
+                s.fail_task_if(&f.id, Platform::Web, &t.claim_ref(), "tests fail", 3, "d")
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        // Lane failures block no task failure's count (LA-C035 condition 1: two of them, the
+        // second backing the target off; a third would need a lead of its own).
+        for _ in 0..2 {
+            assert_eq!(end(true, 6).status, TargetStatus::Affected);
+        }
+        assert_eq!(end(false, 10).status, TargetStatus::Affected);
+        assert_eq!(end(false, 10).status, TargetStatus::Affected);
+        let t = end(false, 20);
+        assert_eq!(t.status, TargetStatus::Blocked, "the third inside 24 hours");
+        assert!(t.next_try_at.is_none());
+        // The history says why, and the owner is told once through `untold`.
+        let d = s.get(&f.id).unwrap();
+        let e = d
+            .events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "released")
+            .unwrap();
+        assert_eq!(e.detail["why"], "needs a lead");
+        assert_eq!(e.detail["failures"], 3);
+        assert_eq!(s.untold().unwrap().len(), 1);
+        // Two failures a day apart do not add up.
+        let g = due_on(&s, "y", Platform::Web);
+        for _ in 0..2 {
+            let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
+            s.fail_task_if(&g.id, Platform::Web, &t.claim_ref(), "x", 3, "d")
+                .unwrap();
+            clock.fetch_add(25 * 60, Ordering::SeqCst);
+        }
+        assert_eq!(s.task_failures(&g.id, Platform::Web).unwrap(), 0);
+        let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
+        let t = s
+            .fail_task_if(&g.id, Platform::Web, &t.claim_ref(), "x", 3, "d")
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.status, TargetStatus::Affected, "a rolling window");
+        // Lane failures never count as task failures, however spread over the window: five of
+        // them a day apart block nothing and add no task failure.
+        let h = due_on(&s, "z", Platform::Web);
+        for _ in 0..5 {
+            let t = s.claim(&h.id, Platform::Web, "/r", "d").unwrap();
+            let t = s
+                .give_back_if(&h.id, Platform::Web, &t.claim_ref(), "sign-in", true, "d")
+                .unwrap()
+                .unwrap();
+            assert_eq!(t.status, TargetStatus::Affected);
+            clock.fetch_add(25 * 60, Ordering::SeqCst);
+        }
+        assert_eq!(s.task_failures(&h.id, Platform::Web).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_database_from_before_the_guards_keeps_its_rows() {
+        // The deployed file: targets without the new columns. Opening it adds them, and what was
+        // there reads as no back-off, no lane and claim number 0.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("flaws.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(OLD_SCHEMA).unwrap();
+            c.execute_batch(
+                "ALTER TABLE flaws ADD COLUMN triage_step INTEGER;
+                 INSERT INTO flaws (id,words,title,severity,state,reporter,created_at,updated_at)
+                   VALUES ('fl-00000001','old words','old','high','open','owner','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z');
+                 INSERT INTO flaw_targets (flaw_id,platform,layer,status,agent,repo,attempts,claimed_at,updated_at)
+                   VALUES ('fl-00000001','web','client','fixing','ag-old','/r',1,'2026-11-01T00:00:00Z','2026-11-01T00:00:00Z');",
+            )
+            .unwrap();
+        }
+        let s = Flaws::open(&p).unwrap();
+        let t = s.get("fl-00000001").unwrap().targets;
+        let t = t.iter().find(|t| t.platform == Platform::Web).unwrap();
+        assert_eq!(
+            (t.status, t.agent.as_deref(), t.attempts, t.claim_seq),
+            (TargetStatus::Fixing, Some("ag-old"), 1, 0)
+        );
+        assert!(t.next_try_at.is_none() && t.lane.is_none());
+        // It can be given back like any other claim, by the claim as read.
+        let back = s
+            .give_back_if(
+                "fl-00000001",
+                Platform::Web,
+                &t.claim_ref(),
+                "old",
+                false,
+                "d",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!((back.status, back.attempts), (TargetStatus::Affected, 0));
+        // Opening a second time (a second process) changes nothing and does not fail.
+        Flaws::open(&p).unwrap();
+    }
+
+    #[test]
+    fn restore_lists_blocked_targets_and_resets_exactly_the_one_asked() {
+        let s = Flaws::in_memory().unwrap();
+        let step = Step::new("claude", Some("claude-sonnet-5-5"), Some("claude-sonnet"));
+        let blocked = |words: &str| -> Flaw {
+            let f = due_on(&s, words, Platform::Web);
+            for i in 0..2 {
+                let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+                s.attach(
+                    &f.id,
+                    Platform::Web,
+                    "w",
+                    &format!("{}-ag{i}", f.id),
+                    &step,
+                    "d",
+                )
+                .unwrap();
+                s.release(
+                    &f.id,
+                    Platform::Web,
+                    "the agent ended without a merged commit",
+                    2,
+                    "d",
+                )
+                .unwrap();
+                let _ = t;
+            }
+            assert_eq!(
+                s.get(&f.id).unwrap().targets[0].status,
+                TargetStatus::Blocked
+            );
+            f
+        };
+        let (a, b) = (blocked("one"), blocked("two"));
+        let looks = s.blocked_since("2000-01-01T00:00:00Z").unwrap();
+        assert_eq!(looks.len(), 2);
+        assert_eq!(
+            looks.iter().find(|l| l.flaw.id == a.id).unwrap().agents,
+            vec![format!("{}-ag0", a.id), format!("{}-ag1", a.id)]
+        );
+        // Nothing before the time asked.
+        assert!(s
+            .blocked_since("2999-01-01T00:00:00Z")
+            .unwrap()
+            .iter()
+            .all(|l| l.agents.is_empty()));
+        let t = s
+            .restore_target(&a.id, Platform::Web, "lane failure", "d")
+            .unwrap();
+        assert_eq!(
+            (t.status, t.attempts, t.agent, t.next_try_at),
+            (TargetStatus::Affected, 0, None, None)
+        );
+        assert_eq!(
+            s.get(&b.id).unwrap().targets[0].status,
+            TargetStatus::Blocked,
+            "only the one named"
+        );
+        assert!(s
+            .restore_target(&a.id, Platform::Web, "again", "d")
+            .is_err());
+        assert_eq!(s.due().unwrap().len(), 1);
     }
 }
