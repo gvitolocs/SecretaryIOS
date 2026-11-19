@@ -506,16 +506,18 @@ impl Step {
             match child.try_wait() {
                 Ok(Some(s)) => break s,
                 Ok(None) => {}
-                Err(_) => return None,
+                Err(e) => {
+                    let how = end_ask(&mut child);
+                    self.manager_note = Some(format!(
+                        "the user manager's ask for the control group of {unit} could not be waited on ({e}); {how}"
+                    ));
+                    return None;
+                }
             }
             if started.elapsed() >= MANAGER_ASK_CAP {
-                // Ended through the same screen every other signal goes through, and only the pid this
-                // wait started; then reaped, and read as no answer.
-                let mut miss = Miss::default();
-                signal_pid(child.id(), Signal::KILL, &mut miss);
-                let _ = child.wait();
+                let how = end_ask(&mut child);
                 self.manager_note = Some(format!(
-                    "the user manager did not answer the ask for the control group of {unit} within {}s",
+                    "the user manager did not answer the ask for the control group of {unit} within {}s; {how}",
                     MANAGER_ASK_CAP.as_secs()
                 ));
                 return None;
@@ -525,7 +527,15 @@ impl Step {
         if !status.success() {
             return None;
         }
-        let out = rx.recv_timeout(SLACK).ok()?;
+        // The read is inside the same cap as the process: what is left of it, and no more.
+        let left = MANAGER_ASK_CAP.saturating_sub(started.elapsed());
+        let Ok(out) = rx.recv_timeout(left) else {
+            self.manager_note = Some(format!(
+                "the user manager did not answer the ask for the control group of {unit} within {}s; its answer was not read in time",
+                MANAGER_ASK_CAP.as_secs()
+            ));
+            return None;
+        };
         let stdout_str = String::from_utf8(out).ok()?;
         let cg = stdout_str.trim();
         // The same screen the `/proc` route applies, and for the same reason: a control group is
@@ -534,14 +544,10 @@ impl Step {
         if !cg.starts_with('/') || Path::new(cg).file_name()?.to_str()? != format!("{unit}.scope") {
             return None;
         }
-        // And no component may be `..` or `.`: a path that climbs out of the cgroup tree is not this
-        // step's tree, whatever its last component says.
-        if Path::new(cg).components().any(|c| {
-            matches!(
-                c,
-                std::path::Component::ParentDir | std::path::Component::CurDir
-            )
-        }) {
+        // And no segment may be `..` or `.`: a path that climbs out of the cgroup tree, or wanders in it,
+        // is not this step's tree, whatever its last component says. Asked of the raw answer, because
+        // `Path::components` drops a `.` from an absolute path and would never show it.
+        if cg.split('/').any(|s| s == "." || s == "..") {
             return None;
         }
         Some(PathBuf::from(format!("/sys/fs/cgroup{cg}")))
@@ -628,6 +634,39 @@ impl Step {
             }
         }
         (miss, left.len())
+    }
+}
+
+/// Ends the manager ask that did not answer: SIGKILL to that child alone, through the same screen
+/// every other signal goes through, then a reap bounded by [`SLACK`] — never an unbounded `wait`.
+/// What it returns is what actually happened, for the job log: a refusal is kept and named (the
+/// module rule above), and a child that is still there is said to be left running.
+fn end_ask(child: &mut Child) -> String {
+    let mut miss = Miss::default();
+    signal_pid(child.id(), Signal::KILL, &mut miss);
+    let until = Instant::now() + SLACK;
+    let reaped = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break true,
+            Ok(None) if Instant::now() < until => std::thread::sleep(POLL),
+            _ => break false,
+        }
+    };
+    match (miss.is_empty(), reaped) {
+        (true, true) => "killed".to_string(),
+        (true, false) => format!(
+            "killed, but not reaped within {}s; left running",
+            SLACK.as_secs()
+        ),
+        (false, _) => format!(
+            "could not be signalled: {}; {}",
+            miss.line(),
+            if reaped {
+                "it ended by itself"
+            } else {
+                "left running"
+            }
+        ),
     }
 }
 
@@ -1210,6 +1249,97 @@ mod tests {
         assert!(
             matches!(&ended.scope, Sighting::Seen(u) if u == unit),
             "the ask must see no HOME and the variable it was given: {:?}",
+            ended.scope
+        );
+    }
+
+    /// When the ask does not answer and the screen refuses the signal that would end it (this process's
+    /// own ids unreadable), the step still ends within its bound — the reap is bounded, not a `wait` —
+    /// and the log names the refusal and says the ask was left running, not that it was killed.
+    #[test]
+    fn a_manager_ask_that_cannot_be_signalled_is_bounded_and_names_the_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("systemctl");
+        let pidfile = dir.path().join("ask-pid");
+        write_exec(
+            &ctl,
+            &format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 20\n",
+                pidfile.display()
+            ),
+        );
+        let unit = "lucina-kill-test-unit-nosig";
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        refuse_own_ids(true);
+        let start = Instant::now();
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        let elapsed = start.elapsed();
+        refuse_own_ids(false);
+        refuse_cgroup_sight(false);
+
+        // The ask is the one thing this test started: end it now, whatever the asserts say.
+        if let Some(p) = std::fs::read_to_string(&pidfile)
+            .ok()
+            .and_then(|t| t.trim().parse::<i32>().ok())
+            .and_then(Pid::from_raw)
+        {
+            let _ = kill_process(p, Signal::KILL);
+        }
+
+        let bound = MANAGER_ASK_CAP + SLACK + Duration::from_secs(3);
+        assert!(
+            elapsed < bound,
+            "the step took {elapsed:?}, past the bound of {bound:?}"
+        );
+        let note = ended.manager_note.unwrap_or_default();
+        assert!(note.contains("did not answer"), "{note}");
+        assert!(note.contains("could not be signalled"), "{note}");
+        assert!(note.contains("own ids could not be read"), "{note}");
+        assert!(note.contains("left running"), "{note}");
+    }
+
+    /// `.` cannot show up in the components of an absolute path, so the check is on the raw answer: a
+    /// `/./` segment is refused as `..` is.
+    #[test]
+    fn a_manager_answer_with_a_dot_segment_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("systemctl");
+        let unit = "lucina-kill-test-unit-dot";
+        write_exec(
+            &ctl,
+            &format!("#!/bin/sh\nprintf '%s\\n' /user.slice/./x/{unit}.scope\n"),
+        );
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        refuse_cgroup_sight(false);
+
+        assert!(
+            matches!(&ended.scope, Sighting::NeverSeen(u) if u == unit),
+            "a control group with a `.` segment is not this step's tree: {:?}",
             ended.scope
         );
     }
