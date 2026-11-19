@@ -395,24 +395,57 @@ fn ancestors() -> Vec<u32> {
     out
 }
 
+/// The name of the one variable of the environment this module reads: the main pid of agentd, put
+/// there by the daemon when it starts the executor (`manager::pipeline::start_runner`).
+const AGENTD_PID_VAR: &str = "LUCINA_AGENTD_PID";
+
+/// agentd's pid as the executor was told it, read once: `None` when the variable is missing or is
+/// not a number. Nothing else of the environment is read.
+fn agentd_pid_from_env() -> Option<u32> {
+    static PID: OnceLock<Option<u32>> = OnceLock::new();
+    *PID.get_or_init(|| {
+        std::env::var(AGENTD_PID_VAR)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+    })
+}
+
+/// What a `cgroup.kill` may not take: the ids that make this process's kin, and agentd.
+struct Protected {
+    pgid: u32,
+    chain: Vec<u32>,
+    /// agentd's pid, and the group it leads or stands in, when they are known.
+    agentd: Option<(u32, Option<u32>)>,
+}
+
 /// Why `pid` may not take a `cgroup.kill` with it, or `None` when it may: pid 1, this process, a
-/// member of this process's group, and this process's parent and every ancestor above it. The
-/// executor stands in a `lagent-job` unit under the user manager, where its parent is that manager
-/// and agentd's main pid is not an ancestor; run as a plain child (no systemd) its parent *is*
-/// agentd. Either way the daemon is protected where it can be known — through the ancestor chain —
-/// and never guessed at. `chain` is that chain, read once by the caller.
-fn protected_reason(pid: u32, pgid: u32, chain: &[u32]) -> Option<&'static str> {
+/// member of this process's group, this process's parent and every ancestor above it, and agentd
+/// — its pid and its process group — as the daemon named itself when it started the executor. The
+/// executor stands in a `lagent-job` unit under the user manager, where agentd is not an
+/// ancestor, which is why the daemon says who it is; without that, agentd is protected only
+/// when it is an ancestor, and the sweep says so.
+fn protected_reason(pid: u32, p: &Protected) -> Option<&'static str> {
     if pid == 1 {
-        Some("pid 1")
-    } else if pid == std::process::id() {
-        Some("this process, the job's executor")
-    } else if chain.contains(&pid) {
-        Some("a parent of this process")
-    } else if parent_and_group(pid).map(|(_, g)| g) == Some(pgid) && !is_zombie(pid) {
-        Some("a member of this process's group")
-    } else {
-        None
+        return Some("pid 1");
     }
+    if pid == std::process::id() {
+        return Some("this process, the job's executor");
+    }
+    if p.chain.contains(&pid) {
+        return Some("a parent of this process");
+    }
+    if let Some((a, agroup)) = p.agentd {
+        if pid == a {
+            return Some("agentd's main pid");
+        }
+        if agroup.is_some() && parent_and_group(pid).map(|(_, g)| g) == agroup && !is_zombie(pid) {
+            return Some("a member of agentd's process group");
+        }
+    }
+    if parent_and_group(pid).map(|(_, g)| g) == Some(p.pgid) && !is_zombie(pid) {
+        return Some("a member of this process's group");
+    }
+    None
 }
 
 /// SIGKILL of the step's control group and of every group under it, through `cgroup.kill`: no
@@ -432,6 +465,12 @@ fn protected_reason(pid: u32, pgid: u32, chain: &[u32]) -> Option<&'static str> 
 /// A refusal is reported, not swallowed: a scope this user was not delegated answers it for
 /// every write, and then the signals by group and by pid are all there is.
 fn kill_cgroup_tree(cg: &Path, miss: &mut Miss) {
+    kill_cgroup_tree_for(cg, miss, agentd_pid_from_env());
+}
+
+/// [`kill_cgroup_tree`] with agentd's pid given, which is the seam the tests use instead of the
+/// process-wide variable.
+fn kill_cgroup_tree_for(cg: &Path, miss: &mut Miss, agentd: Option<u32>) {
     let pids = raw_cgroup_pids(cg);
     let Some((_, pgid)) = own_ids() else {
         miss.add_cgroup(format!(
@@ -441,17 +480,26 @@ fn kill_cgroup_tree(cg: &Path, miss: &mut Miss) {
         // The pid route screens by the same ids, so it would refuse every one of these as well.
         return;
     };
-    let chain = ancestors();
+    if agentd.is_none() && !pids.is_empty() {
+        miss.add_cgroup(format!(
+            "agentd's pid is unknown ({AGENTD_PID_VAR} is missing or not a number), so it is not protected beyond this process's own ancestors"
+        ));
+    }
+    let prot = Protected {
+        pgid,
+        chain: ancestors(),
+        agentd: agentd.map(|a| (a, parent_and_group(a).map(|(_, g)| g))),
+    };
     let found = pids
         .iter()
-        .find_map(|p| protected_reason(*p, pgid, &chain).map(|why| (*p, why)));
+        .find_map(|p| protected_reason(*p, &prot).map(|why| (*p, why)));
     if let Some((pid, why)) = found {
         miss.add_cgroup(format!(
             "pid {pid} ({why}) is in the tree {}, so it was not swept through cgroup.kill; its other pids were signalled one by one",
             cg.display()
         ));
         for p in pids {
-            if protected_reason(p, pgid, &chain).is_none() {
+            if protected_reason(p, &prot).is_none() {
                 signal_pid(p, Signal::KILL, miss);
             }
         }
@@ -1480,7 +1528,7 @@ mod tests {
         let cg = fake_scope(dir.path(), &[child_pid], &[own]);
 
         let mut miss = Miss::default();
-        kill_cgroup_tree(&cg, &mut miss);
+        kill_cgroup_tree_for(&cg, &mut miss, Some(4_000_000_000));
 
         assert!(
             !cg.join("cgroup.kill").exists() && !cg.join("inner/cgroup.kill").exists(),
@@ -1509,7 +1557,7 @@ mod tests {
         let cg = fake_scope(dir.path(), &[child_pid], &[]);
 
         let mut miss = Miss::default();
-        kill_cgroup_tree(&cg, &mut miss);
+        kill_cgroup_tree_for(&cg, &mut miss, Some(4_000_000_000));
 
         assert_eq!(fs::read(cg.join("cgroup.kill")).unwrap(), b"1\n");
         assert_eq!(fs::read(cg.join("inner/cgroup.kill")).unwrap(), b"1\n");
@@ -1548,6 +1596,60 @@ mod tests {
         assert!(
             child.0.try_wait().unwrap().is_none(),
             "the step was signalled unscreened"
+        );
+    }
+
+    /// Under systemd agentd is not an ancestor of the executor, so the daemon says who it is
+    /// (`LUCINA_AGENTD_PID`). A tree holding that pid gets no `cgroup.kill`, the pid lives, and
+    /// the refusal names it as agentd's. The pid is passed in, not set in the environment.
+    #[test]
+    fn a_tree_holding_agentds_pid_gets_no_cgroup_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let spawn = || {
+            Command::new("/bin/sleep")
+                .arg("300")
+                .process_group(0)
+                .spawn()
+                .expect("sleep starts")
+        };
+        let stand_in = Reap(spawn());
+        let other = spawn();
+        let other_pid = other.id();
+        let mut other = Reap(other);
+        let agentd = stand_in.0.id();
+        let cg = fake_scope(dir.path(), &[other_pid], &[agentd]);
+
+        let mut miss = Miss::default();
+        kill_cgroup_tree_for(&cg, &mut miss, Some(agentd));
+
+        assert!(
+            !cg.join("cgroup.kill").exists() && !cg.join("inner/cgroup.kill").exists(),
+            "cgroup.kill was written on a tree that held agentd's pid"
+        );
+        let line = miss.line();
+        assert!(
+            line.contains(&format!("pid {agentd} (agentd's main pid)")),
+            "the refusal does not name agentd's pid: {line}"
+        );
+        wait_gone(&mut other.0, "the step's other process");
+        let mut stand_in = stand_in;
+        assert!(
+            stand_in.0.try_wait().unwrap().is_none(),
+            "the stand-in for agentd was signalled"
+        );
+    }
+
+    /// Without the variable agentd is unknown, and the job log says so once per sweep.
+    #[test]
+    fn an_unknown_agentd_pid_is_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let cg = fake_scope(dir.path(), &[4_000_000_000], &[]);
+        let mut miss = Miss::default();
+        kill_cgroup_tree_for(&cg, &mut miss, None);
+        assert!(
+            miss.line().contains("agentd's pid is unknown"),
+            "{}",
+            miss.line()
         );
     }
 }
