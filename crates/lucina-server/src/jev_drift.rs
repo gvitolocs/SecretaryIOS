@@ -557,7 +557,7 @@ pub fn score_from(
         }
         let rule_keeps = x.tier0.as_deref().is_some_and(|t| {
             deterministic_intent(t)
-                && !jev.map_or(true, |(j, c)| {
+                && !jev.is_none_or(|(j, c)| {
                     jev_beats_rule_from(
                         j,
                         c,

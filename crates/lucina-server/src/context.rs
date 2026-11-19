@@ -208,7 +208,7 @@ pub async fn classify(
                     tier0 = ?rule.as_ref().map(|r| r.intent.as_str()), "jev_first fallback");
                 let deterministic = rule
                     .as_ref()
-                    .is_some_and(|r| crate::jev_route::deterministic_rule(r));
+                    .is_some_and(crate::jev_route::deterministic_rule);
                 // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
                 let confidence = s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN);
                 if unsure_plan(mcp, deterministic, owner_turn) {
