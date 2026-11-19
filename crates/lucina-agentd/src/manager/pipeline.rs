@@ -1232,8 +1232,44 @@ fn recent_deploys(n: usize) -> Vec<Value> {
     v
 }
 
+/// The name of the variable that tells the executor which process is agentd, so that the sweep of a
+/// step's control group never takes the daemon with it (finding PIPE-01). Read by
+/// `pipeline::kill`, by this name only.
+const AGENTD_PID_VAR: &str = "LUCINA_AGENTD_PID";
+
+/// The arguments of the `systemd-run` that starts the executor: the unit, the working directory,
+/// the job's `PATH`, the daemon's pid, and the command under the merge lock.
+fn systemd_run_args(
+    unit: &str,
+    dir: &Path,
+    path: &str,
+    agentd_pid: u32,
+    lock: &Path,
+    lagent: &str,
+) -> Vec<String> {
+    vec![
+        "--user".into(),
+        "--collect".into(),
+        "--quiet".into(),
+        "--unit".into(),
+        unit.into(),
+        format!("--working-directory={}", dir.display()),
+        format!("--setenv=PATH={path}"),
+        format!("--setenv={AGENTD_PID_VAR}={agentd_pid}"),
+        "--property=TimeoutStopSec=30".into(),
+        "--".into(),
+        "flock".into(),
+        lock.display().to_string(),
+        lagent.into(),
+        "pipeline-exec".into(),
+        dir.display().to_string(),
+    ]
+}
+
 /// Start the executor under the merge lock: a transient systemd unit (it outlives agentd
-/// restarts and agentd's own deploys), else a child process. Returns the runner.
+/// restarts and agentd's own deploys), else a child process. Returns the runner. This runs in
+/// the daemon's own process, so `std::process::id()` is agentd's main pid, which the executor is
+/// told in [`AGENTD_PID_VAR`].
 async fn start_runner(
     cfg: &pipeline::Config,
     id: &str,
@@ -1242,19 +1278,13 @@ async fn start_runner(
 ) -> Result<String, String> {
     let lagent = cfg.lagent.display().to_string();
     let path = std::env::var("PATH").unwrap_or_default();
+    let agentd_pid = std::process::id();
     if cfg.systemd {
         let unit = format!("lagent-job-{}", id.trim_start_matches("job_"));
         let out = tokio::process::Command::new("systemd-run")
-            .args(["--user", "--collect", "--quiet", "--unit", &unit])
-            .arg(format!("--working-directory={}", dir.display()))
-            .arg(format!("--setenv=PATH={path}"))
-            .arg("--property=TimeoutStopSec=30")
-            .arg("--")
-            .arg("flock")
-            .arg(lock)
-            .arg(&lagent)
-            .arg("pipeline-exec")
-            .arg(dir)
+            .args(systemd_run_args(
+                &unit, dir, &path, agentd_pid, lock, &lagent,
+            ))
             .stdin(std::process::Stdio::null())
             .output()
             .await
@@ -1273,6 +1303,7 @@ async fn start_runner(
         .arg("pipeline-exec")
         .arg(dir)
         .current_dir(dir)
+        .env(AGENTD_PID_VAR, agentd_pid.to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1314,6 +1345,33 @@ async fn stop_runner(runner: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The executor is told which process is agentd: the unit's `systemd-run` carries the daemon's
+    /// pid in `LUCINA_AGENTD_PID`, so a sweep of a step's control group can protect it.
+    #[test]
+    fn the_systemd_run_argv_carries_agentds_pid() {
+        let args = systemd_run_args(
+            "lagent-job-x",
+            Path::new("/d"),
+            "/bin",
+            4242,
+            Path::new("/l"),
+            "/lagent",
+        );
+        assert!(
+            args.iter().any(|a| a == "--setenv=LUCINA_AGENTD_PID=4242"),
+            "{args:?}"
+        );
+        let sep = args.iter().position(|a| a == "--").unwrap();
+        let setenv = args
+            .iter()
+            .position(|a| a.starts_with("--setenv=LUCINA_AGENTD_PID="))
+            .unwrap();
+        assert!(
+            setenv < sep,
+            "the variable must precede the command: {args:?}"
+        );
+    }
 
     /// A full commit id, as `rev-parse --verify --quiet <rev>^{commit}` answers it.
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
