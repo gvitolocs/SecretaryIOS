@@ -169,3 +169,21 @@ async fn off_means_off() {
     let d = h.chat("flaw: x").await;
     assert_ne!(d["action"], "flaw_report");
 }
+
+#[tokio::test]
+async fn the_lane_breakers_are_listed_and_cleared_over_http() {
+    // LA-C035: a lead closes a lane by hand. Nothing has failed here, so the list is empty and a
+    // clear says so; GET and POST are the only methods.
+    let h = plain().await;
+    let (s, b) = h.get("/flaws/lanes").await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["data"]["lanes"].as_array().unwrap().len(), 0, "{b}");
+    let (s, b) = h.post("/flaws/lanes/claude-sonnet/clear", json!({})).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["data"]["cleared"], false, "{b}");
+    assert_eq!(b["data"]["lane"], "claude-sonnet");
+    let (s, _, _) = h
+        .call(reqwest::Method::PUT, "/flaws/lanes", Some(json!({})))
+        .await;
+    assert_eq!(s, 405);
+}
