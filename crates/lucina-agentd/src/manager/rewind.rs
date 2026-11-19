@@ -39,7 +39,10 @@ use lucina_agents::timeline::Cursor;
 use lucina_agents::{AgentSnapshot, AgentStatus, TimelineItem};
 use serde::{Deserialize, Serialize};
 
-use super::{split_provider, BusEvent, Caller, CreateRequest, Manager, ManagerError, MCP_TOKEN_LABEL, PARENT_LABEL};
+use super::{
+    split_provider, BusEvent, Caller, CreateRequest, Manager, ManagerError, MCP_TOKEN_LABEL,
+    PARENT_LABEL,
+};
 use crate::provider::Rewind;
 
 /// How long a rewind waits for the finished-run check to end.
@@ -139,9 +142,17 @@ impl Drop for Hold {
 
 impl Manager {
     /// Whether `caller` owns agent `id` (module docs). `include_self`: an agent owns itself.
-    fn require_owned(&self, caller: &Caller, id: &str, what: &str, include_self: bool) -> Result<(), ManagerError> {
+    fn require_owned(
+        &self,
+        caller: &Caller,
+        id: &str,
+        what: &str,
+        include_self: bool,
+    ) -> Result<(), ManagerError> {
         let agents = self.lock();
-        let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+        let a = agents
+            .get(id)
+            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
         let labels = &a.record.labels;
         let owned = match caller {
             Caller::Owner(_) => true,
@@ -149,65 +160,134 @@ impl Manager {
             Caller::Mcp(origin) => origin
                 .strip_prefix("mcp:")
                 .filter(|t| !t.is_empty() && *t != "unknown")
-                .is_some_and(|token| labels.get(MCP_TOKEN_LABEL).map(String::as_str) == Some(token)),
+                .is_some_and(|token| {
+                    labels.get(MCP_TOKEN_LABEL).map(String::as_str) == Some(token)
+                }),
             Caller::Unknown => false,
         };
         if owned {
             Ok(())
         } else {
-            Err(ManagerError::NotYourAgent(format!("Agent {id} is not yours to {what}")))
+            Err(ManagerError::NotYourAgent(format!(
+                "Agent {id} is not yours to {what}"
+            )))
         }
     }
 
     /// Paseo's `agent.fork_context.request`: the chat-history attachment of agent `id`
     /// up to the boundary.
-    pub fn fork_context(&self, caller: &Caller, id: &str, cursor: Option<&Cursor>, message_id: Option<&str>) -> Result<ForkContext, ManagerError> {
+    pub fn fork_context(
+        &self,
+        caller: &Caller,
+        id: &str,
+        cursor: Option<&Cursor>,
+        message_id: Option<&str>,
+    ) -> Result<ForkContext, ManagerError> {
         self.require_owned(caller, id, "fork", true)?;
         let agents = self.lock();
-        let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
-        fork_context::build(&a.rows, &a.record.epoch, Boundary { cursor, message_id }, a.record.title.as_deref(), Some(&a.record.cwd))
-            .map_err(|e| ManagerError::ForkBoundary(e.to_string()))
+        let a = agents
+            .get(id)
+            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+        fork_context::build(
+            &a.rows,
+            &a.record.epoch,
+            Boundary { cursor, message_id },
+            a.record.title.as_deref(),
+            Some(&a.record.cwd),
+        )
+        .map_err(|e| ManagerError::ForkBoundary(e.to_string()))
     }
 
     /// A new agent seeded with agent `id`'s chat history (module docs).
-    pub async fn fork(&self, caller: &Caller, id: &str, req: ForkRequest) -> Result<ForkOutcome, ManagerError> {
-        let context = self.fork_context(caller, id, req.boundary_cursor.as_ref(), req.boundary_message_id.as_deref())?;
-        let source = self.lock().get(id).map(|a| a.record.clone()).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
-        let spec = req.provider.clone().unwrap_or_else(|| source.provider.clone());
+    pub async fn fork(
+        &self,
+        caller: &Caller,
+        id: &str,
+        req: ForkRequest,
+    ) -> Result<ForkOutcome, ManagerError> {
+        let context = self.fork_context(
+            caller,
+            id,
+            req.boundary_cursor.as_ref(),
+            req.boundary_message_id.as_deref(),
+        )?;
+        let source = self
+            .lock()
+            .get(id)
+            .map(|a| a.record.clone())
+            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+        let spec = req
+            .provider
+            .clone()
+            .unwrap_or_else(|| source.provider.clone());
         let (provider_id, embedded_model) = split_provider(&spec, None);
         if provider_id == ext::PROVIDER {
-            return Err(ManagerError::Invalid("An external agent's history can't seed an agent of the same kind; pass a provider".into()));
+            return Err(ManagerError::Invalid(
+                "An external agent's history can't seed an agent of the same kind; pass a provider"
+                    .into(),
+            ));
         }
         // Settings carry over only to the same provider: its modes and models are its own.
         let same = provider_id == source.provider;
-        let inherit = |own: Option<String>, theirs: Option<String>| own.or(if same { theirs } else { None });
+        let inherit =
+            |own: Option<String>, theirs: Option<String>| own.or(if same { theirs } else { None });
         let (cwd, workspace_id) = match (&req.cwd, &req.workspace_id) {
             (None, None) => (source.cwd.clone(), source.workspace_id.clone()),
             (cwd, workspace) => (cwd.clone().unwrap_or_default(), workspace.clone()),
         };
         let mut create = CreateRequest {
             provider: provider_id,
-            model: req.model.or(embedded_model).or_else(|| inherit(None, source.config.model.clone())),
+            model: req
+                .model
+                .or(embedded_model)
+                .or_else(|| inherit(None, source.config.model.clone())),
             cwd,
             workspace_id,
             prompt: req.prompt.filter(|p| !p.trim().is_empty()),
             title: req.title,
             labels: req.labels,
             // Someone who isn't the owner gets a supervised mode, not the source's if that skips prompts.
-            mode_id: req.mode_id.or_else(|| caller.is_owner().then(|| inherit(None, source.last_mode_id.clone().or(source.config.mode_id.clone()))).flatten()),
-            thinking_option_id: inherit(req.thinking_option_id, source.config.thinking_option_id.clone()),
-            feature_values: if same { source.config.feature_values.clone().unwrap_or_default() } else { Default::default() },
+            mode_id: req.mode_id.or_else(|| {
+                caller
+                    .is_owner()
+                    .then(|| {
+                        inherit(
+                            None,
+                            source
+                                .last_mode_id
+                                .clone()
+                                .or(source.config.mode_id.clone()),
+                        )
+                    })
+                    .flatten()
+            }),
+            thinking_option_id: inherit(
+                req.thinking_option_id,
+                source.config.thinking_option_id.clone(),
+            ),
+            feature_values: if same {
+                source.config.feature_values.clone().unwrap_or_default()
+            } else {
+                Default::default()
+            },
             idempotency_key: req.idempotency_key,
             allow_main_checkout: req.allow_main_checkout && caller.is_owner(),
             seed_context: Some(context.attachment.text.clone()),
+            // A fork counts toward the caps like a create, for whoever asked for it.
+            created_by: Some(caller.origin()),
             ..CreateRequest::default()
         };
         self.prepare_create(caller, &mut create)?;
         create.labels.insert(FORKED_LABEL.into(), source.id.clone());
         // What an MCP token starts, that token owns (and so can fork and rewind later).
         if let Caller::Mcp(origin) = caller {
-            if let Some(token) = origin.strip_prefix("mcp:").filter(|t| !t.is_empty() && *t != "unknown") {
-                create.labels.insert(MCP_TOKEN_LABEL.into(), token.to_string());
+            if let Some(token) = origin
+                .strip_prefix("mcp:")
+                .filter(|t| !t.is_empty() && *t != "unknown")
+            {
+                create
+                    .labels
+                    .insert(MCP_TOKEN_LABEL.into(), token.to_string());
             }
         }
         let agent = self.create(create).await?;
@@ -228,7 +308,10 @@ impl Manager {
             if !self.lock().get(id).is_some_and(|a| a.gate_running) {
                 return true;
             }
-            if tokio::time::timeout_at(deadline, rx.changed()).await.is_err() {
+            if tokio::time::timeout_at(deadline, rx.changed())
+                .await
+                .is_err()
+            {
                 return false;
             }
         }
@@ -236,24 +319,47 @@ impl Manager {
 
     fn hold(&self, id: &str) -> Result<Hold, ManagerError> {
         let mut agents = self.lock();
-        let a = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+        let a = agents
+            .get_mut(id)
+            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
         if a.rewinding {
-            return Err(ManagerError::Busy("The agent is already being rewound".into()));
+            return Err(ManagerError::Busy(
+                "The agent is already being rewound".into(),
+            ));
         }
         a.rewinding = true;
-        Ok(Hold { manager: self.clone(), id: id.to_string() })
+        Ok(Hold {
+            manager: self.clone(),
+            id: id.to_string(),
+        })
     }
 
     /// What a files rewind must pass beyond the capability: the directory is there, a
     /// caller who isn't the owner stays inside the agent's workspace, and the worktree guard
     /// lets an agent edit there.
-    async fn check_files(&self, caller: &Caller, id: &str, owner_override: bool) -> Result<(), ManagerError> {
-        let record = self.lock().get(id).map(|a| a.record.clone()).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+    async fn check_files(
+        &self,
+        caller: &Caller,
+        id: &str,
+        owner_override: bool,
+    ) -> Result<(), ManagerError> {
+        let record = self
+            .lock()
+            .get(id)
+            .map(|a| a.record.clone())
+            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
         if !Path::new(&record.cwd).is_dir() {
-            return Err(ManagerError::Invalid(format!("The agent's directory {} no longer exists", record.cwd)));
+            return Err(ManagerError::Invalid(format!(
+                "The agent's directory {} no longer exists",
+                record.cwd
+            )));
         }
         if !caller.is_owner() {
-            let outside = || ManagerError::RewindForbidden("Only the owner rewinds files outside an agent's workspace".into());
+            let outside = || {
+                ManagerError::RewindForbidden(
+                    "Only the owner rewinds files outside an agent's workspace".into(),
+                )
+            };
             let workspace = record
                 .workspace_id
                 .as_deref()
@@ -266,75 +372,141 @@ impl Manager {
                 return Err(outside());
             }
         }
-        let mode = record.last_mode_id.as_deref().or(record.config.mode_id.as_deref());
-        self.guard_start(&record.cwd, &record.provider, mode, owner_override).await
+        let mode = record
+            .last_mode_id
+            .as_deref()
+            .or(record.config.mode_id.as_deref());
+        self.guard_start(&record.cwd, &record.provider, mode, owner_override)
+            .await
     }
 
     /// Take agent `id` back to just before the user message `req.message_id` (module docs).
-    pub async fn rewind(&self, caller: &Caller, id: &str, req: RewindRequest) -> Result<RewindOutcome, ManagerError> {
+    pub async fn rewind(
+        &self,
+        caller: &Caller,
+        id: &str,
+        req: RewindRequest,
+    ) -> Result<RewindOutcome, ManagerError> {
         let mode = req.mode;
         self.require_owned(caller, id, "rewind", false)?;
         let (provider_id, external, chain, found) = {
             let agents = self.lock();
-            let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
-            (a.record.provider.clone(), a.record.external, a.chain_active, rw::find_target(&a.rows, &req.message_id))
+            let a = agents
+                .get(id)
+                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            (
+                a.record.provider.clone(),
+                a.record.external,
+                a.chain_active,
+                rw::find_target(&a.rows, &req.message_id),
+            )
         };
         if external {
-            return Err(ManagerError::RewindUnsupported("External agents run on another host; rewind the session there".into()));
+            return Err(ManagerError::RewindUnsupported(
+                "External agents run on another host; rewind the session there".into(),
+            ));
         }
         // The provider's own flags, not the agent's: a closed agent reports none.
-        let info = self.inner.providers.get(&provider_id).map(|p| p.info()).ok_or_else(|| ManagerError::UnknownProvider(provider_id.clone()))?;
+        let info = self
+            .inner
+            .providers
+            .get(&provider_id)
+            .map(|p| p.info())
+            .ok_or_else(|| ManagerError::UnknownProvider(provider_id.clone()))?;
         if !rw::supports(&info.capabilities, mode) {
-            return Err(ManagerError::RewindUnsupported(rw::unsupported_message(mode)));
+            return Err(ManagerError::RewindUnsupported(rw::unsupported_message(
+                mode,
+            )));
         }
         if found.is_none() {
-            return Err(ManagerError::RewindTargetNotFound(format!("Rewind target {} is not a user message of agent {id}", req.message_id)));
+            return Err(ManagerError::RewindTargetNotFound(format!(
+                "Rewind target {} is not a user message of agent {id}",
+                req.message_id
+            )));
         }
         if chain {
-            return Err(ManagerError::Busy("The agent is running a lane chain; wait for it".into()));
+            return Err(ManagerError::Busy(
+                "The agent is running a lane chain; wait for it".into(),
+            ));
         }
         if mode.changes_files() {
-            self.check_files(caller, id, req.allow_main_checkout && caller.is_owner()).await?;
+            self.check_files(caller, id, req.allow_main_checkout && caller.is_owner())
+                .await?;
         }
         let _hold = self.hold(id)?;
         // The finished-run check reads the files a rewind may change: let it end first.
         if !self.wait_gate_settled(id, GATE_WAIT).await {
-            return Err(ManagerError::Busy("The agent's finished-run check is still running; try again".into()));
+            return Err(ManagerError::Busy(
+                "The agent's finished-run check is still running; try again".into(),
+            ));
         }
-        if self.lock().get(id).is_some_and(|a| a.k.status == AgentStatus::Running) {
+        if self
+            .lock()
+            .get(id)
+            .is_some_and(|a| a.k.status == AgentStatus::Running)
+        {
             self.stop_turn(id).await?;
-            if self.lock().get(id).is_some_and(|a| a.k.status == AgentStatus::Running) {
-                return Err(ManagerError::Busy("The running turn didn't stop; try again".into()));
+            if self
+                .lock()
+                .get(id)
+                .is_some_and(|a| a.k.status == AgentStatus::Running)
+            {
+                return Err(ManagerError::Busy(
+                    "The running turn didn't stop; try again".into(),
+                ));
             }
         }
         let session = self.ensure_loaded(id).await?;
         // The stopped turn may have added rows after the target; the target itself stays.
         let (target, provider_message_id) = {
             let agents = self.lock();
-            let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
-            let target = rw::find_target(&a.rows, &req.message_id)
-                .ok_or_else(|| ManagerError::RewindTargetNotFound(format!("Rewind target {} is not a user message of agent {id}", req.message_id)))?;
-            let provider_message_id = a.rows.iter().find(|r| r.seq == target.seq).and_then(|r| match &r.item {
-                TimelineItem::UserMessage { message_id, .. } => message_id.clone(),
-                _ => None,
-            });
-            (target, provider_message_id.unwrap_or_else(|| req.message_id.clone()))
+            let a = agents
+                .get(id)
+                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            let target = rw::find_target(&a.rows, &req.message_id).ok_or_else(|| {
+                ManagerError::RewindTargetNotFound(format!(
+                    "Rewind target {} is not a user message of agent {id}",
+                    req.message_id
+                ))
+            })?;
+            let provider_message_id =
+                a.rows
+                    .iter()
+                    .find(|r| r.seq == target.seq)
+                    .and_then(|r| match &r.item {
+                        TimelineItem::UserMessage { message_id, .. } => message_id.clone(),
+                        _ => None,
+                    });
+            (
+                target,
+                provider_message_id.unwrap_or_else(|| req.message_id.clone()),
+            )
         };
         tracing::info!(agent = %id, message = %req.message_id, mode = mode.as_str(), "agent.rewind.start");
         session
-            .rewind(&Rewind { mode, message_id: provider_message_id, user_turn: target.user_turn })
+            .rewind(&Rewind {
+                mode,
+                message_id: provider_message_id,
+                user_turn: target.user_turn,
+            })
             .await
             .map_err(|e| ManagerError::Provider(e.0))?;
         let (epoch, removed) = {
             let mut agents = self.lock();
-            let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            let agent = agents
+                .get_mut(id)
+                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             let mut removed = 0;
             if mode.changes_conversation() {
                 let mut rows = agent.rows.clone();
                 rw::keep_before(&mut rows, &target);
                 removed = agent.rows.len() - rows.len();
                 self.inner.store.replace_rows(id, &rows)?;
-                agent.record.last_user_message_at = rows.iter().rev().find(|r| matches!(r.item, TimelineItem::UserMessage { .. })).map(|r| r.timestamp.clone());
+                agent.record.last_user_message_at = rows
+                    .iter()
+                    .rev()
+                    .find(|r| matches!(r.item, TimelineItem::UserMessage { .. }))
+                    .map(|r| r.timestamp.clone());
                 agent.record.last_activity_at = rows.last().map(|r| r.timestamp.clone());
                 agent.rows = rows;
                 agent.record.epoch = uuid::Uuid::new_v4().to_string();
@@ -348,10 +520,20 @@ impl Manager {
         };
         if mode.changes_conversation() {
             self.forget_index(id);
-            let _ = self.inner.bus.send(BusEvent::TimelineReplacement { agent_id: id.to_string(), epoch: epoch.clone() });
+            let _ = self.inner.bus.send(BusEvent::TimelineReplacement {
+                agent_id: id.to_string(),
+                epoch: epoch.clone(),
+            });
         }
         tracing::info!(agent = %id, message = %req.message_id, mode = mode.as_str(), removed, "agent.rewind.complete");
         self.bump();
-        Ok(RewindOutcome { agent_id: id.to_string(), message_id: req.message_id, mode, ok: true, epoch, removed_rows: removed })
+        Ok(RewindOutcome {
+            agent_id: id.to_string(),
+            message_id: req.message_id,
+            mode,
+            ok: true,
+            epoch,
+            removed_rows: removed,
+        })
     }
 }

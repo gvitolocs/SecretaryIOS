@@ -404,6 +404,22 @@ the Paseo 0.13.2 Android app. These are design requirements. Each one has a row 
    - The agents uid fixes this for agents agentd launches. Interactive Claude and Codex sessions running as `nez`
      stay exposed until the owner moves that blob.
 
+## Create caps, provider breaker and failed agents (AGENT-01)
+
+Settings are environment variables of `lucina-agentd` (no config file). Code: `crates/lucina-agentd/src/manager/breaker.rs`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LUCINA_AGENTD_MAX_AGENTS_PER_CALLER` | 4 | live spawned agents (starting, running, idle) one caller may hold |
+| `LUCINA_AGENTD_MAX_CREATES_PER_MINUTE` | 4 | creates one caller may make in a rolling 60 s |
+| `LUCINA_AGENTD_MAX_AGENTS_HOST` | 12 | live spawned agents on the host |
+
+`0` turns a cap off. The caller is the identity the API derives (`local`, `device:<id>`, `mcp:<id>`, `agent:<id>`). A create over a cap is refused with HTTP 429 (`AGENT_LIMIT`), naming the cap, the count and who holds the slots; nothing is spawned. The caps count ONLY agents made through the agent create route (`Manager::create`) for which agentd spawns a provider process. They do not count worker runs of `lagent work start` (lane's own pool limits those), merge or deploy jobs (the pipeline), `claude-session` and other external agents, helper agents, or hand-off continuations, and they never refuse any of those.
+
+An agent that turns `error` and is not being handed on releases its provider process and every process under it (its process group, plus descendants found through `/proc`); its row keeps status `error`, log and timeline, and a later `send` starts a new session.
+
+A turn that fails on authentication ("Failed to authenticate"), or on a quota or usage limit, trips that provider's breaker: `create` for it is refused (HTTP 503, `PROVIDER_TRIPPED`) before anything is spawned. A quota error that carries a reset time (`resets_at=<RFC 3339>`, `resets 8pm`, `resets Nov 4, 12pm (UTC)`) clears the breaker at that time. Otherwise it clears on the first successful turn of an agent with that provider, or by hand: `lagent providers clear <provider>` (owner only). The state is kept in `<state dir>/provider-breaker.json`. The trip is logged once as a `tracing` warning, `provider breaker tripped`.
+
 ## UIs
 
 - **Web** (Solid, `web/`): an Agents plugin at `/agents` in `PLUGIN_PATHS` (`web/src/views/Shell.tsx`) and the grid in
