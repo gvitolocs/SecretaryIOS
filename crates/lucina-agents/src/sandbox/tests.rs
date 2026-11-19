@@ -1302,18 +1302,52 @@ fn the_audit_refuses_a_tmpfs_over_any_bound_target() {
 
 #[test]
 fn the_audit_refuses_a_tmpfs_over_a_parent_of_a_locked_target() {
-    for parent in [
-        COMMON,
-        OWN,
-        "/home/nez/Projects/Lucina/SecretaryIOS",
-        "/home/nez/Projects/Lucina",
-        "/home/nez/.local/lib",
-        "/",
-    ] {
+    let a = args(&run("qoder"));
+    let targets: Vec<&str> = a
+        .windows(3)
+        .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
+        .map(|w| w[2].as_str())
+        .collect();
+    // Every ancestor of every bound target, taken from the list itself.
+    let mut parents: BTreeSet<String> = BTreeSet::new();
+    for t in &targets {
+        for anc in Path::new(t).ancestors().skip(1) {
+            parents.insert(anc.to_string_lossy().into_owned());
+        }
+    }
+    let hooks = targets
+        .iter()
+        .find(|t| t.ends_with("/hooks"))
+        .expect("a hooks lock");
+    let hooks_parent = Path::new(hooks)
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(parents.contains(&hooks_parent), "{hooks_parent}");
+    assert!(parents.len() > 5, "{parents:?}");
+    for parent in &parents {
         assert!(audit_with(&["--tmpfs", parent]).is_err(), "{parent}");
     }
-    // A tmpfs over the home after the binds would hide what is bound there.
-    assert!(audit_with(&["--tmpfs", HOME]).is_err());
+}
+
+#[test]
+fn the_audit_refuses_a_home_tmpfs_after_a_read_write_bind_under_the_home() {
+    let a = args(&run("qoder"));
+    let rw_under_home = a
+        .windows(3)
+        .filter(|w| w[0] == "--bind")
+        .map(|w| w[2].as_str())
+        .find(|t| Path::new(t).starts_with(HOME) && *t != HOME)
+        .expect("a read-write bind under the home");
+    // The value is the home itself, so only the ordering rule can refuse it.
+    let e = audit_with(&["--tmpfs", HOME]).expect_err(rw_under_home);
+    let text = e.to_string();
+    assert!(text.contains("would hide the earlier bind"), "{text}");
+    assert!(
+        Path::new(rw_under_home).starts_with(HOME) && text.contains(HOME),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1356,8 +1390,9 @@ fn the_audit_refuses_a_tmpfs_or_chdir_value_not_in_normal_form() {
     let ws_double = WS.replacen("/home/nez/", "/home/nez//", 1);
     assert!(a.contains(&WS.to_owned()));
     assert!(audit_with(&["--tmpfs", &home_x]).is_err());
-    assert!(audit_with(&["--tmpfs", "/tmp/"]).is_err());
-    assert!(audit_with(&["--tmpfs", "/tmp/."]).is_err());
+    let tmp = &a[a.iter().position(|x| x == "--tmpfs").unwrap() + 1];
+    assert!(audit_with(&["--tmpfs", &format!("{tmp}/")]).is_err());
+    assert!(audit_with(&["--tmpfs", &format!("{tmp}/.")]).is_err());
     for p in [&ws_dot, &ws_slash, &ws_double] {
         let e = audit_with(&["--chdir", p]).expect_err(p);
         assert!(e.to_string().contains("--chdir"), "{p}");
