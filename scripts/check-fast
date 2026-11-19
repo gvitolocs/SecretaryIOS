@@ -15,6 +15,8 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 # against its own slot record (tools/bq/src/main.rs, ancestor_slot_class), and a launcher that read the mark itself would be
 # believing a caller's word on a weaker test. BQ_* names also reach the job unscrubbed (tools/bq/src/main.rs:1794-1799; the
 # scrub list is :133), so keying on them would let any caller skip the queue.
+# A start inside a bq slot of a class other than long or gate is refused (bq_foreign_class below); that refusal also keys on BQ_SLOT,
+# BQ_SLOT_PID and the slot record, so a caller who clears BQ_SLOT only reverts to queueing, never to a skip.
 # The queue is looked up in the home directory of the real uid from the passwd entry, never in $HOME (a caller's HOME decides
 # nothing here): $QHOME/.local/bin/bq first, which must print our usage or the check FAILS (exit 2) and runs nothing; a `bq`
 # on PATH only when that file does not exist, and only if it prints our usage (PATH holds the Google Cloud SDK's BigQuery
@@ -105,14 +107,15 @@ bq_slot_is_real() {
 # A start inside a slot that bq really holds for a class other than long or gate is refused at once. check-fast queues itself in
 # the long class: started inside a short, proof or node slot it would wait for a long slot while keeping the first one, and
 # the jobs queued behind that slot would wait for it. A record with any other class is treated the same way. A hand-set BQ_SLOT
-# with no real record is not a slot and is ignored.
+# A failed check exits 1 (lucina-ci check-fast); this refusal exits 2 and says no check ran. It keys on BQ_SLOT, BQ_SLOT_PID and the
+# slot record, so a caller who clears BQ_SLOT only goes back to queueing, never to a skip.
 bq_foreign_class() {
     bq_slot_is_real any || return 1
     case "$slot_class" in long | gate) return 1 ;; esac
     return 0
 }
 if bq_foreign_class; then
-    echo "check-fast: check-fast queues itself in the long class and must not be started inside a short, proof or node slot; run it outside \`bq run\`, or inside \`bq run --class long\`" >&2
+    echo "check-fast: refused, no check ran (exit 2, not a result about the change): it was started inside a bq slot of class $slot_class. Run scripts/check-fast directly; it queues itself in the long class." >&2
     exit 2
 fi
 # The argument carries how many times this run has been through the queue (--queued-by-bq=N; a typed bare --queued-by-bq is 0). A

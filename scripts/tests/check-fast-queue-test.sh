@@ -148,6 +148,9 @@ refused() {
     [ "$rc" -eq 2 ] || fail "($1) expected the refusal's exit code 2, got $rc: $(cat "$err")"
     if grep -q "stub-ran" "$out"; then fail "($1) the check ran: $(cat "$out")"; fi
 }
+# msg_for <class>: the refusal of a start inside a slot of another class, byte for byte.
+msg_for() { printf '%s' "check-fast: refused, no check ran (exit 2, not a result about the change): it was started inside a bq slot of class $1. Run scripts/check-fast directly; it queues itself in the long class."; }
+
 home=$tmp/home
 L=$(launcher_for home)
 
@@ -294,6 +297,7 @@ queued_once otherpid
 printf 'pid=%s\nclass=bogus\n' "$$" > "$tmp/home/.cache/bq/long-0.meta"
 launch noclass home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$$" -- "$L" --queued-by-bq --base HEAD
 refused noclass # a real record of a class bq does not know is a foreign class (15): refused, nothing queued
+[ "$(cat "$err")" = "$(msg_for bogus)" ] || fail "(13) noclass: the message does not name the class found: $(cat "$err")"
 [ "$(ncalls "$calls")" = 0 ] || fail "(13) noclass: a queue was called: $(cat "$calls")"
 rm -f "$tmp/home/.cache/bq/"*.meta
 # a meta file in a state directory the launcher does not read (BQ_DIR, HOME) is not looked at
@@ -316,20 +320,21 @@ grep -qF "queued twice" "$err" || fail "(14) the refusal does not say why: $(cat
 echo "ok: (14) a queue that holds no real slot is gone through twice, then the run stops with exit 2"
 
 # (15) a start inside a slot of a class other than long or gate is refused before anything is queued.
-msg='check-fast: check-fast queues itself in the long class and must not be started inside a short, proof or node slot; run it outside `bq run`, or inside `bq run --class long`'
 rm -f "$tmp/home/.cache/bq/"*.meta
 for c in short proof node; do
     launch "foreign-$c" home "$tmp/base" -- "$home/.local/bin/bq" run --class "$c" -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
     refused "foreign-$c"
     [ "$(grep -c '^home run ' "$calls")" = 1 ] || fail "(15) $c: the launcher queued from inside the slot: $(cat "$calls")"
     if grep -q -- '--queued-by-bq' "$calls" && grep -q -- "--class long" "$calls"; then fail "(15) $c: a long call was queued: $(cat "$calls")"; fi
-    [ "$(cat "$err")" = "$msg" ] || fail "(15) $c: the message is not the pinned one: $(cat "$err")"
+    want_msg=$(msg_for "$c")
+    [ "$(cat "$err")" = "$want_msg" ] || fail "(15) $c: the message is not the pinned one: $(cat "$err")"
     [ ! -s "$out" ] || fail "(15) $c: the refusal printed on stdout: $(cat "$out")"
+    case "$(cat "$err")" in "check-fast: refused, no check ran"*) ;; *) fail "(15) $c: the refusal does not lead with the pinned words: $(cat "$err")" ;; esac
 done
 # the launcher's own typed argument does not get past it either
 launch foreign-typed home "$tmp/base" -- "$home/.local/bin/bq" run --class short -- bash -c '"$@"; exit $?' sh "$L" --queued-by-bq=1 --base HEAD
 refused foreign-typed
-[ "$(cat "$err")" = "$msg" ] || fail "(15) typed: the message is not the pinned one: $(cat "$err")"
+[ "$(cat "$err")" = "$(msg_for short)" ] || fail "(15) typed: the message is not the pinned one: $(cat "$err")"
 # a long slot: unchanged (in place once); a gate slot: unchanged (queues once in the long class)
 launch long-slot home "$tmp/base" -- "$home/.local/bin/bq" run --class long -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
 ran_ok long-slot
