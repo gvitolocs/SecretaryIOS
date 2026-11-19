@@ -103,12 +103,87 @@ pub fn presence_block(st: &AppState, prompt: &str) -> String {
     }
 }
 
+/// Keep this turn's Jev answer as a sample (`jev_samples`): the one line of a real turn of the owner's
+/// whose answer the classifier consulted. Both paths that can answer a turn call this — [`classify`]
+/// from inside the turn's context building, and `chat` when a fast spoken route answers before that
+/// building gets there — and the turn's mark (`crate::voice::claim_sample`) makes the second call do
+/// nothing, so a turn keeps exactly one line (CO-C009).
+pub fn record_jev_sample(
+    st: &AppState,
+    sample: bool,
+    rule: Option<&Classification>,
+    user_text: &str,
+    platform: &str,
+    jev: &crate::voice::SharedIntent,
+) {
+    if !sample {
+        return;
+    }
+    // The classifier consults Jev when JEV is first or when a tier-0 rule double-checks it (`classify`):
+    // only such a verdict is one of its own answers, and only such an answer is a sample.
+    let wanted =
+        crate::jev_route::jev_first_enabled() || rule.is_none_or(crate::jev_route::checks_tier0);
+    let Some(verdict) = jev else {
+        return;
+    };
+    if !wanted {
+        return;
+    }
+    if !crate::voice::claim_sample() {
+        return;
+    }
+    crate::jev_samples::record(
+        &st.cfg.data_dir,
+        user_text,
+        platform,
+        verdict,
+        rule.map(|r| r.intent.as_str()),
+    );
+}
+
+/// Is this turn's Jev answer kept as a sample (`jev_samples`)? One of the owner's own, with nothing in
+/// the turn saying someone else wrote it, no caller behind it, and not a self-test turn.
+/// [`prepare_keyed`] passes this to [`classify`]; the fast route of a spoken turn asks it itself, so the
+/// two paths agree on which turns have a line at all (CO-C009).
+pub fn sample_turn(surface: &TurnSurface, session: &str) -> bool {
+    surface.may_read(&Scope::OwnerPersonal)
+        && surface.caller().is_none()
+        && !crate::selftest::is_session(session)
+}
+
+/// What [`classify`] reads as the turn's recent turns. A fast spoken route asks for the same string to
+/// compute the tier-0 rule of its sample, so the line it keeps is the one the classifier would have
+/// written (CO-C009).
+pub fn classifier_recent(
+    st: &AppState,
+    surface: &TurnSurface,
+    keys: Keys<'_>,
+    now: chrono::DateTime<Utc>,
+) -> String {
+    if !surface.may_read(&Scope::OwnerPersonal) {
+        return String::new();
+    }
+    match shared_session(st, keys) {
+        // A file he shared from the iPhone's share sheet lands in the app's default session: it is the
+        // same conversation, so its last hours count as recent turns of this one.
+        Some(other) => keys.recent.render_with(
+            keys.recent_key,
+            &[other],
+            now - chrono::Duration::hours(SHARED_HOURS),
+            st.cfg.time_zone,
+        ),
+        None => keys.recent.render(keys.recent_key, st.cfg.time_zone),
+    }
+}
+
 /// Classify a turn: tier 0, else the model (tier 1) on the recent turns.
 /// `mcp`: the turn comes from a Lucina MCP client (an agent's or assistant app's text, not the owner's).
 /// `owner_turn`: the owner's own surface, with nothing in the turn saying someone else wrote it
 /// ([`prepare_keyed`] computes it); only such a turn may start something.
 /// `device`: the device the owner is talking through (`crate::device::jev_device_of_turn`), a fact in Jev's state.
 /// `sample`: a real turn of the owner's own, whose Jev answer is kept (`jev_samples`).
+/// `source`: what the `jev_first` line says the text came from, `"turn"` or `"replay"` (the drift
+/// report counts live traffic from a turn alone, `crate::jev_drift`).
 #[allow(clippy::too_many_arguments)]
 pub async fn classify(
     st: &AppState,
@@ -120,6 +195,7 @@ pub async fn classify(
     mcp: bool,
     owner_turn: bool,
     sample: bool,
+    source: &'static str,
 ) -> Classification {
     let s = &st.cfg.intent;
     let t = TurnInput {
@@ -143,10 +219,7 @@ pub async fn classify(
     } else {
         None
     };
-    if let (true, Some(verdict)) = (sample, &jev) {
-        let tier0 = rule.as_ref().map(|r| r.intent.as_str());
-        crate::jev_samples::record(&st.cfg.data_dir, user_text, platform, verdict, tier0);
-    }
+    record_jev_sample(st, sample, rule.as_ref(), user_text, platform, &jev);
     let chat = |confidence: f64| {
         tier0::from_model_json(
             &serde_json::json!({"intent": "chat", "confidence": confidence,
@@ -187,9 +260,14 @@ pub async fn classify(
                     "an acting intent overrode the rule {}",
                     overrode_rule
                 );
-                tracing::info!(target: "lucina_jev::route", event = "jev_first", used = true,
-                    intent = %c.intent, confidence, tier0 = ?rule.as_ref().map(|r| r.intent.as_str()),
-                    overrode_rule = %overrode_rule, guard, "jev_first");
+                crate::jev_route::log_jev_first_used(
+                    source,
+                    &c.intent,
+                    confidence,
+                    rule.as_ref().map(|r| r.intent.as_str()),
+                    &overrode_rule,
+                    guard,
+                );
                 if guard.ends_with(":chat") {
                     return chat(confidence);
                 }
@@ -203,9 +281,12 @@ pub async fn classify(
                 return c;
             }
             Err(reason) => {
-                tracing::info!(target: "lucina_jev::route", event = "jev_first", used = false, reason,
-                    intent = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1),
-                    tier0 = ?rule.as_ref().map(|r| r.intent.as_str()), "jev_first fallback");
+                crate::jev_route::log_jev_first_fallback(
+                    source,
+                    reason,
+                    pick,
+                    rule.as_ref().map(|r| r.intent.as_str()),
+                );
                 let deterministic = rule
                     .as_ref()
                     .is_some_and(crate::jev_route::deterministic_rule);
@@ -507,22 +588,7 @@ pub async fn prepare_keyed(
     if !owner {
         surface.log_denied("read", &Scope::OwnerPersonal, "turn_context");
     }
-    let recent_context = if owner {
-        let shared = shared_session(st, keys);
-        match shared {
-            // A file he shared from the iPhone's share sheet lands in the app's default session: it is the
-            // same conversation, so its last hours count as recent turns of this one.
-            Some(other) => keys.recent.render_with(
-                keys.recent_key,
-                &[other],
-                now - chrono::Duration::hours(SHARED_HOURS),
-                tz,
-            ),
-            None => keys.recent.render(keys.recent_key, tz),
-        }
-    } else {
-        String::new()
-    };
+    let recent_context = classifier_recent(st, surface, keys, now);
     let intent_text = keys.intent_text.unwrap_or(user_text);
     let (classification, policy, reason) = if tools_mode {
         let c = tier0::classify_tier0(intent_text, &recent_context, &st.cfg.intent)
@@ -538,7 +604,8 @@ pub async fn prepare_keyed(
             keys.device,
             surface.caller().is_some(),
             owner_turn,
-            owner && surface.caller().is_none() && !crate::selftest::is_session(session),
+            sample_turn(surface, session),
+            "turn",
         )
         .await;
         let (p, r) = policy::resolve(&c, first_after_idle, st.cfg.intent.confidence_min);

@@ -727,7 +727,7 @@ async fn route(
             };
             let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
             let routed = crate::context::classify(
-                st, text, recent, USER_LABEL, platform, "", mcp, owner_turn, false,
+                st, text, recent, USER_LABEL, platform, "", mcp, owner_turn, false, "replay",
             )
             .await;
             Ok(ok(json!({

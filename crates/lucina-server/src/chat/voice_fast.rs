@@ -36,6 +36,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -99,8 +100,9 @@ pub(super) struct Started {
     /// Jev is configured: the route and the ack are events of the stream. Without a Jev client the turn
     /// is today's path to the last event (and the log line still says so).
     announce: bool,
-    /// The call's verdict in the classifier's shape, for the context building (one intent call per turn).
-    intent: tokio::sync::watch::Receiver<Option<SharedIntent>>,
+    /// The call's verdict in the classifier's shape, for the context building (one intent call per turn),
+    /// with the turn's sample mark.
+    intent: Arc<voice::IntentSlot>,
 }
 
 /// The facts Jev sees, in one fixed template: no recent turns, no guessed context.
@@ -183,8 +185,9 @@ async fn ask(jev: &Jev, state: Value, cap: Duration) -> (Outcome, SharedIntent) 
 }
 
 impl Started {
-    /// The receiving end of the intent verdict, for the context building.
-    pub(super) fn intent_rx(&self) -> tokio::sync::watch::Receiver<Option<SharedIntent>> {
+    /// The turn's shared verdict and the mark of its sample: what the context building is scoped with,
+    /// and what the route that answers before the building does reads to keep the line itself.
+    pub(super) fn slot(&self) -> Arc<voice::IntentSlot> {
         self.intent.clone()
     }
 
