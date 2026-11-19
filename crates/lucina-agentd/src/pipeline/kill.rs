@@ -2327,17 +2327,15 @@ mod tests {
     }
 
     /// A process running a copy of a small binary at `dir/<name>`, in a group of its own, ended and
-    /// reaped on every path. Argument zero stays `sleep`, because the host's `sleep` is one applet of a
-    /// multicall binary that picks it by that name.
+    /// reaped on every path. It is a copy of the shell (the host sleep is one applet of a multicall
+    /// binary that picks its applet by the file name, so a renamed copy of it does not run).
     fn start_copy(dir: &Path, name: &str) -> (Reap, PathBuf) {
-        use std::os::unix::process::CommandExt;
         let path = dir.join(name);
-        fs::copy("/bin/sleep", &path).expect("sleep is copied");
+        fs::copy("/bin/sh", &path).expect("sh is copied");
         // A file another thread's fork holds open for writing cannot be executed for a moment (ETXTBSY).
         for _ in 0..100 {
             match Command::new(&path)
-                .arg0("sleep")
-                .arg("300")
+                .args(["-c", "while :; do sleep 1; done"])
                 .process_group(0)
                 .spawn()
             {
@@ -2345,10 +2343,10 @@ mod tests {
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                     std::thread::sleep(Duration::from_millis(20))
                 }
-                Err(e) => panic!("the copy of sleep does not start: {e}"),
+                Err(e) => panic!("the copy of sh does not start: {e}"),
             }
         }
-        panic!("the copy of sleep stayed busy");
+        panic!("the copy of sh stayed busy");
     }
 
     /// Resets what a test of the identity sets, whatever the test does after it.
