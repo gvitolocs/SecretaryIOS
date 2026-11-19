@@ -4,7 +4,7 @@
 //! built and no test sleeps a real 180 s.
 //!
 //! The repository holds two kinds of crate, because that is what names the steps: a root workspace member, whose fast steps are
-//! the plain `fmt`/`clippy`/`unit-tests-build`/`unit-tests` the table in `main.rs` raises to 240 s for `clippy`, to the 1200 s
+//! the plain `fmt`/`clippy`/`unit-tests-build`/`unit-tests` the table in `main.rs` raises to 480 s for `clippy`, to the 1200 s
 //! of GATE-08 for the build of the tests and leaves at 240 s for their run, now timed alone, and a standalone crate under
 //! `tools/`, whose steps are named after it (`clippy-tools-ci-fake`) and are in no table row, so they sit at the 180 default.
 //!
@@ -197,7 +197,7 @@ fn merge_gate_prints_each_step_s_own_limit_and_keeps_180_for_the_rest() {
     let (repo, bin) = setup("limits", "0.2", "0.2", "0.2");
     let (_code, out) = run(&repo, &bin, None);
     for (name, limit, own) in [
-        ("clippy", "/ 240s", "cut from its own 300"),
+        ("clippy", "/ 480s", "its own 480, the cap of its row"),
         (
             "unit-tests-build",
             "/ 1200s",

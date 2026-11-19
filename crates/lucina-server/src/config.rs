@@ -18,6 +18,8 @@ pub enum ModelProvider {
     #[default]
     DeepSeek,
     Mistral,
+    /// The tailnet llama-server: reached by name (`crate::model_try`) only; it never answers her turns.
+    Raffy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +252,8 @@ pub struct Config {
     pub deepseek: DeepSeekConfig,
     /// Mistral (`MISTRAL_*`): reached by name (`crate::model_try`) unless [`ModelProvider::Mistral`] is set.
     pub mistral: DeepSeekConfig,
+    /// The tailnet llama-server (`RAFFY_*`): reached by name (`crate::model_try`) only.
+    pub raffy: DeepSeekConfig,
     pub model_provider: ModelProvider,
     pub planner: PlannerMode,
     pub tools: ToolSelection,
@@ -667,8 +671,10 @@ impl Config {
             deal_watch: lucina_deals::WatchConfig::from_lookup(&get, &data_dir),
             deepseek: DeepSeekConfig::from_lookup(&get),
             mistral: DeepSeekConfig::mistral_from_lookup(&get),
+            raffy: DeepSeekConfig::raffy_from_lookup(&get),
             model_provider: match get("LUCINA_MODEL_PROVIDER").as_deref().map(str::trim) {
                 Some("mistral") => ModelProvider::Mistral,
+                Some("raffy") => ModelProvider::Raffy,
                 _ => ModelProvider::DeepSeek,
             },
             planner: match get("LUCINA_PLANNER").as_deref().map(str::trim) {

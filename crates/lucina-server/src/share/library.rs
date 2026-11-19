@@ -122,9 +122,21 @@ impl DocumentReader for LibraryReader {
             return Ok(render(&part, &from_record(r), req.question));
         }
         part.path = Some(req.path.to_owned());
-        let x = extract::read(st, &st.cfg.share.dir, &mut part, true, None, "en", false)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Not a share: its read writes no timing lines of its own (the chat turn it belongs to is timed there).
+        let x = extract::read(
+            st,
+            &st.cfg.share.dir,
+            &mut part,
+            &extract::Reading {
+                extract_files: true,
+                on_device: None,
+                lang: "en",
+                summarize: false,
+                timing: crate::share::ShareTiming::silent(),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let record = memory::Record {
             id,
             share_id: "drive".into(),

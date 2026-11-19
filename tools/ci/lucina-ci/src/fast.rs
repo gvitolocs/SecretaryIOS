@@ -115,7 +115,7 @@ pub fn cargo_steps(owners: &BTreeSet<Owner>, changed: &[String]) -> Vec<(String,
         steps.push((
             "clippy".to_string(),
             format!("out=$(cargo clippy --quiet --locked {p} --all-targets --no-deps --message-format=short 2>&1); rc=$?; if printf '%s\\n' \"$out\" | grep -E \"{re}\"; then exit 1; fi; exit $rc"),
-            300,
+            480, // the table row `("clippy", 480)` in main.rs MERGE_STEP_LIMITS may not exceed this (GATE-13)
         ));
         // The tests are built and run as two steps (finding GATE-08): one `cargo test` builds and links the test binaries of
         // the touched crates and only then runs them, and that build was the whole wait — JD-C018 measured `cargo test` for

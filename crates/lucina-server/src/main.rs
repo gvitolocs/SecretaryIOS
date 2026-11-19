@@ -240,7 +240,7 @@ enum Cmd {
     #[command(args_conflicts_with_subcommands = true)]
     /// One model call through a named provider, on the running server: no turn, no timeline, no tool runs.
     ModelTry {
-        /// deepseek | mistral.
+        /// deepseek | mistral | raffy.
         #[arg(long, default_value = "mistral")]
         provider: String,
         /// A model id other than the provider's default.

@@ -839,7 +839,7 @@ fn tool_exists(t: &str) -> bool {
 /// lands unbuilt, but it is reported as `build too slow at load <1-min load average>: not a test verdict` (`gated_step`) rather
 /// than as a late test. Coordinator allow 2026-11-18 (GATE-08).
 const MERGE_STEP_LIMITS: &[(&str, u64)] = &[
-    ("clippy", 240),            // measured p95 151.6 s, merges 2026-11-11..17, GATE-02
+    ("clippy", 480), // 480 s holds until the merge job warm-up runs clippy (GATE-13); then the limit is measured again and goes back to 240 s; coordinator allow 2026-11-18, GATE-13
     ("unit-tests-build", 1200), // 20 min, a slow build is not a test failure: coordinator allow 2026-11-18, GATE-08
     ("unit-tests", 240),        // the run, timed alone since GATE-08: coordinator allow 2026-11-18
 ];
@@ -2784,7 +2784,7 @@ mod tests {
     fn merge_limits_are_per_step_with_an_180_default() {
         let no_override = MergeCaps::default();
         let limit = |n: &str| no_override.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
-        assert_eq!(limit("clippy"), 240);
+        assert_eq!(limit("clippy"), 480);
         assert_eq!(limit("unit-tests-build"), 1200);
         assert_eq!(limit("unit-tests"), 240);
         assert_eq!(limit("diffgate"), 180);
@@ -2802,7 +2802,7 @@ mod tests {
     fn a_merge_limit_cuts_a_step_s_own_timeout_and_never_lifts_it() {
         let no_override = MergeCaps::default();
         for (name, own, enforced) in [
-            ("clippy", 300_u64, 240_u64),
+            ("clippy", 480_u64, 480_u64),
             ("unit-tests-build", 1200, 1200),
             ("unit-tests", 300, 240),
             ("unit-tests-build-tools-ci-lucina-ci", 1200, 180),
