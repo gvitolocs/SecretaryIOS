@@ -185,7 +185,10 @@ fn wipe(v: &mut Value) {
 }
 
 /// One request to the broker; `Err((code, message))` for its refusals.
-pub(crate) async fn broker_call(socket: &std::path::Path, mut req: Value) -> Result<Value, (String, String)> {
+pub(crate) async fn broker_call(
+    socket: &std::path::Path,
+    mut req: Value,
+) -> Result<Value, (String, String)> {
     let fut = async {
         let stream = tokio::net::UnixStream::connect(socket).await.map_err(|e| {
             (
@@ -326,17 +329,35 @@ fn grant_record(grant: &str) -> Value {
     let payload = grant
         .split('.')
         .nth(1)
-        .and_then(|p| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(p).ok())
+        .and_then(|p| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(p)
+                .ok()
+        })
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .unwrap_or(Value::Null);
-    let text = |key: &str| payload[key].as_str().map(|s| s.chars().take(256).collect::<String>());
+    let text = |key: &str| {
+        payload[key]
+            .as_str()
+            .map(|s| s.chars().take(256).collect::<String>())
+    };
     let mut out = json!({"ts": lucina_store::timeutil::now_iso(), "op": text("act").unwrap_or_else(|| "unknown".into())});
-    for key in ["project", "environment", "path", "key", "project_name", "slug"] {
+    for key in [
+        "project",
+        "environment",
+        "path",
+        "key",
+        "project_name",
+        "slug",
+    ] {
         if let Some(v) = text(key) {
             out[key] = json!(v);
         }
     }
-    if let Some(caller) = ["caller", "service", "grantee"].iter().find_map(|k| text(k)) {
+    if let Some(caller) = ["caller", "service", "grantee"]
+        .iter()
+        .find_map(|k| text(k))
+    {
         out["caller"] = json!(caller);
     }
     out
@@ -371,7 +392,10 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
         .ok_or_else(|| ApiError::bad_request("grant is required"))?
         .to_owned();
     let held = body["held"].as_str().map(str::to_owned);
-    let request_id = body["request"].as_str().filter(|r| r.len() <= 64).map(str::to_owned);
+    let request_id = body["request"]
+        .as_str()
+        .filter(|r| r.len() <= 64)
+        .map(str::to_owned);
     let value: Option<SecretValue> = match (body.get("value"), &held) {
         (Some(Value::String(v)), None) => Some(SecretValue::new(v.clone())),
         (None, Some(id)) => Some(st.held_secrets.get(id).ok_or_else(|| {
@@ -624,7 +648,11 @@ pub fn answer_secret_command(
 /// Mask secrets in a normal message: token shapes always, and with `words` (the owner's own turns)
 /// values said in words ("the password is …"). Returns the masked text and, when something was
 /// masked, the held ids with a short hint (`sk-…`, 51 chars; a value in words shows no characters).
-pub fn mask_message(st: &crate::AppState, text: &str, words: bool) -> (String, Vec<(String, String)>) {
+pub fn mask_message(
+    st: &crate::AppState,
+    text: &str,
+    words: bool,
+) -> (String, Vec<(String, String)>) {
     let mut held = Vec::new();
     if words {
         for f in lucina_secrets::labelled::detect(text).iter().take(3) {
@@ -632,14 +660,24 @@ pub fn mask_message(st: &crate::AppState, text: &str, words: bool) -> (String, V
             held.push((st.held_secrets.hold(v), format!("…, {}", v.chars().count())));
         }
     }
-    let masked = if words { lucina_secrets::labelled::mask(text) } else { std::borrow::Cow::Borrowed(text) };
-    for d in lucina_secrets::redact::detect(&masked).iter().take(3usize.saturating_sub(held.len())) {
+    let masked = if words {
+        lucina_secrets::labelled::mask(text)
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    for d in lucina_secrets::redact::detect(&masked)
+        .iter()
+        .take(3usize.saturating_sub(held.len()))
+    {
         let v = &masked[d.start..d.end];
         let prefix: String = v.chars().take(3).collect();
         let hint = format!("{prefix}…, {}", v.chars().count());
         held.push((st.held_secrets.hold(v), hint));
     }
-    (lucina_secrets::redactor().redact(&masked).into_owned(), held)
+    (
+        lucina_secrets::redactor().redact(&masked).into_owned(),
+        held,
+    )
 }
 
 /// After a turn whose message had tokens: Lucina's "Save as secret?" card.
@@ -797,7 +835,10 @@ pub(crate) fn request_folder(path: &str) -> Option<String> {
         return Some("/".into());
     }
     let segs: Vec<&str> = t.split('/').collect();
-    let ok = t.len() < 512 && segs.iter().all(|s| slug_ok(s, 128) && *s != "." && *s != "..");
+    let ok = t.len() < 512
+        && segs
+            .iter()
+            .all(|s| slug_ok(s, 128) && *s != "." && *s != "..");
     ok.then(|| format!("/{}", segs.join("/")))
 }
 
@@ -848,13 +889,25 @@ fn request_text(body: &Value, key: &str, max: usize) -> Result<Option<String>, A
 /// Check a request body. Refuses unknown fields (a value above all) and token-like text.
 pub fn parse_request(body: &Value) -> Result<SecretRequest, ApiError> {
     let Value::Object(m) = body else {
-        return Err(request_error("bad_request", "the body must be a JSON object"));
+        return Err(request_error(
+            "bad_request",
+            "the body must be a JSON object",
+        ));
     };
     if let Some(k) = m.keys().find(|k| !REQUEST_FIELDS.contains(&k.as_str())) {
         let lower = k.to_lowercase();
-        let valueish = ["value", "secret", "password", "passphrase", "psk", "token", "held", "key"]
-            .iter()
-            .any(|w| lower.contains(w));
+        let valueish = [
+            "value",
+            "secret",
+            "password",
+            "passphrase",
+            "psk",
+            "token",
+            "held",
+            "key",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
         return Err(if valueish {
             request_error(
                 "value_refused",
@@ -865,12 +918,17 @@ pub fn parse_request(body: &Value) -> Result<SecretRequest, ApiError> {
         });
     }
     let slug = |key: &str, max: usize| -> Result<String, ApiError> {
-        body[key].as_str().map(str::trim).filter(|s| slug_ok(s, max)).map(str::to_owned).ok_or_else(|| {
-            request_error(
-                "bad_request",
-                &format!("{key}: required, 1-{max} of letters, digits, _ . @ -"),
-            )
-        })
+        body[key]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| slug_ok(s, max))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                request_error(
+                    "bad_request",
+                    &format!("{key}: required, 1-{max} of letters, digits, _ . @ -"),
+                )
+            })
     };
     let name = slug("name", 256)?;
     let project = slug("project", 128)?;
@@ -881,8 +939,12 @@ pub fn parse_request(body: &Value) -> Result<SecretRequest, ApiError> {
             request_error("bad_request", "path: folders of letters, digits, _ . @ -")
         })?,
     };
-    let reason = request_text(body, "reason", 500)?
-        .ok_or_else(|| request_error("bad_request", "reason: required, why you need it (1-500 characters)"))?;
+    let reason = request_text(body, "reason", 500)?.ok_or_else(|| {
+        request_error(
+            "bad_request",
+            "reason: required, why you need it (1-500 characters)",
+        )
+    })?;
     let from = request_text(body, "from", 120)?;
     let client = request_text(body, "asking_client", 32)?.unwrap_or_else(|| "an agent".into());
     let who = match from {
@@ -892,7 +954,12 @@ pub fn parse_request(body: &Value) -> Result<SecretRequest, ApiError> {
     let new_project = match body.get("new_project") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
-        Some(_) => return Err(request_error("bad_request", "new_project must be true or false")),
+        Some(_) => {
+            return Err(request_error(
+                "bad_request",
+                "new_project must be true or false",
+            ))
+        }
     };
     Ok(SecretRequest {
         name,
@@ -913,7 +980,11 @@ pub(crate) fn request_card(r: &SecretRequest, known: Option<bool>) -> (String, V
         if !r.name.is_empty() {
             payload["name"] = json!(r.name);
         }
-        let label = if r.name.is_empty() { "Add secret".to_owned() } else { format!("Add {}", r.name) };
+        let label = if r.name.is_empty() {
+            "Add secret".to_owned()
+        } else {
+            format!("Add {}", r.name)
+        };
         let text = format!("🔐 {label}");
         let actions = vec![
             json!({"id": "secret-request", "label": label, "emoji": "🔐", "kind": "secret", "payload": payload}),
@@ -928,13 +999,21 @@ pub(crate) fn request_card(r: &SecretRequest, known: Option<bool>) -> (String, V
         r.who, r.name, r.reason, r.name, r.who
     );
     if known == Some(false) {
-        text.push_str(&format!("\nThe project {} isn't in your Infisical yet: create it first.", r.project));
+        text.push_str(&format!(
+            "\nThe project {} isn't in your Infisical yet: create it first.",
+            r.project
+        ));
     } else if missing {
         text.push_str(&format!("\nThe project {} may not exist yet.", r.project));
     }
     // `target` too: sheets bundled before 2026-11-01 (the Mac app's) match `project` by id only,
     // but resolve a target by slug or name; newer sheets ignore it when `project` is set.
-    let target = format!("{}/{}{}", r.project, r.environment, if r.path == "/" { "" } else { &r.path });
+    let target = format!(
+        "{}/{}{}",
+        r.project,
+        r.environment,
+        if r.path == "/" { "" } else { &r.path }
+    );
     let mut actions = vec![json!({
         "id": "secret-request",
         "label": format!("Add {}", r.name),
@@ -971,26 +1050,53 @@ pub struct SecretWords {
 
 /// What may come before the verb.
 const WORDS_LEAD: &[&str] = &[
-    "lucina", "ehi", "hey", "ciao", "ok", "okay", "puoi", "potresti", "riesci", "a", "can", "could", "would", "you",
-    "please", "per", "favore", "piacere", "voglio", "vorrei", "devo", "fammi", "i", "want", "need", "to", "kan", "du",
-    "vil", "gerne", "jeg",
+    "lucina", "ehi", "hey", "ciao", "ok", "okay", "puoi", "potresti", "riesci", "a", "can",
+    "could", "would", "you", "please", "per", "favore", "piacere", "voglio", "vorrei", "devo",
+    "fammi", "i", "want", "need", "to", "kan", "du", "vil", "gerne", "jeg",
 ];
 const WORDS_VERB: &[&str] = &[
-    "salva", "salvare", "salvami", "aggiungi", "aggiungere", "aggiungimi", "inserisci", "inserire", "memorizza",
-    "memorizzare", "conserva", "conservare", "registra", "registrare", "save", "add", "store", "enter", "gem", "tilføj",
+    "salva",
+    "salvare",
+    "salvami",
+    "aggiungi",
+    "aggiungere",
+    "aggiungimi",
+    "inserisci",
+    "inserire",
+    "memorizza",
+    "memorizzare",
+    "conserva",
+    "conservare",
+    "registra",
+    "registrare",
+    "save",
+    "add",
+    "store",
+    "enter",
+    "gem",
+    "tilføj",
 ];
 const WORDS_ARTICLE: &[&str] = &[
-    "un", "uno", "una", "il", "lo", "la", "i", "gli", "due", "tre", "nuovo", "mio", "a", "an", "the", "my", "new", "two",
-    "three", "en", "ny", "min",
+    "un", "uno", "una", "il", "lo", "la", "i", "gli", "due", "tre", "nuovo", "mio", "a", "an",
+    "the", "my", "new", "two", "three", "en", "ny", "min",
 ];
-const WORDS_NOUN: &[&str] = &["segreto", "segreti", "secret", "secrets", "hemmelighed", "hemmeligheder"];
+const WORDS_NOUN: &[&str] = &[
+    "segreto",
+    "segreti",
+    "secret",
+    "secrets",
+    "hemmelighed",
+    "hemmeligheder",
+];
 /// Words that join the names and the place.
 const WORDS_JOIN: &[&str] = &[
-    "e", "and", "og", "poi", "then", "in", "nel", "nella", "su", "sul", "sulla", "di", "del", "della", "dell", "il", "la",
-    "lo", "l", "a", "al", "alla", "to", "into", "on", "at", "the", "my", "qui", "here", "per", "favore", "please", "i",
-    "dem",
+    "e", "and", "og", "poi", "then", "in", "nel", "nella", "su", "sul", "sulla", "di", "del",
+    "della", "dell", "il", "la", "lo", "l", "a", "al", "alla", "to", "into", "on", "at", "the",
+    "my", "qui", "here", "per", "favore", "please", "i", "dem",
 ];
-const WORDS_NAME_MARK: &[&str] = &["chiamato", "chiamata", "nome", "named", "called", "name", "kaldet", "navn"];
+const WORDS_NAME_MARK: &[&str] = &[
+    "chiamato", "chiamata", "nome", "named", "called", "name", "kaldet", "navn",
+];
 const WORDS_PROJECT_MARK: &[&str] = &["progetto", "project", "projekt"];
 const WORDS_ENV_MARK: &[&str] = &["ambiente", "env", "environment", "miljø"];
 const WORDS_PATH_MARK: &[&str] = &["cartella", "folder", "path", "percorso", "mappe"];
@@ -1064,7 +1170,12 @@ pub fn secret_words(text: &str) -> Option<SecretWords> {
     }
     while i < raw.len() {
         let w = raw[i];
-        if is(WORDS_FOR, i) && out.names.is_empty() && !lower[i + 1..].iter().any(|w| WORDS_PROJECT_MARK.contains(&w.as_str())) {
+        if is(WORDS_FOR, i)
+            && out.names.is_empty()
+            && !lower[i + 1..]
+                .iter()
+                .any(|w| WORDS_PROJECT_MARK.contains(&w.as_str()))
+        {
             // A purpose in his words: the card asks for the name.
             let place = raw[i + 1..].iter().find_map(|w| parse_place(w));
             if let Some((p, e, f)) = place {
@@ -1087,7 +1198,9 @@ pub fn secret_words(text: &str) -> Option<SecretWords> {
             out.environment = Some(raw[i + 1].to_owned());
             after_name = false;
             i += 2;
-        } else if is(WORDS_PATH_MARK, i) && raw.get(i + 1).is_some_and(|n| request_folder(n).is_some()) {
+        } else if is(WORDS_PATH_MARK, i)
+            && raw.get(i + 1).is_some_and(|n| request_folder(n).is_some())
+        {
             out.path = request_folder(raw[i + 1]);
             after_name = false;
             i += 2;
@@ -1123,51 +1236,139 @@ pub fn secret_words(text: &str) -> Option<SecretWords> {
 /// means (chat `secret_turn`). "show me the wifi password" is neither; the normal turn answers it.
 pub fn secret_talk(text: &str) -> bool {
     let lower = text.to_lowercase();
-    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
     if words.len() > 40 {
         return false;
     }
     // Counts with a storing verb or an offer.
     const STRONG_NOUNS: &[&str] = &[
-        "password", "passwd", "passphrase", "psk", "token", "segreto", "segreti", "secret", "secrets", "credenziali",
-        "credentials", "credential", "apikey", "pwd", "pin", "passcode", "hemmelighed", "adgangskode",
+        "password",
+        "passwd",
+        "passphrase",
+        "psk",
+        "token",
+        "segreto",
+        "segreti",
+        "secret",
+        "secrets",
+        "credenziali",
+        "credentials",
+        "credential",
+        "apikey",
+        "pwd",
+        "pin",
+        "passcode",
+        "hemmelighed",
+        "adgangskode",
     ];
     // Counts only with an offer: "add the key points" is not a secret.
     const WEAK_NOUNS: &[&str] = &["key", "keys", "chiave", "chiavi", "nøgle", "nøglen"];
     const VERBS: &[&str] = &[
-        "salva", "salvami", "salvala", "salvalo", "salvarla", "salvarlo", "salvare", "memorizza", "memorizzala", "aggiungi",
-        "inserisci", "conserva", "conservala", "registra", "chiedimi", "save", "store", "add", "gem", "tilføj", "move", "sposta",
-        "spostala", "spostalo", "flyt",
+        "salva",
+        "salvami",
+        "salvala",
+        "salvalo",
+        "salvarla",
+        "salvarlo",
+        "salvare",
+        "memorizza",
+        "memorizzala",
+        "aggiungi",
+        "inserisci",
+        "conserva",
+        "conservala",
+        "registra",
+        "chiedimi",
+        "save",
+        "store",
+        "add",
+        "gem",
+        "tilføj",
+        "move",
+        "sposta",
+        "spostala",
+        "spostalo",
+        "flyt",
     ];
     // He hands one over (matched on the words joined by spaces, so "here's" is "here s").
     const OFFERS: &[&str] = &[
-        "give you", "gibe you", "giv you", "send you", "pass you", "let me give", "let me gibe", "let me send", "let me paste",
-        "here is the", "here is my", "here s the", "here s my", "i ll send", "i will send", "i have the", "paste it", "i paste",
-        "so i paste", "ti do", "ti passo", "ti mando", "ti incollo", "te la do", "te la passo", "ask me for", "giver dig", "giv dig",
+        "give you",
+        "gibe you",
+        "giv you",
+        "send you",
+        "pass you",
+        "let me give",
+        "let me gibe",
+        "let me send",
+        "let me paste",
+        "here is the",
+        "here is my",
+        "here s the",
+        "here s my",
+        "i ll send",
+        "i will send",
+        "i have the",
+        "paste it",
+        "i paste",
+        "so i paste",
+        "ti do",
+        "ti passo",
+        "ti mando",
+        "ti incollo",
+        "te la do",
+        "te la passo",
+        "ask me for",
+        "giver dig",
+        "giv dig",
         "sender dig",
     ];
-    const QUESTION: &[&str] = &["come", "how", "why", "perché", "perche", "cosa", "what", "dove", "where", "quale", "which", "hvordan"];
+    const QUESTION: &[&str] = &[
+        "come", "how", "why", "perché", "perche", "cosa", "what", "dove", "where", "quale",
+        "which", "hvordan",
+    ];
     // He asks for the card itself instead of handing the value over. Not "ask": "ask me for" is
     // already an offer, and "ask him about the token" is no card.
     const REQUEST_VERBS: &[&str] = &[
-        "prompt", "request", "open", "show", "pop", "bring", "apri", "aprimi", "mostra", "mostrami", "richiedi", "åbn", "vis",
+        "prompt", "request", "open", "show", "pop", "bring", "apri", "aprimi", "mostra",
+        "mostrami", "richiedi", "åbn", "vis",
     ];
     // The card under its other names, only together with a noun: "open the card for the key".
-    const CARD_WORDS: &[&str] = &["card", "cards", "tile", "tiles", "prompt", "scheda", "schede", "kort", "kortet"];
+    const CARD_WORDS: &[&str] = &[
+        "card", "cards", "tile", "tiles", "prompt", "scheda", "schede", "kort", "kortet",
+    ];
     // The word that says what the card is for on its own: "open the secret card".
     const SECRET_WORD: &[&str] = &["secret", "secrets", "segreto", "segreti", "hemmelighed"];
     // STRONG_NOUNS without "pin", "pwd", "psk" and "passcode", which "open" and "show" meet in
     // other meanings: "open the map and drop a pin".
     const REQUEST_NOUNS: &[&str] = &[
-        "secret", "secrets", "password", "passphrase", "token", "credentials", "credential", "apikey", "segreto", "adgangskode",
+        "secret",
+        "secrets",
+        "password",
+        "passphrase",
+        "token",
+        "credentials",
+        "credential",
+        "apikey",
+        "segreto",
+        "adgangskode",
         "hemmelighed",
     ];
     // A polite request is not a question about secrets: its "?" keeps the card.
     const POLITE: &[&str] = &["can you", "could you", "would you", "puoi", "kan du"];
     let joined = words.join(" ");
-    let offer = OFFERS.iter().any(|p| format!(" {joined} ").contains(&format!(" {p} ")));
+    let offer = OFFERS
+        .iter()
+        .any(|p| format!(" {joined} ").contains(&format!(" {p} ")));
     let infisical = words.contains(&"infisical")
-        && words.iter().any(|w| ["paste", "tile", "card", "store", "incolla", "kort", "indsæt"].contains(w));
+        && words.iter().any(|w| {
+            [
+                "paste", "tile", "card", "store", "incolla", "kort", "indsæt",
+            ]
+            .contains(w)
+        });
     if offer || infisical {
         let strong = words.iter().any(|w| STRONG_NOUNS.contains(w)) || joined.contains("api key");
         return strong || infisical || words.iter().any(|w| WEAK_NOUNS.contains(w));
@@ -1176,13 +1377,16 @@ pub fn secret_talk(text: &str) -> bool {
     // the thing that goes in it ("open the card for the Stripe key"). A verb with only "password"
     // or "token" is a wish to see one ("show me the wifi password"), and the normal turn answers it.
     let secret_word = words.iter().any(|w| SECRET_WORD.contains(w));
-    let card_noun = words.iter().any(|w| REQUEST_NOUNS.contains(w)) || joined.contains("api key")
+    let card_noun = words.iter().any(|w| REQUEST_NOUNS.contains(w))
+        || joined.contains("api key")
         || words.iter().any(|w| WEAK_NOUNS.contains(w));
     let asked = words.iter().any(|w| REQUEST_VERBS.contains(w))
         && (secret_word || (words.iter().any(|w| CARD_WORDS.contains(w)) && card_noun));
     let polite = POLITE.iter().any(|p| joined.starts_with(&format!("{p} ")));
     // A question about secrets is answered, not a card.
-    if (words.first().is_some_and(|w| QUESTION.contains(w)) || text.trim_end().ends_with('?')) && !(polite && asked) {
+    if (words.first().is_some_and(|w| QUESTION.contains(w)) || text.trim_end().ends_with('?'))
+        && !(polite && asked)
+    {
         return false;
     }
     let strong = words.iter().any(|w| STRONG_NOUNS.contains(w)) || joined.contains("api key");
@@ -1191,14 +1395,30 @@ pub fn secret_talk(text: &str) -> bool {
 
 /// The owner's request in words: its cards in the queue. The reply, the card's item id, and the
 /// card's message for the chat response. Never asks for the value in a chat.
-pub async fn answer_secret_words(st: &crate::AppState, words: &SecretWords, lang: &str) -> (String, Option<String>, Option<Value>) {
+pub async fn answer_secret_words(
+    st: &crate::AppState,
+    words: &SecretWords,
+    lang: &str,
+) -> (String, Option<String>, Option<Value>) {
     let tx = texts(lang);
-    let names: Vec<&str> = if words.names.is_empty() { vec![""] } else { words.names.iter().map(String::as_str).take(10).collect() };
+    let names: Vec<&str> = if words.names.is_empty() {
+        vec![""]
+    } else {
+        words.names.iter().map(String::as_str).take(10).collect()
+    };
     let project = words.project.clone().unwrap_or_default();
     // A project without an environment can't be saved blindly: the card asks for the place.
-    let environment = if project.is_empty() { String::new() } else { words.environment.clone().unwrap_or_default() };
+    let environment = if project.is_empty() {
+        String::new()
+    } else {
+        words.environment.clone().unwrap_or_default()
+    };
     let path = words.path.clone().unwrap_or_else(|| "/".to_owned());
-    let place = if project.is_empty() || environment.is_empty() { None } else { Some(format!("{project} / {environment} / {path}")) };
+    let place = if project.is_empty() || environment.is_empty() {
+        None
+    } else {
+        Some(format!("{project} / {environment} / {path}"))
+    };
     let mut first: Option<crate::secret_requests::Asked> = None;
     let mut waiting = 0;
     let mut refused = false;
@@ -1218,7 +1438,11 @@ pub async fn answer_secret_words(st: &crate::AppState, words: &SecretWords, lang
             who: String::new(),
             new_project: false,
         };
-        match st.secret_requests.ask(request, Some(bubble.clone()), true).await {
+        match st
+            .secret_requests
+            .ask(request, Some(bubble.clone()), true)
+            .await
+        {
             Ok(a) => {
                 if a.status != "asked" {
                     waiting += 1;
@@ -1249,11 +1473,22 @@ pub async fn answer_secret_words(st: &crate::AppState, words: &SecretWords, lang
         }
         None => {
             // Nothing new on screen: one plain line, so the reply has its item too.
-            reply.push_str(if refused { tx.words_full } else { tx.words_waiting });
-            (lucina_item(&st.timeline, &reply, "secret_offer", None), None)
+            reply.push_str(if refused {
+                tx.words_full
+            } else {
+                tx.words_waiting
+            });
+            (
+                lucina_item(&st.timeline, &reply, "secret_offer", None),
+                None,
+            )
         }
     };
-    tracing::info!(names = names.len(), value_suspect = words.value_suspect, "owner's secret request answered before the planner");
+    tracing::info!(
+        names = names.len(),
+        value_suspect = words.value_suspect,
+        "owner's secret request answered before the planner"
+    );
     (reply, item, rich)
 }
 
@@ -1322,25 +1557,73 @@ mod tests {
 
     #[test]
     fn secret_words_shapes() {
-        for yes in ["salva un segreto", "Salva un segreto.", "Lucina, salva un segreto", "puoi aggiungere un segreto?",
-                    "add a secret", "please store a new secret", "can you save a secret", "gem en hemmelighed",
-                    "voglio salvare un segreto", "salva un segreto per il wifi di casa", "add a secret for the Wi-Fi"] {
+        for yes in [
+            "salva un segreto",
+            "Salva un segreto.",
+            "Lucina, salva un segreto",
+            "puoi aggiungere un segreto?",
+            "add a secret",
+            "please store a new secret",
+            "can you save a secret",
+            "gem en hemmelighed",
+            "voglio salvare un segreto",
+            "salva un segreto per il wifi di casa",
+            "add a secret for the Wi-Fi",
+        ] {
             let w = secret_words(yes).unwrap_or_else(|| panic!("{yes}"));
             assert!(w.names.is_empty() && !w.value_suspect, "{yes}: {w:?}");
         }
-        for no in ["come salvo un segreto?", "how do I add a secret", "hai un segreto?", "salva questo file", "add a secret santa to my list",
-                   "salva la nota segreta", "perché salva un segreto?", "mi dici un segreto", "non salvare un segreto", "save the file", ""] {
+        for no in [
+            "come salvo un segreto?",
+            "how do I add a secret",
+            "hai un segreto?",
+            "salva questo file",
+            "add a secret santa to my list",
+            "salva la nota segreta",
+            "perché salva un segreto?",
+            "mi dici un segreto",
+            "non salvare un segreto",
+            "save the file",
+            "",
+        ] {
             assert_eq!(secret_words(no), None, "{no}");
         }
         let w = secret_words("salva il segreto GBGO_WIFI_PSK in lucinaos/prod").unwrap();
-        assert_eq!(w, SecretWords { names: vec!["GBGO_WIFI_PSK".into()], project: Some("lucinaos".into()),
-                                    environment: Some("prod".into()), path: Some("/".into()), value_suspect: false });
+        assert_eq!(
+            w,
+            SecretWords {
+                names: vec!["GBGO_WIFI_PSK".into()],
+                project: Some("lucinaos".into()),
+                environment: Some("prod".into()),
+                path: Some("/".into()),
+                value_suspect: false
+            }
+        );
         let w = secret_words("aggiungi due segreti A_KEY e B_KEY nel progetto lucinaos ambiente prod cartella gbgo/wifi").unwrap();
         assert_eq!(w.names, ["A_KEY", "B_KEY"]);
-        assert_eq!((w.project.as_deref(), w.environment.as_deref(), w.path.as_deref()), (Some("lucinaos"), Some("prod"), Some("/gbgo/wifi")));
-        assert_eq!(secret_words("save a secret called wifi_psk").unwrap().names, ["wifi_psk"]);
-        assert_eq!(secret_words("salva il segreto wifi").unwrap().names, ["wifi"]);
-        assert_eq!(secret_words("add a secret for poko in poko/prod/bot").unwrap().path.as_deref(), Some("/bot"));
+        assert_eq!(
+            (
+                w.project.as_deref(),
+                w.environment.as_deref(),
+                w.path.as_deref()
+            ),
+            (Some("lucinaos"), Some("prod"), Some("/gbgo/wifi"))
+        );
+        assert_eq!(
+            secret_words("save a secret called wifi_psk").unwrap().names,
+            ["wifi_psk"]
+        );
+        assert_eq!(
+            secret_words("salva il segreto wifi").unwrap().names,
+            ["wifi"]
+        );
+        assert_eq!(
+            secret_words("add a secret for poko in poko/prod/bot")
+                .unwrap()
+                .path
+                .as_deref(),
+            Some("/bot")
+        );
     }
 
     #[test]
@@ -1358,25 +1641,54 @@ mod tests {
                     "open a tile for the maps key"] {
             assert!(secret_talk(yes), "{yes}");
         }
-        for no in ["come salvo una password?", "how do I store a token", "qual è la chiave del successo", "salva la nota", "add milk to the list",
-                   "il token è scaduto", "what is a secret", "give me the key points of this article", "the key to success is patience",
-                   "what is an api key?", "send me the report", "here is the plan for tomorrow", "where is infisical running?",
-                   "add the key points to my notes", "save this page?", "show me the key points", "open the map and drop a pin",
-                   "open the door with the key", "prompt me tomorrow about the report", "request a refund for the order",
-                   "what is a secret card?", "where is the secret card?", "open the notes about password hygiene?",
-                   "show me the token economy article", "show me the wifi password", "open the password manager",
-                   "request a new token from the api", "bring the credentials document to the meeting"] {
+        for no in [
+            "come salvo una password?",
+            "how do I store a token",
+            "qual è la chiave del successo",
+            "salva la nota",
+            "add milk to the list",
+            "il token è scaduto",
+            "what is a secret",
+            "give me the key points of this article",
+            "the key to success is patience",
+            "what is an api key?",
+            "send me the report",
+            "here is the plan for tomorrow",
+            "where is infisical running?",
+            "add the key points to my notes",
+            "save this page?",
+            "show me the key points",
+            "open the map and drop a pin",
+            "open the door with the key",
+            "prompt me tomorrow about the report",
+            "request a refund for the order",
+            "what is a secret card?",
+            "where is the secret card?",
+            "open the notes about password hygiene?",
+            "show me the token economy article",
+            "show me the wifi password",
+            "open the password manager",
+            "request a new token from the api",
+            "bring the credentials document to the meeting",
+        ] {
             assert!(!secret_talk(no), "{no}");
         }
     }
 
     #[test]
     fn a_value_after_the_name_is_noticed() {
-        for suspect in ["salva il segreto WIFI_PSK hunter2", "salva il segreto wifi hunter2", "save a secret called wifi hunter2 in home/prod",
-                        "add the secret API_KEY abc123 lucinaos/prod"] {
+        for suspect in [
+            "salva il segreto WIFI_PSK hunter2",
+            "salva il segreto wifi hunter2",
+            "save a secret called wifi hunter2 in home/prod",
+            "add the secret API_KEY abc123 lucinaos/prod",
+        ] {
             let w = secret_words(suspect).unwrap_or_else(|| panic!("{suspect}"));
             assert!(w.value_suspect, "{suspect}: {w:?}");
-            assert!(!format!("{w:?}").contains("hunter2") && !format!("{w:?}").contains("abc123"), "{w:?}");
+            assert!(
+                !format!("{w:?}").contains("hunter2") && !format!("{w:?}").contains("abc123"),
+                "{w:?}"
+            );
         }
     }
 
@@ -1413,14 +1725,40 @@ mod tests {
             "value_sha256": "5e8f", "held": "held-0123456789", "value": "test-secret-value",
             "signature": "test-signature", "token": "test-token"});
         let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
-        let grant = format!("g1.{}.{}", b64(&serde_json::to_vec(&payload).unwrap()), b64(b"signature-bytes"));
+        let grant = format!(
+            "g1.{}.{}",
+            b64(&serde_json::to_vec(&payload).unwrap()),
+            b64(b"signature-bytes")
+        );
         let r = grant_record(&grant);
         assert_eq!(r["op"], "put_secret");
         assert_eq!(r["key"], "JEV_API_KEY_LUCINA");
         assert_eq!(r["caller"], "svc-gallery");
-        assert_eq!((r["project"].as_str(), r["environment"].as_str(), r["path"].as_str()), (Some("lucina"), Some("prod"), Some("/")));
+        assert_eq!(
+            (
+                r["project"].as_str(),
+                r["environment"].as_str(),
+                r["path"].as_str()
+            ),
+            (Some("lucina"), Some("prod"), Some("/"))
+        );
         let line = r.to_string();
-        for leak in ["value", "5e8f", "held", "jti", "abc123", "sub", "dev_1", "grant", "sig", "token", "test-secret-value", "test-signature", "test-token", &b64(b"signature-bytes")] {
+        for leak in [
+            "value",
+            "5e8f",
+            "held",
+            "jti",
+            "abc123",
+            "sub",
+            "dev_1",
+            "grant",
+            "sig",
+            "token",
+            "test-secret-value",
+            "test-signature",
+            "test-token",
+            &b64(b"signature-bytes"),
+        ] {
             assert!(!line.contains(leak), "{leak} in {line}");
         }
         assert_eq!(grant_record("g1.not-base64!.x")["op"], "unknown");
@@ -1434,9 +1772,15 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         record_grant(&file, &json!({"op": "catalog", "outcome": "ok"}));
         record_grant(&file, &json!({"op": "put_secret", "outcome": "error"}));
-        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let text = std::fs::read_to_string(file).unwrap();
-        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[1]["outcome"], "error");
     }
@@ -1450,8 +1794,15 @@ mod tests {
     #[test]
     fn requests_take_names_and_refuse_values() {
         let r = parse_request(&wifi_request()).unwrap();
-        assert_eq!((r.name.as_str(), r.project.as_str(), r.environment.as_str(), r.path.as_str()),
-                   ("GBGO_WIFI_PSK", "lucinaos", "prod", "/"));
+        assert_eq!(
+            (
+                r.name.as_str(),
+                r.project.as_str(),
+                r.environment.as_str(),
+                r.path.as_str()
+            ),
+            ("GBGO_WIFI_PSK", "lucinaos", "prod", "/")
+        );
         assert_eq!(r.who, "claude-code (gbgo-wifi)");
         assert!(!r.new_project);
         let mut b = wifi_request();
@@ -1473,9 +1824,16 @@ mod tests {
         let e = parse_request(&b).unwrap_err();
         assert_eq!(e.code, "value_refused");
         assert!(!e.message.contains("sk-abc"));
-        for (k, v) in [("name", json!("a b")), ("name", json!("A/B")), ("project", json!("")), ("environment", json!(3)),
-                       ("path", json!("/a/../b")), ("reason", json!("  ")), ("reason", json!("x".repeat(501))),
-                       ("new_project", json!("yes"))] {
+        for (k, v) in [
+            ("name", json!("a b")),
+            ("name", json!("A/B")),
+            ("project", json!("")),
+            ("environment", json!(3)),
+            ("path", json!("/a/../b")),
+            ("reason", json!("  ")),
+            ("reason", json!("x".repeat(501))),
+            ("new_project", json!("yes")),
+        ] {
             let mut b = wifi_request();
             b[k] = v;
             assert_eq!(parse_request(&b).unwrap_err().code, "bad_request", "{k}");
@@ -1497,8 +1855,11 @@ mod tests {
         let a = &rich["actions"][0];
         assert_eq!(a["kind"], "secret");
         assert_eq!(a["label"], "Add GBGO_WIFI_PSK");
-        assert_eq!(a["payload"], json!({"mode": "save", "name": "GBGO_WIFI_PSK", "project": "lucinaos",
-                                         "environment": "prod", "path": "/", "target": "lucinaos/prod"}));
+        assert_eq!(
+            a["payload"],
+            json!({"mode": "save", "name": "GBGO_WIFI_PSK", "project": "lucinaos",
+                                         "environment": "prod", "path": "/", "target": "lucinaos/prod"})
+        );
         let mut deep = r.clone();
         deep.path = "/gbgo/wifi".into();
         let (_, actions, _) = request_card(&deep, Some(true));
@@ -1506,7 +1867,10 @@ mod tests {
         // A project the last catalog didn't list, or one the agent says is new: "Create project".
         let (text, actions, missing) = request_card(&r, Some(false));
         assert!(missing && text.contains("isn't in your Infisical yet"));
-        assert_eq!(actions[1]["payload"], json!({"mode": "project", "projectName": "lucinaos"}));
+        assert_eq!(
+            actions[1]["payload"],
+            json!({"mode": "project", "projectName": "lucinaos"})
+        );
         assert_eq!(request_card(&r, None).1.len(), 2);
         let mut r2 = r.clone();
         r2.new_project = true;
@@ -1516,7 +1880,10 @@ mod tests {
 
     #[test]
     fn catalogs_teach_project_names() {
-        remember_projects(&[json!({"id": "a1b2", "name": "LucinaOS", "slug": "lucinaos-x1", "alias": null})], true);
+        remember_projects(
+            &[json!({"id": "a1b2", "name": "LucinaOS", "slug": "lucinaos-x1", "alias": null})],
+            true,
+        );
         assert_eq!(project_known("lucinaos"), Some(true));
         assert_eq!(project_known("LUCINAOS-X1"), Some(true));
         assert_eq!(project_known("poko"), Some(false));
