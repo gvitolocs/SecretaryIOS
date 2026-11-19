@@ -20,7 +20,14 @@ use crate::{Gate, Layer, Platform, TargetStatus};
 
 /// Agents per repo at once: nezopt runs hot when many sessions build (limit: Tctl 90 °C).
 pub const DEFAULT_MAX_RUNNING: usize = 2;
-pub const DEFAULT_MAX_ATTEMPTS: u32 = 2;
+/// Dispatcher agents alive at once, in all (`LUCINA_FLAWS_MAX_ALIVE`).
+pub const DEFAULT_MAX_ALIVE: usize = 3;
+/// Dispatcher agents alive at once on one lane (`LUCINA_FLAWS_MAX_PER_LANE`).
+pub const DEFAULT_MAX_PER_LANE: usize = 1;
+/// New dispatches one tick may start (`LUCINA_FLAWS_MAX_NEW_PER_TICK`).
+pub const DEFAULT_MAX_NEW_PER_TICK: usize = 1;
+/// Task failures within a rolling 24 hours before a target is `blocked` for a lead.
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// How long an agent may hold a target (matches the other lanes' 45 minutes).
 pub const DEFAULT_AGENT_MINUTES: i64 = 45;
 /// `LUCINA_FLAWS_PROVIDER`, when the old variables build the chain.
@@ -123,7 +130,15 @@ pub struct Policy {
     pub auto_triage: bool,
     /// `LUCINA_FLAWS_MAX_RUNNING`: agents at once per repo.
     pub max_running_per_repo: usize,
-    /// `LUCINA_FLAWS_MAX_ATTEMPTS`: tries before a target is `blocked`.
+    /// `LUCINA_FLAWS_MAX_ALIVE`: dispatcher agents alive
+    /// at once in all (a fix or a triage, attached or not).
+    pub max_alive: usize,
+    /// `LUCINA_FLAWS_MAX_PER_LANE`: alive at once on one lane.
+    pub max_per_lane: usize,
+    /// `LUCINA_FLAWS_MAX_NEW_PER_TICK`: new dispatches in one tick of the loop.
+    pub max_new_per_tick: usize,
+    /// `LUCINA_FLAWS_MAX_ATTEMPTS`: task failures within a rolling 24 hours before a target is
+    /// `blocked` for a lead. A lane failure never counts.
     pub max_attempts: u32,
     /// `LUCINA_FLAWS_AGENT_MINUTES`.
     pub agent_minutes: i64,
@@ -215,6 +230,12 @@ impl Policy {
             ),
             max_running_per_repo: num("LUCINA_FLAWS_MAX_RUNNING", DEFAULT_MAX_RUNNING as u64)
                 as usize,
+            max_alive: num("LUCINA_FLAWS_MAX_ALIVE", DEFAULT_MAX_ALIVE as u64) as usize,
+            max_per_lane: num("LUCINA_FLAWS_MAX_PER_LANE", DEFAULT_MAX_PER_LANE as u64) as usize,
+            max_new_per_tick: num(
+                "LUCINA_FLAWS_MAX_NEW_PER_TICK",
+                DEFAULT_MAX_NEW_PER_TICK as u64,
+            ) as usize,
             max_attempts: num("LUCINA_FLAWS_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS as u64) as u32,
             agent_minutes: num("LUCINA_FLAWS_AGENT_MINUTES", DEFAULT_AGENT_MINUTES as u64) as i64,
             owner_gates: Gate::ALL.to_vec(),
@@ -457,7 +478,7 @@ pub fn outcome_line(flaw: &Flaw, target: &Target, policy: &Policy) -> String {
         TargetStatus::Verified => "fixed and shown working".to_owned(),
         TargetStatus::NotAffected => "doesn't happen there".to_owned(),
         TargetStatus::Blocked => format!(
-            "I couldn't fix it after {} tries; someone needs to look",
+            "I couldn't fix it after {} tries; it needs a lead to look at it",
             target.attempts
         ),
         other => other.to_string(),

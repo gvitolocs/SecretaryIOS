@@ -15,8 +15,9 @@ pub mod store;
 
 pub use policy::{Pick, Policy, Step, Verdict};
 pub use store::{
-    Detail, Event, Flaw, FlawPatch, Flaws, ListQuery, NewFlaw, Outcome, Reported, Target,
-    TargetUpdate,
+    backoff_minutes, BlockedLook, ClaimCaps, ClaimRef, Detail, Event, Failure, Flaw, FlawPatch,
+    Flaws, LaneBreaker, LaneState, ListQuery, NewFlaw, Outcome, Reported, Target, TargetUpdate,
+    FAILURE_WINDOW_HOURS,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +37,10 @@ pub enum FlawError {
     /// Someone else holds the target, or it is not ready to start.
     #[error("{0}")]
     NotClaimable(String),
+    /// A limit stopped the claim (the caps, a lane that failed, a back-off): nothing was started
+    /// and the target is as it was.
+    #[error("{0}")]
+    Busy(String),
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
 }
@@ -49,6 +54,7 @@ impl FlawError {
             FlawError::BadTransition { .. } => "bad_transition",
             FlawError::Invalid(_) => "bad_request",
             FlawError::NotClaimable(_) => "not_claimable",
+            FlawError::Busy(_) => "busy",
             FlawError::Db(_) => "internal_error",
         }
     }
