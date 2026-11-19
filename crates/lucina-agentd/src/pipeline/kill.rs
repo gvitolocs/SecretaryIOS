@@ -1029,6 +1029,9 @@ pub(crate) struct Step {
     grant: Option<Grant>,
 }
 
+/// What a [`Grant`] tells: the slot name and the time since the step started.
+pub(crate) type GrantSeen = Box<dyn FnMut(&str, Duration)>;
+
 /// The grant a step that queues for a bq slot waits for (LA-C038, WORK-26). `marker` is a file the
 /// wrapped job writes first, once bq has granted the slot and started it; until it exists the step's
 /// deadline has not started, and the step's wait stays bounded by bq's own `--max-wait`. The marker
@@ -1037,7 +1040,7 @@ pub(crate) struct Step {
 /// step was started.
 pub(crate) struct Grant {
     pub(crate) marker: PathBuf,
-    pub(crate) seen: Box<dyn FnMut(&str, Duration)>,
+    pub(crate) seen: GrantSeen,
 }
 
 impl Step {

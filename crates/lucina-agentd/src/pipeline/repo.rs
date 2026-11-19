@@ -136,7 +136,7 @@ pub fn takes_slot(run: &str, queue: Option<GateQueue>) -> bool {
         Some(GateQueue::Off) => return false,
         None => {}
     }
-    run.split(|c: char| matches!(c, ';' | '&' | '|' | '\n' | '(' | ')' | '{' | '}'))
+    run.split([';', '&', '|', '\n', '(', ')', '{', '}'])
         .any(|step| {
             let mut words = step.split_whitespace().peekable();
             // Leading `NAME=value` words and the wrappers that only start another command.
