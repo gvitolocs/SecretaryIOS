@@ -85,7 +85,21 @@ that step's lane, not always the first one.
    and never a second; and the sweep, which before a start stops any untracked agent already working on that target (and any
    idle agent whose target no longer holds it), so a start never adds a second live agent to a target. A second process on the
    file is covered by the SQL re-check alone, and its agentd-only agents are not: one agentd, one dispatching server is the
-   deployed shape. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
+   deployed shape.
+
+   **How long the lock can be held (`MAX_HOLD`).** The lock is never waited on by a caller that has someone waiting on it.
+   `POST /flaws/{id}/dispatch` and the MCP tool `flaw_dispatch` wait for it at most 5 s (`Limits::lock_wait`); then they start
+   nothing and answer `409 dispatcher_busy` with `retry_after_s` (the worst-case time left of the hold; the MCP tool says
+   "the dispatcher is busy, retry in N s. Nothing was started."). The minute loop never waits: it tries the lock and, if a
+   request holds it, skips that tick and says `flaws: dispatcher busy, tick skipped` once per change of state, so ticks never
+   queue. Every call made under the lock has its own deadline (`Limits`): `GET /agents` 10 s, each stop and each archive 10 s,
+   the worktree create and the agent create 30 s each, the lookup by labels after a failed create 10 s, the ops record of an
+   opened breaker 10 s, one lane probe 20 s with all the probes of a hold under one 30 s budget (a probe that does not answer, or
+   that finds the budget spent, is not ready). Agents put away in one hold are bounded (`MAX_AWAY` = 3 for the sweep and the
+   untracked agents of the target, 3 more extras after a failed create); an untracked agent that cannot be stopped in time
+   stops the start on its target, which waits for the next tick. The owner's go for a gated flaw is asked before the lock is
+   taken. The sum, `MAX_HOLD`, is 10 + 3 x 20 + 30 + 2 x 30 + (10 + 3 x 20 + 10) = **240 s**. Moving the probes outside the lock is
+   a follow-up. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
    probe says it has quota; it never comes back up to a cheaper step it started at. When no step from there down is ready,
    nothing starts this round. A server or core fix is one task and one commit for every client waiting on it.
 4. **Tell him.** Fixed, closed or blocked targets, once per change, in his chat and on his phone.

@@ -353,22 +353,142 @@ pub trait Hands: Send + Sync {
     /// A line on his timeline that an attempt started, and on which agent. The timeline only: he
     /// hears on the phone about what came of it, not about every start.
     async fn tell_start(&self, text: &str);
+    /// The deadlines of the calls made under the dispatch lock.
+    fn limits(&self) -> Limits {
+        Limits::DEFAULT
+    }
 }
 
 // ---------------------------------------------------------------- the dispatch lock
 
-/// One lock per flaw store: the cap check, the claim, the create and the attach of a dispatch are
-/// one step, for the loop and for `dispatch_one` alike. (The claim itself re-checks the counts
-/// in SQL, which covers a second process on the same file.)
-fn dispatch_lock(flaws: &Flaws) -> Arc<tokio::sync::Mutex<()>> {
-    type Locks = std::sync::Mutex<Vec<(usize, Arc<tokio::sync::Mutex<()>>)>>;
+/// The deadline of every call made while the dispatch lock is held, so the lock cannot be held
+/// for longer than [`MAX_HOLD`] whatever agentd or a probe does. Tests give the fake hands
+/// short ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// How long a request (`POST /dispatch`, the MCP tool) waits for the lock before answering busy.
+    pub lock_wait: Duration,
+    /// `GET /agents`.
+    pub list: Duration,
+    /// One stop or one archive of an agent.
+    pub away: Duration,
+    /// The worktree create and the agent create, each.
+    pub create: Duration,
+    /// The lookup of a target's agents by labels, after a create that errored.
+    pub lookup: Duration,
+    /// The ops record of an opened breaker.
+    pub record: Duration,
+    /// One lane probe.
+    pub probe_lane: Duration,
+    /// All the probes of one hold together.
+    pub probe_budget: Duration,
+}
+
+/// Agents put away (stopped and archived) in one hold for the sweep of idle agents and the
+/// untracked agents of the target started on; the extras after a failed create are another
+/// [`MAX_AWAY`]. What is left waits for the next tick.
+pub const MAX_AWAY: usize = 3;
+
+impl Limits {
+    pub const DEFAULT: Limits = Limits {
+        lock_wait: Duration::from_secs(5),
+        list: Duration::from_secs(10),
+        away: Duration::from_secs(10),
+        create: Duration::from_secs(30),
+        lookup: Duration::from_secs(10),
+        record: Duration::from_secs(10),
+        probe_lane: Duration::from_secs(20),
+        probe_budget: Duration::from_secs(30),
+    };
+
+    /// The longest one hold can last: the list, the sweep and the untracked agents (`MAX_AWAY`
+    /// of them, each stopped and archived), all the probes, the two creates, and then the longest
+    /// of what follows a failed create (the lookup, `MAX_AWAY` extras put away, the ops record).
+    /// 10 + 60 + 30 + 60 + (10 + 60 + 10) = 240 s with the defaults.
+    pub const fn max_hold(&self) -> Duration {
+        let away = self.away.as_secs() * 2 * MAX_AWAY as u64;
+        Duration::from_secs(
+            self.list.as_secs()
+                + away
+                + self.probe_budget.as_secs()
+                + 2 * self.create.as_secs()
+                + self.lookup.as_secs()
+                + away
+                + self.record.as_secs(),
+        )
+    }
+}
+
+/// The worst-case time the dispatch lock is held (`Limits::DEFAULT`): 240 s.
+pub const MAX_HOLD: Duration = Limits::DEFAULT.max_hold();
+
+/// A call under the lock, cut at its limit: `None`: it did not answer in time.
+async fn within<T>(limit: Duration, fut: impl std::future::Future<Output = T>) -> Option<T> {
+    tokio::time::timeout(limit, fut).await.ok()
+}
+
+/// The lock of one flaw store: the cap check, the claim, the create and the attach of a dispatch
+/// are one step, for the loop and for `dispatch_one` alike. (The claim itself re-checks the
+/// counts in SQL, which covers a second process on the same file.) A request waits for it a
+/// bounded time and answers busy; the minute loop never waits, it skips the tick.
+struct DispatchLock {
+    m: Arc<tokio::sync::Mutex<()>>,
+    since: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+/// The lock, held. It says it is free again when dropped.
+struct Held {
+    _g: tokio::sync::OwnedMutexGuard<()>,
+    lock: Arc<DispatchLock>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        *self.lock.since.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+impl DispatchLock {
+    fn held(self: &Arc<Self>, g: tokio::sync::OwnedMutexGuard<()>) -> Held {
+        *self.since.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+        Held {
+            _g: g,
+            lock: self.clone(),
+        }
+    }
+
+    /// `Err(held for)`: it was not free within `wait`.
+    async fn acquire(self: &Arc<Self>, wait: Duration) -> Result<Held, Duration> {
+        match tokio::time::timeout(wait, self.m.clone().lock_owned()).await {
+            Ok(g) => Ok(self.held(g)),
+            Err(_) => Err(self.held_for()),
+        }
+    }
+
+    fn try_acquire(self: &Arc<Self>) -> Option<Held> {
+        self.m.clone().try_lock_owned().ok().map(|g| self.held(g))
+    }
+
+    fn held_for(&self) -> Duration {
+        self.since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map_or(Duration::ZERO, |t| t.elapsed())
+    }
+}
+
+fn dispatch_lock(flaws: &Flaws) -> Arc<DispatchLock> {
+    type Locks = std::sync::Mutex<Vec<(usize, Arc<DispatchLock>)>>;
     static LOCKS: Locks = std::sync::Mutex::new(Vec::new());
     let key = flaws as *const Flaws as usize;
     let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, m)) = locks.iter().find(|(k, _)| *k == key) {
         return m.clone();
     }
-    let m = Arc::new(tokio::sync::Mutex::new(()));
+    let m = Arc::new(DispatchLock {
+        m: Arc::new(tokio::sync::Mutex::new(())),
+        since: std::sync::Mutex::new(None),
+    });
     locks.push((key, m.clone()));
     m
 }
@@ -408,15 +528,33 @@ fn caps_of(policy: &Policy) -> ClaimCaps {
 pub struct Probes {
     ready: HashMap<String, bool>,
     fresh: HashMap<String, bool>,
+    /// When the lock was taken: all the probes of one hold share one budget from here.
+    held_since: Option<std::time::Instant>,
 }
 
 impl Probes {
+    /// The lock was just taken: the probe budget starts now.
+    fn start_hold(&mut self) {
+        self.held_since = Some(std::time::Instant::now());
+    }
+
+    /// What one more probe may take: a lane's limit, and what the hold's budget has left.
+    fn left(&self, l: &Limits) -> Duration {
+        match self.held_since {
+            None => l.probe_lane,
+            Some(t) => l.probe_budget.saturating_sub(t.elapsed()).min(l.probe_lane),
+        }
+    }
+
+    /// A probe that does not answer in its time, or that the budget has no time left for, is not
+    /// ready.
     async fn ready(&mut self, hands: &dyn Hands, step: &Step) -> bool {
         let key = lane_key(step);
         if let Some(r) = self.ready.get(&key) {
             return *r;
         }
-        let r = hands.step_ready(step).await;
+        let wait = self.left(&hands.limits());
+        let r = !wait.is_zero() && within(wait, hands.step_ready(step)).await.unwrap_or(false);
         self.ready.insert(key, r);
         r
     }
@@ -425,7 +563,8 @@ impl Probes {
         if let Some(r) = self.fresh.get(lane) {
             return *r;
         }
-        let r = hands.probe_lane(lane).await;
+        let wait = self.left(&hands.limits());
+        let r = !wait.is_zero() && within(wait, hands.probe_lane(lane)).await.unwrap_or(false);
         self.fresh.insert(lane.to_owned(), r);
         r
     }
@@ -484,7 +623,15 @@ async fn open_lane(flaws: &Flaws, hands: &dyn Hands, lane: &str, why: &str) {
     match flaws.lane_open(lane, why) {
         Ok(true) => {
             tracing::warn!(lane, why, "flaws: this lane failed; its breaker is open and nothing is dispatched on it until a probe passes");
-            hands.record_lane_open(lane, why).await;
+            if within(hands.limits().record, hands.record_lane_open(lane, why))
+                .await
+                .is_none()
+            {
+                tracing::warn!(
+                    lane,
+                    "flaws: the ops record of the opened lane did not answer in time"
+                );
+            }
         }
         Ok(false) => {}
         Err(e) => tracing::warn!(lane, error = %e, "flaws: the lane breaker could not be opened"),
@@ -576,7 +723,11 @@ fn lane_cap(flaws: &Flaws, policy: &Policy, lane: &str) -> usize {
 
 /// One `GET /agents`, or no dispatch: agentd that cannot be asked is said once per change.
 async fn ask_alive(flaws: &Flaws, hands: &dyn Hands) -> Result<Vec<Alive>, String> {
-    match hands.alive_agents().await {
+    let answer = match within(hands.limits().list, hands.alive_agents()).await {
+        Some(a) => a,
+        None => Err("agentd did not answer the list of agents in time".to_owned()),
+    };
+    match answer {
         Ok(a) => {
             if changed(flaws, "agentd", "ok") {
                 tracing::info!("flaws: agentd answers again; dispatch resumes");
@@ -592,20 +743,38 @@ async fn ask_alive(flaws: &Flaws, hands: &dyn Hands) -> Result<Vec<Alive>, Strin
     }
 }
 
-/// An agent put away: stopped, then archived. Both are tried; neither failing is the end of it.
-async fn put_away(hands: &dyn Hands, agent: &str) {
-    hands.stop_agent(agent).await;
-    if let Err(e) = hands.archive_agent(agent).await {
-        tracing::warn!(agent, error = %e, "flaws: the agent was stopped but not archived");
+/// An agent put away: stopped, then archived, each within its limit. `true`: the stop was
+/// answered. Neither failing is the end of it for an agent nobody tracks, but a start on its
+/// target waits for it.
+async fn put_away(hands: &dyn Hands, agent: &str) -> bool {
+    let l = hands.limits();
+    let stopped = within(l.away, hands.stop_agent(agent)).await.is_some();
+    if !stopped {
+        tracing::warn!(agent, "flaws: agentd did not answer the stop in time");
     }
+    match within(l.away, hands.archive_agent(agent)).await {
+        Some(Ok(())) => {}
+        Some(Err(e)) => {
+            tracing::warn!(agent, error = %e, "flaws: the agent was stopped but not archived")
+        }
+        None => tracing::warn!(agent, "flaws: agentd did not answer the archive in time"),
+    }
+    stopped
 }
+
+/// How many more agents this hold may put away.
+struct Away(usize);
 
 /// Fixing agents that ended their turn and are idle, on a target that no longer holds them (it
 /// is `fixed`, closed, or someone else's now): finished, they hold a process and count against
 /// every cap for nothing, so they are put away and leave the list this dispatch is decided on.
-async fn sweep_idle(flaws: &Flaws, hands: &dyn Hands, alive: &mut Vec<Alive>) {
+/// At most the hold's budget of them; the rest wait for the next tick.
+async fn sweep_idle(flaws: &Flaws, hands: &dyn Hands, alive: &mut Vec<Alive>, away: &mut Away) {
     let mut gone = Vec::new();
     for a in alive.iter().filter(|a| a.idle && !a.triage) {
+        if away.0 == 0 {
+            break;
+        }
         let (Some(flaw), Some(platform)) = (a.flaw.as_deref(), a.platform.as_deref()) else {
             continue;
         };
@@ -620,16 +789,26 @@ async fn sweep_idle(flaws: &Flaws, hands: &dyn Hands, alive: &mut Vec<Alive>) {
             })
         });
         if !holds {
-            put_away(hands, &a.id).await;
-            gone.push(a.id.clone());
+            away.0 -= 1;
+            if put_away(hands, &a.id).await {
+                gone.push(a.id.clone());
+            }
         }
     }
     alive.retain(|a| !gone.contains(&a.id));
 }
 
 /// An agent that works on a target the store says nobody holds: it cannot be tracked, so it goes
-/// before a new one starts. `alive`: the list this dispatch was decided on.
-async fn clear_orphans(flaws: &Flaws, hands: &dyn Hands, alive: &[Alive], flaw: &str, p: Platform) {
+/// before a new one starts. `alive`: the list this dispatch was decided on. `false`: one could
+/// not be stopped in time (or the hold's budget is spent), and nothing starts on the target now.
+async fn clear_orphans(
+    flaws: &Flaws,
+    hands: &dyn Hands,
+    alive: &[Alive],
+    flaw: &str,
+    p: Platform,
+    away: &mut Away,
+) -> bool {
     let held = flaws
         .get(flaw)
         .ok()
@@ -642,9 +821,16 @@ async fn clear_orphans(flaws: &Flaws, hands: &dyn Hands, alive: &[Alive], flaw: 
             && a.platform.as_deref() == Some(p.as_str())
             && held.as_deref() != Some(a.id.as_str())
     }) {
+        if away.0 == 0 {
+            return false;
+        }
+        away.0 -= 1;
         tracing::warn!(flaw, platform = %p, agent = %a.id, "flaws: an agent nobody tracks already works on this target; stopping it first");
-        put_away(hands, &a.id).await;
+        if !put_away(hands, &a.id).await {
+            return false;
+        }
     }
+    true
 }
 
 fn dispatched_line(
@@ -725,16 +911,21 @@ pub async fn start_fix(
     let key = format!("flaw:{id}:{p}:{}", claimed.claim_seq);
     let started = async {
         allowed_model(&step.provider, step.model.as_deref()).map_err(|e| (None, e))?;
-        let (ws, cwd) = hands
-            .start_task(&title, &repo, &branch, id, Some(p))
+        let lim = hands.limits();
+        let late = |what: &str| format!("agentd did not answer the {what} within {} s", lim.create.as_secs());
+        let (ws, cwd) = within(lim.create, hands.start_task(&title, &repo, &branch, id, Some(p)))
             .await
+            .ok_or_else(|| (None, late("worktree create")))?
             .map_err(|e| (None, e))?;
         let prompt = policy.brief(pick_flaw, &claimed, &cwd);
         let labels = json!({"from": "lucina", "flaw": id, "platform": p, "flaw_lane": lane, "lucina.handoff-off": "1"});
-        let agent = hands
-            .start_agent(policy, step, &cwd, &prompt, &title, labels, Some(&key))
-            .await
-            .map_err(|e| (Some(ws.clone()), e))?;
+        let agent = within(
+            lim.create,
+            hands.start_agent(policy, step, &cwd, &prompt, &title, labels, Some(&key)),
+        )
+        .await
+        .ok_or_else(|| (Some(ws.clone()), late("agent create")))?
+        .map_err(|e| (Some(ws.clone()), e))?;
         Ok::<_, (Option<String>, String)>((ws, agent))
     }
     .await;
@@ -761,9 +952,12 @@ pub async fn start_fix(
         Err((ws, why)) => {
             tracing::warn!(flaw = id, platform = %p, error = %why, "flaws: task not started");
             // agentd may have made the agent although the answer was lost or late.
-            match hands.fix_agents(id, p).await {
+            let looked = within(hands.limits().lookup, hands.fix_agents(id, p))
+                .await
+                .unwrap_or_else(|| Err("agentd did not answer the lookup in time".to_owned()));
+            match looked {
                 Ok(found) if !found.is_empty() => {
-                    for extra in &found[1..] {
+                    for extra in found[1..].iter().take(MAX_AWAY) {
                         put_away(hands, extra).await;
                     }
                     let agent = &found[0];
@@ -907,13 +1101,41 @@ pub async fn dispatch_one_as(
     }
     // From here on one dispatch at a time: the loop and every explicit start queue on this lock,
     // and what they read is what they act on.
+    let limits = hands.limits();
     let lock = dispatch_lock(flaws);
-    let _held = lock.lock().await;
+    let _held = match lock.acquire(limits.lock_wait).await {
+        Ok(h) => h,
+        Err(held_for) => {
+            // The caller is a request, maybe the owner's own chat turn: it is told, not kept.
+            let n = limits.max_hold().saturating_sub(held_for).as_secs().max(1);
+            tracing::info!(
+                "{}",
+                refused_line(
+                    id,
+                    p,
+                    caller,
+                    &format!(
+                        "dispatcher busy: the lock has been held {} s",
+                        held_for.as_secs()
+                    )
+                )
+            );
+            let mut e = ApiError::new(
+                409,
+                "dispatcher_busy",
+                format!("the dispatcher is busy, retry in {n} s"),
+            );
+            e.extra = Some(json!({"retry_after_s": n}));
+            return Err(e);
+        }
+    };
+    let mut probes = Probes::default();
+    probes.start_hold();
     let mut alive = ask_alive(flaws, hands)
         .await
         .map_err(|e| ApiError::new(503, "agentd_unavailable", e))?;
-    sweep_idle(flaws, hands, &mut alive).await;
-    let mut probes = Probes::default();
+    let mut away = Away(MAX_AWAY);
+    sweep_idle(flaws, hands, &mut alive, &mut away).await;
     let Some(step) = choose_step(flaws, hands, policy, target.attempts + 1, &mut probes).await
     else {
         tracing::info!(
@@ -938,7 +1160,13 @@ pub async fn dispatch_one_as(
         tracing::info!("{}", refused_line(id, p, caller, &why));
         return Err(ApiError::new(409, "busy", why));
     }
-    clear_orphans(flaws, hands, &alive, id, p).await;
+    if !clear_orphans(flaws, hands, &alive, id, p, &mut away).await {
+        return Err(ApiError::new(
+            503,
+            "orphan_not_stopped",
+            "an agent nobody tracks works on this target and could not be stopped in time; nothing was started",
+        ));
+    }
     let ctx = StartCtx {
         caller,
         caps: caps_of(policy),
@@ -1051,7 +1279,7 @@ async fn probe_lane(lane: &str) -> bool {
     probe_cmd(
         bin.as_os_str(),
         &["probe", "--lane", lane],
-        Duration::from_secs(120),
+        Limits::DEFAULT.probe_lane,
     )
     .await
 }
@@ -1422,7 +1650,10 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probes: &
     let step = &policy.chain[ran];
     // Triage agents are dispatcher agents too: they start under the same lock and the same caps.
     let lock = dispatch_lock(flaws);
-    let _held = lock.lock().await;
+    let Some(_held) = lock.try_acquire() else {
+        return;
+    };
+    probes.start_hold();
     let Ok(alive) = ask_alive(flaws, hands).await else {
         return;
     };
@@ -1487,63 +1718,91 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probes: &
     }
 }
 
+/// The owner's go for one pick, outside the lock (asking him is a call of its own): `true` for a
+/// pick that may start. A gated flaw is asked once and waits; a no dismisses it.
+async fn may_start(flaws: &Flaws, hands: &dyn Hands, pick: &lucina_flaws::Pick) -> bool {
+    let list = hands.limits().list;
+    match pick.verdict {
+        Verdict::Start => true,
+        Verdict::AskOwner(g) => match &pick.flaw.decision_id {
+            None => {
+                match within(list, hands.ask_owner(&pick.flaw, g)).await {
+                    Some(Ok(dc)) => {
+                        let patch = FlawPatch {
+                            decision_id: Some(dc),
+                            ..FlawPatch::default()
+                        };
+                        let _ = flaws.patch(&pick.flaw.id, patch, ACTOR);
+                    }
+                    Some(Err(e)) => {
+                        tracing::warn!(flaw = %pick.flaw.id, error = %e, "flaws: couldn't ask")
+                    }
+                    None => {
+                        tracing::warn!(flaw = %pick.flaw.id, "flaws: the question to the owner did not answer in time")
+                    }
+                }
+                false
+            }
+            Some(dc) => match within(list, hands.decision(dc)).await.flatten() {
+                Some(true) => true,
+                Some(false) => {
+                    let patch = FlawPatch {
+                        dismissed: Some(format!("the owner said no ({dc})")),
+                        ..FlawPatch::default()
+                    };
+                    let _ = flaws.patch(&pick.flaw.id, patch, ACTOR);
+                    false
+                }
+                None => false,
+            },
+        },
+    }
+}
+
 /// What the loop starts on this tick, under the dispatch lock: caps on agents alive (rows and
 /// agentd's list, by agent id), at most `max_new_per_tick` new dispatches, an approved gated pick
-/// counted like any other. agentd that can't be asked means nothing starts.
+/// counted like any other. agentd that can't be asked means nothing starts. The loop never
+/// waits for the lock: held by a request, the tick is skipped, and said once per change.
 async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probes: &mut Probes) {
-    let lock = dispatch_lock(flaws);
-    let _held = lock.lock().await;
-    let Ok(mut alive) = ask_alive(flaws, hands).await else {
-        return;
-    };
-    sweep_idle(flaws, hands, &mut alive).await;
-    let mut load = Load::of(flaws, policy, &alive);
     let due = flaws.due().unwrap_or_default();
     if due.is_empty() {
         return;
     }
+    // Who may start is settled first, outside the lock; the caps are the lock's.
+    let mut startable = Vec::new();
+    for pick in policy.pick(due, &HashMap::new()) {
+        if may_start(flaws, hands, &pick).await {
+            startable.push(pick);
+        }
+    }
+    if startable.is_empty() {
+        return;
+    }
+    let lock = dispatch_lock(flaws);
+    let Some(_held) = lock.try_acquire() else {
+        if changed(flaws, "dispatch-lock", "busy") {
+            tracing::info!("flaws: dispatcher busy, tick skipped");
+        }
+        return;
+    };
+    if changed(flaws, "dispatch-lock", "ok") {
+        tracing::info!("flaws: the dispatcher is free again; ticks resume");
+    }
+    probes.start_hold();
+    let Ok(mut alive) = ask_alive(flaws, hands).await else {
+        return;
+    };
+    let mut away = Away(MAX_AWAY);
+    sweep_idle(flaws, hands, &mut alive, &mut away).await;
+    let mut load = Load::of(flaws, policy, &alive);
     let ctx = StartCtx {
         caller: "loop",
         caps: caps_of(policy),
     };
     let mut started = 0usize;
-    for pick in policy.pick(due, &load.per_repo) {
-        let verdict = match pick.verdict {
-            Verdict::Start => Verdict::Start,
-            Verdict::AskOwner(g) => match &pick.flaw.decision_id {
-                None => {
-                    match hands.ask_owner(&pick.flaw, g).await {
-                        Ok(dc) => {
-                            let patch = FlawPatch {
-                                decision_id: Some(dc),
-                                ..FlawPatch::default()
-                            };
-                            let _ = flaws.patch(&pick.flaw.id, patch, ACTOR);
-                        }
-                        Err(e) => {
-                            tracing::warn!(flaw = %pick.flaw.id, error = %e, "flaws: couldn't ask")
-                        }
-                    }
-                    continue;
-                }
-                Some(dc) => match hands.decision(dc).await {
-                    Some(true) => Verdict::Start,
-                    Some(false) => {
-                        let patch = FlawPatch {
-                            dismissed: Some(format!("the owner said no ({dc})")),
-                            ..FlawPatch::default()
-                        };
-                        let _ = flaws.patch(&pick.flaw.id, patch, ACTOR);
-                        continue;
-                    }
-                    None => continue,
-                },
-            },
-        };
-        debug_assert_eq!(verdict, Verdict::Start);
+    for pick in startable {
         let (id, p) = (pick.flaw.id.as_str(), pick.target.platform);
-        // An approved gated pick is a start like any other: it counts against every cap below,
-        // which `policy.pick` leaves to the ungated ones.
+        // An approved gated pick is a start like any other: it counts against every cap below.
         if started >= policy.max_new_per_tick {
             tracing::info!(
                 "{}",
@@ -1573,7 +1832,18 @@ async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probe
             tracing::info!("{}", refused_line(id, p, "loop", &why));
             continue;
         }
-        clear_orphans(flaws, hands, &alive, id, p).await;
+        if !clear_orphans(flaws, hands, &alive, id, p, &mut away).await {
+            tracing::info!(
+                "{}",
+                refused_line(
+                    id,
+                    p,
+                    "loop",
+                    "an untracked agent on this target was not stopped in time"
+                )
+            );
+            continue;
+        }
         // An attempt counts whether it worked or not: a create that fails is as much agentd's
         // work as one that succeeds, and a failing one must not be retried in a loop.
         started += 1;
@@ -2267,6 +2537,8 @@ mod tests {
         log: Mutex<Vec<String>>,
         /// The probe keeps saying ready after a failure (as it did at 00:43:12): `step_out` is ignored.
         ignore_step_out: Mutex<bool>,
+        /// The deadlines the hands report (short ones, for the tests that wait on a deadline).
+        limits: Mutex<Option<Limits>>,
         /// One-shot pause points a test forces an order with.
         pauses: Mutex<HashMap<&'static str, Arc<Pause>>>,
     }
@@ -2333,6 +2605,7 @@ mod tests {
             _flaw: &str,
             _p: Option<Platform>,
         ) -> Result<(String, String), String> {
+            self.at("start_task").await;
             self.tasks.lock().unwrap().push(format!("{repo} {branch}"));
             Ok((format!("wks_{branch}"), format!("/w/{branch}")))
         }
@@ -2389,10 +2662,12 @@ mod tests {
             Ok(self.status.lock().unwrap().get(id).cloned())
         }
         async fn stop_agent(&self, id: &str) {
+            self.at("stop").await;
             self.stopped.lock().unwrap().push(id.to_owned());
             self.log.lock().unwrap().push(format!("stop {id}"));
         }
         async fn fix_agents(&self, flaw: &str, p: Platform) -> Result<Vec<String>, String> {
+            self.at("lookup").await;
             if *self.lookup_down.lock().unwrap() || *self.list_down.lock().unwrap() {
                 return Err("agentd did not answer".into());
             }
@@ -2410,6 +2685,7 @@ mod tests {
                 .collect())
         }
         async fn alive_agents(&self) -> Result<Vec<Alive>, String> {
+            self.at("alive").await;
             if *self.list_down.lock().unwrap() {
                 return Err("Lucina Agents (agentd) is not reachable".into());
             }
@@ -2474,6 +2750,7 @@ mod tests {
             self.continued.lock().unwrap().get(id).cloned()
         }
         async fn archive_agent(&self, id: &str) -> Result<(), String> {
+            self.at("archive").await;
             self.archived.lock().unwrap().push(id.to_owned());
             Ok(())
         }
@@ -2514,6 +2791,9 @@ mod tests {
         async fn tell(&self, text: &str) -> bool {
             self.told.lock().unwrap().push(text.to_owned());
             true
+        }
+        fn limits(&self) -> Limits {
+            self.limits.lock().unwrap().unwrap_or(Limits::DEFAULT)
         }
         async fn tell_start(&self, text: &str) {
             self.started.lock().unwrap().push(text.to_owned());
@@ -4965,5 +5245,182 @@ mod tests {
         *h.out.lock().unwrap() = true;
         tick(&s, &p, &h).await;
         assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+    }
+
+    // F1: the lock cannot be held for long, and a request or the minute loop never waits on it.
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// Deadlines short enough for a test to wait them out.
+    fn quick() -> Limits {
+        Limits {
+            lock_wait: ms(50),
+            list: ms(40),
+            away: ms(40),
+            create: ms(40),
+            lookup: ms(40),
+            record: ms(40),
+            probe_lane: ms(40),
+            probe_budget: ms(60),
+        }
+    }
+
+    #[test]
+    fn the_worst_case_hold_is_the_sum_of_the_deadlines_240_seconds() {
+        let l = Limits::DEFAULT;
+        assert_eq!(l.lock_wait, Duration::from_secs(5));
+        assert_eq!(
+            l.max_hold(),
+            // list + sweep/orphans (3 x stop+archive) + probes + 2 creates
+            //   + (lookup + 3 extras x stop+archive + ops record)
+            Duration::from_secs(10 + 60 + 30 + 2 * 30 + 10 + 60 + 10)
+        );
+        assert_eq!(MAX_HOLD, Duration::from_secs(240));
+        assert_eq!(MAX_HOLD, l.max_hold());
+    }
+
+    #[tokio::test]
+    async fn a_request_that_cannot_get_the_lock_in_time_is_told_busy_and_starts_nothing() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        // The probe of the one in the lock may take long; the one waiting gives up after 50 ms.
+        *h.limits.lock().unwrap() = Some(Limits {
+            probe_lane: Duration::from_secs(5),
+            probe_budget: Duration::from_secs(5),
+            ..quick()
+        });
+        let a = due(&s, "one", Platform::Web, None);
+        let b = due(&s, "two", Platform::Web, None);
+        let pause = h.pause_at("probe");
+        let (s, h, p) = (&s, &h, &p);
+        let slow = async { dispatch_one(s, p, h, &a.id, Platform::Web, "t").await };
+        let rival = async {
+            pause.reached.notified().await;
+            let t0 = std::time::Instant::now();
+            let r = dispatch_one(s, p, h, &b.id, Platform::Web, "t").await;
+            let took = t0.elapsed();
+            pause.release.notify_one();
+            (r, took)
+        };
+        let (first, (second, took)) = tokio::join!(slow, rival);
+        first.unwrap();
+        let e = second.unwrap_err();
+        assert_eq!(
+            (e.status.as_u16(), e.code.as_str()),
+            (409, "dispatcher_busy")
+        );
+        assert!(took < Duration::from_secs(2), "answered in {took:?}");
+        let n = e.extra.as_ref().unwrap()["retry_after_s"].as_u64().unwrap();
+        assert!((1..=240).contains(&n), "{n}");
+        assert!(
+            e.message.contains(&format!("retry in {n} s")),
+            "{}",
+            e.message
+        );
+        assert_eq!(
+            h.agents.lock().unwrap().len(),
+            1,
+            "nothing started for the one told busy"
+        );
+        assert_eq!(
+            target(s, &b.id, Platform::Web).status,
+            TargetStatus::Affected
+        );
+    }
+
+    #[tokio::test]
+    async fn the_minute_loop_never_waits_for_the_lock_it_skips_the_tick_and_says_so_once() {
+        let (buf, _log) = capture();
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        *h.limits.lock().unwrap() = Some(Limits {
+            probe_lane: Duration::from_secs(5),
+            probe_budget: Duration::from_secs(5),
+            ..quick()
+        });
+        let a = due(&s, "one", Platform::Web, None);
+        due(&s, "two", Platform::Web, None);
+        let pause = h.pause_at("probe");
+        let (s, h, p) = (&s, &h, &p);
+        let slow = async { dispatch_one(s, p, h, &a.id, Platform::Web, "t").await };
+        let rival = async {
+            pause.reached.notified().await;
+            for _ in 0..3 {
+                // Were it to wait, the lock would never come: the holder waits for this very test.
+                let r = tokio::time::timeout(Duration::from_secs(2), tick(s, p, h)).await;
+                assert!(r.is_ok(), "the tick waited for the lock");
+            }
+            pause.release.notify_one();
+        };
+        let (first, _) = tokio::join!(slow, rival);
+        first.unwrap();
+        let said = buf.text();
+        assert_eq!(
+            said.matches("dispatcher busy, tick skipped").count(),
+            1,
+            "once per change of state, not per tick: {said}"
+        );
+        assert_eq!(
+            h.agents.lock().unwrap().len(),
+            1,
+            "no tick queued behind it"
+        );
+        tick(s, p, h).await;
+        assert!(buf.text().contains("dispatcher is free again"));
+    }
+
+    #[tokio::test]
+    async fn every_call_made_under_the_lock_is_cut_at_its_limit() {
+        // A fake that never answers one call: the dispatch is cut at that call's limit and
+        // answers, whichever call it is, instead of holding the lock for ever.
+        for point in [
+            "alive",
+            "start_task",
+            "start_agent",
+            "lookup",
+            "stop",
+            "archive",
+            "probe",
+        ] {
+            let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+            *h.limits.lock().unwrap() = Some(quick());
+            let f = due(&s, "emoji", Platform::Web, None);
+            match point {
+                // The create errors, then the lookup by labels never answers.
+                "lookup" => *h.late_error.lock().unwrap() = Some("timed out".into()),
+                // An agent nobody tracks already works on the target.
+                "stop" | "archive" => {
+                    let labels = json!({"from": "lucina", "flaw": f.id, "platform": "web"});
+                    h.start_agent(&p, &p.chain[0], "/w", "<owner_words>", "t", labels, None)
+                        .await
+                        .unwrap();
+                }
+                _ => {}
+            }
+            let _never_released = h.pause_at(point);
+            let t0 = std::time::Instant::now();
+            let r = tokio::time::timeout(
+                Duration::from_secs(3),
+                dispatch_one(&s, &p, &h, &f.id, Platform::Web, "t"),
+            )
+            .await;
+            assert!(r.is_ok(), "{point}: the call under the lock was not cut");
+            assert!(t0.elapsed() < Duration::from_secs(2), "{point}");
+            match (point, r.unwrap()) {
+                ("alive", Err(e)) => assert_eq!(e.code, "agentd_unavailable"),
+                ("probe", Ok(t)) => {
+                    // The lane that did not answer is not ready: the walk goes below it.
+                    assert_eq!(t.status, TargetStatus::Fixing);
+                    assert_eq!(h.ran(), vec![p.chain[1].label()]);
+                }
+                ("stop", Err(e)) => assert_eq!(e.code, "orphan_not_stopped"),
+                ("start_task" | "start_agent" | "lookup", Err(e)) => {
+                    assert_eq!(e.code, "dispatch_failed", "{point}")
+                }
+                // An archive that does not answer does not stop the start.
+                ("archive", Ok(t)) => assert_eq!(t.status, TargetStatus::Fixing),
+                (pt, other) => panic!("{pt}: unexpected {other:?}"),
+            }
+        }
     }
 }

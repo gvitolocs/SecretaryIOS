@@ -159,6 +159,7 @@ fn refusal(e: crate::backend::BackendError) -> ToolError {
     match e.code.as_str() {
         "flaws_disabled" => bad("Lucina's flaw tracker is switched off on this server; nothing was recorded."),
         "flaw_not_found" => bad("No flaw with that id (flaw_search finds them)."),
+        "dispatcher_busy" => bad(format!("{} Nothing was started.", e.message)),
         "evidence_required" => bad(format!(
             "Refused: {}. Show it on an installed build, then call flaw_target again with that evidence.",
             e.message
