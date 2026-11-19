@@ -25,6 +25,7 @@ pub mod exec;
 mod kill;
 pub mod repo;
 mod sweep;
+mod warm;
 
 /// A registered piece of work: one workspace, one branch, one session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

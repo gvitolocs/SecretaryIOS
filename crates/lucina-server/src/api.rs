@@ -714,6 +714,9 @@ async fn route(
             let recent = body["recent"].as_str().unwrap_or("");
             let platform = body["platform"].as_str().unwrap_or("secretary");
             let mcp = body["mcp"].as_bool().unwrap_or(false);
+            // A replay is not the owner's own turn unless the body says it is: this is what decides
+            // whether an unsure turn goes to the planner (`context::unsure_plan`).
+            let owner_turn = body["ownerTurn"].as_bool().unwrap_or(false);
             let rule = lucina_intent::tier0::classify_tier0(text, recent, &st.cfg.intent);
             let t = crate::planner::TurnInput {
                 user_text: text,
@@ -723,9 +726,10 @@ async fn route(
                 device: "",
             };
             let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
-            let routed =
-                crate::context::classify(st, text, recent, USER_LABEL, platform, "", mcp, false)
-                    .await;
+            let routed = crate::context::classify(
+                st, text, recent, USER_LABEL, platform, "", mcp, owner_turn, false,
+            )
+            .await;
             Ok(ok(json!({
                 "tier0": rule.as_ref().map(|c| c.intent.clone()),
                 "tier0Confidence": rule.as_ref().map(|c| c.confidence),

@@ -875,7 +875,10 @@ async fn describe_batch(
         if !allowed {
             continue;
         }
-        match crate::share::vision::describe(st, &p.file, true).await {
+        // Not a share: these looks write no timing lines of their own.
+        match crate::share::vision::describe(st, &p.file, true, crate::share::ShareTiming::silent())
+            .await
+        {
             Ok(a) => {
                 let d = local_answer(&a);
                 if !d.description.is_empty() {
