@@ -338,26 +338,232 @@ async fn a_voice_turn_lands_in_the_lucina_voice_thread() {
     assert_eq!(page["data"]["items"].as_array().unwrap().len(), 4);
 }
 
+/// What a directory holds at this moment, names and sizes only: the failure message of the wait below.
+fn dir_contents(dir: &std::path::Path) -> String {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => return format!("unreadable ({e})"),
+    };
+    let listed: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            let size = e.metadata().map(|m| m.len()).unwrap_or_default();
+            format!("{} ({} bytes)", e.file_name().to_string_lossy(), size)
+        })
+        .collect();
+    if listed.is_empty() {
+        "nothing".to_owned()
+    } else {
+        listed.join(", ")
+    }
+}
+
 #[tokio::test]
 async fn an_owner_turn_keeps_jevs_answer_in_the_servers_data_dir() {
     let jev = Fake::new().intent("che ore sono?", "temporal_query", 0.97);
     let server = fake_jev(&jev).await;
     let h = harness(chat_script(), with_jev(&server)).await;
-    stream(&h, voice_body("che ore sono?")).await;
+    let s = stream(&h, voice_body("che ore sono?")).await;
+    // Jev answered this turn, say the route: checked before the sample, so a turn whose classifier
+    // never saw an answer fails here and not as a missing line.
+    let route = s.find("route");
+    let intent = layer(&route["layers"], "intent")
+        .unwrap_or_else(|| panic!("Jev did not answer this turn; the route says {route}"));
+    assert_eq!(
+        intent["verdict"], "temporal_query",
+        "Jev did not answer this turn; the route says {route}"
+    );
     let dir = h.dir.path().join("jev-cal");
+    // The sample is written by a blocking task spawned off the turn (`jev_samples::record`), so on a
+    // loaded host it can be seconds late: the wait is bounded by a deadline, not by a turn count.
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(30);
     let mut body = String::new();
-    for _ in 0..100 {
+    loop {
         if let Some(Ok(entry)) = std::fs::read_dir(&dir).ok().and_then(|mut d| d.next()) {
             body = std::fs::read_to_string(entry.path()).unwrap();
         }
         if !body.is_empty() {
             break;
         }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "waited {:?} for the sample file the server writes in the background into {} \
+                 (`jev_samples::record`), and the body stayed empty; at the deadline the directory \
+                 held: {}",
+                started.elapsed(),
+                dir.display(),
+                dir_contents(&dir),
+            );
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let row: Value = serde_json::from_str(body.lines().next().expect("a sample")).unwrap();
     assert_eq!(row["message"], "che ore sono?");
     assert_eq!(row["intent"], "temporal_query");
+}
+
+/// The samples this server kept, at this moment: `jev_samples` writes one file per month, and a data dir
+/// as fresh as this one holds nothing but the turns of this test.
+fn rows_now(dir: &std::path::Path) -> Vec<Value> {
+    let body = match std::fs::read_dir(dir).ok().and_then(|mut d| d.next()) {
+        Some(Ok(entry)) => std::fs::read_to_string(entry.path()).unwrap_or_default(),
+        _ => String::new(),
+    };
+    body.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("a sample row"))
+        .collect()
+}
+
+/// The kept rows once at least one has landed: the write is a blocking task spawned off the turn
+/// (`jev_samples::record`), so on a loaded host it is seconds late. A turn that must add nothing is
+/// judged with [`rows_now`] after the fact, never with this wait.
+async fn sample_rows(dir: &std::path::Path, turn: &str) -> Vec<Value> {
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(30);
+    loop {
+        let rows = rows_now(dir);
+        if !rows.is_empty() {
+            return rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{turn}: no sample in {} after {:?}; the directory held {}",
+            dir.display(),
+            started.elapsed(),
+            dir_contents(dir),
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A fast spoken turn is the race of CO-C009: the turn's Jev call and its context building are polled
+/// against each other, in whatever order they are ready, and a Jev call that answers first drops the
+/// building on its way — with the sample it had not written yet. Which of the two gets there first
+/// changes from turn to turn, so this runs the same turn forty times, each on a server of its own: a
+/// round that keeps no line shows up within the first few, and a round that keeps two shows in any.
+const FAST_ROUNDS: usize = 40;
+
+#[tokio::test]
+async fn a_fast_spoken_owner_turn_keeps_exactly_one_sample() {
+    for round in 1..=FAST_ROUNDS {
+        let jev = Fake::new().intent("che ore sono?", "temporal_query", 0.97);
+        let server = fake_jev(&jev).await;
+        let h = harness(chat_script(), with_jev(&server)).await;
+        let s = stream(&h, voice_body("che ore sono?")).await;
+        // The route took the intent for its own: this round is one of the turns the building may lose.
+        let route = s.find("route");
+        assert_eq!(
+            route["fast"].as_bool(),
+            Some(true),
+            "round {round}, route: {route}"
+        );
+        let rows = sample_rows(
+            &h.dir.path().join("jev-cal"),
+            &format!("round {round} of {FAST_ROUNDS}"),
+        )
+        .await;
+        assert_eq!(
+            rows.len(),
+            1,
+            "round {round}: the server kept {} lines for one turn: {rows:?}",
+            rows.len()
+        );
+        assert_eq!(rows[0]["message"], "che ore sono?", "round {round}");
+        assert_eq!(rows[0]["intent"], "temporal_query", "round {round}");
+    }
+}
+
+#[tokio::test]
+async fn a_spoken_turn_answered_by_the_building_keeps_one_sample() {
+    // Jev's intent is not one of the quick commands, so the context building answers the turn and only
+    // `classify` can keep its line. One line, not two: the route that read the same verdict adds none.
+    let jev = Fake::new().intent("che ore sono?", "chat", 0.95);
+    let server = fake_jev(&jev).await;
+    let h = harness(chat_script(), with_jev(&server)).await;
+    let s = stream(&h, voice_body("che ore sono?")).await;
+    // The model's canned answer of the script, not a spoken template: this turn went the normal way.
+    assert_eq!(
+        s.find("reply")["text"],
+        REPLY,
+        "a quick command answered this turn; the route says {}",
+        s.find("route")
+    );
+    let rows = sample_rows(&h.dir.path().join("jev-cal"), "the spoken turn").await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "one turn kept {} lines, and both paths read the same verdict: {rows:?}",
+        rows.len()
+    );
+    assert_eq!(rows[0]["message"], "che ore sono?");
+    assert_eq!(rows[0]["intent"], "chat");
+}
+
+#[tokio::test]
+async fn an_agents_turn_through_mcp_keeps_no_sample() {
+    let jev = Fake::new().intent("che ore sono?", "temporal_query", 0.97);
+    let server = fake_jev(&jev).await;
+    let h = harness(chat_script(), with_jev(&server)).await;
+    stream(&h, voice_body("che ore sono?")).await;
+    let dir = h.dir.path().join("jev-cal");
+    let rows = sample_rows(&dir, "the owner's spoken turn").await;
+    assert_eq!(rows.len(), 1);
+    let (status, _) = h
+        .post(
+            "/chat",
+            json!({
+                "message": "dimmi che ore sono",
+                "sessionId": "mcp-grok-coordinator",
+                "channel": "ios",
+            }),
+        )
+        .await;
+    assert!(
+        status == 200 || status == 202,
+        "the mcp turn ended with {status}"
+    );
+    // A line that must not come cannot be waited for: give the background write more than the owner's
+    // turn above needed, then count.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let rows = rows_now(&dir);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the mcp turn of the same server kept a sample too: {rows:?}"
+    );
+    assert_eq!(rows[0]["message"], "che ore sono?");
+}
+
+#[test]
+fn only_the_owners_own_turns_are_kept_as_samples() {
+    use lucina_memory::surface::OwnerIds;
+    use lucina_memory::{TurnFacts, TurnSurface};
+    let owner = OwnerIds::default();
+    let own = TurnSurface::classify(&TurnFacts::secretary("ios", true, None), &owner);
+    assert!(lucina_server::context::sample_turn(&own, "secretary_app"));
+    // An MCP caller reads the owner's memory but his words are the agent's: not a sample.
+    let agent = TurnSurface::classify(
+        &TurnFacts::secretary("ios", true, Some("grok".into())),
+        &owner,
+    );
+    assert!(!lucina_server::context::sample_turn(
+        &agent,
+        "mcp-grok-coordinator"
+    ));
+    // The self-test of the owner's own surface is not a real turn either.
+    let test = TurnSurface::classify(&TurnFacts::secretary("ios", true, None), &owner);
+    assert!(!lucina_server::context::sample_turn(
+        &test,
+        lucina_server::selftest::SESSION
+    ));
+    // A client that proves nothing about who speaks has no personal memory to sample from at all.
+    let guest = TurnSurface::classify(&TurnFacts::secretary("ios", false, None), &owner);
+    assert!(!lucina_server::context::sample_turn(
+        &guest,
+        "secretary_app"
+    ));
 }
 
 #[tokio::test]
@@ -862,5 +1068,8 @@ async fn a_shopping_sentence_with_several_products_is_split_by_the_slots_layer()
     assert_eq!(route["fast"], true);
     assert_eq!(layer(&route["layers"], "slots").unwrap()["used"], false);
     assert!(!listed.to_lowercase().contains("latte e uova"), "{listed}");
-    assert!(listed.contains("Latte") && listed.contains("Uova"), "{listed}");
+    assert!(
+        listed.contains("Latte") && listed.contains("Uova"),
+        "{listed}"
+    );
 }
