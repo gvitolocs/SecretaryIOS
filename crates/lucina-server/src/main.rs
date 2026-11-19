@@ -408,7 +408,10 @@ enum FlawsCmd {
     },
     /// Blocked targets whose failures since the time given were all lane failures (sign-in,
     /// quota, provider down), one line each: flaw, platform, attempts, last error. With --apply
-    /// they are reset (attempts 0, affected, no back-off); without it nothing changes.
+    /// they are reset (attempts 0, affected, no back-off); without it nothing changes. NOTE: --apply
+    /// zeroes `attempts`, so a target that also failed for real reasons before --since gets those
+    /// tries back too. Before --apply, a lead confirms the lane really signs in with one real agent
+    /// turn (not `lane probe`, which said ok during the 2026-11-19 incident).
     RestoreLaneFailures {
         /// RFC 3339, e.g. 2026-11-19T00:40:00Z.
         #[arg(long)]
@@ -1063,16 +1066,33 @@ async fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
                     k.reason.replace(['\n', '\t'], " ")
                 );
             }
+            for k in &found.failed {
+                println!(
+                    "failed\t{}\t{}\t{}",
+                    k.flaw_id,
+                    k.platform,
+                    k.reason.replace(['\n', '\t'], " ")
+                );
+            }
             println!(
-                "{} listed{}, {} skipped",
+                "{} listed{}, {} skipped{}",
                 found.listed.len(),
-                if apply {
-                    " and reset"
+                if apply { " and reset" } else { "" },
+                found.skipped.len(),
+                if found.failed.is_empty() {
+                    String::new()
                 } else {
-                    " (run with --apply to reset them)"
-                },
-                found.skipped.len()
+                    format!(", {} could not be reset", found.failed.len())
+                }
             );
+            if !apply {
+                // A dry run's footer: what --apply does, and what to check first.
+                println!(
+                    "--apply sets attempts to 0 on each listed target, so one that also failed for \
+                     real reasons before --since gets those tries back too. Before --apply, confirm \
+                     the lane really signs in with one real agent turn (not `lane probe`)."
+                );
+            }
             return Ok(());
         }
     };

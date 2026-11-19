@@ -392,19 +392,19 @@ pub const MAX_AWAY: usize = 3;
 impl Limits {
     pub const DEFAULT: Limits = Limits {
         lock_wait: Duration::from_secs(5),
-        list: Duration::from_secs(10),
-        away: Duration::from_secs(10),
-        create: Duration::from_secs(30),
-        lookup: Duration::from_secs(10),
-        record: Duration::from_secs(10),
-        probe_lane: Duration::from_secs(20),
-        probe_budget: Duration::from_secs(30),
+        list: Duration::from_secs(5),
+        away: Duration::from_secs(5),
+        create: Duration::from_secs(25),
+        lookup: Duration::from_secs(5),
+        record: Duration::from_secs(5),
+        probe_lane: Duration::from_secs(10),
+        probe_budget: Duration::from_secs(15),
     };
 
     /// The longest one hold can last: the list, the sweep and the untracked agents (`MAX_AWAY`
     /// of them, each stopped and archived), all the probes, the two creates, and then the longest
     /// of what follows a failed create (the lookup, `MAX_AWAY` extras put away, the ops record).
-    /// 10 + 60 + 30 + 60 + (10 + 60 + 10) = 240 s with the defaults.
+    /// 5 + 30 + 15 + 50 + (5 + 30 + 5) = 140 s with the defaults (two minutes and twenty seconds).
     pub const fn max_hold(&self) -> Duration {
         let away = self.away.as_secs() * 2 * MAX_AWAY as u64;
         Duration::from_secs(
@@ -419,7 +419,8 @@ impl Limits {
     }
 }
 
-/// The worst-case time the dispatch lock is held (`Limits::DEFAULT`): 240 s.
+/// The worst-case time the dispatch lock is held (`Limits::DEFAULT`): 140 s. A hold is
+/// milliseconds when agentd and the lanes answer; this is what it can take when none does.
 pub const MAX_HOLD: Duration = Limits::DEFAULT.max_hold();
 
 /// A call under the lock, cut at its limit: `None`: it did not answer in time.
@@ -530,6 +531,8 @@ pub struct Probes {
     fresh: HashMap<String, bool>,
     /// When the lock was taken: all the probes of one hold share one budget from here.
     held_since: Option<std::time::Instant>,
+    /// Lanes whose breaker opened in this tick: not healed in the tick that opened them.
+    opened_now: HashSet<String>,
 }
 
 impl Probes {
@@ -579,6 +582,9 @@ async fn lane_usable(flaws: &Flaws, hands: &dyn Hands, step: &Step, probes: &mut
         LaneState::Closed => probes.ready(hands, step).await,
         LaneState::HalfOpen => true,
         LaneState::Open => {
+            if probes.opened_now.contains(&key) {
+                return false;
+            }
             if probes.fresh(hands, &key).await {
                 if flaws.lane_half_open(&key).unwrap_or(false) {
                     tracing::info!(lane = %key, "flaws: the lane's probe passed; one agent may try it");
@@ -595,7 +601,7 @@ async fn lane_usable(flaws: &Flaws, hands: &dyn Hands, step: &Step, probes: &mut
 /// cannot run or times out leaves it open, and is said once per change.
 async fn heal_lanes(flaws: &Flaws, hands: &dyn Hands, probes: &mut Probes) {
     for b in flaws.lanes().unwrap_or_default() {
-        if b.state != LaneState::Open {
+        if b.state != LaneState::Open || probes.opened_now.contains(&b.lane) {
             continue;
         }
         let ok = probes.fresh(hands, &b.lane).await;
@@ -618,10 +624,12 @@ async fn heal_lanes(flaws: &Flaws, hands: &dyn Hands, probes: &mut Probes) {
 
 /// A lane failed: open its breaker, forget what was cached about it, and say so once in the ops
 /// record. A breaker that is open already writes nothing again.
-async fn open_lane(flaws: &Flaws, hands: &dyn Hands, lane: &str, why: &str) {
+async fn open_lane(flaws: &Flaws, hands: &dyn Hands, lane: &str, why: &str, probes: &mut Probes) {
     hands.step_out(&Step::new("lane", None, Some(lane)), why);
     match flaws.lane_open(lane, why) {
         Ok(true) => {
+            // Not healed in this tick: the probe that passes right after a failure says little.
+            probes.opened_now.insert(lane.to_owned());
             tracing::warn!(lane, why, "flaws: this lane failed; its breaker is open and nothing is dispatched on it until a probe passes");
             if within(hands.limits().record, hands.record_lane_open(lane, why))
                 .await
@@ -741,6 +749,19 @@ async fn ask_alive(flaws: &Flaws, hands: &dyn Hands) -> Result<Vec<Alive>, Strin
             Err(e)
         }
     }
+}
+
+/// The `agents` array of agentd's list. An answer without one is not "no agents": it is not an
+/// answer, and nothing is decided on it.
+fn agent_list(v: &Value) -> Result<&Vec<Value>, String> {
+    v["agents"]
+        .as_array()
+        .ok_or_else(|| "agentd answered without a list of agents".to_owned())
+}
+
+/// The ops record's key for one opening of a lane: how many times it has opened, never a time.
+fn lane_ops_key(lane: &str, opens: i64) -> String {
+    format!("flaw-lane:{lane}:open-{opens}")
 }
 
 /// An agent put away: stopped, then archived, each within its limit. `true`: the stop was
@@ -881,6 +902,7 @@ pub async fn start_fix(
     target: &Target,
     actor: &str,
     ctx: &StartCtx<'_>,
+    probes: &mut Probes,
 ) -> Result<Target, ApiError> {
     let p = target.platform;
     let id = pick_flaw.id.as_str();
@@ -996,7 +1018,7 @@ pub async fn start_fix(
             let lane_failure = create_lane_failure(&why);
             let _ = flaws.give_back_if(id, p, &claim, &why, lane_failure, actor);
             if lane_failure {
-                open_lane(flaws, hands, &lane, &why).await;
+                open_lane(flaws, hands, &lane, &why, probes).await;
             }
             Err(ApiError::new(503, "dispatch_failed", why))
         }
@@ -1171,7 +1193,18 @@ pub async fn dispatch_one_as(
         caller,
         caps: caps_of(policy),
     };
-    start_fix(flaws, policy, step, hands, &d.flaw, target, actor, &ctx).await
+    start_fix(
+        flaws,
+        policy,
+        step,
+        hands,
+        &d.flaw,
+        target,
+        actor,
+        &ctx,
+        &mut probes,
+    )
+    .await
 }
 
 /// Agents at work per repo, triage included. A session's own work isn't ours to count.
@@ -1337,6 +1370,13 @@ fn flaw_line(text: &str) -> NewItem {
     }
 }
 
+/// Is this claim the trial agent of its half-open lane? Only that one's first turn says the lane
+/// works again: any other `running` agent on the lane may have been started before it failed.
+fn is_trial(flaws: &Flaws, lane: &str, flaw: &str, t: &Target) -> bool {
+    flaws.lane_trial(lane).ok().flatten().as_deref()
+        == Some(format!("{flaw}:{}:{}", t.platform, t.claim_seq).as_str())
+}
+
 /// A claim with no agent, older than the stale limit: the server stopped between the claim and
 /// the attach, or the create's answer was lost. agentd is asked first. An agent that exists is the
 /// claim's; none is a give-back, never a counted try.
@@ -1377,6 +1417,7 @@ async fn stale_claim(flaws: &Flaws, hands: &dyn Hands, flaw: &Flaw, t: &Target, 
 /// An agent that ended with no merged commit: its claim ends as a lane failure (no attempt; the
 /// lane's breaker opens) or a task failure (a counted attempt with back-off). The agent is put
 /// away first, and the claim let go is the one that was read.
+#[allow(clippy::too_many_arguments)]
 async fn ended(
     flaws: &Flaws,
     policy: &Policy,
@@ -1385,6 +1426,7 @@ async fn ended(
     t: &Target,
     claim: &ClaimRef,
     agent: &str,
+    probes: &mut Probes,
 ) {
     let p = t.platform;
     let error = hands.agent_error(agent).await;
@@ -1395,7 +1437,7 @@ async fn ended(
             let _ = flaws.give_back_if(&flaw.id, p, claim, &why, true, ACTOR);
             // The lane failed whoever held the claim by now: open it, and forget it was ready.
             if let Some(lane) = t.lane.as_deref() {
-                open_lane(flaws, hands, lane, &why).await;
+                open_lane(flaws, hands, lane, &why, probes).await;
             }
         }
         Ended::Task(why) => {
@@ -1404,6 +1446,7 @@ async fn ended(
             // trial that went straight to `idle` never shows `running` to a tick.)
             if let Some(lane) = t.lane.as_deref() {
                 if flaws.lane_state(lane).ok() == Some(LaneState::HalfOpen)
+                    && is_trial(flaws, lane, &flaw.id, t)
                     && flaws.lane_close(lane).unwrap_or(false)
                 {
                     tracing::info!(lane, agent, "flaws: the trial agent got through its first turn and went idle; the lane is closed");
@@ -1422,7 +1465,7 @@ async fn ended(
 }
 
 /// Check what each running task became (Symphony: re-read state after every turn).
-async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
+async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probes: &mut Probes) {
     for (flaw, t) in flaws.in_progress().unwrap_or_default() {
         let p = t.platform;
         // What was read of the claim: every release below only takes effect on this claim.
@@ -1480,6 +1523,7 @@ async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
                     // has shown the lane works again.
                     if let Some(lane) = t.lane.as_deref() {
                         if flaws.lane_state(lane).ok() == Some(LaneState::HalfOpen)
+                            && is_trial(flaws, lane, &flaw.id, &t)
                             && flaws.lane_close(lane).unwrap_or(false)
                         {
                             tracing::info!(lane, agent = %agent, "flaws: the trial agent's first turn succeeded; the lane is closed");
@@ -1489,7 +1533,7 @@ async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             }
             // It ended and nothing was merged: the agent may have changed the target itself, in
             // which case it isn't `fixing` any more and this list didn't include it.
-            _ => ended(flaws, policy, hands, &flaw, &t, &claim, &agent).await,
+            _ => ended(flaws, policy, hands, &flaw, &t, &claim, &agent, probes).await,
         }
     }
 }
@@ -1610,12 +1654,13 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probes: &
                 // An agent in error, idle or closed: what it answered says whether the work can be
                 // handed to another agent, or the triage ends here.
                 let error = hands.agent_error(&agent).await;
-                if error.as_deref().is_some_and(is_limit) {
+                if error.as_deref().and_then(lane_reason).is_some() {
                     let e = error.unwrap_or_default();
                     // Triage keeps to the cheap end of the chain; the step that ran is the one
-                    // out of quota, not always the first.
+                    // that failed (out of quota, or a sign-in refused), not always the first: its
+                    // lane's breaker opens, and the flaw stays triage-due for the next lane.
                     if let Some(step) = triage_ran(policy, &flaw) {
-                        hands.step_out(step, &e);
+                        open_lane(flaws, hands, &lane_key(step), &e, probes).await;
                     }
                     if record_stopped_triage(flaws, &flaw, &e) {
                         archive_triage(hands, &agent).await;
@@ -1857,6 +1902,7 @@ async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probe
             &pick.target,
             ACTOR,
             &ctx,
+            probes,
         )
         .await
         {
@@ -1871,8 +1917,8 @@ async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probe
 
 /// One round of the loop.
 pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
-    reconcile(flaws, policy, hands).await;
     let mut probes = Probes::default();
+    reconcile(flaws, policy, hands, &mut probes).await;
     heal_lanes(flaws, hands, &mut probes).await;
     run_triage(flaws, policy, hands, &mut probes).await;
     if policy.auto_dispatch {
@@ -2004,6 +2050,8 @@ impl Hands for StateHands {
     /// agents out already; the check stays so the answer doesn't depend on the endpoint's default.
     async fn triage_agents(&self, flaw: &str) -> Result<Vec<String>, String> {
         let v = self.agentd("GET", "/agents", None).await?;
+        // Not knowing is not zero agents: nothing is decided on it.
+        agent_list(&v)?;
         Ok(v["agents"]
             .as_array()
             .map(|a| {
@@ -2087,6 +2135,8 @@ impl Hands for StateHands {
 
     async fn fix_agents(&self, flaw: &str, platform: Platform) -> Result<Vec<String>, String> {
         let v = self.agentd("GET", "/agents", None).await?;
+        // Not knowing is not zero agents: nothing is decided on it.
+        agent_list(&v)?;
         Ok(v["agents"]
             .as_array()
             .map(|a| {
@@ -2105,6 +2155,8 @@ impl Hands for StateHands {
 
     async fn alive_agents(&self) -> Result<Vec<Alive>, String> {
         let v = self.agentd("GET", "/agents", None).await?;
+        // Not knowing is not zero agents: nothing is decided on it.
+        agent_list(&v)?;
         let label = |x: &Value, k: &str| x["labels"][k].as_str().map(str::to_owned);
         Ok(v["agents"]
             .as_array()
@@ -2167,7 +2219,7 @@ impl Hands for StateHands {
             .unwrap_or("main");
         let range = format!("{base}..{branch}");
         let out = tokio::process::Command::new("git")
-            .args(["-C", repo, "rev-list", "--count", &range])
+            .args(["-C", repo, "rev-list", "--count", &range, "--"])
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output();
@@ -2244,7 +2296,15 @@ impl Hands for StateHands {
              breaker. A lead closes it by hand with `lucina-rs flaws lane clear {lane}`. Refs DISP-01."
         );
         new.severity = Some(lucina_ops::Severity::Medium);
-        new.dedup_key = Some(format!("flaw-lane:{lane}:{}", Utc::now().timestamp()));
+        // One record per opening, keyed by how many times the lane has opened (never a time).
+        let opens = self
+            .st
+            .flaws
+            .as_ref()
+            .and_then(|f| f.lanes().ok())
+            .and_then(|ls| ls.into_iter().find(|b| b.lane == lane))
+            .map_or(0, |b| b.opens);
+        new.dedup_key = Some(lane_ops_key(lane, opens));
         if let Err(e) = ops.record(new, "lucina").await {
             tracing::warn!(lane, error = %e, "flaws: the lane incident could not be recorded");
         }
@@ -2324,6 +2384,8 @@ pub struct Skipped {
 pub struct RestoreReport {
     pub listed: Vec<Restorable>,
     pub skipped: Vec<Skipped>,
+    /// Listed targets that `--apply` could not reset, and why.
+    pub failed: Vec<Skipped>,
 }
 
 /// `lucina-rs flaws restore-lane-failures --since <rfc3339> [--apply]`: the blocked targets whose
@@ -2425,19 +2487,28 @@ pub async fn restore_lane_failures(
             last_error: texts.pop().unwrap_or_default(),
         });
     }
+    let mut failed = Vec::new();
     if apply {
         for r in &found {
-            flaws.restore_target(
+            // One target that cannot be reset does not stop the others; it is said.
+            if let Err(e) = flaws.restore_target(
                 &r.flaw_id,
                 r.platform,
                 "every failure since was a lane failure",
                 "lucina-rs-restore",
-            )?;
+            ) {
+                failed.push(Skipped {
+                    flaw_id: r.flaw_id.clone(),
+                    platform: r.platform,
+                    reason: format!("reset failed: {e}"),
+                });
+            }
         }
     }
     Ok(RestoreReport {
         listed: found,
         skipped,
+        failed,
     })
 }
 
@@ -2535,6 +2606,8 @@ mod tests {
         key_log: Mutex<Vec<String>>,
         /// What happened, in order: `start agN`, `stop agN`.
         log: Mutex<Vec<String>>,
+        /// Every agent ends its first turn at once, idle, with no tool call and no error.
+        idle_dies: Mutex<bool>,
         /// The probe keeps saying ready after a failure (as it did at 00:43:12): `step_out` is ignored.
         ignore_step_out: Mutex<bool>,
         /// The deadlines the hands report (short ones, for the tests that wait on a deadline).
@@ -2645,10 +2718,17 @@ mod tests {
             if let Some(err) = &dead {
                 self.errors.lock().unwrap().insert(id.clone(), err.clone());
             }
-            self.status.lock().unwrap().insert(
-                id.clone(),
-                if dead.is_some() { "error" } else { "running" }.into(),
-            );
+            let status = if dead.is_some() {
+                "error"
+            } else if *self.idle_dies.lock().unwrap() {
+                "idle"
+            } else {
+                "running"
+            };
+            self.status
+                .lock()
+                .unwrap()
+                .insert(id.clone(), status.into());
             if let Some(key) = key {
                 self.keys.lock().unwrap().insert(key.to_owned(), id.clone());
             }
@@ -3899,6 +3979,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_opencode_triage_is_archived_when_it_ends() {
+        // LA-C035 condition 2: "connection refused" is a lane failure now (the breaker opens and the
+        // flaw stays triage-due), so the error this test ends the round on is one that is not.
         // The tracking is the agent's, not the provider's: an OpenCode step is followed, ended and
         // put away exactly like a Claude one.
         let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
@@ -3919,10 +4001,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert("ag0".into(), "error".into());
-        h.errors
-            .lock()
-            .unwrap()
-            .insert("ag0".into(), "opencode: connection refused".into());
+        h.errors.lock().unwrap().insert(
+            "ag0".into(),
+            "opencode: the run ended on a bad answer".into(),
+        );
         tick(&s, &p, &h).await;
         assert_eq!(
             *h.archived.lock().unwrap(),
@@ -3936,7 +4018,9 @@ mod tests {
                 .iter()
                 .any(|e| e.kind == "triaged"
                     && e.detail["why"].as_str()
-                        == Some("the agent ended on an error: opencode: connection refused")),
+                        == Some(
+                            "the agent ended on an error: opencode: the run ended on a bad answer"
+                        )),
             "and its error is what ended the round"
         );
     }
@@ -4060,7 +4144,11 @@ mod tests {
         // The lane is really back: one agent tries it, its first turn works, the breaker closes.
         *h.dies_with.lock().unwrap() = None;
         h.lanes_out.lock().unwrap().clear();
+        // (a failed trial shuts the lane for 5 minutes: LA-C035 condition 1)
         clock.fetch_add(1, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 2, "not before the back-off");
+        clock.fetch_add(5, Ordering::SeqCst);
         tick(&s, &p, &h).await;
         assert_eq!(h.agents.lock().unwrap().len(), 3);
         clock.fetch_add(1, Ordering::SeqCst);
@@ -4275,7 +4363,8 @@ mod tests {
                 .unwrap();
             pause.release.notify_one();
         };
-        tokio::join!(reconcile(&s, &p, &h), meanwhile);
+        let mut probes = Probes::default();
+        tokio::join!(reconcile(&s, &p, &h, &mut probes), meanwhile);
         let t = target(&s, &f.id, Platform::Web);
         assert_eq!(
             (t.status, t.agent.as_deref()),
@@ -4755,6 +4844,10 @@ mod tests {
             .insert("ag0".into(), SIGN_IN.into());
         tick(&s, &p, &h).await;
         assert_eq!(h.ops.lock().unwrap().len(), 1, "it did open");
+        // LA-C035 condition 1: a breaker opened in a tick is not healed in that same tick.
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+        assert_eq!(h.agents.lock().unwrap().len(), 1, "no refill in that tick");
+        tick(&s, &p, &h).await;
         assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::HalfOpen);
         assert_eq!(
             h.agents.lock().unwrap().len(),
@@ -5176,10 +5269,11 @@ mod tests {
         );
         // A task failure on record is left to a lead, and says so.
         let g = due(&s, "worked", Platform::Web, None);
-        let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
+        s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
         s.attach(&g.id, Platform::Web, "w", "g0", &policy().chain[0], "d")
             .unwrap();
-        s.fail_task_if(&g.id, Platform::Web, &t.claim_ref(), "tests fail", 1, "d")
+        let read = target(&s, &g.id, Platform::Web).claim_ref();
+        s.fail_task_if(&g.id, Platform::Web, &read, "tests fail", 1, "d")
             .unwrap();
         let r = restore_lane_failures(&s, "2000-01-01T00:00:00Z", false, &src)
             .await
@@ -5268,16 +5362,16 @@ mod tests {
     }
 
     #[test]
-    fn the_worst_case_hold_is_the_sum_of_the_deadlines_240_seconds() {
+    fn the_worst_case_hold_is_the_sum_of_the_deadlines_140_seconds() {
         let l = Limits::DEFAULT;
         assert_eq!(l.lock_wait, Duration::from_secs(5));
         assert_eq!(
             l.max_hold(),
             // list + sweep/orphans (3 x stop+archive) + probes + 2 creates
             //   + (lookup + 3 extras x stop+archive + ops record)
-            Duration::from_secs(10 + 60 + 30 + 2 * 30 + 10 + 60 + 10)
+            Duration::from_secs(5 + 30 + 15 + 2 * 25 + 5 + 30 + 5)
         );
-        assert_eq!(MAX_HOLD, Duration::from_secs(240));
+        assert_eq!(MAX_HOLD, Duration::from_secs(140));
         assert_eq!(MAX_HOLD, l.max_hold());
     }
 
@@ -5312,7 +5406,7 @@ mod tests {
         );
         assert!(took < Duration::from_secs(2), "answered in {took:?}");
         let n = e.extra.as_ref().unwrap()["retry_after_s"].as_u64().unwrap();
-        assert!((1..=240).contains(&n), "{n}");
+        assert!((1..=140).contains(&n), "{n}");
         assert!(
             e.message.contains(&format!("retry in {n} s")),
             "{}",
@@ -5422,5 +5516,176 @@ mod tests {
                 (pt, other) => panic!("{pt}: unexpected {other:?}"),
             }
         }
+    }
+
+    // LA-C035, the coordinator's conditions on the review.
+
+    #[tokio::test]
+    async fn a_flaw_whose_agents_end_with_no_work_on_a_healthy_lane_is_bounded_in_30_ticks() {
+        // Condition 1. `lane probe` always says ok (as it did in the incident), the agents end
+        // their turn at once with no tool call and no commit, and three flaws are due. Before: one
+        // agent every tick, never blocked, an incident per cycle.
+        const AGENTS_AT_MOST: usize = 6;
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        let clock = with_clock(&s);
+        *h.ignore_step_out.lock().unwrap() = true;
+        *h.idle_dies.lock().unwrap() = true;
+        let fs: Vec<Flaw> = (0..3)
+            .map(|i| due(&s, &format!("poisoned {i}"), Platform::Web, None))
+            .collect();
+        for _ in 0..30 {
+            clock.fetch_add(1, Ordering::SeqCst);
+            tick(&s, &p, &h).await;
+        }
+        let agents = h.agents.lock().unwrap().len();
+        let ops = h.ops.lock().unwrap().len();
+        assert!(
+            agents <= AGENTS_AT_MOST,
+            "{agents} agents in 30 ticks, at most {AGENTS_AT_MOST}"
+        );
+        assert!(
+            ops <= agents,
+            "one incident per opening: {ops} for {agents}"
+        );
+        assert!(
+            fs.iter()
+                .any(|f| target(&s, &f.id, Platform::Web).status == TargetStatus::Blocked),
+            "the flaw that kept failing needs a lead"
+        );
+        assert!(
+            fs.iter()
+                .all(|f| target(&s, &f.id, Platform::Web).attempts == 0),
+            "and none of it cost an attempt"
+        );
+        assert!(h.alive_now().is_empty(), "nothing left alive");
+    }
+
+    #[tokio::test]
+    async fn a_triage_agent_dying_at_sign_in_opens_the_breaker_and_leaves_the_flaw_triage_due() {
+        // Condition 2: triage used `is_limit` alone, so a sign-in failure finished the triage for
+        // good and the next report got an agent on the next tick.
+        let p = Policy {
+            max_running_per_repo: 1,
+            ..triaging()
+        };
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let f = report(&s, "report one");
+        report(&s, "report two");
+        *h.dies_with.lock().unwrap() = Some(SIGN_IN.into());
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 1);
+        tick(&s, &p, &h).await;
+        let lane0 = p.chain[0].probe_lane.clone().unwrap();
+        assert_eq!(s.lane_state(&lane0).unwrap(), LaneState::Open);
+        assert_eq!(h.ops.lock().unwrap().len(), 1);
+        assert!(
+            s.get(&f.id).unwrap().flaw.triaged_at.is_none(),
+            "not finished: it is triage-due again"
+        );
+        assert!(s.triage_due().unwrap().iter().any(|x| x.id == f.id));
+        assert_eq!(
+            h.agents.lock().unwrap().len(),
+            1,
+            "and no agent for the next report on the lane that just failed"
+        );
+        assert!(h.archived.lock().unwrap().contains(&"ag0".to_string()));
+    }
+
+    #[tokio::test]
+    async fn only_the_trial_agent_closes_a_half_open_lane() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        let a = due(&s, "started before the lane failed", Platform::Web, None);
+        let lane0 = p.chain[0].probe_lane.clone().unwrap();
+        // An agent on the lane, claimed while it was closed, and running.
+        let t = s
+            .claim_capped(
+                &a.id,
+                Platform::Web,
+                "/r",
+                Some(&lane0),
+                &caps_of(&policy()),
+                "t",
+            )
+            .unwrap();
+        let labels = json!({"from": "lucina", "flaw": a.id, "platform": "web", "flaw_lane": lane0});
+        let id = h
+            .start_agent(&p, &p.chain[0], "/w", "<owner_words>", "t", labels, None)
+            .await
+            .unwrap();
+        s.attach(&a.id, Platform::Web, "w", &id, &p.chain[0], "t")
+            .unwrap();
+        assert_ne!(t.claim_seq, 0);
+        // The lane failed (another agent) and a probe passed: half-open, and this one is not its trial.
+        s.lane_open(&lane0, "sign-in").unwrap();
+        s.lane_half_open(&lane0).unwrap();
+        tick(&s, &p, &h).await;
+        assert_eq!(
+            s.lane_state(&lane0).unwrap(),
+            LaneState::HalfOpen,
+            "a running agent that is not the trial says nothing about the lane"
+        );
+    }
+
+    #[test]
+    fn an_answer_without_a_list_of_agents_is_not_zero_agents() {
+        assert!(agent_list(&json!({})).is_err());
+        assert!(agent_list(&json!({"agents": null})).is_err());
+        assert!(agent_list(&json!({"error": {"message": "x"}})).is_err());
+        assert_eq!(agent_list(&json!({"agents": []})).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn the_ops_key_of_an_opening_is_a_count_never_a_time() {
+        assert_eq!(
+            lane_ops_key("claude-sonnet", 3),
+            "flaw-lane:claude-sonnet:open-3"
+        );
+        assert_ne!(
+            lane_ops_key("claude-sonnet", 3),
+            lane_ops_key("claude-sonnet", 4)
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_continues_past_a_target_it_cannot_reset_and_says_which() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("flaws.db");
+        let s = Flaws::open(&db).unwrap();
+        let v = blocked_the_old_way(&s, "resettable", ["v0", "v1"]);
+        let w = blocked_the_old_way(&s, "stuck", ["w0", "w1"]);
+        // The second cannot be reset: the database refuses.
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TRIGGER stuck BEFORE UPDATE ON flaw_targets WHEN NEW.flaw_id = '{}' AND NEW.status = 'affected'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+                w.id
+            ))
+            .unwrap();
+        let src = Errors(
+            ["v0", "v1", "w0", "w1"]
+                .into_iter()
+                .map(|a| (a.to_owned(), SIGN_IN.to_owned()))
+                .collect(),
+        );
+        let r = restore_lane_failures(&s, "2000-01-01T00:00:00Z", true, &src)
+            .await
+            .unwrap();
+        assert_eq!(r.listed.len(), 2);
+        assert_eq!(r.failed.len(), 1, "{:?}", r.failed);
+        assert_eq!(r.failed[0].flaw_id, w.id);
+        assert!(
+            r.failed[0].reason.contains("reset failed"),
+            "{:?}",
+            r.failed
+        );
+        assert_eq!(
+            target(&s, &v.id, Platform::Web).status,
+            TargetStatus::Affected
+        );
+        assert_eq!(
+            target(&s, &w.id, Platform::Web).status,
+            TargetStatus::Blocked
+        );
     }
 }
