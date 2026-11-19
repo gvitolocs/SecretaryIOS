@@ -129,11 +129,18 @@ if [ "$queued" = 0 ]; then
     fi
     if [ "$bqrc" -eq 0 ]; then
         prio=normal
+        # 3600 s for a plain run. The merge gate runs under the outer limit of its pipeline gate (.lucina/pipeline.toml), which counts
+        # the wait for the one gate slot, so it waits at most BQ_WAIT_ALLOWANCE_S (tools/ci/lucina-ci/src/budget.rs) and then fails at
+        # once with bq's own message, instead of being killed by the clock halfway through its steps (GATE-19). A test ties the two.
+        maxwait=3600
         for arg in "$@"; do
-            if [ "$arg" = "--merge-gate" ]; then prio=gate; fi
+            if [ "$arg" = "--merge-gate" ]; then
+                prio=gate
+                maxwait=300
+            fi
         done
         self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-        exec "$bqbin" run --class long --priority "$prio" --max-wait 3600 --keep-env GIT_CONFIG_COUNT \
+        exec "$bqbin" run --class long --priority "$prio" --max-wait "$maxwait" --keep-env GIT_CONFIG_COUNT \
             --who "check-fast:$(basename "$root")" -- "$self" "--queued-by-bq=$((depth + 1))" "$@"
     fi
     # On stderr, so that the stdout of a run is still the check's own bytes; it is the first line the run prints.
