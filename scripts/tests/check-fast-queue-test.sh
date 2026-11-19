@@ -20,6 +20,9 @@
 #   (13) a typed --queued-by-bq is ignored unless bq really holds a slot for the run (a live ancestor holder, and a meta file in the
 #        queue's state directory under the passwd home naming that pid): without one it queues; with a real one it runs in place;
 #   (14) a queue that never holds a real slot sends the run round at most twice, then it stops with exit 2.
+#   (15) a start inside a slot bq really holds for a class other than long or gate (short, proof, node, or a class bq does not know)
+#        is refused at once: exit 2, the exact message, nothing queued, nothing run; inside a long or gate slot, or with a hand-set
+#        BQ_SLOT that has no real record, nothing changes.
 # Last line: `check-fast-queue-test: pass`.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -170,11 +173,9 @@ ran_ok nested
 [ "$(grep -c '^home in-place long$' "$calls")" = 1 ] || fail "(3) a nested call of the same class did not run in place exactly once: $(cat "$calls")"
 [ "$(grep -c -- "--queued-by-bq" "$calls")" = 1 ] || fail "(3) the launcher called the queue other than once: $(cat "$calls")"
 launch nested2 home "$tmp/base" -- "$home/.local/bin/bq" run --class short -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
-ran_ok nested2
-if grep -q 'in-place' "$calls"; then fail "(3) a nested call of another class ran in place: $(cat "$calls")"; fi
-grep -qxF "home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD" "$calls" ||
-    fail "(3) the nested call of another class did not queue as class long: $(cat "$calls")"
-echo "ok: (3) nested in the same class runs in place once, in another class queues in its own slot; neither loops"
+refused nested2 # started inside a short slot: refused at once (see (15) for the exact message and the other classes)
+[ "$(grep -c -- "--queued-by-bq" "$calls")" = 0 ] || fail "(3) the launcher queued from inside a short slot: $(cat "$calls")"
+echo "ok: (3) nested in the same class runs in place once, inside a short slot it is refused; neither loops"
 
 # (4) hand-set BQ_SLOT / BQ_SLOT_PID / BQ_PRIORITY decide nothing: a dead holder, a live non-ancestor, no holder.
 dead=$(sh -c 'echo $$')
@@ -292,7 +293,9 @@ queued_once otherpid
 # a meta file for this pid but no class bq knows
 printf 'pid=%s\nclass=bogus\n' "$$" > "$tmp/home/.cache/bq/long-0.meta"
 launch noclass home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$$" -- "$L" --queued-by-bq --base HEAD
-queued_once noclass
+refused noclass # a real record of a class bq does not know is a foreign class (15): refused, nothing queued
+[ "$(ncalls "$calls")" = 0 ] || fail "(13) noclass: a queue was called: $(cat "$calls")"
+rm -f "$tmp/home/.cache/bq/"*.meta
 # a meta file in a state directory the launcher does not read (BQ_DIR, HOME) is not looked at
 mkdir -p "$tmp/elsewhere"
 printf 'pid=%s\nclass=long\n' "$$" > "$tmp/elsewhere/long-0.meta"
@@ -311,5 +314,43 @@ refused noslot
 [ "$(grep -c '^home run ' "$calls")" = 2 ] || fail "(14) expected exactly two trips through the queue: $(cat "$calls")"
 grep -qF "queued twice" "$err" || fail "(14) the refusal does not say why: $(cat "$err")"
 echo "ok: (14) a queue that holds no real slot is gone through twice, then the run stops with exit 2"
+
+# (15) a start inside a slot of a class other than long or gate is refused before anything is queued.
+msg='check-fast: check-fast queues itself in the long class and must not be started inside a short, proof or node slot; run it outside `bq run`, or inside `bq run --class long`'
+rm -f "$tmp/home/.cache/bq/"*.meta
+for c in short proof node; do
+    launch "foreign-$c" home "$tmp/base" -- "$home/.local/bin/bq" run --class "$c" -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
+    refused "foreign-$c"
+    [ "$(grep -c '^home run ' "$calls")" = 1 ] || fail "(15) $c: the launcher queued from inside the slot: $(cat "$calls")"
+    if grep -q -- '--queued-by-bq' "$calls" && grep -q -- "--class long" "$calls"; then fail "(15) $c: a long call was queued: $(cat "$calls")"; fi
+    [ "$(cat "$err")" = "$msg" ] || fail "(15) $c: the message is not the pinned one: $(cat "$err")"
+    [ ! -s "$out" ] || fail "(15) $c: the refusal printed on stdout: $(cat "$out")"
+done
+# the launcher's own typed argument does not get past it either
+launch foreign-typed home "$tmp/base" -- "$home/.local/bin/bq" run --class short -- bash -c '"$@"; exit $?' sh "$L" --queued-by-bq=1 --base HEAD
+refused foreign-typed
+[ "$(cat "$err")" = "$msg" ] || fail "(15) typed: the message is not the pinned one: $(cat "$err")"
+# a long slot: unchanged (in place once); a gate slot: unchanged (queues once in the long class)
+launch long-slot home "$tmp/base" -- "$home/.local/bin/bq" run --class long -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
+ran_ok long-slot
+[ "$(grep -c '^home in-place long$' "$calls")" = 1 ] || fail "(15) a long slot did not run in place once: $(cat "$calls")"
+launch gate-slot home "$tmp/base" -- "$home/.local/bin/bq" run --class gate -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
+ran_ok gate-slot
+[ "$(grep -c -- '--queued-by-bq=1' "$calls")" = 1 ] || fail "(15) a gate slot did not queue once: $(cat "$calls")"
+grep -qxF "home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD" "$calls" ||
+    fail "(15) the gate slot's call is not the byte-exact one: $(cat "$calls")"
+# the launcher's own re-exec, inside the long slot it was queued into: unchanged
+launch reexec home "$tmp/base" -- "$home/.local/bin/bq" run --class long -- bash -c '"$@"; exit $?' sh "$L" --queued-by-bq=1 --base HEAD
+ran_ok reexec
+[ "$(grep -c '^home run ' "$calls")" = 1 ] || fail "(15) the re-exec went through the queue again: $(cat "$calls")"
+# a hand-set short slot with no record, with a record naming another pid, and with a record for a dead holder: not a slot
+rm -f "$tmp/home/.cache/bq/"*.meta
+launch hand-norec home "$tmp/base" BQ_SLOT=short-0 "BQ_SLOT_PID=$$" -- "$L" --base HEAD
+queued_once hand-norec
+printf 'pid=%s\nclass=short\n' "$dead" > "$tmp/home/.cache/bq/short-0.meta"
+launch hand-otherpid home "$tmp/base" BQ_SLOT=short-0 "BQ_SLOT_PID=$$" -- "$L" --base HEAD
+queued_once hand-otherpid
+rm -f "$tmp/home/.cache/bq/"*.meta
+echo "ok: (15) inside a short, proof or node slot the check is refused with exit 2 and the pinned message, nothing queued; long and gate slots and a hand-set BQ_SLOT are unchanged"
 
 echo "check-fast-queue-test: pass"
