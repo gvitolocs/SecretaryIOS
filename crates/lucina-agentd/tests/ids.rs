@@ -2038,3 +2038,131 @@ fn a_note_after_a_runs_end_row_owes_the_store_nothing() {
     );
     assert_eq!(lagent_json(&d, &["work", "show", &id])["state"], "verified");
 }
+
+fn import_text(d: &Daemon, name: &str, body: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_ledger(dir.path(), name, body);
+    ok(d, &["id", "import", &path])
+}
+
+fn refuse_work(d: &Daemon, f: &Fixture, lead: &str, change: &str) -> String {
+    let ws = f.repo("ws");
+    let spec = f.spec();
+    refused(
+        d,
+        &[
+            "work",
+            "start",
+            "--cost",
+            "build",
+            "--lead",
+            lead,
+            "--change",
+            change,
+            "--lane",
+            "qoder",
+            "--workspace",
+            &ws,
+            "--spec",
+            &spec,
+        ],
+    )
+}
+
+/// An import whose only row for `XX-C001` is an annotation. A work start may not use it.
+#[test]
+fn an_annotation_only_change_is_refused_at_work_start() {
+    let f = Fixture::new();
+    let d = f.daemon();
+    lead_add(&d, "XX");
+    let out = import_text(
+        &d,
+        "XX.tsv",
+        "id\tutc\tkind\tstate\ttitle\n\
+         XX-C001\t2026-11-18T00:00:00Z\tchange\tdone\ta refused change\n",
+    );
+    assert!(out.contains("1 as annotations"), "{out}");
+    assert_eq!(view(&d, "XX-C001")["state"], "note");
+    let before = std::fs::read(ids_file(&d)).unwrap();
+    let e = refuse_work(&d, &f, "XX", "XX-C001");
+    assert!(
+        e.contains("no change XX-C001"),
+        "the same refusal as a change the store has never seen: {e}"
+    );
+    assert_eq!(std::fs::read(ids_file(&d)).unwrap(), before);
+    let called = std::fs::read_dir(f.data())
+        .unwrap()
+        .filter_map(|ent| ent.ok())
+        .any(|ent| ent.file_name().to_string_lossy().ends_with(".args"));
+    assert!(!called, "the stand-in was not asked to run");
+}
+
+/// A lead code whose only row is an annotation. `lead_registered` is false, so a work start
+/// for that lead is refused before it asks about the change.
+#[test]
+fn an_annotation_only_lead_is_not_registered() {
+    let f = Fixture::new();
+    let d = f.daemon();
+    let out = import_text(
+        &d,
+        "XX.tsv",
+        "id\tutc\tkind\tstate\ttitle\n\
+         XX\t2026-11-18T00:00:00Z\tlead\tstamp\ta refused lead\n",
+    );
+    assert!(out.contains("1 as annotations"), "{out}");
+    assert_eq!(view(&d, "XX")["kind"], "lead");
+    assert_eq!(view(&d, "XX")["state"], "note");
+    let e = refuse_work(&d, &f, "XX", "XX-C001");
+    assert!(
+        e.contains("lead \"XX\" is not registered"),
+        "lead_registered is false for a lead known only by an annotation: {e}"
+    );
+    assert!(
+        !e.contains("no change"),
+        "the lead check is the one that refuses: {e}"
+    );
+}
+
+/// `id state` on an id that exists only as an annotation is the unknown-id refusal, and the
+/// store file is unchanged. `id show` still opens the kept line.
+#[test]
+fn an_annotation_only_id_is_unknown_to_id_state() {
+    let d = Daemon::start();
+    lead_add(&d, "XX");
+    import_text(
+        &d,
+        "XX.tsv",
+        "id\tutc\tkind\tstate\ttitle\n\
+         XX-C001\t2026-11-18T00:00:00Z\tchange\tdone\ta refused change\n",
+    );
+    assert_eq!(
+        view(&d, "XX-C001")["state"],
+        "note",
+        "show still opens the kept line"
+    );
+    let before = std::fs::read(ids_file(&d)).unwrap();
+    let e = refused(&d, &["id", "state", "XX-C001", "open"]);
+    assert!(
+        e.contains("no id XX-C001"),
+        "the same refusal as any unknown id: {e}"
+    );
+    assert_eq!(
+        std::fs::read(ids_file(&d)).unwrap(),
+        before,
+        "the refusal wrote nothing"
+    );
+}
+
+/// The next change stays above a number that exists only as an annotation.
+#[test]
+fn an_annotation_only_number_is_not_reused_by_id_new() {
+    let d = Daemon::start();
+    lead_add(&d, "XX");
+    import_text(
+        &d,
+        "XX.tsv",
+        "id\tutc\tkind\tstate\ttitle\n\
+         XX-C001\t2026-11-18T00:00:00Z\tchange\tdone\ta refused change\n",
+    );
+    assert_eq!(new_change(&d, "XX"), "XX-C002");
+}
