@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use super::kill::{self, Step};
 use super::repo::{self, Crate, Gate, Rules};
+use super::warm;
 use super::{GateResult, JobKind, Outcome, Spec};
 
 /// The exit code: 0 when the job did what it was for.
@@ -877,7 +878,14 @@ impl Exec {
     /// ([`Exec::warm_up_secs`]) and with `gate_env` kept empty, so it gets none of the gate
     /// allow/waivers. The reason it returns (a timeout in particular) goes into the
     /// `warm-up: failed` line.
-    fn warm_up(&mut self, dir: &Path, base: &str, rules: &Rules) {
+    ///
+    /// Then (LA-C026, GATE-13) the gate's own clippy for the branch's touched crates, so the gate's
+    /// clippy — whose artefacts are not `cargo check`'s — finds a warm target too: the commands are
+    /// [`super::warm::clippy_commands`]. They run through the same [`Exec::sh_run`], one line before
+    /// and one after each, and share the warm-up's one cap with the check: a command gets what is
+    /// left of [`Exec::warm_up_secs`], and none starts once it is spent. Whatever they do — fail,
+    /// time out, or never start because the member names could not be had — is only logged.
+    fn warm_up(&mut self, dir: &Path, base: &str, head: &str, rules: &Rules) {
         if repo::cargo_mode(&rules.merge.cargo) == Some(repo::CargoMode::None) {
             return;
         }
@@ -889,20 +897,91 @@ impl Exec {
         self.say(&format!(
             "warm-up: cargo check of the merge base {short} (not a gate)"
         ));
-        let t = Instant::now();
+        let started = Instant::now();
         let cap = self.warm_up_secs;
-        let why = self.sh_run(
-            dir,
-            "cargo check --workspace --quiet",
-            Duration::from_secs(cap),
-            &format!("timed out after {cap}s"),
-        );
+        self.warm_step(dir, "cargo check --workspace --quiet", started, cap);
+        self.warm_clippy(dir, base, head, started, cap);
+    }
+
+    /// One warm-up command, under what is left of the warm-up's `cap` seconds counted from
+    /// `started`. Its result is logged and goes nowhere else.
+    fn warm_step(&mut self, dir: &Path, cmd: &str, started: Instant, cap: u64) {
+        let left = Duration::from_secs(cap).saturating_sub(started.elapsed());
+        if left.is_zero() {
+            self.say(&format!(
+                "warm-up: {cmd} not run (not a gate): the warm-up's {cap}s are spent"
+            ));
+            return;
+        }
+        let t = Instant::now();
+        let why = self.sh_run(dir, cmd, left, &format!("timed out after {cap}s"));
         match why {
             None => self.say(&format!("warm-up: done in {}s", t.elapsed().as_secs())),
             Some(reason) => self.say(&format!(
                 "warm-up: failed after {}s (not a gate failure): {reason}",
                 t.elapsed().as_secs()
             )),
+        }
+    }
+
+    /// The clippy half of the warm-up: what the branch touches, mapped to the gate's clippy
+    /// commands, each run as a [`Exec::warm_step`] under the shared cap. A branch whose files give
+    /// the gate no clippy step runs nothing and says nothing.
+    fn warm_clippy(&mut self, dir: &Path, base: &str, head: &str, started: Instant, cap: u64) {
+        let files: Vec<String> = match self
+            .git(dir, &["diff", "--name-only", &format!("{base}...{head}")])
+        {
+            Ok(out) => out.lines().map(str::to_string).collect(),
+            Err(e) => {
+                self.say(&format!(
+                    "warm-up: clippy skipped (not a gate): the branch's files could not be listed: {e}"
+                ));
+                return;
+            }
+        };
+        if !files
+            .iter()
+            .any(|f| f.ends_with(".rs") || f.ends_with("Cargo.toml"))
+        {
+            return;
+        }
+        let Some(scratch) = self.step_tmp.clone() else {
+            self.say(
+                "warm-up: clippy skipped (not a gate): the job has no scratch for cargo metadata",
+            );
+            return;
+        };
+        let out_file = scratch.join("warm-up-metadata.json");
+        if out_file.display().to_string().contains('\'') {
+            self.say("warm-up: clippy skipped (not a gate): the scratch path cannot be quoted");
+            return;
+        }
+        let left = Duration::from_secs(cap).saturating_sub(started.elapsed());
+        if left.is_zero() {
+            self.say("warm-up: clippy skipped (not a gate): the warm-up's time is spent");
+            return;
+        }
+        let cmd = format!(
+            "cargo metadata --no-deps --format-version 1 --offline > '{}'",
+            out_file.display()
+        );
+        let meta = self.sh_run(dir, &cmd, left, &format!("timed out after {cap}s"));
+        let members = match (meta, std::fs::canonicalize(dir)) {
+            (None, Ok(root)) => std::fs::read(&out_file)
+                .ok()
+                .and_then(|j| warm::member_map(&j, &root)),
+            _ => None,
+        };
+        let _ = std::fs::remove_file(&out_file);
+        let Some(members) = members else {
+            self.say("warm-up: clippy skipped (not a gate): the workspace members could not be read from cargo metadata");
+            return;
+        };
+        let root = dir.to_path_buf();
+        let manifest = |d: &str| std::fs::read_to_string(root.join(d).join("Cargo.toml")).ok();
+        for cmd in warm::clippy_commands(&files, &members, &manifest) {
+            self.say(&format!("warm-up: {cmd} (not a gate)"));
+            self.warm_step(dir, &cmd, started, cap);
         }
     }
 
@@ -949,7 +1028,7 @@ impl Exec {
             };
             // Warm the shared target at the base, outside every timed gate step, so the first
             // timed check does not pay a cold build (finding GATE-04). Its outcome changes nothing.
-            self.warm_up(&dir, &base, &rules);
+            self.warm_up(&dir, &base, &head, &rules);
             // The warm-up ran `cargo check`, which can leave files in the worktree that are not in
             // the base — an untracked `Cargo.lock`, when the base had none and cargo wrote one. The
             // `checkout -f` below puts the *tracked* files back but leaves that untracked one, and a
@@ -3801,5 +3880,166 @@ mod tests {
         );
         assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    // ---- the warm-up's clippy (LA-C026, GATE-13) ---------------------------------------------
+
+    /// A trunk with one workspace member, `crates/foo`, a topic that changes `touched` (path, text),
+    /// and a fake `cargo` on the job's PATH that records its argv, one line per call, in a file,
+    /// answers `cargo metadata` with that one member and otherwise runs `extra` (shell) before
+    /// succeeding. `cap` sets the warm-up's cap in seconds. Returns the outcome, the job log, the
+    /// recorded calls and the merge's wall time.
+    fn warm_clippy_merge(
+        root: &Path,
+        extra: &str,
+        touched: &[(&str, &str)],
+        cap: Option<u64>,
+    ) -> (Outcome, String, Vec<String>, Duration) {
+        let (_origin, repo) = main_with_cargo(root, &warm_rules("check"));
+        std::fs::create_dir_all(repo.join("crates/foo/src")).unwrap();
+        std::fs::write(
+            repo.join("crates/foo/Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        commit(&repo, "crates/foo/src/lib.rs", "\n", "a member");
+        git(&repo, &["push", "-q", "origin", "main"]);
+        let rec = root.join("cargo-calls");
+        let shadow = format!(
+            "#!/bin/sh\necho \"$*\" >> {rec}\nif [ \"$1\" = metadata ]; then printf '{{\"workspace_members\":[\"foo 0.1\"],\"packages\":[{{\"id\":\"foo 0.1\",\"name\":\"foo\",\"manifest_path\":\"%s/crates/foo/Cargo.toml\"}}]}}' \"$(pwd -P)\"; exit 0; fi\n{extra}\nexit 0\n",
+            rec = rec.display()
+        );
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("cargo"), &shadow);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let mut head = String::new();
+        for (path, text) in touched {
+            if let Some(parent) = Path::new(path).parent() {
+                std::fs::create_dir_all(repo.join(parent)).unwrap();
+            }
+            head = commit(&repo, path, text, "topic");
+        }
+        let dir = root.join("job-warm-clippy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        if let Some(c) = cap {
+            x.warm_up_secs = c;
+        }
+        let t = Instant::now();
+        let out = x.merge();
+        let took = t.elapsed();
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        let calls = std::fs::read_to_string(&rec)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        (out, log, calls, took)
+    }
+
+    const GATE_CLIPPY_FOO: &str =
+        "clippy --quiet --locked -p foo --all-targets --no-deps --message-format=short";
+
+    #[test]
+    fn the_warm_up_runs_the_gate_s_clippy_for_the_touched_member() {
+        let root = tempfile::tempdir().unwrap();
+        let (out, log, calls, _) = warm_clippy_merge(
+            root.path(),
+            "",
+            &[("crates/foo/src/lib.rs", "pub fn x() {}\n")],
+            None,
+        );
+        assert_eq!(out.code, "MERGED", "{out:?}\nLOG:\n{log}");
+        let clippy: Vec<usize> = (0..calls.len())
+            .filter(|&i| calls[i].starts_with("clippy"))
+            .collect();
+        assert_eq!(clippy.len(), 1, "{calls:?}\n{log}");
+        assert_eq!(calls[clippy[0]], GATE_CLIPPY_FOO, "{calls:?}");
+        let check = calls
+            .iter()
+            .position(|c| c == "check --workspace --quiet")
+            .expect("the cargo check");
+        assert!(check < clippy[0], "clippy after check: {calls:?}");
+        let line = format!("warm-up: cargo {GATE_CLIPPY_FOO} (not a gate)");
+        let w = log
+            .find(&line)
+            .unwrap_or_else(|| panic!("no `{line}`:\n{log}"));
+        let g = log.find("gate: ").expect("gate line");
+        assert!(
+            w < g,
+            "the clippy warm-up is logged before the first gate:\n{log}"
+        );
+        assert!(log[w..g].contains("warm-up: done in"), "{log}");
+        // Not a gate: the report carries only the declared gate.
+        let names: Vec<&str> = out.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["cargo check (workspace)", "trivial"], "{log}");
+    }
+
+    #[test]
+    fn a_docs_only_branch_makes_no_clippy_warm_up() {
+        let root = tempfile::tempdir().unwrap();
+        let (out, log, calls, _) =
+            warm_clippy_merge(root.path(), "", &[("docs/x.md", "text\n")], None);
+        assert_eq!(out.code, "MERGED", "{out:?}\nLOG:\n{log}");
+        assert!(!calls.iter().any(|c| c.starts_with("clippy")), "{calls:?}");
+        assert!(!log.contains("cargo clippy"), "{log}");
+        assert!(
+            calls.iter().any(|c| c == "check --workspace --quiet"),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_failing_clippy_warm_up_does_not_fail_the_merge() {
+        let root = tempfile::tempdir().unwrap();
+        let (out, log, calls, _) = warm_clippy_merge(
+            root.path(),
+            "if [ \"$1\" = clippy ]; then exit 1; fi",
+            &[("crates/foo/src/lib.rs", "pub fn x() {}\n")],
+            None,
+        );
+        assert!(calls.iter().any(|c| c == GATE_CLIPPY_FOO), "{calls:?}");
+        assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        assert_eq!(out.code, "MERGED", "{log}");
+        let w = log
+            .find("warm-up: cargo clippy")
+            .expect("clippy warm-up line");
+        assert!(
+            log[w..].contains("warm-up: failed after")
+                && log[w..].contains("(not a gate failure): exit 1"),
+            "{log}"
+        );
+        let names: Vec<&str> = out.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["cargo check (workspace)", "trivial"], "{log}");
+        assert!(out.gates.iter().all(|g| g.ok), "{log}");
+    }
+
+    #[test]
+    fn the_check_and_the_clippy_share_one_warm_up_cap() {
+        let root = tempfile::tempdir().unwrap();
+        // The check takes 1 s of the 2 s; the clippy would sleep 300 s and gets only what is left.
+        let (out, log, calls, took) = warm_clippy_merge(
+            root.path(),
+            "if [ \"$1\" = check ]; then exec sleep 1; fi\nif [ \"$1\" = clippy ]; then exec sleep 300; fi",
+            &[("crates/foo/src/lib.rs", "pub fn x() {}\n")],
+            Some(2),
+        );
+        assert!(calls.iter().any(|c| c == GATE_CLIPPY_FOO), "{calls:?}");
+        assert_eq!(out.code, "MERGED", "{out:?}\nLOG:\n{log}");
+        assert!(
+            took < Duration::from_secs(30),
+            "the merge took {took:?}\n{log}"
+        );
+        let w = log
+            .find("warm-up: cargo clippy")
+            .expect("clippy warm-up line");
+        assert!(
+            log[w..].contains("(not a gate failure): timed out after 2s"),
+            "{log}"
+        );
+        // One budget, not two: the clippy was cut after what the check left, not after a cap of its own.
+        assert!(!log[w..].contains("failed after 2s"), "{log}");
     }
 }

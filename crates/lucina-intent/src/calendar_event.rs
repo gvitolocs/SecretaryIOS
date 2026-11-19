@@ -257,6 +257,70 @@ pub fn clean_title(title: &str) -> String {
     }
 }
 
+/// A title this long (characters) is the owner's sentence, not an event name.
+const TITLE_MAX_CHARS: usize = 80;
+/// A title with this many words is the owner's sentence, not an event name.
+const TITLE_MAX_WORDS: usize = 10;
+/// How many characters [`short_title`] keeps, cut at a word boundary.
+const TITLE_KEEP_CHARS: usize = 60;
+/// A message of this many words or fewer can be its own event name.
+const MESSAGE_MAX_WORDS: usize = 6;
+/// What an event with no name at all is called.
+pub const UNTITLED: &str = "Event";
+
+/// The title lowercased and stripped of its surrounding punctuation and inner double spaces,
+/// for comparing it with the message it came from.
+fn fold_words(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+}
+
+/// The title of a `calendar_event` is not a usable event name when it is the owner's whole
+/// sentence ("That is the hour of the chat, not of the meeting, …"), a long ramble, or empty.
+/// A short message that is itself the name is usable: "Dentist" out of "Dentist tomorrow at 10".
+pub fn title_is_sentence(title: &str, message: &str) -> bool {
+    let title = clean_title(title);
+    let words = title.split_whitespace().count();
+    if words == 0 {
+        return true;
+    }
+    if words > TITLE_MAX_WORDS || title.chars().count() > TITLE_MAX_CHARS {
+        return true;
+    }
+    message.split_whitespace().count() > MESSAGE_MAX_WORDS
+        && fold_words(&title) == fold_words(message)
+}
+
+/// The title to keep when nothing better is known: [`clean_title`], of the first
+/// [`TITLE_KEEP_CHARS`] characters when the title is longer than that — cut at a word boundary,
+/// so the word the cut lands in is dropped rather than left half. Never empty ([`UNTITLED`] when
+/// nothing of a word is kept).
+pub fn short_title(title: &str) -> String {
+    let cleaned = clean_title(title);
+    let too_long = cleaned.chars().count() > TITLE_KEEP_CHARS;
+    let kept = if too_long {
+        let head: String = cleaned.chars().take(TITLE_KEEP_CHARS).collect();
+        match head.rfind(' ') {
+            Some(i) if i > 0 => head[..i].to_owned(),
+            _ => head,
+        }
+    } else {
+        cleaned
+    };
+    let words: Vec<&str> = kept
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .collect();
+    if words.is_empty() {
+        UNTITLED.to_owned()
+    } else {
+        words.join(" ")
+    }
+}
+
 fn local(iso: &str, tz: Tz) -> Option<DateTime<Tz>> {
     DateTime::parse_from_rfc3339(iso)
         .ok()
@@ -610,6 +674,81 @@ mod tests {
             "Hack Night: Rust meets AI"
         );
         assert_eq!(clean_title("(123456)"), "(123456)");
+    }
+
+    /// The owner correcting one hour for another: his whole sentence, which the
+    /// direct rule reads as the event name.
+    const CORRECTION: &str =
+        "That is the hour of the chat, not of the meeting, the meeting is tomorrow at 10";
+
+    #[test]
+    fn a_whole_sentence_is_not_an_event_title() {
+        assert!(title_is_sentence(CORRECTION, CORRECTION));
+        // The rule's title, with the day and the time removed: still the sentence.
+        assert!(title_is_sentence(
+            "That is the hour of the chat not of the meeting the meeting is",
+            CORRECTION
+        ));
+        // Same words, other punctuation and case (9 words: only the whole-sentence rule fires).
+        let said = "Should we move the design review to next friday";
+        assert!(title_is_sentence(&said.to_uppercase(), &format!("{said}!")));
+        assert!(title_is_sentence(
+            "Standup with the design crew and the two new mentors on Thursday",
+            "when suits you?"
+        ));
+        // Ten words (so not the word rule) but 81 characters.
+        assert!(title_is_sentence(
+            "International Workshop on Machine Learning for Network Operations and Maintenance",
+            "put it down"
+        ));
+        assert!(title_is_sentence("", CORRECTION));
+        assert!(title_is_sentence("   ", CORRECTION));
+    }
+
+    #[test]
+    fn a_short_name_stays_the_title_of_its_message() {
+        assert!(!title_is_sentence("Dentist", "Dentist tomorrow at 10"));
+        // Six words used whole: a name, not a sentence.
+        let six = "Team standup with the two mentors";
+        assert!(!title_is_sentence(six, six));
+        assert!(!title_is_sentence(
+            "Mentor session",
+            "Mentor session 6 november at 12:30"
+        ));
+        assert!(!title_is_sentence("Hack Night", CORRECTION));
+    }
+
+    #[test]
+    fn a_title_kept_short_cuts_at_a_word() {
+        let short = short_title(CORRECTION);
+        assert_eq!(
+            short,
+            "That is the hour of the chat, not of the meeting, the"
+        );
+        assert!(short.chars().count() <= 60, "{short}");
+        assert!(!short.ends_with("meetin"), "{short}");
+        // Nothing to cut at: no word kept, and still not an empty title.
+        assert_eq!(short_title("!!! ??? ..."), UNTITLED);
+        assert_eq!(short_title(""), UNTITLED);
+        // A word longer than the keep: it stays, whole, at the cut.
+        assert_eq!(short_title(&"x".repeat(90)).chars().count(), 60);
+        // A title the keep covers is not cut at all: its last word is not a spare.
+        let whole = "Call the clinic about the invoice today";
+        assert_eq!(short_title(whole), whole);
+        // Ordinary words past the keep: the cut lands between two of them.
+        let long = "Please bring the annual general meeting of the association of civil engineers to a vote today";
+        let kept = short_title(long);
+        assert_eq!(
+            kept,
+            "Please bring the annual general meeting of the association"
+        );
+        assert!(kept.chars().count() <= 60, "{kept}");
+        assert!(long.chars().count() > 90, "{long}");
+        assert_eq!(
+            long.chars().nth(kept.chars().count()),
+            Some(' '),
+            "cut at a word, not inside one: {kept}"
+        );
     }
 
     fn at(h: u32, m: u32, sec: u32) -> DateTime<Utc> {

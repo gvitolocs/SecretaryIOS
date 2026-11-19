@@ -580,6 +580,24 @@ pub async fn calendar_turn(
     // 12:30"); one the event parser cannot complete goes on to the planner.
     let parsed = cal::parse_create(message, now, tz)
         .or_else(|| cal::parse_event(message, now, tz).filter(Result::is_ok));
+    // A create whose name is the owner's whole sentence (a correction of one hour for another)
+    // names no event: the rule cannot tell the event from the words around it, so the planner,
+    // which sees the recent turns, is asked for the name. A guarded caller is refused here, as
+    // below, and never costs a planner call.
+    let parsed = match parsed {
+        Some(Ok(c))
+            if *caller != CalendarCaller::Guarded
+                && ev::title_is_sentence(c.event["title"].as_str().unwrap_or(""), message) =>
+        {
+            tracing::info!(
+                target: "lucina_chat::calendar",
+                event = "title_replan",
+                words = message.split_whitespace().count()
+            );
+            None
+        }
+        p => p,
+    };
     if let Some(parsed) = parsed {
         if *caller == CalendarCaller::Guarded {
             return Some(Err("calendar.create"));
@@ -1388,10 +1406,18 @@ mod calendar_create_tests {
         let dir = tempfile::tempdir().unwrap();
         let s = secretary(&server, dir.path());
         let st = BridgeState::default();
-        let o = calendar_turn(&s, &st, "Mentor session 6 november at 12:30", "chat-1", &owner(), now(), TZ)
-            .await
-            .unwrap()
-            .unwrap();
+        let o = calendar_turn(
+            &s,
+            &st,
+            "Mentor session 6 november at 12:30",
+            "chat-1",
+            &owner(),
+            now(),
+            TZ,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(
             o.reply,
             "Added to your calendar: \"Mentor session\", Friday 6 November at 12:30."
@@ -1415,9 +1441,17 @@ mod calendar_create_tests {
             "Added to your calendar: \"Mentor session\", Friday 6 November at 12:30. [Open in calendar](https://getsecretary.tech/calendar?event=lucina%3Aev_1)"
         );
         // A reminder is not the calendar's.
-        assert!(calendar_turn(&s, &st, "ricordami domani alle 9 di pagare", "chat-1", &owner(), now(), TZ)
-            .await
-            .is_none());
+        assert!(calendar_turn(
+            &s,
+            &st,
+            "ricordami domani alle 9 di pagare",
+            "chat-1",
+            &owner(),
+            now(),
+            TZ
+        )
+        .await
+        .is_none());
     }
 
     #[tokio::test]
@@ -1427,8 +1461,12 @@ mod calendar_create_tests {
                            "end": "2026-10-30T23:00:00.000Z", "allDay": false, "url": "https://calendar.google.com/event?eid=new1"});
         Mock::given(method("POST"))
             .and(path("/v1/calendar/events"))
-            .and(body_partial_json(json!({"title": "Claude Max 5x unlocks", "start": "2026-10-30T23:00:00+01:00"})))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"created": true, "event": event})))
+            .and(body_partial_json(
+                json!({"title": "Claude Max 5x unlocks", "start": "2026-10-30T23:00:00+01:00"}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(json!({"created": true, "event": event})),
+            )
             .expect(1)
             .mount(&server)
             .await;
@@ -1456,22 +1494,32 @@ mod calendar_create_tests {
             o.reply,
             "Added to your calendar: \"Claude Max 5x unlocks\", Friday 30 October at 23:00. [Open in Google Calendar](https://calendar.google.com/event?eid=new1)"
         );
-        assert_eq!(o.action_result, "[calendar event created: Claude Max 5x unlocks]");
+        assert_eq!(
+            o.action_result,
+            "[calendar event created: Claude Max 5x unlocks]"
+        );
         assert_eq!(o.events.len(), 1);
         assert_eq!(o.routes, vec![undo_action("en")]);
         assert_eq!(o.routes[0]["payload"]["text"], "undo");
         // Undo in another chat does nothing; in the same chat it deletes the event, once.
-        assert!(calendar_turn(&s, &st, "undo", "chat-2", &owner(), now(), TZ)
-            .await
-            .is_none());
+        assert!(
+            calendar_turn(&s, &st, "undo", "chat-2", &owner(), now(), TZ)
+                .await
+                .is_none()
+        );
         let u = calendar_turn(&s, &st, "undo", "chat-1", &owner(), now(), TZ)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(u.reply, "Undone: \"Claude Max 5x unlocks\" is off your calendar.");
-        assert!(calendar_turn(&s, &st, "undo", "chat-1", &owner(), now(), TZ)
-            .await
-            .is_none());
+        assert_eq!(
+            u.reply,
+            "Undone: \"Claude Max 5x unlocks\" is off your calendar."
+        );
+        assert!(
+            calendar_turn(&s, &st, "undo", "chat-1", &owner(), now(), TZ)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1485,7 +1533,9 @@ mod calendar_create_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/calendar/proposals"))
-            .and(body_partial_json(json!({"title": "Claude Max 5x unlocks", "from": "mcp:claude-ai"})))
+            .and(body_partial_json(
+                json!({"title": "Claude Max 5x unlocks", "from": "mcp:claude-ai"}),
+            ))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_1"})))
             .expect(1)
             .mount(&server)
@@ -1531,7 +1581,9 @@ mod calendar_create_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/calendar/proposals"))
-            .and(body_partial_json(json!({"from": "lucina:ios", "reason": "Google Calendar isn't connected"})))
+            .and(body_partial_json(
+                json!({"from": "lucina:ios", "reason": "Google Calendar isn't connected"}),
+            ))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_2"})))
             .expect(1)
             .mount(&server)
