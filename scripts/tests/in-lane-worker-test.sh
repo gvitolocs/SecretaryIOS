@@ -15,6 +15,7 @@ trap 'rm -rf "$tmp"' EXIT
 # shellcheck source=../lib/in-lane-worker.sh
 . "$root/scripts/lib/in-lane-worker.sh"
 
+me=$$
 fails=0
 fail() {
     echo "FAIL: $*" >&2
@@ -26,23 +27,23 @@ expect() {
     local want=$1 label=$2 got
     if (
         unset LANE_WORKER LANE_PROOFS_REFUSED
-        in_lane_worker "$3" "$4"
+        in_lane_worker "$3" "$4" "${5:-}"
     ); then got=worker; else got=not; fi
     [ "$got" = "$want" ] || fail "$label: wanted $want, got $got"
 }
 
 # fake_proc <dir> <cgroup of $$> <cgroup of parent 1> <cgroup of parent 2>: $$ -> 91001 -> 91002 -> 1. A cgroup of "-" is an
 # unreadable step (the file is not written). The command names hold spaces and a ")" to prove the parse is after the last ") ".
-fake_proc() {
+fake_proc() { # <dir> <cgroups...>; the chain starts at $me (default this script, $$)
     local d=$1 p
     rm -rf "$d"
-    mkdir -p "$d/$$" "$d/91001" "$d/91002" "$d/1"
-    printf '%s (bash) S 91001 1 1 0 -1\n' "$$" > "$d/$$/stat"
+    mkdir -p "$d/$me" "$d/91001" "$d/91002" "$d/1"
+    printf '%s (bash) S 91001 1 1 0 -1\n' "$me" > "$d/$me/stat"
     printf '91001 (bq run (x) y) S 91002 1 1 0 -1\n' > "$d/91001/stat"
     printf '91002 (a b) S 1 1 1 0 -1\n' > "$d/91002/stat"
     printf '1 (init) S 0 1 1 0 -1\n' > "$d/1/stat"
     local i=2
-    for p in "$$" 91001 91002; do
+    for p in "$me" 91001 91002; do
         [ "${!i}" = "-" ] || printf '0::%s\n' "${!i}" > "$d/$p/cgroup"
         i=$((i + 1))
     done
@@ -104,12 +105,56 @@ expect worker "lane in-worker exits 2: cannot tell" "$tmp/lane2" "$tmp/p1"
 expect worker "lane in-worker exits 7: anything but 1" "$tmp/lane7" "$tmp/p1"
 expect worker "lane says 1 but an ancestor holds the runner's scope" "$tmp/lane1" "$tmp/p2"
 
-# subcommand missing (LB-C063 not installed): --help fails, the walk decides
-stub_lane "$tmp/lane-old" 0 0
-expect not "subcommand missing, clean tree: the walk says not" "$tmp/lane-old" "$tmp/p1"
-expect worker "subcommand missing, runner scope on a grandparent: the walk says worker" "$tmp/lane-old" "$tmp/p2"
+# `--help` fails (older lane): the call itself decides when it answers 0, 1 or 2
+stub_lane "$tmp/lane-nh0" 0 0
+stub_lane "$tmp/lane-nh1" 1 0
+stub_lane "$tmp/lane-nh2" 2 0
+expect worker "help fails, in-worker exits 0" "$tmp/lane-nh0" "$tmp/p1"
+expect not "help fails, in-worker exits 1 (clean tree)" "$tmp/lane-nh1" "$tmp/p1"
+expect worker "help fails, in-worker exits 1, runner scope on a grandparent" "$tmp/lane-nh1" "$tmp/p2"
+expect worker "help fails, in-worker exits 2" "$tmp/lane-nh2" "$tmp/p1"
+# any other status without a working --help: no such subcommand, the walk decides
+stub_lane "$tmp/lane-none" 9 0
+expect not "no in-worker subcommand, clean tree: the walk says not" "$tmp/lane-none" "$tmp/p1"
+expect worker "no in-worker subcommand, runner scope on a grandparent: the walk says worker" "$tmp/lane-none" "$tmp/p2"
 # a lane that is not there at all
 expect worker "no lane, runner scope on a grandparent" "$nolane" "$tmp/p2"
+# a lane that hangs: `timeout 10` counts as a worker
+printf '#!/bin/sh\nsleep 30\n' > "$tmp/lane-hang"
+chmod 0755 "$tmp/lane-hang"
+expect worker "a lane that hangs counts as a worker" "$tmp/lane-hang" "$tmp/p1"
+
+# --- 2b. no /proc and no lane on Darwin: not a worker; every other unreadable case stays a worker
+expect not "Darwin, proc root that does not exist" "$nolane" "$tmp/no-proc-here" Darwin
+expect worker "Linux, proc root that does not exist" "$nolane" "$tmp/no-proc-here" Linux
+expect not "Darwin, proc root without self" "$nolane" "$tmp/p2" Darwin
+mkdir "$tmp/p2/self"
+expect worker "Darwin but /proc/self exists: the walk decides" "$nolane" "$tmp/p2" Darwin
+rmdir "$tmp/p2/self"
+if ! (
+    export LANE_WORKER=1
+    in_lane_worker "$nolane" "$tmp/no-proc-here" Darwin
+); then fail "LANE_WORKER=1 on Darwin must still say worker"; fi
+
+# --- 2c. the same answers from a POSIX shell (dash), the fail-open the review found
+posix_answer() { # <cgroup of $$> <cgroup of parent 1> <cgroup of parent 2>: the answer of `sh` over a tree built for its pid
+    local out=$tmp/sh-out go=$tmp/sh-go pidf=$tmp/sh-pid i
+    rm -f "$out" "$go" "$pidf"
+    mkfifo "$go"
+    sh -c 'echo $$ > "$1"; read -r _ < "$2"; . "$3"; if in_lane_worker "$4" "$5"; then echo worker; else echo not; fi' \
+        sh "$pidf" "$go" "$root/scripts/lib/in-lane-worker.sh" "$nolane" "$tmp/psh" > "$out" 2>&1 &
+    for i in $(seq 1 100); do [ -s "$pidf" ] && break; sleep 0.1; done
+    me=$(cat "$pidf")
+    fake_proc "$tmp/psh" "$1" "$2" "$3"
+    echo go > "$go"
+    wait $! || true
+    me=$$
+    cat "$out"
+}
+[ "$(posix_answer "$clean" "$clean" "$clean")" = not ] || fail "sh: clean chain must say not"
+[ "$(posix_answer /user.slice/bq-4242.scope /user.slice/bq-wrap-1.scope /user.slice/lane-runner-ab12cd.scope)" = worker ] \
+    || fail "sh: runner scope on a grandparent must say worker (the [[ =~ ]] fail-open)"
+[ "$(posix_answer "$clean" /user.slice/lane-attempt-4521.scope "$clean")" = worker ] || fail "sh: attempt scope must say worker"
 
 # --- 3. variables are a second trigger, and cannot clear anything
 if ! (
@@ -152,6 +197,13 @@ entry() { # <script path under root>
     out=$(cd "$tmp" && LANE_WORKER=1 VERUS=/nonexistent/verus bash "$f" 2>&1 > /dev/null) || code=$?
     [ "$code" = 75 ] || fail "$1: exit $code, wanted 75: $out"
     [ "$out" = "$name: refused inside a lane worker (proofs run on GitHub)" ] || fail "$1: message was: $out"
+    for shell in sh dash; do
+        command -v "$shell" > /dev/null 2>&1 || continue
+        code=0
+        out=$(cd "$tmp" && LANE_WORKER=1 VERUS=/nonexistent/verus "$shell" "$f" 2>&1 > /dev/null) || code=$?
+        [ "$code" = 75 ] || fail "$1 under $shell: exit $code, wanted 75: $out"
+        [ "$out" = "$name: refused inside a lane worker (proofs run on GitHub)" ] || fail "$1 under $shell: message was: $out"
+    done
 }
 for e in scripts/verify.sh scripts/verify-shipped.sh scripts/verify-verus.sh; do
     entry "$e"

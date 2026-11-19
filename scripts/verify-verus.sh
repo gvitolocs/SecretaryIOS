@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 # GATE-12 / PF-C046: proofs run on GitHub; a lane worker starts none.
 . "$(dirname "$0")/lib/in-lane-worker.sh" || exit 75
@@ -7,6 +6,8 @@ if in_lane_worker; then
     echo "verify-verus.sh: refused inside a lane worker (proofs run on GitHub)" >&2
     exit 75
 fi
+
+set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
