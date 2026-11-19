@@ -82,6 +82,11 @@ const KILL_GRACE: Duration = Duration::from_secs(30);
 /// one that is not fails at once.
 const SCOPE_PROBE_CAP: Duration = Duration::from_secs(10);
 
+/// The systemd slice every gate step's scope and the scope probe are started in (HOST-11): build work
+/// belongs in `build.slice`, where the host puts its limits on builds, and not in the slice of whatever
+/// started the job. Only the scope route carries it; the process-group route has no unit to place.
+const SCOPE_SLICE: &str = "build.slice";
+
 /// What the host answers to the one question every step asks: can it have a transient systemd
 /// scope of its own, or is the process group all there is. Asked once per job, by asking and not by
 /// guessing from the environment (finding GATE-05: the group alone is the route a nested scope
@@ -482,6 +487,7 @@ impl Exec {
                     std::ffi::OsString::from("--unit"),
                     std::ffi::OsString::from(u),
                     std::ffi::OsString::from("--expand-environment=no"),
+                    std::ffi::OsString::from(format!("--slice={SCOPE_SLICE}")),
                     std::ffi::OsString::from("--"),
                     bash.to_path_buf().into(),
                 ];
@@ -3568,6 +3574,25 @@ mod tests {
             "systemd-run expands the braced dollar-brace form of a payload argv it is handed unless this says otherwise, \
              which is the only reason the step had a file of its own: {flags:?}"
         );
+        let slice_at = flags
+            .iter()
+            .position(|f| f == "--slice=build.slice")
+            .expect("the scope route places its unit in build.slice (HOST-11)");
+        let dashes_at = flags
+            .iter()
+            .position(|f| f == "--")
+            .expect("the scope route separates its options from the payload");
+        assert!(
+            slice_at < dashes_at,
+            "the slice is an option of systemd-run, so it comes before the payload: {flags:?}"
+        );
+        let (_, plain) = Exec::step_argv(bash, None, None, cmd);
+        assert!(
+            !plain
+                .iter()
+                .any(|a| a.to_string_lossy().starts_with("--slice")),
+            "the process-group route has no scope and so no slice: {plain:?}"
+        );
         let unit_at = flags
             .iter()
             .position(|f| f == "--unit")
@@ -3662,6 +3687,10 @@ mod tests {
             asked.contains("--expand-environment=no"),
             "the probe was asked without the option a step is handed, so a host that refuses it says \
              yes to the job and no to every gate: {asked}"
+        );
+        assert!(
+            asked.contains("--slice=build.slice"),
+            "the probe is asked with the argv a step gets, slice included: {asked}"
         );
         assert!(
             asked.contains("bash -c /bin/true"),
