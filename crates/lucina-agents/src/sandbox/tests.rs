@@ -1346,3 +1346,20 @@ fn the_generator_puts_both_tmpfs_mounts_before_every_bind() {
         assert!(!covered.iter().any(|c| t.starts_with(c)), "{w:?}");
     }
 }
+
+#[test]
+fn the_audit_refuses_a_tmpfs_or_chdir_value_not_in_normal_form() {
+    let a = args(&run("qoder"));
+    let home_x = format!("{HOME}/x/..");
+    let ws_dot = format!("{WS}/.");
+    let ws_slash = format!("{WS}/");
+    let ws_double = WS.replacen("/home/nez/", "/home/nez//", 1);
+    assert!(a.contains(&WS.to_owned()));
+    assert!(audit_with(&["--tmpfs", &home_x]).is_err());
+    assert!(audit_with(&["--tmpfs", "/tmp/"]).is_err());
+    assert!(audit_with(&["--tmpfs", "/tmp/."]).is_err());
+    for p in [&ws_dot, &ws_slash, &ws_double] {
+        let e = audit_with(&["--chdir", p]).expect_err(p);
+        assert!(e.to_string().contains("--chdir"), "{p}");
+    }
+}
