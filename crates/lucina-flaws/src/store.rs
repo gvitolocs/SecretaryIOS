@@ -2920,6 +2920,19 @@ CREATE TABLE flaw_events (
             .unwrap()
             .unwrap();
         assert_eq!(t.status, TargetStatus::Affected, "a rolling window");
+        // Lane failures never count as task failures, however spread over the window: five of
+        // them a day apart block nothing and add no task failure.
+        let h = due_on(&s, "z", Platform::Web);
+        for _ in 0..5 {
+            let t = s.claim(&h.id, Platform::Web, "/r", "d").unwrap();
+            let t = s
+                .give_back_if(&h.id, Platform::Web, &t.claim_ref(), "sign-in", true, "d")
+                .unwrap()
+                .unwrap();
+            assert_eq!(t.status, TargetStatus::Affected);
+            clock.fetch_add(25 * 60, Ordering::SeqCst);
+        }
+        assert_eq!(s.task_failures(&h.id, Platform::Web).unwrap(), 0);
     }
 
     #[test]

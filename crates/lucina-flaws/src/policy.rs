@@ -477,6 +477,14 @@ pub fn outcome_line(flaw: &Flaw, target: &Target, policy: &Policy) -> String {
         }
         TargetStatus::Verified => "fixed and shown working".to_owned(),
         TargetStatus::NotAffected => "doesn't happen there".to_owned(),
+        // Blocked by its agents' lane failing, never by a failed fix: say that, not "0 tries".
+        TargetStatus::Blocked if target.attempts == 0 => format!(
+            "its agents kept ending on the lane failing, not on the fix ({}); it needs a lead to look at it",
+            target
+                .last_error
+                .as_deref()
+                .map_or(String::from("no error text"), |e| e.chars().take(80).collect())
+        ),
         TargetStatus::Blocked => format!(
             "I couldn't fix it after {} tries; it needs a lead to look at it",
             target.attempts
