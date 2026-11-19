@@ -18,18 +18,25 @@ fn bad(msg: impl Into<String>) -> ToolError {
 }
 
 fn parse<T: serde::de::DeserializeOwned>(args: &JsonObject) -> Result<T, ToolError> {
-    serde_json::from_value(Value::Object(args.clone())).map_err(|e| bad(format!("Invalid arguments: {e}")))
+    serde_json::from_value(Value::Object(args.clone()))
+        .map_err(|e| bad(format!("Invalid arguments: {e}")))
 }
 
 fn id_ok(id: &str) -> bool {
-    id.strip_prefix("fl-").is_some_and(|h| h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    id.strip_prefix("fl-").is_some_and(|h| {
+        h.len() == 8
+            && h.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 fn check_id(id: &str) -> Result<(), ToolError> {
     if id_ok(id) {
         Ok(())
     } else {
-        Err(bad("`id` is `fl-` and 8 lowercase hex digits (flaw_search finds it)"))
+        Err(bad(
+            "`id` is `fl-` and 8 lowercase hex digits (flaw_search finds it)",
+        ))
     }
 }
 
@@ -176,7 +183,10 @@ fn pretty(v: &Value) -> String {
 
 /// The matrix as a text table.
 fn format_matrix(v: &Value) -> String {
-    let platforms: Vec<&str> = v["platforms"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let platforms: Vec<&str> = v["platforms"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
     let mut out = String::new();
     let rows = v["rows"].as_array().map(Vec::as_slice).unwrap_or_default();
     if rows.is_empty() {
@@ -204,7 +214,13 @@ fn format_matrix(v: &Value) -> String {
 }
 
 impl Tools<'_> {
-    async fn flaw_req(&self, method: Method, path: &str, query: &[(&str, String)], body: Option<&Value>) -> Result<Value, ToolError> {
+    async fn flaw_req(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<Value, ToolError> {
         self.app
             .backend
             .send_device_query(method, path, query, body, caller_headers(&self.caller.name))
@@ -220,9 +236,14 @@ impl Tools<'_> {
                     return Err(bad("`words` is the owner's report, in his words"));
                 }
                 let body = serde_json::to_value(&a).map_err(|e| bad(e.to_string()))?;
-                let r = self.flaw_req(Method::POST, "/v1/flaws", &[], Some(&body)).await?;
+                let r = self
+                    .flaw_req(Method::POST, "/v1/flaws", &[], Some(&body))
+                    .await?;
                 let mut out = format!("Recorded {}.", line(&r["flaw"]));
-                if let Some(d) = r["possible_duplicates"].as_array().filter(|d| !d.is_empty()) {
+                if let Some(d) = r["possible_duplicates"]
+                    .as_array()
+                    .filter(|d| !d.is_empty())
+                {
                     out.push_str("\nIt may be the same as:");
                     for f in d {
                         out.push_str(&format!("\n- {}", line(f)));
@@ -233,7 +254,12 @@ impl Tools<'_> {
             "flaw_search" => {
                 let a: SearchArgs = parse(args)?;
                 let mut q: Vec<(&str, String)> = Vec::new();
-                for (k, v) in [("q", &a.q), ("state", &a.state), ("platform", &a.platform), ("status", &a.status)] {
+                for (k, v) in [
+                    ("q", &a.q),
+                    ("state", &a.state),
+                    ("platform", &a.platform),
+                    ("status", &a.status),
+                ] {
                     if let Some(v) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                         q.push((k, v.to_owned()));
                     }
@@ -246,17 +272,25 @@ impl Tools<'_> {
                 }
                 let v = self.flaw_req(Method::GET, "/v1/flaws", &q, None).await?;
                 let items = v["items"].as_array().map(Vec::as_slice).unwrap_or_default();
-                Ok(if items.is_empty() { "No flaws match.".into() } else { items.iter().map(line).collect::<Vec<_>>().join("\n") })
+                Ok(if items.is_empty() {
+                    "No flaws match.".into()
+                } else {
+                    items.iter().map(line).collect::<Vec<_>>().join("\n")
+                })
             }
             "flaw_status" => {
                 let a: StatusArgs = parse(args)?;
                 check_id(&a.id)?;
-                let v = self.flaw_req(Method::GET, &format!("/v1/flaws/{}", seg(&a.id)), &[], None).await?;
+                let v = self
+                    .flaw_req(Method::GET, &format!("/v1/flaws/{}", seg(&a.id)), &[], None)
+                    .await?;
                 Ok(pretty(&v))
             }
             "flaw_matrix" => {
                 let _: NoArgs = parse(args)?;
-                let v = self.flaw_req(Method::GET, "/v1/flaws/matrix", &[], None).await?;
+                let v = self
+                    .flaw_req(Method::GET, "/v1/flaws/matrix", &[], None)
+                    .await?;
                 Ok(format_matrix(&v))
             }
             "flaw_target" => {
@@ -264,7 +298,12 @@ impl Tools<'_> {
                 check_id(&a.id)?;
                 let body = serde_json::to_value(&a).map_err(|e| bad(e.to_string()))?;
                 let v = self
-                    .flaw_req(Method::PUT, &format!("/v1/flaws/{}/targets/{}", seg(&a.id), seg(&a.platform)), &[], Some(&body))
+                    .flaw_req(
+                        Method::PUT,
+                        &format!("/v1/flaws/{}/targets/{}", seg(&a.id), seg(&a.platform)),
+                        &[],
+                        Some(&body),
+                    )
                     .await?;
                 Ok(pretty(&v))
             }
@@ -272,8 +311,19 @@ impl Tools<'_> {
                 let a: DispatchArgs = parse(args)?;
                 check_id(&a.id)?;
                 let body = json!({"platform": a.platform});
-                let v = self.flaw_req(Method::POST, &format!("/v1/flaws/{}/dispatch", seg(&a.id)), &[], Some(&body)).await?;
-                Ok(format!("Started a task on {}: agent {}.", a.platform, v["agent"].as_str().unwrap_or("?")))
+                let v = self
+                    .flaw_req(
+                        Method::POST,
+                        &format!("/v1/flaws/{}/dispatch", seg(&a.id)),
+                        &[],
+                        Some(&body),
+                    )
+                    .await?;
+                Ok(format!(
+                    "Started a task on {}: agent {}.",
+                    a.platform,
+                    v["agent"].as_str().unwrap_or("?")
+                ))
             }
             _ => Err(bad(format!("unknown tool {name}"))),
         }
