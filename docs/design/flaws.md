@@ -52,21 +52,36 @@ that step's lane, not always the first one.
 
 `crate::flaws::tick`, every minute in lucina-rs:
 
-1. **Reconcile.** For each target an agent holds: a merged task records the commit and becomes `fixed`; an agent that ended
-   without a merge gives the claim back and retries on a new branch, then `blocked` after 2 tries; after 45 minutes it is
-   stopped; a flaw that became a duplicate or was dismissed stops its agent.
+1. **Reconcile.** For each target an agent holds: a merged task records the commit and becomes `fixed`. An agent that
+   ended without a merge is put away (stopped and archived) and its claim ends one of two ways. A *lane failure* (its error
+   says the sign-in was refused, the quota or limit is out, or the provider is unavailable; or it never provably worked: no
+   tool call on its timeline, no commit or change in its workspace) gives the claim back, counts no attempt and opens the
+   lane's breaker. A *task failure* (the agent provably worked and did not fix it) is a counted attempt: the target waits
+   5 minutes, doubling per failure up to 2 hours, and the third task failure inside 24 hours (`LUCINA_FLAWS_MAX_ATTEMPTS`)
+   makes it `blocked` for a lead, and he is told once. After 45 minutes an agent is stopped (a task failure). A flaw that
+   became a duplicate or was dismissed stops its agent. Every release carries the agent and claim it read, and touches
+   nothing newer. A claim with no agent after 5 minutes asks agentd by labels first: an agent that exists is attached, none
+   is a give-back, never a counted try.
 2. **Triage.** A report with clients nobody looked at gets one agent, once, that reads the code and sets status and layer
    (`LUCINA_FLAWS_AUTO_TRIAGE`). This is what turns a plain "emoji are boxes" into a target that can start. The rows it
    leaves open stay open. It runs on the cheap end of the chain only, `LUCINA_FLAWS_TRIAGE_STEPS` steps of it, and waits
    when none of those has quota: it never reaches an expensive step.
-3. **Start.** Every `affected` target with a layer, held by nobody: worst first, at most `LUCINA_FLAWS_MAX_RUNNING` (2) per
-   repo, triage agents included, so nezopt doesn't overheat. A claim is atomic, so nothing starts twice, and a failed start
-   gives it back. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
+3. **Start.** Every `affected` target with a layer, held by nobody and past its back-off: worst first, under caps on agents
+   *alive* (the union, by agent id, of `fixing` rows and what agentd lists with the label `flaw`, triage agents included, from
+   one `GET /agents` per tick; agentd that cannot be asked means no dispatch): `LUCINA_FLAWS_MAX_ALIVE` (3) in all,
+   `LUCINA_FLAWS_MAX_PER_LANE` (1) per lane, `LUCINA_FLAWS_MAX_RUNNING` (2) per repo, and at most
+   `LUCINA_FLAWS_MAX_NEW_PER_TICK` (1) new dispatch per tick, so nezopt doesn't overheat. An owner-approved gated flaw counts
+   like any other. One dispatch lock serialises cap check, claim, create and attach for the loop and for `POST
+   /flaws/{id}/dispatch`; the claim re-checks the counts in SQL (a second process on the file), and a refused claim is `409
+   busy` with nothing started. The create carries the idempotency key `flaw:<id>:<platform>:<claim number>`; a create that
+   errors looks agentd up by labels before it gives anything back, and an agent that exists is attached. Every dispatch
+   writes one line, `flaws: dispatched flaw=.. platform=.. caller=loop|post|mcp attempt=.. lane=.. agent=..`, and a
+   refusal one line with its reason. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
    probe says it has quota; it never comes back up to a cheaper step it started at. When no step from there down is ready,
    nothing starts this round. A server or core fix is one task and one commit for every client waiting on it.
 4. **Tell him.** Fixed, closed or blocked targets, once per change, in his chat and on his phone.
 
-`POST /flaws/{id}/dispatch` starts one under the same gates and cap. A session already on a target sets `session` on it
+`POST /flaws/{id}/dispatch` (`{platform, caller?}`) starts one under the same gates and caps. A session already on a target sets `session` on it
 and the dispatcher leaves it alone.
 
 Agents run through agentd on the step of the chain the try landed on, at medium effort (never Codex), in a `lagent task`
@@ -77,11 +92,18 @@ history entry and in the line she writes in his chat when it starts.
 stays: this slice only adds `service:lucina` to starting a task. So an agent stops at merged (`fixed`), a session deploys,
 and the target closes with evidence after that. Lucina says so when she tells him.
 
-**Quota.** An agent ending on a limit (Claude's weekly limit, 2026-11-02) isn't a failed fix: the claim goes back, the try
-doesn't count and he isn't told it failed — and that step's lane is marked out, so the next round's walk down takes the step
-below it. Each lane answers for itself: `lane probe` runs per step, its answer cached half an hour while the lane is ready
-and an hour while it is out. Only when the walk finds no ready step at all does the target wait, so an outage leaves no
-trail of worktrees. Then it starts by itself.
+**The lane breaker (DISP-01, the 2026-11-19 storm: 29 agents failed at sign-in in ten minutes).** An agent ending on a limit
+(Claude's weekly limit, 2026-11-02), a refused sign-in or an unavailable provider isn't a failed fix: the claim goes back, the
+try doesn't count and he isn't told it failed. That lane's breaker, kept in the flaw store so it survives a restart, opens on
+the first such failure, whatever was cached about the lane being ready, and one ops record says so once. While it is open
+nothing is dispatched on the lane and the walk down passes it; every tick probes it, and a probe that cannot run, times out or
+says anything but ok is not ready. A passing probe makes it half-open: exactly one agent may try the lane, and its first
+turn succeeding closes the breaker (failing opens it again). `lucina-rs flaws lane clear <lane>` and `POST
+/flaws/lanes/{lane}/clear` close it by hand; `lucina-rs flaws lanes` and `GET /flaws/lanes` list the breakers. A create
+answered `503 PROVIDER_TRIPPED` or `429 AGENT_LIMIT` (agentd's own breaker and create caps) is the same failure. Only when
+the walk finds no usable step at all does the target wait, so an outage leaves no trail of worktrees. Then it starts by itself.
+After a deploy, `lucina-rs flaws restore-lane-failures --since <rfc3339> [--apply]` lists, and with `--apply` resets, the
+blocked targets whose every failure since was a lane failure by the stored agent error text.
 
 ## Getting a report in
 

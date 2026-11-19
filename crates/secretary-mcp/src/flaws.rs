@@ -310,7 +310,8 @@ impl Tools<'_> {
             "flaw_dispatch" => {
                 let a: DispatchArgs = parse(args)?;
                 check_id(&a.id)?;
-                let body = json!({"platform": a.platform});
+                // The caller tag the dispatcher logs with every start.
+                let body = json!({"platform": a.platform, "caller": "mcp"});
                 let v = self
                     .flaw_req(
                         Method::POST,

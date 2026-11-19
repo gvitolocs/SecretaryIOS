@@ -399,6 +399,29 @@ enum FlawsCmd {
     },
     /// Every live flaw against every client.
     Matrix,
+    /// The dispatcher's lane breakers: closed, open or half-open, and why.
+    Lanes,
+    /// Act on one lane's breaker.
+    Lane {
+        #[command(subcommand)]
+        cmd: LaneCmd,
+    },
+    /// Blocked targets whose failures since the time given were all lane failures (sign-in,
+    /// quota, provider down), one line each: flaw, platform, attempts, last error. With --apply
+    /// they are reset (attempts 0, affected, no back-off); without it nothing changes.
+    RestoreLaneFailures {
+        /// RFC 3339, e.g. 2026-11-19T00:40:00Z.
+        #[arg(long)]
+        since: String,
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LaneCmd {
+    /// A lead closes the breaker: dispatch on the lane resumes.
+    Clear { lane: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -878,7 +901,7 @@ async fn upstream_cmd(cmd: UpstreamCmd) -> anyhow::Result<()> {
 /// `lucina-rs decide …`: a client of the running server (`/api/secretary/decisions`), so the
 /// decision goes through the same path as `lucina_decide`: evidence, Jev, the owner's push, the
 /// ops record. The API token comes from the unit's env files and is never printed.
-fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
+async fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
     use lucina_flaws::{
         Evidence, EvidenceKind, Gate, Layer, ListQuery, NewFlaw, Platform, Severity, TargetStatus,
         TargetUpdate,
@@ -1006,6 +1029,41 @@ fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
             }
         }
         FlawsCmd::Matrix => flaws.matrix()?,
+        FlawsCmd::Lanes => serde_json::to_value(flaws.lanes()?)?,
+        FlawsCmd::Lane {
+            cmd: LaneCmd::Clear { lane },
+        } => {
+            let cleared = flaws.lane_close(&lane)?;
+            serde_json::json!({"lane": lane, "cleared": cleared})
+        }
+        FlawsCmd::RestoreLaneFailures { since, apply } => {
+            let found = lucina_server::flaws::restore_lane_failures(
+                &flaws,
+                &since,
+                apply,
+                &lucina_server::flaws::SocketErrors,
+            )
+            .await?;
+            for r in &found {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    r.flaw_id,
+                    r.platform,
+                    r.attempts,
+                    r.last_error.replace(['\n', '\t'], " ")
+                );
+            }
+            eprintln!(
+                "{} target(s) {}",
+                found.len(),
+                if apply {
+                    "reset"
+                } else {
+                    "would be reset (run with --apply)"
+                }
+            );
+            return Ok(());
+        }
     };
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -1624,7 +1682,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             );
         }
         Cmd::SecretKeep { cmd } => keep_cmd(cmd).await?,
-        Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db)?,
+        Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db).await?,
         Cmd::Parcels { cmd } => parcels_cmd(cmd).await?,
         Cmd::Reach { cmd } => reach_cmd(cmd).await?,
         Cmd::Jev { cmd } => jev_cmd(cmd).await?,

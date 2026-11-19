@@ -1001,4 +1001,41 @@ mod tests {
         ));
         assert!(runtime_serves(Platform::Ios, Some(Layer::Core), "ios"));
     }
+
+    #[test]
+    fn the_dispatch_caps_and_the_failure_window_have_their_defaults_and_keys() {
+        // LA-C035: 3 agents alive in all, 1 per lane, 1 new dispatch per tick, and three task
+        // failures inside a day before a lead is needed.
+        let p = policy();
+        assert_eq!(
+            (
+                p.max_alive,
+                p.max_per_lane,
+                p.max_new_per_tick,
+                p.max_running_per_repo,
+                p.max_attempts
+            ),
+            (3, 1, 1, 2, 3)
+        );
+        let get = |k: &str| match k {
+            "LUCINA_FLAWS_MAX_ALIVE" => Some("5".to_owned()),
+            "LUCINA_FLAWS_MAX_PER_LANE" => Some("2".to_owned()),
+            "LUCINA_FLAWS_MAX_NEW_PER_TICK" => Some("4".to_owned()),
+            "LUCINA_FLAWS_MAX_ATTEMPTS" => Some("6".to_owned()),
+            _ => None,
+        };
+        let p = Policy::from_lookup(get, Path::new("/h")).unwrap();
+        assert_eq!(
+            (
+                p.max_alive,
+                p.max_per_lane,
+                p.max_new_per_tick,
+                p.max_attempts
+            ),
+            (5, 2, 4, 6)
+        );
+        // Zero or text is no cap at all: the default stands.
+        let p = one("LUCINA_FLAWS_MAX_ALIVE", "0");
+        assert_eq!(p.max_alive, 3);
+    }
 }
