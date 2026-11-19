@@ -1268,3 +1268,133 @@ fn the_audit_refuses_an_appended_ro_bind_try() {
     assert!(text.contains("--ro-bind-try"), "{text}");
     assert!(text.contains("position"), "{text}");
 }
+
+/// A resolved list with `extra` inserted before the final `--`, run through the audit.
+fn audit_with(extra: &[&str]) -> Result<()> {
+    let hidden = Hidden::for_run(&policy(), Path::new(HOME), "qoder").unwrap();
+    let mut a = args(&run("qoder"));
+    a.pop();
+    a.extend(extra.iter().map(|s| s.to_string()));
+    a.push("--".into());
+    audit(&hidden, &a)
+}
+
+#[test]
+fn the_audit_refuses_a_tmpfs_over_any_bound_target() {
+    let a = args(&run("qoder"));
+    let targets: Vec<&str> = a
+        .windows(3)
+        .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
+        .map(|w| w[2].as_str())
+        .collect();
+    assert!(targets.contains(&"/usr"), "{targets:?}");
+    assert!(targets.len() > 10, "{targets:?}");
+    for t in targets {
+        let e = audit_with(&["--tmpfs", t]).expect_err(t);
+        let text = e.to_string();
+        assert!(
+            text.contains("--tmpfs") && text.contains("position"),
+            "{t}: {text}"
+        );
+        assert!(text.contains(t), "{t}: {text}");
+    }
+}
+
+#[test]
+fn the_audit_refuses_a_tmpfs_over_a_parent_of_a_locked_target() {
+    let a = args(&run("qoder"));
+    let targets: Vec<&str> = a
+        .windows(3)
+        .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
+        .map(|w| w[2].as_str())
+        .collect();
+    // Every ancestor of every bound target, taken from the list itself.
+    let mut parents: BTreeSet<String> = BTreeSet::new();
+    for t in &targets {
+        for anc in Path::new(t).ancestors().skip(1) {
+            parents.insert(anc.to_string_lossy().into_owned());
+        }
+    }
+    let hooks = targets
+        .iter()
+        .find(|t| t.ends_with("/hooks"))
+        .expect("a hooks lock");
+    let hooks_parent = Path::new(hooks)
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(parents.contains(&hooks_parent), "{hooks_parent}");
+    assert!(parents.len() > 5, "{parents:?}");
+    for parent in &parents {
+        assert!(audit_with(&["--tmpfs", parent]).is_err(), "{parent}");
+    }
+}
+
+#[test]
+fn the_audit_refuses_a_home_tmpfs_after_a_read_write_bind_under_the_home() {
+    let a = args(&run("qoder"));
+    let rw_under_home = a
+        .windows(3)
+        .filter(|w| w[0] == "--bind")
+        .map(|w| w[2].as_str())
+        .find(|t| Path::new(t).starts_with(HOME) && *t != HOME)
+        .expect("a read-write bind under the home");
+    // The value is the home itself, so only the ordering rule can refuse it.
+    let e = audit_with(&["--tmpfs", HOME]).expect_err(rw_under_home);
+    let text = e.to_string();
+    assert!(text.contains("would hide the earlier bind"), "{text}");
+    assert!(
+        Path::new(rw_under_home).starts_with(HOME) && text.contains(HOME),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_audit_refuses_a_chdir_outside_the_read_write_binds() {
+    for p in ["/", "/etc", "/usr", COMMON, "relative"] {
+        let e = audit_with(&["--chdir", p]).expect_err(p);
+        assert!(e.to_string().contains("--chdir"), "{p}");
+    }
+}
+
+#[test]
+fn no_earlier_bind_sits_at_or_under_a_path_a_tmpfs_covers() {
+    let a = args(&run("qoder"));
+    let tmpfs: Vec<usize> = a
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| *x == "--tmpfs")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(tmpfs.len(), 2, "{a:?}");
+    let last_tmpfs = *tmpfs.last().unwrap();
+    // Earlier binds are allowed, but none may be at or under a path a tmpfs then covers.
+    let covered: Vec<&Path> = tmpfs.iter().map(|i| Path::new(&a[i + 1])).collect();
+    let before: Vec<&[String]> = a[..last_tmpfs]
+        .windows(3)
+        .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
+        .collect();
+    for w in before {
+        let t = Path::new(&w[2]);
+        assert!(!covered.iter().any(|c| t.starts_with(c)), "{w:?}");
+    }
+}
+
+#[test]
+fn the_audit_refuses_a_tmpfs_or_chdir_value_not_in_normal_form() {
+    let a = args(&run("qoder"));
+    let home_x = format!("{HOME}/x/..");
+    let ws_dot = format!("{WS}/.");
+    let ws_slash = format!("{WS}/");
+    let ws_double = WS.replacen("/home/nez/", "/home/nez//", 1);
+    assert!(a.contains(&WS.to_owned()));
+    assert!(audit_with(&["--tmpfs", &home_x]).is_err());
+    let tmp = &a[a.iter().position(|x| x == "--tmpfs").unwrap() + 1];
+    assert!(audit_with(&["--tmpfs", &format!("{tmp}/")]).is_err());
+    assert!(audit_with(&["--tmpfs", &format!("{tmp}/.")]).is_err());
+    for p in [&ws_dot, &ws_slash, &ws_double] {
+        let e = audit_with(&["--chdir", p]).expect_err(p);
+        assert!(e.to_string().contains("--chdir"), "{p}");
+    }
+}
