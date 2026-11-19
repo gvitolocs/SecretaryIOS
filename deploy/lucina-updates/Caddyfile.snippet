@@ -20,6 +20,8 @@ handle @updates {
 		request_body {
 			max_size 1KiB
 		}
+		# UPDATES_UPSTREAM must be replaced by the address at which p1 Caddy reaches the nezopt sidecar (it listens on
+		# 127.0.0.1:8811 on nezopt). The coordinator sets it at deploy; do not apply this snippet while it is undefined.
 		reverse_proxy UPDATES_UPSTREAM {
 			# Large artefacts and Range requests stream through: no buffering, no read deadline
 			# for a slow phone.
