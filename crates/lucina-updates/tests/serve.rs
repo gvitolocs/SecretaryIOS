@@ -343,7 +343,7 @@ async fn bad_artefact_names_are_404() {
         format!("{sha}.BIN"),                  // uppercase extension
         format!("{sha}.exe!"),                 // bad extension character
         format!("{sha}.verylongext"),          // extension over 8
-        sha.to_string(),                      // no extension
+        sha.to_string(),                       // no extension
         format!("{sha}."),                     // empty extension
         format!("{sha}.bin.gz.extra"),         // extra suffix
         format!("{sha}.bin/"),                 // trailing slash
