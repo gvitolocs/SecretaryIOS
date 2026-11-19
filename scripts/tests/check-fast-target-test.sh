@@ -8,6 +8,7 @@
 #   (3) an inherited CARGO_TARGET_DIR outside the cache is kept and warned about; inside the cache it is kept silently;
 #   (4) LUCINA_CHECK_ALLOW_TARGET=1 silences the warning, the target is still kept.
 #   (5) the child sees CARGO_INCREMENTAL=0, and an explicitly inherited value is kept.
+#   (6) LUCINA_AGENT_SHARED_TARGET equal (after readlink -f) to the inherited target: it is dropped and the worktree target is used, with one line; a different or absent target, or an empty variable, changes nothing.
 # Last line: `check-fast-target-test: pass`.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -93,5 +94,40 @@ run_in wt-a
 [ "$inc" = 0 ] || fail "CARGO_INCREMENTAL is not 0 by default: $inc"
 run_in wt-a CARGO_INCREMENTAL=1
 [ "$inc" = 1 ] || fail "an inherited CARGO_INCREMENTAL was not kept: $inc"
+
+# (6) the agent runner's shared target (LUCINA_AGENT_SHARED_TARGET) is not used: the check builds in its own per-worktree target
+shared_line="the agent's shared target is not used"
+mtime() { stat -c %Y "$1"; }
+mkdir -p "$tmp/agent-shared"
+touch -d '2020-01-01 00:00:00' "$tmp/agent-shared"
+before=$(mtime "$tmp/agent-shared")
+run_in wt-a CARGO_TARGET_DIR="$tmp/agent-shared" LUCINA_AGENT_SHARED_TARGET="$tmp/agent-shared"
+[ "$out" = "$a1" ] || fail "the agent's shared target was not replaced by the worktree target: $out (want $a1)"
+[ "$(mtime "$tmp/agent-shared")" = "$before" ] || fail "the shared target was touched"
+[ ! -e "$tmp/agent-shared/.last-used" ] || fail "the shared target got a .last-used"
+[ "$(grep -c "$shared_line" "$tmp/err")" = 1 ] || fail "want exactly one line about the shared target: $(cat "$tmp/err")"
+grep -q "building in $a1\$" "$tmp/err" || fail "the line does not name the real target: $(cat "$tmp/err")"
+no_target_warning "agent shared target"
+# a different inherited target is still warned about and kept
+mkdir -p "$tmp/other-shared"
+run_in wt-a CARGO_TARGET_DIR="$tmp/other-shared" LUCINA_AGENT_SHARED_TARGET="$tmp/agent-shared"
+[ "$out" = "$tmp/other-shared" ] || fail "a different inherited target was not kept: $out"
+grep -q "warning: CARGO_TARGET_DIR=$tmp/other-shared (inherited) is outside" "$tmp/err" || fail "no warning for a different target: $(cat "$tmp/err")"
+if grep -q "$shared_line" "$tmp/err"; then fail "the shared-target line was printed for a different target"; fi
+# a symlink to the shared target counts as the same place
+ln -s "$tmp/agent-shared" "$tmp/agent-link"
+run_in wt-a CARGO_TARGET_DIR="$tmp/agent-link" LUCINA_AGENT_SHARED_TARGET="$tmp/agent-shared"
+[ "$out" = "$a1" ] || fail "a symlink to the shared target was kept: $out"
+[ "$(grep -c "$shared_line" "$tmp/err")" = 1 ] || fail "symlink: want one line: $(cat "$tmp/err")"
+no_target_warning "symlink"
+# the variable set but no inherited target: nothing changes
+run_in wt-a LUCINA_AGENT_SHARED_TARGET="$tmp/agent-shared"
+[ "$out" = "$a1" ] || fail "variable without an inherited target changed the target: $out"
+if grep -q "$shared_line" "$tmp/err"; then fail "a line was printed without an inherited target"; fi
+# the variable empty: nothing changes
+run_in wt-a CARGO_TARGET_DIR="$tmp/elsewhere" LUCINA_AGENT_SHARED_TARGET=
+[ "$out" = "$tmp/elsewhere" ] || fail "an empty variable changed the target: $out"
+if grep -q "$shared_line" "$tmp/err"; then fail "a line was printed for an empty variable"; fi
+grep -q "warning: CARGO_TARGET_DIR=$tmp/elsewhere (inherited)" "$tmp/err" || fail "empty variable: the warning is gone"
 
 echo "check-fast-target-test: pass"

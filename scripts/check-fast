@@ -173,11 +173,28 @@ fi
 # which includes these wt-* children.
 cache_root=${LUCINA_CHECK_CACHE:-$qhome/.cache/lucina-check-target}
 wt_id=wt-$(printf '%s' "$root" | sha1sum | cut -c1-10)
+# The agent runner gives every agent in a worktree one shared Cargo target for its plain builds and names it in
+# LUCINA_AGENT_SHARED_TARGET. A check run by such an agent inherits it as CARGO_TARGET_DIR; it is dropped here, so the check builds in
+# its own per-worktree target below and does not warn about the inherited one. The variable can be set by anyone running as this user
+# and can hold any path: all it can do is make this script use its OWN target instead of the inherited one, never someone else's.
+# Only a path that resolves to the same place as the inherited target counts; a different inherited target is judged as before.
+agent_shared=0
+if [ -n "${LUCINA_AGENT_SHARED_TARGET:-}" ] && [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    shared_real=$(readlink -f "$LUCINA_AGENT_SHARED_TARGET" 2>/dev/null || true)
+    inherited_real=$(readlink -f "$CARGO_TARGET_DIR" 2>/dev/null || true)
+    if [ -n "$shared_real" ] && [ "$shared_real" = "$inherited_real" ]; then
+        unset CARGO_TARGET_DIR
+        agent_shared=1
+    fi
+fi
 if [ -n "${CARGO_TARGET_DIR:-}" ] && [ "${CARGO_TARGET_DIR#"$cache_root"/}" = "$CARGO_TARGET_DIR" ] && [ "${LUCINA_CHECK_ALLOW_TARGET:-}" != 1 ]; then
     echo "check-fast: warning: CARGO_TARGET_DIR=$CARGO_TARGET_DIR (inherited) is outside $cache_root; a target shared with other worktrees can hold another commit's artifacts (set LUCINA_CHECK_ALLOW_TARGET=1 to silence this)." >&2
 fi
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$cache_root/$wt_id}
 mkdir -p "$CARGO_TARGET_DIR"
+if [ "$agent_shared" = 1 ]; then
+    echo "check-fast: the agent's shared target is not used; building in $CARGO_TARGET_DIR" >&2
+fi
 touch "$CARGO_TARGET_DIR/.last-used"
 # No incremental compilation: the caches rarely get reused and were nearly half the old shared target's size (40 of 89 GiB on 2026-11-11,
 # when nezopt's disk ran short). A caller that sets CARGO_INCREMENTAL keeps its value.
