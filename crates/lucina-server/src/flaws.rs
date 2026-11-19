@@ -261,16 +261,8 @@ pub async fn route(
                 _ => "post",
             };
             let hands = StateHands { st: st.clone() };
-            let t = dispatch_one_as(
-                &flaws,
-                &st.cfg.flaws.policy,
-                &hands,
-                id,
-                p,
-                &actor,
-                caller,
-            )
-            .await?;
+            let t = dispatch_one_as(&flaws, &st.cfg.flaws.policy, &hands, id, p, &actor, caller)
+                .await?;
             Ok(ok_status(202, redacted(json!(t))))
         }
         _ => Err(ApiError::not_found()),
@@ -637,9 +629,18 @@ async fn sweep_idle(flaws: &Flaws, hands: &dyn Hands, alive: &mut Vec<Alive>) {
 
 /// An agent that works on a target the store says nobody holds: it cannot be tracked, so it goes
 /// before a new one starts. `alive`: the list this dispatch was decided on.
-async fn clear_orphans(hands: &dyn Hands, alive: &[Alive], flaw: &str, p: Platform) {
+async fn clear_orphans(flaws: &Flaws, hands: &dyn Hands, alive: &[Alive], flaw: &str, p: Platform) {
+    let held = flaws
+        .get(flaw)
+        .ok()
+        .and_then(|d| d.targets.into_iter().find(|t| t.platform == p))
+        .filter(|t| t.status == TargetStatus::Fixing)
+        .and_then(|t| t.agent);
     for a in alive.iter().filter(|a| {
-        !a.triage && a.flaw.as_deref() == Some(flaw) && a.platform.as_deref() == Some(p.as_str())
+        !a.triage
+            && a.flaw.as_deref() == Some(flaw)
+            && a.platform.as_deref() == Some(p.as_str())
+            && held.as_deref() != Some(a.id.as_str())
     }) {
         tracing::warn!(flaw, platform = %p, agent = %a.id, "flaws: an agent nobody tracks already works on this target; stopping it first");
         put_away(hands, &a.id).await;
@@ -766,8 +767,14 @@ pub async fn start_fix(
                         put_away(hands, extra).await;
                     }
                     let agent = &found[0];
-                    return match flaws.attach(id, p, ws.as_deref().unwrap_or(""), agent, step, actor)
-                    {
+                    return match flaws.attach(
+                        id,
+                        p,
+                        ws.as_deref().unwrap_or(""),
+                        agent,
+                        step,
+                        actor,
+                    ) {
                         Ok(t) => {
                             tracing::info!(
                                 "{}",
@@ -911,7 +918,12 @@ pub async fn dispatch_one_as(
     else {
         tracing::info!(
             "{}",
-            refused_line(id, p, caller, "lane open: no agent of the chain has a usable lane")
+            refused_line(
+                id,
+                p,
+                caller,
+                "lane open: no agent of the chain has a usable lane"
+            )
         );
         return Err(ApiError::new(
             503,
@@ -926,7 +938,7 @@ pub async fn dispatch_one_as(
         tracing::info!("{}", refused_line(id, p, caller, &why));
         return Err(ApiError::new(409, "busy", why));
     }
-    clear_orphans(hands, &alive, id, p).await;
+    clear_orphans(flaws, hands, &alive, id, p).await;
     let ctx = StartCtx {
         caller,
         caps: caps_of(policy),
@@ -1072,7 +1084,8 @@ static LANES: std::sync::Mutex<std::collections::BTreeMap<String, (bool, std::ti
 const LANE_READY_FOR: Duration = Duration::from_secs(30 * 60);
 const LANE_OUT_FOR: Duration = Duration::from_secs(5 * 60);
 
-fn lanes() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, (bool, std::time::Instant)>>
+fn lanes(
+) -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, (bool, std::time::Instant)>>
 {
     LANES.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -1177,7 +1190,8 @@ async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
         // What was read of the claim: every release below only takes effect on this claim.
         let claim = t.claim_ref();
         let Some(agent) = t.agent.clone() else {
-            if t.session.is_none() && older_than(flaws, t.claimed_at.as_deref(), STALE_CLAIM_MINUTES)
+            if t.session.is_none()
+                && older_than(flaws, t.claimed_at.as_deref(), STALE_CLAIM_MINUTES)
             {
                 stale_claim(flaws, hands, &flaw, &t, &claim).await;
             }
@@ -1536,8 +1550,7 @@ async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probe
             continue;
         }
         // The free steps first: this attempt's own step, or the first ready one below it.
-        let Some(step) =
-            choose_step(flaws, hands, policy, pick.target.attempts + 1, probes).await
+        let Some(step) = choose_step(flaws, hands, policy, pick.target.attempts + 1, probes).await
         else {
             tracing::info!(
                 "{}",
@@ -1550,11 +1563,22 @@ async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probe
             tracing::info!("{}", refused_line(id, p, "loop", &why));
             continue;
         }
-        clear_orphans(hands, &alive, id, p).await;
+        clear_orphans(flaws, hands, &alive, id, p).await;
         // An attempt counts whether it worked or not: a create that fails is as much agentd's
         // work as one that succeeds, and a failing one must not be retried in a loop.
         started += 1;
-        match start_fix(flaws, policy, step, hands, &pick.flaw, &pick.target, ACTOR, &ctx).await {
+        match start_fix(
+            flaws,
+            policy,
+            step,
+            hands,
+            &pick.flaw,
+            &pick.target,
+            ACTOR,
+            &ctx,
+        )
+        .await
+        {
             Ok(t) => {
                 load.add(
                     t.agent.clone().unwrap_or_else(|| format!("claim:{id}:{p}")),
@@ -1917,7 +1941,11 @@ impl Hands for StateHands {
         let Some(lane) = step.probe_lane.as_deref() else {
             return;
         };
-        tracing::warn!(lane, why, "flaws: an agent failed on this lane; what was cached about it is dropped");
+        tracing::warn!(
+            lane,
+            why,
+            "flaws: an agent failed on this lane; what was cached about it is dropped"
+        );
         lanes().remove(lane);
     }
 
@@ -1928,7 +1956,10 @@ impl Hands for StateHands {
         let mut new = lucina_ops::NewRecord::new(
             lucina_ops::Kind::Incident,
             "lucina",
-            &clip(&format!("Flaw dispatcher: lane {lane} failed and is closed to it"), 200),
+            &clip(
+                &format!("Flaw dispatcher: lane {lane} failed and is closed to it"),
+                200,
+            ),
         );
         new.body = format!(
             "An agent of the flaw dispatcher failed on lane {lane}: {why}. Nothing is dispatched on \
@@ -2286,13 +2317,15 @@ mod tests {
                 .filter_map(|id| {
                     let l = &labels[id.trim_start_matches("ag").parse::<usize>().ok()?];
                     l["flaw"].as_str()?;
+                    let idle =
+                        self.status.lock().unwrap().get(&id).map(String::as_str) == Some("idle");
                     Some(Alive {
                         id,
                         lane: l["flaw_lane"].as_str().map(str::to_owned),
                         flaw: l["flaw"].as_str().map(str::to_owned),
                         platform: l["platform"].as_str().map(str::to_owned),
                         triage: l["triage"] == "1",
-                        idle: self.status.lock().unwrap().get(&id).map(String::as_str) == Some("idle"),
+                        idle,
                     })
                 })
                 .collect())
@@ -2613,8 +2646,9 @@ mod tests {
         // LA-C035: a crash is the task's only when the agent provably worked, and its retry then
         // waits out the back-off.
         h.worked.lock().unwrap().insert("ag1".into());
-        clock.fetch_add(5, Ordering::SeqCst);
         *h.lanes_out.lock().unwrap() = vec![];
+        tick(&s, &p, &h).await;
+        clock.fetch_add(5, Ordering::SeqCst);
         tick(&s, &p, &h).await;
         assert_eq!(
             h.ran()[2],
@@ -2831,6 +2865,7 @@ mod tests {
                 .insert(format!("ag{i}"), "the provider crashed".into());
             // LA-C035: the agent worked (a counted failure), and its retry waits out the back-off.
             h.worked.lock().unwrap().insert(format!("ag{i}"));
+            tick(&s, &p, &h).await;
             clock.fetch_add(130, Ordering::SeqCst);
             tick(&s, &p, &h).await;
             let down = (i + 1).min(p.chain.len() - 1);
@@ -3526,7 +3561,8 @@ mod tests {
     // ------------------------------------------------------------ LA-C035: the dispatcher cannot storm
 
     /// What the Claude lane really answered at 00:43-00:52 on 2026-11-19, about 2 s after each create.
-    const SIGN_IN: &str = "Failed to authenticate: OAuth session expired and could not be refreshed";
+    const SIGN_IN: &str =
+        "Failed to authenticate: OAuth session expired and could not be refreshed";
 
     /// A chain of the one lane the incident had left: Claude sonnet.
     fn one_lane() -> Policy {
@@ -3538,21 +3574,6 @@ mod tests {
             )],
             ..strict()
         }
-    }
-
-    fn due_layer(s: &Flaws, words: &str, p: Platform, layer: Layer) -> Flaw {
-        let f = due(s, words, p, None);
-        s.set_target(
-            &f.id,
-            p,
-            TargetUpdate {
-                layer: Some(layer),
-                ..TargetUpdate::default()
-            },
-            "t",
-        )
-        .unwrap();
-        f
     }
 
     /// The log of the dispatcher, as text, for what the lines must say.
@@ -3625,7 +3646,12 @@ mod tests {
             vec![("claude-sonnet", LaneState::Open)],
             "one breaker, open"
         );
-        assert_eq!(h.ops.lock().unwrap().len(), 1, "one ops record: {:?}", h.ops);
+        assert_eq!(
+            h.ops.lock().unwrap().len(),
+            1,
+            "one ops record: {:?}",
+            h.ops
+        );
         let due_now = s.due().unwrap();
         assert_eq!(due_now.len(), 15, "every target is still due");
         assert!(
@@ -3778,7 +3804,12 @@ mod tests {
             ..strict()
         };
         for i in 0..5 {
-            due(&s, &format!("gated {i}"), Platform::Web, Some(Gate::Payment));
+            due(
+                &s,
+                &format!("gated {i}"),
+                Platform::Web,
+                Some(Gate::Payment),
+            );
         }
         tick(&s, &p, &h).await;
         assert!(h.agents.lock().unwrap().is_empty(), "asked, not started");
@@ -3791,14 +3822,15 @@ mod tests {
         );
         tick(&s, &p, &h).await;
         assert_eq!(h.agents.lock().unwrap().len(), 2);
-        assert_eq!(
-            s.due().unwrap().len(),
-            3,
-            "the rest wait, still affected"
-        );
+        assert_eq!(s.due().unwrap().len(), 3, "the rest wait, still affected");
         // And the total: another repo takes the third alive, never a fourth.
         for i in 0..3 {
-            due(&s, &format!("juno {i}"), Platform::Juno, Some(Gate::Payment));
+            due(
+                &s,
+                &format!("juno {i}"),
+                Platform::Juno,
+                Some(Gate::Payment),
+            );
         }
         tick(&s, &p, &h).await;
         tick(&s, &p, &h).await;
@@ -3890,7 +3922,10 @@ mod tests {
             for _ in 0..5 {
                 tokio::task::yield_now().await;
             }
-            assert!(h.agents.lock().unwrap().is_empty(), "the tick waits its turn");
+            assert!(
+                h.agents.lock().unwrap().is_empty(),
+                "the tick waits its turn"
+            );
             pause.release.notify_one();
         };
         let (explicit, _, _) = tokio::join!(slow, rival, control);
@@ -3929,7 +3964,8 @@ mod tests {
             s.claim(&f.id, Platform::Web, "/r", "t").unwrap();
         }
         let step = p.chain[0].clone();
-        let labels = json!({"from": "lucina", "flaw": a.id, "platform": "web", "lucina.handoff-off": "1"});
+        let labels =
+            json!({"from": "lucina", "flaw": a.id, "platform": "web", "lucina.handoff-off": "1"});
         let made = h
             .start_agent(&p, &step, "/w/x", "<owner_words>", "t", labels, None)
             .await
@@ -3962,7 +3998,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert("ag0".into(), "error".into());
-        h.errors.lock().unwrap().insert("ag0".into(), SIGN_IN.into());
+        h.errors
+            .lock()
+            .unwrap()
+            .insert("ag0".into(), SIGN_IN.into());
         tick(&s, &p, &h).await;
         let lane0 = p.chain[0].probe_lane.clone().unwrap();
         assert!(
@@ -4028,17 +4067,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("flaws.db");
         let (a, b) = (Flaws::open(&db).unwrap(), Flaws::open(&db).unwrap());
-        let (ha, hb) = (Fake::default(), Fake::default());
+        // One agentd, two processes: each has its own store handle and its own memory.
+        let ha = Fake::default();
         let p = strict();
         for i in 0..4 {
             due(&a, &format!("flaw {i}"), Platform::Web, None);
         }
-        // Each process has its own hands and its own memory; the file is what they share.
         tick(&a, &p, &ha).await;
-        tick(&b, &p, &hb).await;
-        assert_eq!(ha.agents.lock().unwrap().len(), 1);
-        assert!(
-            hb.agents.lock().unwrap().is_empty(),
+        tick(&b, &p, &ha).await;
+        assert_eq!(
+            ha.agents.lock().unwrap().len(),
+            1,
             "the lane's one agent is the other process's, and the claim's counts say so"
         );
         // The same, one level down: the claim itself refuses what the caller's snapshot allowed.
@@ -4095,7 +4134,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert("ag0".into(), "error".into());
-        h.errors.lock().unwrap().insert("ag0".into(), SIGN_IN.into());
+        h.errors
+            .lock()
+            .unwrap()
+            .insert("ag0".into(), SIGN_IN.into());
         tick(&s, &p, &h).await;
         let log = h.log.lock().unwrap().clone();
         assert_eq!(log.first().map(String::as_str), Some("start ag0"));
@@ -4176,11 +4218,12 @@ mod tests {
         let y = due(&s, "y", Platform::Web, None);
         let dispatched_first = |t: &Target| t.status == TargetStatus::Fixing;
         tick(&s, &p, &h).await;
-        let (tx, ty) = (
-            target(&s, &x.id, Platform::Web),
-            target(&s, &y.id, Platform::Web),
-        );
-        let (first, other) = if dispatched_first(&tx) { (&x, &y) } else { (&y, &x) };
+        let tx = target(&s, &x.id, Platform::Web);
+        let (first, other) = if dispatched_first(&tx) {
+            (&x, &y)
+        } else {
+            (&y, &x)
+        };
         // The first one's agent worked and ended: back-off. The other is dispatched, not the first again.
         h.worked.lock().unwrap().insert("ag0".into());
         h.status.lock().unwrap().insert("ag0".into(), "idle".into());
@@ -4212,7 +4255,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert("ag0".into(), "error".into());
-        h.errors.lock().unwrap().insert("ag0".into(), SIGN_IN.into());
+        h.errors
+            .lock()
+            .unwrap()
+            .insert("ag0".into(), SIGN_IN.into());
         clock.fetch_add(1, Ordering::SeqCst);
         tick(&s, &p, &h).await;
         let keys = h.key_log.lock().unwrap().clone();
@@ -4232,7 +4278,15 @@ mod tests {
             .unwrap();
         let key = format!("flaw:{}:web:{}", f.id, t.claim_seq);
         let again = h
-            .start_agent(&p, &p.chain[0], "/w", "<owner_words>", "t", json!({}), Some(&key))
+            .start_agent(
+                &p,
+                &p.chain[0],
+                "/w",
+                "<owner_words>",
+                "t",
+                json!({}),
+                Some(&key),
+            )
             .await
             .unwrap();
         assert_eq!(Some(again.as_str()), t.agent.as_deref());
@@ -4312,11 +4366,18 @@ mod tests {
             .lock()
             .unwrap()
             .insert("ag0".into(), "error".into());
-        h.errors.lock().unwrap().insert("ag0".into(), SIGN_IN.into());
+        h.errors
+            .lock()
+            .unwrap()
+            .insert("ag0".into(), SIGN_IN.into());
         tick(&s, &p, &h).await;
         assert_eq!(h.ops.lock().unwrap().len(), 1, "it did open");
         assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::HalfOpen);
-        assert_eq!(h.agents.lock().unwrap().len(), 2, "one trial agent, no refill");
+        assert_eq!(
+            h.agents.lock().unwrap().len(),
+            2,
+            "one trial agent, no refill"
+        );
     }
 
     #[tokio::test]
@@ -4378,7 +4439,11 @@ mod tests {
                 let _ = dispatch_one(&s, &p, &h, &f.id, Platform::Web, "t").await;
             }
             tick(&s, &p, &h).await;
-            assert_eq!(h.agents.lock().unwrap().len(), 3, "tick first: {tick_first}");
+            assert_eq!(
+                h.agents.lock().unwrap().len(),
+                3,
+                "tick first: {tick_first}"
+            );
             let extra = fs
                 .iter()
                 .find(|f| target(&s, &f.id, Platform::Web).status == TargetStatus::Affected)
@@ -4386,8 +4451,16 @@ mod tests {
             let e = dispatch_one(&s, &p, &h, &extra.id, Platform::Web, "t")
                 .await
                 .unwrap_err();
-            assert_eq!((e.status.as_u16(), e.code.as_str()), (409, "busy"), "tick first: {tick_first}");
-            assert!(e.message.contains("3 agents already alive"), "{}", e.message);
+            assert_eq!(
+                (e.status.as_u16(), e.code.as_str()),
+                (409, "busy"),
+                "tick first: {tick_first}"
+            );
+            assert!(
+                e.message.contains("3 agents already alive"),
+                "{}",
+                e.message
+            );
         }
     }
 
@@ -4420,7 +4493,11 @@ mod tests {
                 tick(&s, &p, &h).await;
             }
             tick(&s, &p, &h).await;
-            assert_eq!(h.agents.lock().unwrap().len(), 1, "tick first: {tick_first}");
+            assert_eq!(
+                h.agents.lock().unwrap().len(),
+                1,
+                "tick first: {tick_first}"
+            );
         }
     }
 
@@ -4443,7 +4520,11 @@ mod tests {
             .unwrap();
         assert_eq!(h.agents.lock().unwrap().len(), 2);
         tick(&s, &p, &h).await;
-        assert_eq!(h.agents.lock().unwrap().len(), 3, "one more in the next tick");
+        assert_eq!(
+            h.agents.lock().unwrap().len(),
+            3,
+            "one more in the next tick"
+        );
     }
 
     #[tokio::test]
@@ -4465,7 +4546,8 @@ mod tests {
         );
         let said = buf.text();
         assert_eq!(
-            said.matches("can't be asked which agents are alive").count(),
+            said.matches("can't be asked which agents are alive")
+                .count(),
             1,
             "once per change of state, not per tick: {said}"
         );
@@ -4563,7 +4645,10 @@ mod tests {
             classify(&h, "idler", None, Some("tests do not pass")).await,
             Ended::Lane(_)
         ));
-        assert!(matches!(classify(&h, "idler", None, None).await, Ended::Lane(_)));
+        assert!(matches!(
+            classify(&h, "idler", None, None).await,
+            Ended::Lane(_)
+        ));
     }
 
     // The restore command.
@@ -4585,8 +4670,14 @@ mod tests {
             s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
             s.attach(&f.id, Platform::Web, "w", a, &policy().chain[1], "d")
                 .unwrap();
-            s.release(&f.id, Platform::Web, "the agent ended without a merged commit", 2, "d")
-                .unwrap();
+            s.release(
+                &f.id,
+                Platform::Web,
+                "the agent ended without a merged commit",
+                2,
+                "d",
+            )
+            .unwrap();
         }
         assert_eq!(
             target(s, &f.id, Platform::Web).status,
@@ -4596,7 +4687,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_lists_lane_failures_without_changing_anything_and_apply_resets_exactly_those() {
+    async fn restore_lists_lane_failures_without_changing_anything_and_apply_resets_exactly_those()
+    {
         let s = Flaws::in_memory().unwrap();
         let victim = blocked_the_old_way(&s, "victim", ["v0", "v1"]);
         let real = blocked_the_old_way(&s, "real failure", ["r0", "r1"]);
@@ -4630,33 +4722,6 @@ mod tests {
         for f in [&victim, &real, &unknown, &mixed] {
             assert_eq!(
                 target(&s, &f.id, Platform::Web).status,
-                TargetStatus::Blocked,
-                "a dry run changes nothing"
-            );
-        }
-        // Apply: exactly the listed one.
-        let applied = restore_lane_failures(&s, since, true, &src).await.unwrap();
-        assert_eq!(applied, found);
-        let t = target(&s, &victim.id, Platform::Web);
-        assert_eq!(
-            (t.status, t.attempts, t.next_try_at),
-            (TargetStatus::Affected, 0, None)
-        );
-        for f in [&real, &unknown, &mixed] {
-            assert_eq!(
-                target(&s, &f.id, Platform::Web).status,
-                TargetStatus::Blocked,
-                "left for a lead: {}",
-                f.words
-            );
-        }
-        // A time that is not RFC 3339 is refused.
-        assert!(restore_lane_failures(&s, "yesterday", false, &src)
-            .await
-            .is_err());
-    }
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                      arget(&s, &f.id, Platform::Web).status,
                 TargetStatus::Blocked,
                 "a dry run changes nothing"
             );
