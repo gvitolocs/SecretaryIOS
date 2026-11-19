@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 use crate::planner::TurnInput;
 use crate::prompts::Prompts;
+use crate::share::{Outcome, Sizes};
 use crate::surface::BearerVerified;
 use crate::{jobs, AppState, PlannerMode};
 use lucina_store::recent::RecentChat;
@@ -943,6 +944,11 @@ pub(crate) struct ShareTurn {
     /// What the owner wrote or said (the caption, or a voice note's transcript). The secrets
     /// pre-check reads only this: shared content (OCR of a screenshot, a page) is not the owner asking.
     pub owner_text: String,
+    /// The phases of the share this turn answers: the turn adds its own wait for the intent step, the
+    /// intent step, and the tool loop or the direct answer that follows it. What the share does after
+    /// the turn (its rich reply, its memory write, its timeline item) falls inside the total of the
+    /// summary line but gets no phase of its own.
+    pub timing: crate::share::ShareTiming,
 }
 
 /// Share ingestion has already written the owner's timeline item (with its
@@ -1068,6 +1074,11 @@ async fn run_turn_scoped(
     let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_only = existing.as_ref().is_some_and(|s| s.voice_only);
     let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
+    // The phases of a share carry on inside its turn: what the turn waits for before the intent step
+    // (the quoted message, the secrets pre-check) is time the owner waits too, and the share cannot
+    // see it from its side.
+    let timing = existing.as_ref().map(|s| s.timing.clone());
+    let mut intent_wait = timing.as_ref().map(|t| t.begin("intent_wait", true));
     // Swipe to reply: the quoted message rides in every model call's user part.
     let reply_block = match reply_to.as_deref() {
         Some(id) => reply::block(&st, &surface, &session, id).await,
@@ -1088,6 +1099,10 @@ async fn run_turn_scoped(
         .merge(device_meta);
     if st.cfg.planner == PlannerMode::Tools && !normal_share && origin.is_none() {
         let from_mcp = mcp_turn.is_some();
+        // Tools mode has no intent step: the turn goes straight to the tool loop.
+        if let Some(wait) = intent_wait.take() {
+            wait.finish(Outcome::Skipped, Sizes::NONE);
+        }
         return crate::planner::TURN_REPLY
             .scope(
                 reply_block,
@@ -1222,6 +1237,12 @@ async fn run_turn_scoped(
             (f, None)
         }
         None => {
+            // Everything above was the share waiting: the quoted message, the secrets pre-check, the
+            // turn's own setup. The intent step begins with the context building.
+            if let Some(wait) = intent_wait.take() {
+                wait.finish(Outcome::Ok, Sizes::NONE);
+            }
+            let intent_phase = timing.as_ref().map(|t| t.begin("intent", false));
             let prepare = crate::context::prepare_keyed(
                 &st,
                 &t.surface,
@@ -1267,6 +1288,10 @@ async fn run_turn_scoped(
             let _ = open.send(true);
             if let Some(finish) = fast {
                 voice_fast_turn = true;
+                // Jev answered the intent on its own: the step is over here, without the context building.
+                if let Some(intent) = intent_phase {
+                    intent.finish(Outcome::Ok, Sizes::NONE);
+                }
                 t.recent()
                     .append(t.recent_key(), "user", &heard, Utc::now());
                 (finish, None)
@@ -1275,6 +1300,12 @@ async fn run_turn_scoped(
                     Some(p) => p,
                     None => prepare.await,
                 };
+                if let Some(intent) = intent_phase {
+                    intent.finish(
+                        Outcome::Ok,
+                        Sizes::chars(prepared.memory_context.chars().count()),
+                    );
+                }
                 t.recent()
                     .append(t.recent_key(), "user", &heard, Utc::now());
                 let game_system = if prepared.game.is_empty() || !t.guarded {
@@ -1308,6 +1339,7 @@ async fn run_turn_scoped(
                     "" => game_system,
                     fact => format!("{game_system}\n{fact}").trim().to_owned(),
                 };
+                let agent_phase = timing.as_ref().map(|t| t.begin("agent", false));
                 let finish = crate::planner::TURN_REPLY
                     .scope(
                         reply_block,
@@ -1315,6 +1347,16 @@ async fn run_turn_scoped(
                             .scope(game_system, json_turn(&t, &prepared, cmid.as_deref())),
                     )
                     .await;
+                if let Some(agent) = agent_phase {
+                    agent.finish(
+                        if finish.reply.trim().is_empty() {
+                            Outcome::Error
+                        } else {
+                            Outcome::Ok
+                        },
+                        Sizes::chars(finish.reply.chars().count()),
+                    );
+                }
                 (finish, Some(prepared))
             }
         }
