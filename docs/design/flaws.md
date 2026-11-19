@@ -114,6 +114,13 @@ the walk finds no usable step at all does the target wait, so an outage leaves n
 After a deploy, `lucina-rs flaws restore-lane-failures --since <rfc3339> [--apply]` lists, and with `--apply` resets, the
 blocked targets whose every failure since was a lane failure by the stored agent error text.
 
+**The lane probe's cache (changed in LA-C035).** `LANE_OUT_FOR`, how long a lane that answered not-ready is remembered before
+it is probed again, went from 60 minutes to 5. It used to be the only memory of a lane being out, and an hour was cheap because
+nothing else could bring the lane back. Now the breaker in the store holds "out" across a restart and a probe is asked on every
+tick while it is open, so the cache only spares closed lanes a provider call per pick; a long "out" would keep a lane that
+is back waiting for no reason. `LANE_READY_FOR` stays 30 minutes, and a ready answer is dropped the moment a failure is seen
+on that lane.
+
 ## Getting a report in
 
 - A chat turn Jev routes to `flaw_report` (at least 0.6), or an explicit `flaw: …`, which needs no model and works when Jev
