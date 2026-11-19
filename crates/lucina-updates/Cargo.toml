@@ -1,0 +1,28 @@
+[package]
+name = "lucina-updates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina updates: the read-only channel server (manifest and artefact bytes; holds no key, signs and verifies nothing)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lucina-updates"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+# O_NOFOLLOW for the final open.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+sha2 = { workspace = true }

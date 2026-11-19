@@ -1,0 +1,44 @@
+# PROPOSAL (JD-C008), not installed. lucina-updates: the read-only update channel server
+# (crates/lucina-updates). It serves manifest and artefact bytes from ~/data/lucina-updates, holds no
+# key, signs and verifies nothing, and writes nothing. User unit on nezopt:
+#   install -m 0755 target/release/lucina-updates ~/.local/bin/
+#   cp deploy/lucina-updates.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now lucina-updates
+#
+# Loopback only (127.0.0.1:8811); the p1 Caddy block in deploy/lucina-updates/Caddyfile.snippet is the
+# only client and does the device check (forward_auth /v1/auth/updates).
+[Unit]
+Description=Lucina update channel server (read-only) on 127.0.0.1:8811
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lucina-updates --addr 127.0.0.1:8811 --store %h/data/lucina-updates
+Restart=on-failure
+RestartSec=5
+UMask=0077
+Nice=5
+
+# Read-only everywhere: the store cannot be written even by a bug; no temp files of the host's.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=%h/data/lucina-updates
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+# PrivateNetwork is not possible (it listens): only loopback traffic is allowed instead.
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target
