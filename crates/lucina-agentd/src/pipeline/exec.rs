@@ -606,11 +606,27 @@ impl Exec {
         };
         // The two routes to every process this step started, the deadline, and the sweep after it.
         let grace = self.kill_grace;
-        let ended = Step::new(child.id(), unit, systemctl).run_to_end(&mut child, cap, grace);
+        // The manager ask is a child of this process too, so it runs under the same cleared
+        // environment the probe and the step do: what a shell or an EnvironmentFile would hand a
+        // restart, it does not see.
+        let step_env = built
+            .iter()
+            .cloned()
+            .chain(std::iter::once((
+                OsString::from("PATH"),
+                self.path.clone().into(),
+            )))
+            .collect();
+        let ended = Step::new(child.id(), unit, systemctl)
+            .with_env(step_env)
+            .run_to_end(&mut child, cap, grace);
         // Only now is the scope a fact: the unit was seen as the step's control group, or it never was and
         // the step is worked by its process group alone whatever the name at its start said.
         if let Some(line) = ended.scope.line() {
             self.say(&line);
+        }
+        if let Some(note) = &ended.manager_note {
+            self.say(note);
         }
         if !ended.miss.is_empty() {
             self.say(&ended.miss.line());
@@ -3169,20 +3185,17 @@ mod tests {
         })
     }
 
-    /// The directory the lane's refusing shims live in: `systemd-run`, `sudo`, `docker` and the rest, each
-    /// of which answers a request with a recorded refusal instead of doing the thing (HOST-08). A worker
-    /// may not edit PATH to get around one, and a test may not either, so this is how a test that needs the
-    /// real program says that it cannot run here (finding FENCE-09).
-    const LANE_SHIM_DIR: &str = "/scratch/offload/lane-shim";
-
-    /// Whether the `systemd-run` this process would find is the lane's shim: one PATH element in the shim
-    /// directory, or the program itself resolving into it. `None` when there is no PATH to ask, which is
-    /// not the same as no shim — the test then runs on the real thing or fails saying it could not tell.
-    fn lane_refuses_systemd_run() -> bool {
-        let Ok(path) = std::env::var("PATH") else {
-            return false;
-        };
-        std::env::split_paths(&path).any(|d| d.to_string_lossy().contains(LANE_SHIM_DIR))
+    /// Whether the job's scope probe actually ran and was refused by the lane's shim: the probe's
+    /// exit status is 79, which is the code every refusing wrapper in `/scratch/offload/lane-shim`
+    /// uses (HOST-08). A probe that never ran — no `systemd-run` on the job's PATH, no
+    /// `XDG_RUNTIME_DIR`, no bash — has no exit status and this returns false. A probe that exited
+    /// for any other reason also returns false: it was not a lane refusal, and the test must fail
+    /// saying what happened, not skip silently. This is the condition under which the setsid test
+    /// below may skip: only when the shim actually refused the very command the step would get.
+    fn lane_refused_the_scope_probe(log: &str) -> bool {
+        log.lines().any(|l| {
+            l.contains("scope: none (the lucina-gate-probe-") && l.contains(" probe exited 79)")
+        })
     }
 
     #[test]
@@ -3234,17 +3247,14 @@ mod tests {
     /// that `setsid` away from its process group, and a step without that scope reaches nothing of it. This
     /// is therefore a test of the host's `systemd-run`, and **it cannot run inside a lane run**: the lane's
     /// shim for that program refuses the request by design (HOST-08), and getting at the real one from here
-    /// would mean editing PATH, which a worker must never do (FENCE-09). So in a lane it prints exactly
-    /// `SKIPPED: needs the real systemd-run; lane workers are refused it by design (HOST-08); this test runs
-    /// at the merge gate` and returns — those same words below, and no `#[ignore]`, which would bury this in
-    /// a count of ignored tests instead of saying what was never reached. The merge gate — a `lagent-job`
-    /// unit, with the host's own `systemd-run` on its PATH — is where this proves anything at all.
+    /// would mean editing PATH, which a worker must never do (FENCE-09). The test skips only when the job's
+    /// scope probe actually ran and was refused by that shim — the probe's exit status is 79, the code every
+    /// refusing wrapper uses. Any other reason the step got no scope makes the test fail, not skip: a host
+    /// with no user manager at all, or a probe that died for an unrelated reason, is not a lane refusal and
+    /// must not pass silently. The merge gate — a `lagent-job` unit, with the host's own `systemd-run` on its
+    /// PATH — is where this proves anything at all.
     #[test]
     fn a_gate_step_leaves_no_grandchild_that_left_its_process_group() {
-        if lane_refuses_systemd_run() {
-            println!("SKIPPED: needs the real systemd-run; lane workers are refused it by design (HOST-08); this test runs at the merge gate");
-            return;
-        }
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         let (tag, marker, copy) = survivor_names(root);
@@ -3266,6 +3276,13 @@ mod tests {
         let out = x.merge();
         let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
         assert!(out.ok, "{out:?}\nLOG:\n{log}");
+        // The only reason this test may skip is a real refusal: the probe ran, hit the lane's shim, and
+        // exited 79. Any other no-scope answer — no manager at all, a probe that died, a PATH without
+        // systemd-run — makes the test fail below with the probe's own line.
+        if lane_refused_the_scope_probe(&log) {
+            println!("SKIPPED: needs the real systemd-run; lane workers are refused it by design (HOST-08); this test runs at the merge gate");
+            return;
+        }
         // A scope that was not had is not a host to blame here: outside the lane's shim this process has a
         // user manager, and a step that got no unit is the code failing to ask for one. Say what the probe
         // answered, and fail — an early return on this path was the hole the review found.
@@ -3302,6 +3319,57 @@ mod tests {
         assert_leaves_nothing(&marker, &tag, &log);
         assert!(!log.contains("refused the signal"), "{log}");
         assert_eq!(git(&origin, &["rev-parse", "main"]), out.landed.unwrap());
+    }
+
+    /// The log of a job whose `systemd-run` is a stand-in that exits `code` at once: the scope probe runs
+    /// against it, and what it answered is what the job says about the scope.
+    fn log_of_a_job_whose_systemd_run_exits(code: i32) -> String {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(
+            &bin.join("systemd-run"),
+            &format!("#!/bin/sh\nexit {code}\n"),
+        );
+        let gate = bin.join("says-hello");
+        write_exec(&gate, "#!/bin/sh\necho 'hello from the step'\n");
+        let (_origin, repo, head) = one_gate_repo(root, &gate.display().to_string());
+        let dir = root.join("job-skip-condition");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        let path = x.path.clone();
+        let runtime = root.display().to_string();
+        x.source_env = crate::testutil::env_source(&[
+            ("PATH", &path),
+            ("HOME", "/home/fake"),
+            ("XDG_RUNTIME_DIR", runtime.as_str()),
+        ]);
+        let _ = x.merge();
+        std::fs::read_to_string(dir.join("log")).unwrap_or_default()
+    }
+
+    /// The setsid test's skip condition: only a probe that ran and was refused by the lane's shim
+    /// (exit 79) may skip. A probe that exited for any other reason must not, because the test would
+    /// then pass without watching the control-group route it claims to prove.
+    #[test]
+    fn lane_refused_the_scope_probe_keys_on_exit_79_and_nothing_else() {
+        let refused = log_of_a_job_whose_systemd_run_exits(79);
+        assert!(
+            lane_refused_the_scope_probe(&refused),
+            "a probe that exited 79 is the shim's refusal and must skip:\n{refused}"
+        );
+        let other = log_of_a_job_whose_systemd_run_exits(1);
+        assert!(
+            !lane_refused_the_scope_probe(&other),
+            "a probe that exited 1 is not a lane refusal and must not skip:\n{other}"
+        );
+        assert!(
+            scope_fallback_line(&other).is_some(),
+            "the setsid test would fail on this log, as it must:\n{other}"
+        );
+        assert!(!lane_refused_the_scope_probe("no probe line at all"));
     }
 
     #[test]

@@ -23,6 +23,7 @@
 //! [`super::exec`] owns the environment, the log lines and the outcome; this owns the targets and
 //! the waiting.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -52,6 +53,11 @@ const SCOPE_LOOK: Duration = Duration::from_secs(2);
 /// was still there. Nothing is waited on past it: an unbounded wait is how a limit that did not
 /// bite read as the step's own length (GATE-05).
 const SLACK: Duration = Duration::from_secs(2);
+/// The cap of the one ask this step makes of the user manager for its unit's control group. The
+/// ask happens in the step's own wait, before any signal and again before the sweep, so an
+/// unbounded wait on it would hold a job past every bound this module has (GATE-05): `systemctl`
+/// that stops answering is ended here, and its silence read as "no answer", not as a hang.
+const MANAGER_ASK_CAP: Duration = Duration::from_secs(5);
 /// The prefix of a step's transient scope unit: `lucina-gate-<job id>-<pid>-<n>`, the job, this
 /// process and a number no other step of this process has had. This crate names a scope the same
 /// way twice already (`manager::work` for lane runners, `lagent-job-…` for the job runner itself).
@@ -384,8 +390,15 @@ pub(crate) struct Step {
     /// `systemctl`, as the job's PATH found it: `None` is no manager to ask, which the step reports
     /// rather than guesses at.
     ctl: Option<PathBuf>,
+    /// The environment a step of this job gets — cleared, plus the job's own `PATH` — so the one
+    /// ask of the user manager runs under it, as the probe and the step do (`super::exec`). Without
+    /// it that child would inherit this process's environment: an unmanaged surface in a module
+    /// whose whole reason is to manage what a step can reach.
+    env: Vec<(OsString, OsString)>,
     /// Whether the manager has already been asked for this step's unit, so that one ask is enough.
     asked: bool,
+    /// What the log should say when the one ask of the manager was ended for want of an answer.
+    manager_note: Option<String>,
 }
 
 impl Step {
@@ -397,8 +410,17 @@ impl Step {
             unit,
             cg: None,
             ctl,
+            env: Vec::new(),
             asked: false,
+            manager_note: None,
         }
+    }
+
+    /// The environment the one manager ask runs under: cleared, plus what is given here (the job's own
+    /// `PATH` and the rest of what a step gets), as the probe and the step do in `super::exec`.
+    pub(crate) fn with_env(mut self, env: Vec<(OsString, OsString)>) -> Self {
+        self.env = env;
+        self
     }
 
     /// Whether the scope question is answered for this step: the control group of the unit we
@@ -440,12 +462,21 @@ impl Step {
     /// answer from, and the child it started is out of reach of the group alone. Asked of the unit
     /// *this* step named and no other — the control group of somebody else's unit is not this step's
     /// tree to sweep.
-    fn control_group_from_manager(&self) -> Option<PathBuf> {
+    ///
+    /// The ask is bounded by [`MANAGER_ASK_CAP`] and runs under the cleared environment a step gets:
+    /// it happens in the step's own wait, before any signal and again before the sweep, so a
+    /// `systemctl` that stops answering must not hold the job past every bound this module has. The
+    /// cap is its own — the step's deadline is not, because by the time the ask runs the step may
+    /// already have ended and there is nothing to signal. A manager that does not answer in time is
+    /// ended (SIGKILL to that child alone, through the same screen every other signal goes through)
+    /// and read as "no answer", which is the honest reading: a control group nobody stated is not a
+    /// tree this step may sweep.
+    fn control_group_from_manager(&mut self) -> Option<PathBuf> {
         let (unit, program) = match (&self.unit, &self.ctl) {
             (Some(u), Some(p)) => (u.clone(), p.clone()),
             _ => return None,
         };
-        let out = Command::new(program)
+        let mut child = Command::new(&program)
             .args([
                 "--user",
                 "show",
@@ -454,20 +485,63 @@ impl Step {
                 "--value",
                 &format!("{unit}.scope"),
             ])
+            .env_clear()
+            .envs(self.env.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .output()
+            .spawn()
             .ok()?;
-        if !out.status.success() {
+        // The answer is read on a thread of its own, so that waiting for the process never depends on
+        // the pipe closing: an ask that is ended must not leave this wait reading for a descendant.
+        let mut pipe = child.stdout.take()?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+            let _ = tx.send(buf);
+        });
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) => {}
+                Err(_) => return None,
+            }
+            if started.elapsed() >= MANAGER_ASK_CAP {
+                // Ended through the same screen every other signal goes through, and only the pid this
+                // wait started; then reaped, and read as no answer.
+                let mut miss = Miss::default();
+                signal_pid(child.id(), Signal::KILL, &mut miss);
+                let _ = child.wait();
+                self.manager_note = Some(format!(
+                    "the user manager did not answer the ask for the control group of {unit} within {}s",
+                    MANAGER_ASK_CAP.as_secs()
+                ));
+                return None;
+            }
+            std::thread::sleep(POLL);
+        };
+        if !status.success() {
             return None;
         }
-        let cg = String::from_utf8(out.stdout).ok()?;
-        let cg = cg.trim();
+        let out = rx.recv_timeout(SLACK).ok()?;
+        let stdout_str = String::from_utf8(out).ok()?;
+        let cg = stdout_str.trim();
         // The same screen the `/proc` route applies, and for the same reason: a control group is
         // about to be walked and killed, so it is only ever the one this step's unit ends in. An
         // alias, a template, or a manager that answers with something broader is no answer at all.
         if !cg.starts_with('/') || Path::new(cg).file_name()?.to_str()? != format!("{unit}.scope") {
+            return None;
+        }
+        // And no component may be `..` or `.`: a path that climbs out of the cgroup tree is not this
+        // step's tree, whatever its last component says.
+        if Path::new(cg).components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        }) {
             return None;
         }
         Some(PathBuf::from(format!("/sys/fs/cgroup{cg}")))
@@ -570,6 +644,8 @@ pub(crate) struct Ended {
     pub(crate) left: usize,
     /// Whether the unit it was asked into was ever seen, and what the job therefore says about it.
     pub(crate) scope: Sighting,
+    /// Set when the user manager did not answer its one ask in time, and was ended.
+    pub(crate) manager_note: Option<String>,
 }
 
 impl Step {
@@ -637,6 +713,7 @@ impl Step {
                 Some(u) if self.cg.is_some() => Sighting::Seen(u.clone()),
                 Some(u) => Sighting::NeverSeen(u.clone()),
             },
+            manager_note: self.manager_note.take(),
         }
     }
 }
@@ -1004,6 +1081,136 @@ mod tests {
         assert!(
             ended.status.is_some(),
             "the step ended, and its status is its own"
+        );
+    }
+
+    /// A `systemctl` that stops answering must not hold the step past every bound this module has:
+    /// the ask has its own cap ([`MANAGER_ASK_CAP`]), and a manager that does not answer in time is
+    /// ended (SIGKILL through [`signal_pid`]) and read as "no answer". The step still ends within
+    /// `cap + grace + SLACK + MANAGER_ASK_CAP`, and the scope is reported as never seen.
+    #[test]
+    fn a_manager_ask_that_does_not_answer_is_capped_and_read_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("systemctl");
+        // A fake systemctl that sleeps 60 s: past the cap by a wide margin.
+        write_exec(&ctl, "#!/bin/sh\nexec sleep 60\n");
+        let unit = "lucina-kill-test-unit-cap";
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        let start = Instant::now();
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        refuse_cgroup_sight(false);
+        let elapsed = start.elapsed();
+
+        // The step ends within cap + grace + SLACK + MANAGER_ASK_CAP (5 + 0.1 + 2 + 5 = 12.1 s).
+        // Allow a generous margin for the test harness itself.
+        let bound = Duration::from_secs(13);
+        assert!(
+            elapsed < bound,
+            "the step took {elapsed:?}, past the bound of {bound:?}",
+        );
+
+        assert!(
+            ended
+                .manager_note
+                .as_deref()
+                .is_some_and(|n| n.contains("did not answer")),
+            "the log must say the manager did not answer: {:?}",
+            ended.manager_note
+        );
+        // The manager did not answer: the scope is never seen, and the step was worked by its group alone.
+        assert!(
+            matches!(&ended.scope, Sighting::NeverSeen(u) if u == unit),
+            "a manager that does not answer in time is read as no answer: {:?}",
+            ended.scope
+        );
+    }
+
+    /// A control group the manager answers with a `..` component is refused: it climbs out of the
+    /// scope's own directory, and whatever its last component says, it is not this step's tree to
+    /// sweep. The `/proc` route reads a path it built itself and cannot carry one; an answer from
+    /// the manager can, and it is refused here.
+    #[test]
+    fn a_manager_answer_with_a_dotdot_component_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("systemctl");
+        let unit = "lucina-kill-test-unit-dd";
+        // The fake systemctl answers with a path that contains `..` but whose last component is
+        // still the unit's scope name: the file_name check passes, but the `..` must be caught.
+        write_exec(
+            &ctl,
+            &format!("#!/bin/sh\nprintf '%s\\n' /sys/fs/cgroup/../x/{unit}.scope\n"),
+        );
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl)).run_to_end(
+            &mut child.0,
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        );
+        refuse_cgroup_sight(false);
+
+        assert!(
+            matches!(&ended.scope, Sighting::NeverSeen(u) if u == unit),
+            "a control group with a `..` component is not this step's tree: {:?}",
+            ended.scope
+        );
+    }
+
+    /// The one ask of the manager runs under the cleared environment a step gets, plus what the job
+    /// hands it, and nothing of this process's own. The fake `systemctl` names the scope only when it
+    /// sees no `HOME` and the one variable the step was given.
+    #[test]
+    fn the_manager_ask_runs_under_a_cleared_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("systemctl");
+        let unit = "lucina-kill-test-unit-env";
+        write_exec(
+            &ctl,
+            &format!(
+                "#!/bin/sh\nif [ -z \"${{HOME+x}}\" ] && [ \"$LUCINA_ASK_MARK\" = given ]; then printf '%s\\n' /user.slice/{unit}.scope; else exit 1; fi\n"
+            ),
+        );
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("the step starts");
+        let pid = child.id();
+        let mut child = Reap(child);
+
+        refuse_cgroup_sight(true);
+        let ended = Step::new(pid, Some(unit.into()), Some(ctl))
+            .with_env(vec![("LUCINA_ASK_MARK".into(), "given".into())])
+            .run_to_end(
+                &mut child.0,
+                Duration::from_secs(5),
+                Duration::from_millis(100),
+            );
+        refuse_cgroup_sight(false);
+
+        assert!(
+            matches!(&ended.scope, Sighting::Seen(u) if u == unit),
+            "the ask must see no HOME and the variable it was given: {:?}",
+            ended.scope
         );
     }
 }
