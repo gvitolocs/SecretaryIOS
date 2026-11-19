@@ -222,6 +222,16 @@ impl Manager {
                 if let Some((level, message)) = note {
                     self.append(agent, TimelineItem::Notification { level, message }, None);
                 }
+                // A hand-off that ended with nobody to take the run over leaves the agent in error for
+                // good: it gives up its provider process now (AGENT-01). One that went on to a
+                // continuation keeps its process as before.
+                if labels.iter().any(|(k, v)| {
+                    *k == HANDOFF_LABEL
+                        && v.as_deref()
+                            .is_some_and(|v| v == "exhausted" || v.starts_with("none"))
+                }) {
+                    self.release_if_errored(agent);
+                }
                 self.persist(agent);
                 self.publish_state(agent);
             }
