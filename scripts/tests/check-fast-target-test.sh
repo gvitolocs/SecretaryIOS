@@ -89,6 +89,7 @@ run_in wt-a CARGO_TARGET_DIR="$tmp/elsewhere2" LUCINA_CHECK_ALLOW_TARGET=1
 no_target_warning "allowed"
 
 # (5) incremental compilation is off unless the caller says otherwise
+run_in wt-a
 [ "$inc" = 0 ] || fail "CARGO_INCREMENTAL is not 0 by default: $inc"
 run_in wt-a CARGO_INCREMENTAL=1
 [ "$inc" = 1 ] || fail "an inherited CARGO_INCREMENTAL was not kept: $inc"

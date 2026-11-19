@@ -2020,6 +2020,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 }
             }
         }
+        files.sort();
         if let Some(line) = fast::integration_tests_note(&files, &pkgs) {
             println!("{line}");
         }
