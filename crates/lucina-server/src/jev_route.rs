@@ -1126,7 +1126,7 @@ mod tests {
     /// The lines logged inside `run`, captured on this thread only so a parallel test cannot fill
     /// the buffer.
     fn logged(run: impl FnOnce()) -> String {
-        use std::io::Write as _;
+        use std::io::Write;
         use std::sync::{Arc, Mutex};
 
         #[derive(Clone)]
