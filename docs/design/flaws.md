@@ -98,12 +98,16 @@ that step's lane, not always the first one.
    that finds the budget spent, is not ready). Agents put away in one hold are bounded (`MAX_AWAY` = 3 for the sweep and the
    untracked agents of the target, 3 more extras after a failed create); an untracked agent that cannot be stopped in time
    stops the start on its target, which waits for the next tick. The owner's go for a gated flaw is asked before the lock is
-   taken. The sum, `MAX_HOLD`, is 5 + 3 x 10 + 15 + 2 x 25 + (5 + 3 x 10 + 5) = **140 s** (the first
-   draft had 240; a three-step chain whose every call hangs is the case it bounds). A hold is milliseconds when agentd and the
+   taken. The sum, `MAX_HOLD`, is 5 + 3 x 10 + 15 + 2 x 25 + (5 + 4 x 10) = **145 s** (the first
+   draft had 240, the second 140 and left out the put-away of the agent a lookup found; a three-step chain whose every call hangs is the case it bounds). A hold is milliseconds when agentd and the
    lanes answer. A request that cannot wait that long is told busy after 5 s; one whose client gives up earlier (the MCP client
    waits 20 s) leaves its claim without an agent, which the stale-claim sweep looks up in agentd after 5 minutes. Requests
    build their own probe memo (`dispatch_one` cannot share the tick's, which lives for one tick); only the lane breaker, in the
-   store, is shared. Moving the probes outside the lock is a follow-up. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
+   store, is shared. Triage starts under the same lock and the same deadlines, one start a tick. A create that
+   refuses (503/429) or does not answer in time is the lane's failure, for a fix and for triage alike: the breaker opens, so a create
+   that agentd finishes late cannot be started and stopped again every tick. A request also leaves a lane alone for a minute after it
+   opened (its probes are its own), and the target the lane blocked is told as such, not as "after 0 tries". Moving the probes
+   outside the lock is a follow-up. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
    probe says it has quota; it never comes back up to a cheaper step it started at. When no step from there down is ready,
    nothing starts this round. A server or core fix is one task and one commit for every client waiting on it.
 4. **Tell him.** Fixed, closed or blocked targets, once per change, in his chat and on his phone.
