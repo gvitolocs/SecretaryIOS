@@ -2499,13 +2499,29 @@ async fn json_turn_planner(
         .to_owned();
     // Tier 0 settles "calendar_event" without its fields ("6 november at 12:30", answering her
     // question about his meeting): the planner, which sees the recent turns, fills them in.
-    let (plan, action) = if action == "calendar_event"
-        && plan["start"].as_str().is_none_or(|v| v.trim().is_empty())
+    // A title that is the owner's whole sentence names no event either, and is the planner's to
+    // choose.
+    let title_is_sentence = |p: &Value| {
+        lucina_intent::calendar_event::title_is_sentence(
+            p["title"].as_str().unwrap_or(""),
+            &t.message,
+        )
+    };
+    let (mut plan, action) = if action == "calendar_event"
+        && (plan["start"].as_str().is_none_or(|v| v.trim().is_empty()) || title_is_sentence(&plan))
     {
         replan(t, memory, plan, action).await
     } else {
         (plan, action)
     };
+    // The planner can hand back the sentence as it is: keep its first words, so a whole message
+    // never becomes the name of an event.
+    if action == "calendar_event" {
+        let title = plan["title"].as_str().unwrap_or("").trim().to_owned();
+        if !title.is_empty() && title_is_sentence(&plan) {
+            plan["title"] = json!(lucina_intent::calendar_event::short_title(&title));
+        }
+    }
 
     // The channel's own actions (Discord admin): before the guard, which
     // they replace with their own authorisation.
