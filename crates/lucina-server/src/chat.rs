@@ -1238,6 +1238,7 @@ async fn run_turn_scoped(
                 &t.message,
                 &t.user_label,
                 t.planner_platform(),
+                t.origin.as_ref().map(|o| o.owner),
                 false,
             );
             // Voice: Jev's route and the context building run together (the building holds its
@@ -3553,6 +3554,9 @@ async fn tools_turn(
             &message,
             USER_LABEL,
             PLANNER_PLATFORM,
+            // `tools_mode`: the classifier is not asked, so no turn of this path starts anything
+            // through it.
+            None,
             true,
         )
         .await;

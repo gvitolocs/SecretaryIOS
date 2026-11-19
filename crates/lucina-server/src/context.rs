@@ -16,7 +16,7 @@ use chrono::Utc;
 use lucina_intent::policy::{self, Policy};
 use lucina_intent::presence;
 use lucina_intent::tier0::{self, Classification};
-use lucina_memory::{Scope, TurnSurface};
+use lucina_memory::{Scope, Surface, TurnSurface};
 use lucina_store::reminders::delivered_context;
 
 use crate::planner::TurnInput;
@@ -105,6 +105,8 @@ pub fn presence_block(st: &AppState, prompt: &str) -> String {
 
 /// Classify a turn: tier 0, else the model (tier 1) on the recent turns.
 /// `mcp`: the turn comes from a Lucina MCP client (an agent's or assistant app's text, not the owner's).
+/// `owner_turn`: the owner's own surface, with nothing in the turn saying someone else wrote it
+/// ([`prepare_keyed`] computes it); only such a turn may start something.
 /// `device`: the device the owner is talking through (`crate::device::jev_device_of_turn`), a fact in Jev's state.
 /// `sample`: a real turn of the owner's own, whose Jev answer is kept (`jev_samples`).
 #[allow(clippy::too_many_arguments)]
@@ -116,6 +118,7 @@ pub async fn classify(
     platform: &str,
     device: &str,
     mcp: bool,
+    owner_turn: bool,
     sample: bool,
 ) -> Classification {
     let s = &st.cfg.intent;
@@ -171,9 +174,22 @@ pub async fn classify(
                     (true, false) => "side_effect_without_rule:planner",
                     _ => "",
                 };
+                // Jev won against a deterministic rule that disagreed with it (TURN-01): which one.
+                let overrode_rule = rule
+                    .as_ref()
+                    .filter(|r| crate::jev_route::deterministic_rule(r) && r.intent != c.intent)
+                    .map(|r| r.intent.clone())
+                    .unwrap_or_default();
+                // Such a rule is beaten only by a question (`jev_beats_rule_from`), so the intent that
+                // won never starts something: this is the same fact from the other side.
+                debug_assert!(
+                    !crate::jev_route::acts(&c.intent) || overrode_rule.is_empty(),
+                    "an acting intent overrode the rule {}",
+                    overrode_rule
+                );
                 tracing::info!(target: "lucina_jev::route", event = "jev_first", used = true,
                     intent = %c.intent, confidence, tier0 = ?rule.as_ref().map(|r| r.intent.as_str()),
-                    guard, "jev_first");
+                    overrode_rule = %overrode_rule, guard, "jev_first");
                 if guard.ends_with(":chat") {
                     return chat(confidence);
                 }
@@ -190,11 +206,26 @@ pub async fn classify(
                 tracing::info!(target: "lucina_jev::route", event = "jev_first", used = false, reason,
                     intent = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1),
                     tier0 = ?rule.as_ref().map(|r| r.intent.as_str()), "jev_first fallback");
+                let deterministic = rule
+                    .as_ref()
+                    .is_some_and(crate::jev_route::deterministic_rule);
+                // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
+                let confidence = s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN);
+                if unsure_plan(mcp, deterministic, owner_turn) {
+                    // The words Jev could not place may still ask for something done, so the turn goes
+                    // to the JSON planner (`plan_response`): one plan, then that plan's action, under
+                    // the guards and confirmations of any other planner turn. It does not get the tool
+                    // registry, and nothing here starts a side effect by itself.
+                    tracing::info!(target: "lucina_jev::route", event = "unsure_plan", reason,
+                        jev = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1));
+                    let mut c = chat(confidence);
+                    c.reply_mode = "full_plan".into();
+                    return c;
+                }
+                return crate::jev_route::rule_when_jev_unsure(rule)
+                    .unwrap_or_else(|| chat(confidence));
             }
         }
-        // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
-        return crate::jev_route::rule_when_jev_unsure(rule)
-            .unwrap_or_else(|| chat(s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN)));
     }
     if let Some(c) = rule {
         // A tier-0 regex rule gets Jev's second opinion; only a sure
@@ -251,6 +282,28 @@ pub async fn classify(
     }
 }
 
+/// `LUCINA_UNSURE_PLAN` (on unless off): a turn Jev was unsure of. Only the owner's own turn with no
+/// deterministic route to run and no agent behind it goes to the JSON planner; every other is
+/// answered as before. Pure: [`unsure_plan`] reads the environment.
+pub fn unsure_plan_from(
+    mcp: bool,
+    deterministic: bool,
+    owner_turn: bool,
+    switch: Option<&str>,
+) -> bool {
+    !mcp && !deterministic && owner_turn && !crate::jev_route::switch_off(switch)
+}
+
+/// [`unsure_plan_from`] with `LUCINA_UNSURE_PLAN`.
+pub fn unsure_plan(mcp: bool, deterministic: bool, owner_turn: bool) -> bool {
+    unsure_plan_from(
+        mcp,
+        deterministic,
+        owner_turn,
+        std::env::var("LUCINA_UNSURE_PLAN").ok().as_deref(),
+    )
+}
+
 /// `prepareLucinaTurnContext` for an owner turn.
 pub async fn prepare(
     st: &AppState,
@@ -283,7 +336,7 @@ pub async fn prepare_with(
         device: "",
     };
     prepare_keyed(
-        st, surface, session, keys, user_text, user_label, platform, tools_mode,
+        st, surface, session, keys, user_text, user_label, platform, None, tools_mode,
     )
     .await
 }
@@ -425,7 +478,9 @@ that is not RUNNING cannot be stopped because it has already ended.",
     )
 }
 
-/// [`prepare_with`] for any channel.
+/// [`prepare_with`] for any channel. `channel_owner`: a channel turn's own verdict on whether the
+/// owner himself wrote it ([`crate::chat::ChannelOrigin::owner`]); `None` on the Secretary path,
+/// which has no origin.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_keyed(
     st: &AppState,
@@ -435,10 +490,15 @@ pub async fn prepare_keyed(
     user_text: &str,
     user_label: &str,
     platform: &str,
+    channel_owner: Option<bool>,
     tools_mode: bool,
 ) -> Prepared {
     let now = Utc::now();
     let tz = st.cfg.time_zone;
+    // Whose words these are, for what may start something on them: his own surface — never a
+    // delegate, a group, another person or background work — and no channel fact saying otherwise.
+    let owner_turn =
+        matches!(surface.surface(), Surface::OwnerDirect) && channel_owner != Some(false);
     let metadata = keys.recent.metadata_block(keys.recent_key, tz, now);
     let first_after_idle = metadata.contains("- first turn after idle: yes");
     // The owner's personal memory, per the turn's surface (recent turns
@@ -477,6 +537,7 @@ pub async fn prepare_keyed(
             platform,
             keys.device,
             surface.caller().is_some(),
+            owner_turn,
             owner && surface.caller().is_none() && !crate::selftest::is_session(session),
         )
         .await;
@@ -624,5 +685,47 @@ pub async fn prepare_keyed(
         policy,
         game,
         game_live,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TURN-02: of the sixteen turns Jev was unsure of, exactly one goes to the planner: the owner's
+    /// own, with no deterministic rule to run. The switch's off words leave none.
+    #[test]
+    fn only_the_owners_own_unsure_turn_goes_to_the_planner() {
+        // (an MCP turn, a deterministic rule, the owner's own surface) → the planner?
+        let rows = [
+            ((false, false, false), false),
+            ((false, false, true), true),
+            ((false, true, false), false),
+            ((false, true, true), false),
+            ((true, false, false), false),
+            ((true, false, true), false),
+            ((true, true, false), false),
+            ((true, true, true), false),
+        ];
+        for switch in ["1", "true", "on", "yes", "", "x", " ON "] {
+            for ((mcp, deterministic, owner_turn), plan) in rows {
+                assert_eq!(
+                    unsure_plan_from(mcp, deterministic, owner_turn, Some(switch)),
+                    plan,
+                    "{switch} mcp={mcp} rule={deterministic} owner={owner_turn}"
+                );
+            }
+        }
+        for switch in ["0", "false", "off", "no", "OFF", " No "] {
+            for ((mcp, deterministic, owner_turn), _) in rows {
+                assert!(
+                    !unsure_plan_from(mcp, deterministic, owner_turn, Some(switch)),
+                    "{switch} mcp={mcp} rule={deterministic} owner={owner_turn}"
+                );
+            }
+        }
+        // Unset is on.
+        assert!(unsure_plan_from(false, false, true, None));
+        assert!(!unsure_plan_from(false, false, false, None));
     }
 }
