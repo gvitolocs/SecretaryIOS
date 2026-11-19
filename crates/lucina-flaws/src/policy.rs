@@ -20,7 +20,14 @@ use crate::{Gate, Layer, Platform, TargetStatus};
 
 /// Agents per repo at once: nezopt runs hot when many sessions build (limit: Tctl 90 °C).
 pub const DEFAULT_MAX_RUNNING: usize = 2;
-pub const DEFAULT_MAX_ATTEMPTS: u32 = 2;
+/// Dispatcher agents alive at once, in all (`LUCINA_FLAWS_MAX_ALIVE`).
+pub const DEFAULT_MAX_ALIVE: usize = 3;
+/// Dispatcher agents alive at once on one lane (`LUCINA_FLAWS_MAX_PER_LANE`).
+pub const DEFAULT_MAX_PER_LANE: usize = 1;
+/// New dispatches one tick may start (`LUCINA_FLAWS_MAX_NEW_PER_TICK`).
+pub const DEFAULT_MAX_NEW_PER_TICK: usize = 1;
+/// Task failures within a rolling 24 hours before a target is `blocked` for a lead.
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// How long an agent may hold a target (matches the other lanes' 45 minutes).
 pub const DEFAULT_AGENT_MINUTES: i64 = 45;
 /// `LUCINA_FLAWS_PROVIDER`, when the old variables build the chain.
@@ -123,7 +130,15 @@ pub struct Policy {
     pub auto_triage: bool,
     /// `LUCINA_FLAWS_MAX_RUNNING`: agents at once per repo.
     pub max_running_per_repo: usize,
-    /// `LUCINA_FLAWS_MAX_ATTEMPTS`: tries before a target is `blocked`.
+    /// `LUCINA_FLAWS_MAX_ALIVE`: dispatcher agents alive
+    /// at once in all (a fix or a triage, attached or not).
+    pub max_alive: usize,
+    /// `LUCINA_FLAWS_MAX_PER_LANE`: alive at once on one lane.
+    pub max_per_lane: usize,
+    /// `LUCINA_FLAWS_MAX_NEW_PER_TICK`: new dispatches in one tick of the loop.
+    pub max_new_per_tick: usize,
+    /// `LUCINA_FLAWS_MAX_ATTEMPTS`: task failures within a rolling 24 hours before a target is
+    /// `blocked` for a lead. A lane failure never counts.
     pub max_attempts: u32,
     /// `LUCINA_FLAWS_AGENT_MINUTES`.
     pub agent_minutes: i64,
@@ -139,9 +154,13 @@ pub struct Policy {
     /// `LUCINA_FLAWS_TRIAGE_STEPS`: how many steps from the top of the chain may look at a report.
     /// Triage is the cheap work, so it never reaches a step below this count: one ([`DEFAULT_TRIAGE_STEPS`])
     /// is only the chain's first step, which is free in [`DEFAULT_CHAIN`]; more of them are there for a
-    /// first step that runs out of quota often. Past the end of the chain it is the whole chain; 0 or
-    /// not a number stops the server, the way a bad chain does.
+    /// first step that runs out of quota often. Past the end of the chain it is the whole chain; 0, text or an
+    /// empty value is said once (in [`Policy::notes`], which the server logs as a warning) and the default
+    /// stands: a tracker setting never stops the server (a bad chain still does).
     pub triage_steps: usize,
+    /// Settings that were invalid and replaced by their defaults (`LUCINA_FLAWS_TRIAGE_STEPS`):
+    /// one line each, for the caller to log. The server never stops on them.
+    pub notes: Vec<String>,
     pub effort: String,
     pub mode: String,
     /// `LUCINA_FLAWS_REPO`: server, core and every client but Juno.
@@ -195,16 +214,26 @@ impl Policy {
             None => parse_chain(DEFAULT_CHAIN)?,
         };
         // Triage's cheap end: the same kind of error as a bad chain, never a quiet default.
-        let triage_steps = match val("LUCINA_FLAWS_TRIAGE_STEPS") {
-            Some(v) => v.parse::<usize>().map_err(|_| {
-                format!("LUCINA_FLAWS_TRIAGE_STEPS: `{v}` is not a number of chain steps")
-            })?,
+        // A tracker setting must not take the whole API down: a count that is not one (0, text,
+        // empty) is said once, in `notes`, and the default stands. A bad chain still stops the
+        // server: that one would quietly dispatch on another agent.
+        let mut notes = Vec::new();
+        let triage_steps = match get("LUCINA_FLAWS_TRIAGE_STEPS") {
             None => DEFAULT_TRIAGE_STEPS,
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    notes.push(format!(
+                        "LUCINA_FLAWS_TRIAGE_STEPS: `{}` is not a number of chain steps (1 or more); \
+                         using the default, {DEFAULT_TRIAGE_STEPS}. Switch triage off with LUCINA_FLAWS_AUTO_TRIAGE=off",
+                        raw.trim()
+                    ));
+                    DEFAULT_TRIAGE_STEPS
+                }
+            },
         };
-        if triage_steps == 0 {
-            return Err("LUCINA_FLAWS_TRIAGE_STEPS: no step at all means no triage; say that with LUCINA_FLAWS_AUTO_TRIAGE=off".to_owned());
-        }
         Ok(Self {
+            notes,
             auto_dispatch: !matches!(
                 val("LUCINA_FLAWS_AUTO_DISPATCH").as_deref(),
                 Some("off" | "false" | "0")
@@ -215,6 +244,12 @@ impl Policy {
             ),
             max_running_per_repo: num("LUCINA_FLAWS_MAX_RUNNING", DEFAULT_MAX_RUNNING as u64)
                 as usize,
+            max_alive: num("LUCINA_FLAWS_MAX_ALIVE", DEFAULT_MAX_ALIVE as u64) as usize,
+            max_per_lane: num("LUCINA_FLAWS_MAX_PER_LANE", DEFAULT_MAX_PER_LANE as u64) as usize,
+            max_new_per_tick: num(
+                "LUCINA_FLAWS_MAX_NEW_PER_TICK",
+                DEFAULT_MAX_NEW_PER_TICK as u64,
+            ) as usize,
             max_attempts: num("LUCINA_FLAWS_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS as u64) as u32,
             agent_minutes: num("LUCINA_FLAWS_AGENT_MINUTES", DEFAULT_AGENT_MINUTES as u64) as i64,
             owner_gates: Gate::ALL.to_vec(),
@@ -456,8 +491,16 @@ pub fn outcome_line(flaw: &Flaw, target: &Target, policy: &Policy) -> String {
         }
         TargetStatus::Verified => "fixed and shown working".to_owned(),
         TargetStatus::NotAffected => "doesn't happen there".to_owned(),
+        // Blocked by its agents' lane failing, never by a failed fix: say that, not "0 tries".
+        TargetStatus::Blocked if target.attempts == 0 => format!(
+            "its agents kept ending on the lane failing, not on the fix ({}); it needs a lead to look at it",
+            target
+                .last_error
+                .as_deref()
+                .map_or(String::from("no error text"), |e| e.chars().take(80).collect())
+        ),
         TargetStatus::Blocked => format!(
-            "I couldn't fix it after {} tries; someone needs to look",
+            "I couldn't fix it after {} tries; it needs a lead to look at it",
             target.attempts
         ),
         other => other.to_string(),
@@ -772,15 +815,25 @@ mod tests {
             p.chain.len(),
             "clamped to the chain"
         );
-        // A count that isn't one, or none at all, stops the server: no quiet default.
-        for bad in ["0", "x"] {
-            let e = Policy::from_lookup(
+        // LA-C035 D (this used to pin the opposite): a count that isn't one, or none at all, no
+        // longer stops the server. It is said once and the default stands.
+        for bad in ["0", "abc", "", "  "] {
+            let p = Policy::from_lookup(
                 |k| (k == "LUCINA_FLAWS_TRIAGE_STEPS").then(|| bad.to_owned()),
                 Path::new("/h"),
             )
-            .unwrap_err();
-            assert!(e.contains("LUCINA_FLAWS_TRIAGE_STEPS"), "{bad}: {e}");
+            .expect("the policy builds");
+            assert_eq!(p.triage_steps, DEFAULT_TRIAGE_STEPS, "{bad:?}");
+            assert_eq!(p.notes.len(), 1, "{bad:?}: one warning, {:?}", p.notes);
+            assert!(
+                p.notes[0].contains("LUCINA_FLAWS_TRIAGE_STEPS") && p.notes[0].contains("default"),
+                "{:?}",
+                p.notes
+            );
         }
+        // A good value, or none, says nothing.
+        assert!(one("LUCINA_FLAWS_TRIAGE_STEPS", "2").notes.is_empty());
+        assert!(policy().notes.is_empty());
     }
 
     #[test]
@@ -979,5 +1032,42 @@ mod tests {
             "lucina-rs"
         ));
         assert!(runtime_serves(Platform::Ios, Some(Layer::Core), "ios"));
+    }
+
+    #[test]
+    fn the_dispatch_caps_and_the_failure_window_have_their_defaults_and_keys() {
+        // LA-C035: 3 agents alive in all, 1 per lane, 1 new dispatch per tick, and three task
+        // failures inside a day before a lead is needed.
+        let p = policy();
+        assert_eq!(
+            (
+                p.max_alive,
+                p.max_per_lane,
+                p.max_new_per_tick,
+                p.max_running_per_repo,
+                p.max_attempts
+            ),
+            (3, 1, 1, 2, 3)
+        );
+        let get = |k: &str| match k {
+            "LUCINA_FLAWS_MAX_ALIVE" => Some("5".to_owned()),
+            "LUCINA_FLAWS_MAX_PER_LANE" => Some("2".to_owned()),
+            "LUCINA_FLAWS_MAX_NEW_PER_TICK" => Some("4".to_owned()),
+            "LUCINA_FLAWS_MAX_ATTEMPTS" => Some("6".to_owned()),
+            _ => None,
+        };
+        let p = Policy::from_lookup(get, Path::new("/h")).unwrap();
+        assert_eq!(
+            (
+                p.max_alive,
+                p.max_per_lane,
+                p.max_new_per_tick,
+                p.max_attempts
+            ),
+            (5, 2, 4, 6)
+        );
+        // Zero or text is no cap at all: the default stands.
+        let p = one("LUCINA_FLAWS_MAX_ALIVE", "0");
+        assert_eq!(p.max_alive, 3);
     }
 }

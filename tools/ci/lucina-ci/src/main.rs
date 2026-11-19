@@ -2005,6 +2005,26 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     for s in &skipped {
         println!("skipped  {s}");
     }
+    // The unit-test steps run `cargo test --lib` only: say so when a touched workspace crate has integration tests under tests/.
+    if !a.has("--no-build") {
+        let mut files = Vec::new();
+        let mut pkgs = Vec::new();
+        for o in &owners {
+            if let fast::Owner::Member(n) = o
+                && let Some(d) = fast::member_dir(&root, &members, n)
+            {
+                let f = fast::integration_test_files(&root, &d);
+                if !f.is_empty() {
+                    pkgs.push(n.clone());
+                    files.extend(f);
+                }
+            }
+        }
+        files.sort();
+        if let Some(line) = fast::integration_tests_note(&files, &pkgs) {
+            println!("{line}");
+        }
+    }
     println!(
         "check-fast: {:.0}s, {} failed, {} skipped",
         started.elapsed().as_secs_f64(),
