@@ -1317,7 +1317,7 @@ fn the_audit_refuses_a_tmpfs_over_a_parent_of_a_locked_target() {
 }
 
 #[test]
-fn the_audit_refuses_a_chdir_outside_the_workspace() {
+fn the_audit_refuses_a_chdir_outside_the_read_write_binds() {
     for p in ["/", "/etc", "/usr", COMMON, "relative"] {
         let e = audit_with(&["--chdir", p]).expect_err(p);
         assert!(e.to_string().contains("--chdir"), "{p}");
@@ -1325,7 +1325,7 @@ fn the_audit_refuses_a_chdir_outside_the_workspace() {
 }
 
 #[test]
-fn the_generator_puts_both_tmpfs_mounts_before_every_bind() {
+fn no_earlier_bind_sits_at_or_under_a_path_a_tmpfs_covers() {
     let a = args(&run("qoder"));
     let tmpfs: Vec<usize> = a
         .iter()
