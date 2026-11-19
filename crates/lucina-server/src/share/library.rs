@@ -127,11 +127,13 @@ impl DocumentReader for LibraryReader {
             st,
             &st.cfg.share.dir,
             &mut part,
-            true,
-            None,
-            "en",
-            false,
-            crate::share::ShareTiming::silent(),
+            &extract::Reading {
+                extract_files: true,
+                on_device: None,
+                lang: "en",
+                summarize: false,
+                timing: crate::share::ShareTiming::silent(),
+            },
         )
         .await
         .map_err(|e| e.to_string())?;

@@ -900,22 +900,38 @@ async fn read_text_file(path: &Path, max: u64) -> anyhow::Result<(String, bool)>
     Ok((String::from_utf8_lossy(&bytes).into_owned(), len > max))
 }
 
-/// Read one part with the handler its kind routes to. `extract_files: false`
-/// (library saves) still reads texts, links and locations, but leaves stored
-/// files unread. `on_device` is a transcript the phone already made.
-/// `summarize: false` skips the long-document summary (a chat turn reading a
-/// Drive file has no time for it; it gets the passages it needs instead).
-/// `timing` collects the phases of this read (see [`super::timing`]).
+/// The switches of one read, as the caller of [`read`] chooses them.
+#[derive(Clone, Copy)]
+pub(super) struct Reading<'a> {
+    /// `false` for a library save: texts, links and locations are still read, stored files are not.
+    pub extract_files: bool,
+    /// A transcript the phone already made.
+    pub on_device: Option<&'a str>,
+    /// The language the owner writes in; empty leaves it to the handler.
+    pub lang: &'a str,
+    /// `false` skips the long-document summary: a chat turn reading a Drive file has no time for
+    /// it, and gets the passages it needs instead.
+    pub summarize: bool,
+    /// The collector of the share this read belongs to, or [`ShareTiming::silent`] for one that
+    /// belongs to none.
+    pub timing: &'a ShareTiming,
+}
+
+/// Read one part with the handler its kind routes to; [`Reading`] holds the switches the caller
+/// sets, and the timing its phases go into.
 pub(super) async fn read(
     st: &AppState,
     dir: &Path,
     part: &mut Part,
-    extract_files: bool,
-    on_device: Option<&str>,
-    lang: &str,
-    summarize: bool,
-    timing: &ShareTiming,
+    reading: &Reading<'_>,
 ) -> anyhow::Result<Extracted> {
+    let Reading {
+        extract_files,
+        on_device,
+        lang,
+        summarize,
+        timing,
+    } = *reading;
     if let Some(text) = &part.text {
         let mut x = Extracted::new("text");
         x.text = text.clone();

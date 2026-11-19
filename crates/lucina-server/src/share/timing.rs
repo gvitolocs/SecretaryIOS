@@ -437,9 +437,15 @@ mod tests {
     use tracing::field::{Field, Visit};
     use tracing::{Event, Metadata, Subscriber};
 
+    /// One captured line: its fields, in the order they were written.
+    type Line = Vec<(String, String)>;
+
+    /// The lines captured so far, in the order they came.
+    type Lines = Arc<Mutex<Vec<Line>>>;
+
     /// The fields of one captured line.
     #[derive(Default)]
-    struct Fields(Vec<(String, String)>);
+    struct Fields(Line);
 
     impl Visit for Fields {
         fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
@@ -458,10 +464,10 @@ mod tests {
 
     /// Every `lucina_share::timing` line written while it runs, in the order they came.
     #[derive(Clone, Default)]
-    struct Capture(Arc<Mutex<Vec<Vec<(String, String)>>>>);
+    struct Capture(Lines);
 
     impl Capture {
-        fn lines(&self) -> Vec<Vec<(String, String)>> {
+        fn lines(&self) -> Vec<Line> {
             self.0.lock().unwrap().clone()
         }
     }
@@ -495,13 +501,13 @@ mod tests {
 
     /// The lines `run` wrote to `lucina_share::timing`. A subscriber of this thread only, so the tests
     /// of other threads keep whatever logging the machine has.
-    fn captured<T>(run: impl FnOnce() -> T) -> (T, Vec<Vec<(String, String)>>) {
+    fn captured<T>(run: impl FnOnce() -> T) -> (T, Vec<Line>) {
         let capture = Capture::default();
         let value = tracing::subscriber::with_default(capture.clone(), run);
         (value, capture.lines())
     }
 
-    fn field(line: &[(String, String)], name: &str) -> String {
+    fn field(line: &Line, name: &str) -> String {
         line.iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.clone())
@@ -509,10 +515,7 @@ mod tests {
     }
 
     /// The captured lines of one phase, by name.
-    fn lines_of<'a>(
-        lines: &'a [Vec<(String, String)>],
-        name: &str,
-    ) -> Vec<&'a Vec<(String, String)>> {
+    fn lines_of<'a>(lines: &'a [Line], name: &str) -> Vec<&'a Line> {
         lines
             .iter()
             .filter(|line| field(line, "phase") == name)

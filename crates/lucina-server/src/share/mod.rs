@@ -1434,11 +1434,13 @@ pub(crate) async fn read_local_file(
             st,
             dir,
             &mut part,
-            true,
-            None,
-            "",
-            true,
-            ShareTiming::silent(),
+            &extract::Reading {
+                extract_files: true,
+                on_device: None,
+                lang: "",
+                summarize: true,
+                timing: ShareTiming::silent(),
+            },
         ),
     )
     .await
@@ -1534,11 +1536,13 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 st,
                 dir,
                 &mut job.parts[i],
-                extract_files,
-                on_device.as_deref(),
-                &lang,
-                true,
-                &timing,
+                &extract::Reading {
+                    extract_files,
+                    on_device: on_device.as_deref(),
+                    lang: &lang,
+                    summarize: true,
+                    timing: &timing,
+                },
             ),
         )
         .await;
