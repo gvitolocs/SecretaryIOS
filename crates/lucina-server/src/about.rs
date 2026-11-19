@@ -83,7 +83,7 @@ impl AboutYou {
 
 fn about_err(e: AboutError) -> ApiError {
     match e {
-        AboutError::Secret => ApiError::new(400, "secret_refused", &e.to_string()),
+        AboutError::Secret => ApiError::new(400, "secret_refused", e.to_string()),
         AboutError::NotFound => ApiError::new(404, "not_found", "no such fact"),
         AboutError::Io => ApiError::new(500, "store_failed", "the memory could not be written"),
         AboutError::Invalid(m) => ApiError::new(400, "bad_request", &m),
@@ -149,11 +149,31 @@ pub async fn route(
             let b = body.as_ref().unwrap_or(&Value::Null);
             let d = draft(b)?;
             // The page adds his own edits; a seed names where a fact came from (a note, a document).
-            let kind = b["source"]["kind"].as_str().filter(|k| store::SOURCES.contains(k)).unwrap_or("owner-edit");
-            let reference = b["source"]["reference"].as_str().unwrap_or("").chars().take(120).collect();
-            let by = if kind == "owner-edit" { "owner" } else { "seed" };
+            let kind = b["source"]["kind"]
+                .as_str()
+                .filter(|k| store::SOURCES.contains(k))
+                .unwrap_or("owner-edit");
+            let reference = b["source"]["reference"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect();
+            let by = if kind == "owner-edit" {
+                "owner"
+            } else {
+                "seed"
+            };
             let f = s
-                .add(&d, Source { kind: kind.to_owned(), reference }, by, now)
+                .add(
+                    &d,
+                    Source {
+                        kind: kind.to_owned(),
+                        reference,
+                    },
+                    by,
+                    now,
+                )
                 .map_err(about_err)?;
             Ok(serde_json::to_value(f).unwrap_or_default())
         }

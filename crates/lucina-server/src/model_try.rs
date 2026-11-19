@@ -3,7 +3,7 @@
 //! changing what she answers with. No turn runs: nothing reaches the timeline, Honcho or recent chat, and no
 //! tool is executed. The `lucina-rs model-try` CLI calls it. Not forwarded by secretary-server.
 //!
-//! Body: `{provider?: "deepseek"|"mistral", model?, prompt? | messages?, system?, tools?: "registry" | [...],
+//! Body: `{provider?: "deepseek"|"mistral"|"raffy", model?, prompt? | messages?, system?, tools?: "registry" | [...],
 //! toolChoice?, stream?, maxTokens?, temperature?, json?, thinking?}`.
 
 use std::sync::Arc;
@@ -17,10 +17,12 @@ use crate::api::ApiError;
 /// The longest answer one try may ask for.
 const MAX_TOKENS: u32 = 4096;
 
-/// The chat models a try can name, each behind the redactor. Mistral is here only when it has a key.
+/// The chat models a try can name, each behind the redactor. Mistral and raffy are here only when they have a key.
 pub struct NamedModels {
     pub deepseek: Arc<dyn ChatModel>,
     pub mistral: Option<Arc<dyn ChatModel>>,
+    /// The tailnet llama-server (`RAFFY_*`).
+    pub raffy: Option<Arc<dyn ChatModel>>,
 }
 
 fn messages(body: &Value) -> Result<Vec<Message>, ApiError> {
@@ -57,7 +59,18 @@ pub async fn handle(st: &crate::AppState, body: &Value) -> Result<Value, ApiErro
     let model = match provider {
         "deepseek" => st.named_models.deepseek.clone(),
         "mistral" => st.named_models.mistral.clone().ok_or_else(|| {
-            ApiError::new(503, "no_key", "Mistral has no key here (MISTRAL_API_KEY / MISTRAL_KEY_FILE)")
+            ApiError::new(
+                503,
+                "no_key",
+                "Mistral has no key here (MISTRAL_API_KEY / MISTRAL_KEY_FILE)",
+            )
+        })?,
+        "raffy" => st.named_models.raffy.clone().ok_or_else(|| {
+            ApiError::new(
+                503,
+                "no_key",
+                "the tailnet llama-server has no key (RAFFY_API_KEY / RAFFY_KEY_FILE)",
+            )
         })?,
         other => return Err(ApiError::bad_request(format!("unknown provider {other}"))),
     };
@@ -75,7 +88,9 @@ pub async fn handle(st: &crate::AppState, body: &Value) -> Result<Value, ApiErro
         tools,
         temperature: body["temperature"].as_f64().map(|t| t as f32),
         max_tokens: Some(
-            body["maxTokens"].as_u64().map_or(1024, |n| n.min(u64::from(MAX_TOKENS)) as u32),
+            body["maxTokens"]
+                .as_u64()
+                .map_or(1024, |n| n.min(u64::from(MAX_TOKENS)) as u32),
         ),
         purpose: "model_try",
         json_object: body["json"].as_bool().unwrap_or(false),
