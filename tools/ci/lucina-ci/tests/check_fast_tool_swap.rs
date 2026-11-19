@@ -657,6 +657,14 @@ fn the_per_run_directory_holds_the_run_and_leaves_nothing_behind() {
     }
 }
 
+/// The stand-in build the launcher-install tests use: it leaves its artifact where the install reads from.
+const BUILD_STUB: &str = r#"#!/usr/bin/env bash
+mkdir -p "$CARGO_TARGET_DIR/release"
+printf '#!/usr/bin/env bash\necho TOOL-VERSION-built\n' > "$CARGO_TARGET_DIR/release/lucina-ci"
+chmod 0755 "$CARGO_TARGET_DIR/release/lucina-ci"
+exit 0
+"#;
+
 /// (b), first half: the launcher never writes the shared name it replaces. A hard link to the previous install catches it —
 /// a write through the path would go through the link and change the bytes a run in flight is executing; a rename cannot.
 #[test]
@@ -720,6 +728,9 @@ exit 0
 fn a_failed_build_leaves_the_installed_tool_whole_and_no_partial_file_behind() {
     let s = Scratch::new("build-failed");
     fs::create_dir_all(s.at("tool/release")).unwrap();
+    for d in ["tool", "tool/release"] {
+        fs::set_permissions(s.at(d), fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let installed = s.at("tool/release/lucina-ci");
     let previous = "#!/usr/bin/env bash\necho PREVIOUS-INSTALL\n";
     write_exec(&installed, previous);
@@ -766,24 +777,19 @@ exit 101
     );
 }
 
-/// GATE-16: the install's temp name is `lucina-ci.tmp.<pid of the launcher's shell>`, in a directory other processes may be
-/// able to write, and a symlink planted at it before the copy must not be followed. A wrapper plants the link under its own pid
-/// and execs the launcher, which keeps that pid, so the name is the very one the launcher will use. The file the link points
-/// at keeps its bytes, and what is installed is the new build, a plain file.
+/// GATE-16: the install's temp name is made by mktemp, in a directory other processes may be able to write, so nothing can be
+/// planted at it ahead of the copy. The old predictable name (`lucina-ci.tmp.<pid of the launcher's shell>`) is planted as a
+/// symlink anyway — a wrapper plants it under its own pid and execs the launcher, which keeps that pid: the file the link points
+/// at keeps its bytes, the link is left as it was, and what is installed is the new build, a plain file.
 #[test]
-fn a_symlink_planted_at_the_install_temp_name_is_not_followed() {
+fn a_symlink_planted_at_the_old_install_temp_name_is_not_followed() {
     let s = Scratch::new("tmplink");
     write_exec(&s.bin().join("df"), "#!/usr/bin/env bash\necho '  999G'\n");
-    write_exec(
-        &s.bin().join("cargo"),
-        r#"#!/usr/bin/env bash
-mkdir -p "$CARGO_TARGET_DIR/release"
-printf '#!/usr/bin/env bash\necho TOOL-VERSION-built\n' > "$CARGO_TARGET_DIR/release/lucina-ci"
-chmod 0755 "$CARGO_TARGET_DIR/release/lucina-ci"
-exit 0
-"#,
-    );
+    write_exec(&s.bin().join("cargo"), BUILD_STUB);
     fs::create_dir_all(s.at("tool/release")).unwrap();
+    for d in ["tool", "tool/release"] {
+        fs::set_permissions(s.at(d), fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let victim = s.at("victim");
     fs::write(&victim, "VICTIM-BEFORE").unwrap();
     let mut c = Command::new("bash");
@@ -814,9 +820,79 @@ exit 0
         "the installed tool is a plain file, not the link"
     );
     assert!(read(&installed).contains("TOOL-VERSION-built"));
+    let left: Vec<String> = names(&s.at("tool/release"))
+        .into_iter()
+        .filter(|n| n != "lucina-ci")
+        .collect();
     assert_eq!(
-        names(&s.at("tool/release")),
-        vec!["lucina-ci".to_string()],
-        "the planted link did not survive beside the tool"
+        left.len(),
+        1,
+        "only the planted link is left beside the tool: {left:?}"
     );
+    let link = s.at("tool/release").join(&left[0]);
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the planted link is as it was"
+    );
+}
+
+/// GATE-16: the directory the tool is installed into and run from is chosen by `SECRETARY_CI_TOOL_TARGET` / `_BUILD`; one that
+/// is not under the home directory (as written or as it resolves), or is writable by group or others, is refused with exit 2
+/// before anything is built or written there. Owned-by-someone-else is the same refusal and needs another uid to show.
+#[test]
+fn a_tool_directory_outside_the_home_or_open_to_others_is_refused() {
+    let s = Scratch::new("tooldir");
+    let outside = Scratch::new("tooldir-outside");
+    write_exec(&s.bin().join("df"), "#!/usr/bin/env bash\necho '  999G'\n");
+    write_exec(&s.bin().join("cargo"), BUILD_STUB);
+    let refused = |c: &mut Command, why: &str| {
+        let o = c.output().unwrap();
+        let said = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(2), "{why}: {said}");
+        assert!(
+            !String::from_utf8_lossy(&o.stdout).contains("TOOL-VERSION"),
+            "{why}: the tool ran"
+        );
+        said
+    };
+    // 1. written outside the home: nothing is made there
+    let mut c = launcher_run(&s);
+    c.env("SECRETARY_CI_TOOL_TARGET", outside.at("tool"));
+    let said = refused(&mut c, "a tool directory outside the home");
+    assert!(said.contains("not under the home directory"), "{said}");
+    assert!(
+        !outside.at("tool").exists(),
+        "the launcher made a directory outside the home"
+    );
+    // 2. a link under the home that resolves outside it
+    std::os::unix::fs::symlink(&outside.dir, s.at("tool")).unwrap();
+    fs::create_dir_all(outside.at("release")).unwrap();
+    for d in ["", "release"] {
+        fs::set_permissions(outside.at(d), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let said = refused(&mut launcher_run(&s), "a link out of the home");
+    assert!(said.contains("not under the home directory"), "{said}");
+    assert!(
+        names(&outside.at("release")).is_empty(),
+        "something was installed through the link"
+    );
+    fs::remove_file(s.at("tool")).unwrap();
+    // 3. under the home but open to group and others
+    fs::create_dir_all(s.at("tool/release")).unwrap();
+    for d in ["tool", "tool/release"] {
+        fs::set_permissions(s.at(d), fs::Permissions::from_mode(0o775)).unwrap();
+    }
+    let said = refused(&mut launcher_run(&s), "a group-writable tool directory");
+    assert!(said.contains("writable by group or others"), "{said}");
+    assert!(
+        names(&s.at("tool/release")).is_empty(),
+        "something was installed into it"
+    );
+    fs::set_permissions(s.at("tool/release"), fs::Permissions::from_mode(0o757)).unwrap();
+    fs::set_permissions(s.at("tool"), fs::Permissions::from_mode(0o755)).unwrap();
+    let said = refused(&mut launcher_run(&s), "a world-writable release directory");
+    assert!(said.contains("writable by group or others"), "{said}");
 }

@@ -108,17 +108,62 @@ tool=${SECRETARY_CI_TOOL_TARGET:-$qhome/.cache/secretary-ci-tool}
 # source and would still replace each other, and the run in flight is what has to survive either way — it copies the binary
 # it started from into its own per-run directory and starts every step from that copy (cmd_check_fast, src/main.rs).
 build=${SECRETARY_CI_TOOL_BUILD:-${tool}-build}
+# GATE-16: the directories the tool is built in, installed into and run from are chosen by the environment, and the launcher
+# execs what it finds there. Each must resolve to a directory under the home directory of this uid (the passwd one, as for the
+# queue), owned by this user, and writable by no one else; anything else is a refusal (exit 2) before a byte is written there.
+# The directories are made with umask 022, so a fresh one passes; one made earlier with a looser mode is refused with the
+# command that fixes it.
+tool_dir_ok() {
+    local d=$1 real home_real owner mode
+    real=$(cd "$d" 2>/dev/null && pwd -P) || {
+        echo "check-fast: $d is not a directory" >&2
+        return 1
+    }
+    home_real=$(cd "$qhome" && pwd -P)
+    case "$real/" in
+        "$home_real"/*) ;;
+        *)
+            echo "check-fast: $d (resolves to $real) is not under the home directory $home_real; refusing to install the tool there or run it from there" >&2
+            return 1
+            ;;
+    esac
+    read -r owner mode < <(stat -c '%u %a' "$real")
+    if [ "$owner" != "$(id -u)" ]; then
+        echo "check-fast: $d is owned by uid $owner, not by this user; refusing to install the tool there or run it from there" >&2
+        return 1
+    fi
+    if [ $((8#$mode & 8#022)) -ne 0 ]; then
+        echo "check-fast: $d is writable by group or others (mode $mode); refusing to install the tool there or run it from there. Fix: chmod go-w \"$real\"" >&2
+        return 1
+    fi
+}
+# Nothing is made outside the home: the names are checked as written first, the directories as they resolve after.
+for d in "$tool" "$build"; do
+    case "$d/" in
+        "$qhome"/*) ;;
+        *)
+            echo "check-fast: $d is not under the home directory $qhome; refusing to install the tool there or run it from there" >&2
+            exit 2
+            ;;
+    esac
+done
+(
+    umask 022
+    mkdir -p "$tool/release" "$build"
+)
+for d in "$tool" "$tool/release" "$build"; do
+    tool_dir_ok "$d" || exit 2
+done
 CARGO_TARGET_DIR=$build cargo build --quiet --release --locked --manifest-path "$root/tools/ci/lucina-ci/Cargo.toml"
-mkdir -p "$tool/release"
-tmp=$tool/release/lucina-ci.tmp.$$
+# The temp name is made by mktemp (a name nobody can predict, O_EXCL, mode 0600) in the checked directory: nothing is planted
+# there ahead of the copy, and the copy is never written through a link. If what stands there is not a plain file the install
+# stops.
+tmp=$(mktemp "$tool/release/lucina-ci.tmp.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
-# GATE-16: the temp name is under a directory other processes may be able to write, and a symlink planted at it must not be
-# followed by the copy. It is removed first, `install` (which unlinks an existing destination and writes a new file, mode
-# 0755) makes the file, and the install refuses to go on if what stands there is not a plain file.
-rm -f "$tmp"
-install -m 0755 "$build/release/lucina-ci" "$tmp"
+cp "$build/release/lucina-ci" "$tmp"
+chmod 0755 "$tmp"
 if [ -L "$tmp" ] || [ ! -f "$tmp" ]; then
-    echo "check-fast: $tmp is not a plain file after the install; refusing to move it onto the tool" >&2
+    echo "check-fast: $tmp is not a plain file after the copy; refusing to move it onto the tool" >&2
     exit 2
 fi
 mv -fT "$tmp" "$tool/release/lucina-ci"
