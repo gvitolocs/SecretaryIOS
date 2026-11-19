@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use lucina_agentd::lane::LaneConfig;
 use lucina_agentd::manager::{
-    ActiveTurnBehavior, CapsConfig, CreateRequest, Manager, ManagerError, Options,
+    ActiveTurnBehavior, Caller, CapsConfig, CreateRequest, ForkRequest, Manager, ManagerError,
+    Options, ScheduleInput,
 };
 use lucina_agentd::process::{Proc, Spec};
 use lucina_agentd::provider::{
@@ -210,6 +211,15 @@ impl Session for FakeSession {
 const AUTH: &str = "Failed to authenticate: OAuth session expired and could not be refreshed";
 
 fn manager(dir: &Path, providers: &[&Fake], caps: CapsConfig) -> Manager {
+    manager_with_lanes(dir, providers, caps, LaneConfig::default())
+}
+
+fn manager_with_lanes(
+    dir: &Path,
+    providers: &[&Fake],
+    caps: CapsConfig,
+    lanes: LaneConfig,
+) -> Manager {
     let state = dir.join("state");
     let options = Options {
         caps,
@@ -222,7 +232,7 @@ fn manager(dir: &Path, providers: &[&Fake], caps: CapsConfig) -> Manager {
             .iter()
             .map(|f| Arc::new((*f).clone()) as Arc<dyn Provider>)
             .collect(),
-        LaneConfig::default(),
+        lanes,
         options,
     )
     .unwrap()
@@ -702,4 +712,209 @@ fn providers_clear_reopens_a_provider_after_a_login_failure_through_the_daemon()
     assert_eq!(code, Some(0), "{out} {err}");
     let (code, took, out, err) = fast("mock")(&d, &cwd);
     assert_eq!(code, Some(0), "{took:?} {out} {err}");
+}
+
+fn owner() -> Caller {
+    Caller::Owner("local".into())
+}
+
+#[tokio::test]
+async fn a_quota_failure_with_no_next_lane_ends_in_error_and_its_processes_are_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fake =
+        Fake::new("fake-a", dir.path()).failing("You've hit your weekly limit", Some("quota"));
+    fake.spawn = true;
+    // No lane chain: the hand-off has nobody to hand the run to and ends `exhausted`.
+    let m = manager(dir.path(), &[&fake], roomy());
+    let mut req = request("fake-a", dir.path(), None);
+    req.prompt = Some("do the work".into());
+    let snap = m.create(req).await.unwrap();
+    until("the processes started", || {
+        dir.path().join("provider.pid").exists()
+            && std::fs::read_to_string(dir.path().join("child.pid"))
+                .is_ok_and(|s| !s.trim().is_empty())
+    })
+    .await;
+    let provider = pid_in(&dir.path().join("provider.pid"));
+    let child = pid_in(&dir.path().join("child.pid"));
+    until("status error", || {
+        status(&m, &snap.id) == AgentStatus::Error
+    })
+    .await;
+    until("the hand-off ended exhausted", || {
+        m.snapshots(true)
+            .into_iter()
+            .find(|a| a.id == snap.id)
+            .is_some_and(|a| {
+                a.labels
+                    .get("lucina.handoff")
+                    .is_some_and(|v| v == "exhausted")
+            })
+    })
+    .await;
+    until("both processes gone", || !alive(provider) && !alive(child)).await;
+    assert_eq!(status(&m, &snap.id), AgentStatus::Error);
+}
+
+const LANES: &str = r#"
+[lanes.mock-a]
+kind = "mock"
+[lanes.mock-b]
+kind = "mock-alt"
+[categories]
+deep-lucina = ["mock-a", "mock-b"]
+"#;
+
+#[tokio::test]
+async fn a_hand_off_continuation_is_never_refused_and_never_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let failing =
+        Fake::new("mock", dir.path()).failing("You've hit your weekly limit", Some("quota"));
+    let next = Fake::new("mock-alt", dir.path());
+    let m = manager_with_lanes(
+        dir.path(),
+        &[&failing, &next],
+        CapsConfig::default(),
+        LaneConfig::parse(LANES).unwrap(),
+    );
+    let mut held = Vec::new();
+    for caller in ["c1", "c2", "c3"] {
+        for _ in 0..4 {
+            held.push(
+                m.create(request("mock-alt", dir.path(), Some(caller)))
+                    .await
+                    .unwrap()
+                    .id,
+            );
+        }
+    }
+    assert_eq!(m.capped_agents(), 12, "the host is at its cap");
+    // A run that stops on a quota is handed on to the next lane: that create is not refused.
+    let mut req = request("mock", dir.path(), None);
+    req.prompt = Some("do the work".into());
+    let first = m.create(req).await.unwrap();
+    until("the continuation", || {
+        m.snapshots(true).iter().any(|a| {
+            a.labels
+                .get("lucina.continued-from")
+                .is_some_and(|f| *f == first.id)
+        })
+    })
+    .await;
+    assert_eq!(m.capped_agents(), 12, "the continuation does not count");
+    let refused = m
+        .create(request("mock-alt", dir.path(), Some("c4")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, ManagerError::TooManyAgents(_)),
+        "{refused}"
+    );
+    // One slot freed: the next create fits, which it would not if the continuation counted.
+    m.archive(&held[0]).await.unwrap();
+    m.create(request("mock-alt", dir.path(), Some("c4")))
+        .await
+        .expect("a free slot");
+}
+
+#[tokio::test]
+async fn a_fork_counts_like_a_create_and_is_refused_over_a_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = Fake::new("fake-a", dir.path());
+    let caps = CapsConfig {
+        per_caller: 1,
+        per_minute: 1000,
+        host: 1000,
+    };
+    let m = manager(dir.path(), &[&a], caps);
+    let mut req = request("fake-a", dir.path(), None);
+    req.prompt = Some("history".into());
+    let source = m.create(req).await.unwrap();
+    until("the source finished", || {
+        status(&m, &source.id) == AgentStatus::Idle
+    })
+    .await;
+    let forked = m
+        .fork(&owner(), &source.id, ForkRequest::default())
+        .await
+        .expect("the first fork");
+    assert_eq!(
+        forked
+            .agent
+            .labels
+            .get("lucina.created-by")
+            .map(String::as_str),
+        Some("local")
+    );
+    let refused = m
+        .fork(&owner(), &source.id, ForkRequest::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, ManagerError::TooManyAgents(_)),
+        "{refused}"
+    );
+    assert_eq!(a.starts(), 2, "the refused fork started nothing");
+}
+
+#[tokio::test]
+async fn a_schedule_fire_counts_for_its_owner_and_is_skipped_over_a_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = Fake::new("fake-a", dir.path());
+    let caps = CapsConfig {
+        per_caller: 1,
+        per_minute: 1000,
+        host: 1000,
+    };
+    let m = manager(dir.path(), &[&a], caps);
+    let s = m
+        .create_schedule(
+            &owner(),
+            ScheduleInput {
+                prompt: "tick".into(),
+                every_ms: Some(3_600_000),
+                provider: Some("fake-a".into()),
+                cwd: Some(dir.path().display().to_string()),
+                archive_on_finish: Some(false),
+                ..ScheduleInput::default()
+            },
+        )
+        .unwrap();
+    let finished = |n: usize| {
+        let m = m.clone();
+        let id = s.id.clone();
+        move || {
+            let runs = m.schedule(&id).unwrap().runs;
+            runs.len() == n && runs.last().is_some_and(|r| r.ended_at.is_some())
+        }
+    };
+    m.run_schedule_once(&owner(), &s.id).await.unwrap();
+    until("the first fire ended", finished(1)).await;
+    let runs = m.schedule(&s.id).unwrap().runs;
+    assert_eq!(
+        runs[0].status,
+        lucina_agents::schedule::RunStatus::Succeeded,
+        "{runs:?}"
+    );
+    assert_eq!(m.capped_agents(), 1, "the fired agent counts");
+    // Its owner is now at the per-caller cap: another create by the owner is refused.
+    let refused = m
+        .create(request("fake-a", dir.path(), Some("local")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, ManagerError::TooManyAgents(_)),
+        "{refused}"
+    );
+    // And the next fire is skipped, with the reason, without taking the scheduler down.
+    m.run_schedule_once(&owner(), &s.id).await.unwrap();
+    until("the second fire ended", finished(2)).await;
+    let runs = m.schedule(&s.id).unwrap().runs;
+    assert_eq!(runs[1].status, lucina_agents::schedule::RunStatus::Failed);
+    let why = runs[1].error.clone().unwrap_or_default();
+    assert!(
+        why.contains("Agent create refused") && why.contains("cap 1"),
+        "{why}"
+    );
+    assert_eq!(a.starts(), 1, "the skipped fire started nothing");
 }
