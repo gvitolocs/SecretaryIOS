@@ -166,12 +166,6 @@ fn read_trim(p: &Path) -> Option<String> {
     fs::read_to_string(p).ok().map(|s| s.trim().to_string())
 }
 
-/// `LUCINA_CI_NO_SCOPE=1`: start every step with no systemd scope at all. Production never sets it — the merge job of
-/// lucina-agentd builds its environment from an allowlist this name is not on. It is the switch the tests drive the
-/// scope-less fallback with, because the fallback is the branch GATE-03 is about and a test that waits for a machine
-/// without systemd is not a test. Where no scope is had the step still leads its own process group and still meets its
-/// deadline.
-pub const NO_SCOPE_ENV: &str = "LUCINA_CI_NO_SCOPE";
 /// The unit name `run_unit` asks systemd for, so the cgroup whose directory starts with this is one this launcher made
 /// for this step and may signal by pid. Anything else is a cgroup the check shares with whatever started it.
 const SCOPE_OUR_PREFIX: &str = "lucina-ci-";
@@ -479,10 +473,6 @@ impl Step {
     }
 }
 
-fn env_flag(k: &str) -> bool {
-    std::env::var(k).is_ok_and(|v| v == "1")
-}
-
 pub fn json_escape(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
@@ -499,7 +489,7 @@ pub fn json_escape(s: &str) -> String {
     o
 }
 
-/// What the inner process needs; passed as `key=value` arguments so that it survives `sudo` and `systemd-run`.
+/// What the inner process needs; passed as `key=value` arguments so that it survives `systemd-run`.
 #[derive(Clone, Debug, Default)]
 pub struct Spec {
     pub unit: String,
@@ -675,16 +665,9 @@ pub fn inner(args: &[String]) -> i32 {
 
     // The cap is checked, not assumed, and what the check proves is that this process stands in the scope `run_unit`
     // asked systemd for: `cgroup.kill` and a kill by pid reach every process in that cgroup, so it may only be aimed at a
-    // cgroup that holds nothing but this step. A step that got no scope stands in the cgroup of whatever started the
-    // check, and there neither the cap nor the pid kill applies: its process group is all it owns and all the kill may
-    // take (GATE-03 Part 1b).
-    let step_cg = if env_flag(NO_SCOPE_ENV) {
-        note(
-            &mut m,
-            "no scope: the step ran uncapped, its own process group takes the deadline kill".into(),
-        );
-        None
-    } else {
+    // cgroup that holds nothing but this step. A step that got no scope never reaches this point: `run_unit` fails the
+    // check for it (GATE-12), so there is no uncapped branch.
+    let step_cg = {
         let cg = match own_cgroup() {
             Ok(c) => c,
             Err(e) => return infra(&mut m, e),
@@ -860,22 +843,9 @@ fn scope_prefix() -> Result<Vec<String>, String> {
         if user_bus {
             v.extend(["systemd-run".to_string(), "--user".to_string()]);
         } else {
-            let gid = capture(Command::new("id").arg("-g"))
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            let sudo = Command::new("sudo")
-                .args(["-n", "true"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-            if !sudo {
-                return Err("no systemd user session and no passwordless sudo: cannot create a memory-capped scope".into());
-            }
-            v.extend(["sudo", "-n", "-E", "systemd-run"].map(str::to_string));
-            v.push(format!("--uid={uid}"));
-            v.push(format!("--gid={gid}"));
+            return Err(
+                "no systemd user manager (`systemctl --user show-environment` fails)".into(),
+            );
         }
     }
     v.extend(base.map(str::to_string));
@@ -884,19 +854,19 @@ fn scope_prefix() -> Result<Vec<String>, String> {
 
 /// Runs one unit under its own capped scope; the report always exists afterwards. Returns the outcome's exit code.
 ///
-/// Every step is meant to get its own scope, and where it cannot get one (no systemd user manager, no passwordless sudo,
-/// or `LUCINA_CI_NO_SCOPE`) a check-fast step is still run — uncapped, as the leader of its own process group, which is
-/// then what the deadline kills. It was not so before GATE-03: `scope_prefix()?` aborted the whole check instead, and the
-/// fallback that the fix adds must never be read as a way to skip a cap a machine can afford.
+/// Every step gets its own capped scope. Where it cannot get one (no systemd user manager) the check FAILS with one
+/// message that names the step and the reason; no step is ever run uncapped, and `lucina-ci` never runs `sudo`
+/// (GATE-12). Before GATE-12 a check-fast step fell back to an uncapped process group, and `LUCINA_CI_NO_SCOPE` forced it.
 pub fn run_unit(spec: &Spec) -> Result<i32, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let scope = if env_flag(NO_SCOPE_ENV) {
-        Err(format!("{NO_SCOPE_ENV} is set, so no scope is asked for"))
-    } else {
-        scope_prefix()
-    };
-    let (mut cmd, launcher) = match scope {
-        Ok(prefix) => {
+    let prefix = scope_prefix().map_err(|why| {
+        format!(
+            "step {}: cannot get a memory-capped scope: {why}",
+            spec.unit
+        )
+    })?;
+    let (mut cmd, launcher) = {
+        {
             let mut c = prefix;
             c.push(format!(
                 "--unit=lucina-ci-{}-{}",
@@ -919,18 +889,6 @@ pub fn run_unit(spec: &Spec) -> Result<i32, String> {
             let mut cmd = Command::new(&c[0]);
             cmd.args(&c[1..]);
             (cmd, c[0].clone())
-        }
-        Err(why) => {
-            if spec.group != "fast" {
-                // A proof unit's numbers mean nothing without the cap and the counters of a scope it did not get, so a
-                // proof run still stops here rather than report an uncapped unit as if it were a capped one.
-                return Err(why);
-            }
-            let mut c = Command::new(&exe);
-            c.arg("__inner").args(spec.to_args()).env(NO_SCOPE_ENV, "1");
-            // The inner starts the step as the leader of a group of its own, so this group holds the step and nothing
-            // else: not the check, not the session, not the other steps (GATE-03 Part 1b).
-            (c, exe.display().to_string())
         }
     };
     let status = cmd
