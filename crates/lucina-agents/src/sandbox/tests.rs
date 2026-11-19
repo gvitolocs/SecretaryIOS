@@ -1238,3 +1238,33 @@ fn the_audit_refuses_what_the_generator_never_emits() {
     env_first.extend(good.iter().cloned());
     assert!(audit(&hidden, &env_first).is_err());
 }
+
+/// A list [`Plan::resolve`] would hand out, with `flag p p` inserted before the final `--`.
+/// `p` is the run's temp directory: its own path, not hidden, and not under an earlier read-only bind.
+fn audit_appended(flag: &str) -> Result<Vec<String>> {
+    let hidden = Hidden::for_run(&policy(), Path::new(HOME), "qoder").unwrap();
+    let mut a = args(&run("qoder"));
+    let p = "/home/nez/scratch/tmp/run-1";
+    assert_eq!(a.last().map(String::as_str), Some("--"));
+    let at = a.len() - 1;
+    a.insert(at, p.to_owned());
+    a.insert(at, p.to_owned());
+    a.insert(at, flag.to_owned());
+    audit(&hidden, &a).map(|()| a)
+}
+
+#[test]
+fn the_audit_refuses_an_appended_bind_try() {
+    let e = audit_appended("--bind-try").expect_err("an appended --bind-try");
+    let text = e.to_string();
+    assert!(text.contains("--bind-try"), "{text}");
+    assert!(text.contains("position"), "{text}");
+}
+
+#[test]
+fn the_audit_refuses_an_appended_ro_bind_try() {
+    let e = audit_appended("--ro-bind-try").expect_err("an appended --ro-bind-try");
+    let text = e.to_string();
+    assert!(text.contains("--ro-bind-try"), "{text}");
+    assert!(text.contains("position"), "{text}");
+}
