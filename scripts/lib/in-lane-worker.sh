@@ -13,18 +13,23 @@
 # POSIX only: no `[[ ]]`, no arrays, no `local`, no `$(< file)`, so `sh script.sh` (dash) gets the same answer as bash. A
 # shell that cannot run the rest answers "worker" (the first lines below); the guard never falls through.
 #
-# The answer is the OR of these triggers, and none of them can be turned off from inside the worker:
+# The answer is the OR of these triggers. No variable turns a trigger off; the `lane` binary and the kernel's view of
+# /proc are in the worker's uid and are not defended here:
 #   1. `lane in-worker`, called ONLY by its absolute path (a worker's PATH starts with lane's shim directory and a worker
 #      can edit PATH), under `timeout 10` (a timeout counts as a worker). Exit 0 = worker, 1 = not a worker, 2 = cannot
-#      tell. Only an exact 1 clears it. If `lane in-worker --help` fails but `lane in-worker` itself returns 0, 1 or 2,
+#      tell. Only an exact 1 stops this trigger from answering "worker" (triggers 2 and 3 are still asked).
+#      If `lane in-worker --help` fails but `lane in-worker` itself returns 0, 1 or 2,
 #      that result is used; any other status without a working --help means lane has no such subcommand and the trigger
 #      is skipped. The status variable is set before it is read, so a call that never ran is not read as "not a worker".
 #   2. A walk up the parent chain from $$ to pid 1: any process whose /proc/<pid>/cgroup names a `lane-runner-*.scope`
 #      or a `lane-*-<n>.scope` (an attempt scope) makes this a worker. A script started through `bq run` sits in its own
 #      bq-*.scope, and only an ancestor carries the runner's scope, so /proc/self/cgroup alone is not enough. A step that
 #      cannot be read (no stat, no cgroup, a parent that is not a number, a chain that does not end) counts as a worker.
-#      The one exception: with no /proc/self at all on Darwin (the Mac has no /proc and no lane worker; lane workers
-#      run only on Linux) the answer is "not a worker", so mac-model-check.sh runs on the host it exists for.
+#      The one exception, asked BEFORE trigger 1: when the proc root itself is absent and `uname -s` (called as
+#      /usr/bin/uname) is Darwin, the answer is "not a worker" (the Mac has no /proc and no lane worker; lane workers run
+#      only on Linux), so mac-model-check.sh runs on the host it exists for. A proc root that exists but has no `self`
+#      (a Linux view with procfs hidden or partial) is not this case: it stays a worker. macOS has no `timeout`, and a
+#      missing `timeout` counts as a worker, but on the Mac the Darwin branch answers first.
 #   3. LANE_WORKER=1 or LANE_PROOFS_REFUSED set. A second trigger only: unsetting them turns off nothing else.
 # Triggers 1 and 2 are both asked when `lane` says 1: lane saying "not a worker" never overrides the walk.
 #
@@ -48,6 +53,13 @@ else
             return 0
         fi
 
+        if [ ! -d "$_ilw_proc" ]; then
+            [ -n "$_ilw_uname" ] || _ilw_uname=$(/usr/bin/uname -s 2> /dev/null) || _ilw_uname=
+            if [ "$_ilw_uname" = Darwin ]; then
+                return 1
+            fi
+        fi
+
         if [ -x "$_ilw_lane" ]; then
             command -v timeout > /dev/null 2>&1 || return 0
             _ilw_h=2
@@ -60,13 +72,6 @@ else
                 0 | 2 | 124) return 0 ;;
                 *) [ "$_ilw_h" -ne 0 ] || return 0 ;;
             esac
-        fi
-
-        if [ ! -e "$_ilw_proc/self" ]; then
-            [ -n "$_ilw_uname" ] || _ilw_uname=$(uname -s 2> /dev/null) || _ilw_uname=
-            if [ "$_ilw_uname" = Darwin ]; then
-                return 1
-            fi
         fi
 
         _ilw_p=$$

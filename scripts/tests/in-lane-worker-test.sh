@@ -123,14 +123,18 @@ expect worker "no lane, runner scope on a grandparent" "$nolane" "$tmp/p2"
 printf '#!/bin/sh\nsleep 30\n' > "$tmp/lane-hang"
 chmod 0755 "$tmp/lane-hang"
 expect worker "a lane that hangs counts as a worker" "$tmp/lane-hang" "$tmp/p1"
+# st=124: `--help` answers at once, `in-worker` sleeps past the timeout: worker
+printf '#!/bin/sh\n[ "$2" = --help ] && exit 0\nsleep 30\n' > "$tmp/lane-slow"
+chmod 0755 "$tmp/lane-slow"
+expect worker "in-worker sleeping past the timeout counts as a worker" "$tmp/lane-slow" "$tmp/p1"
 
 # --- 2b. no /proc and no lane on Darwin: not a worker; every other unreadable case stays a worker
 expect not "Darwin, proc root that does not exist" "$nolane" "$tmp/no-proc-here" Darwin
 expect worker "Linux, proc root that does not exist" "$nolane" "$tmp/no-proc-here" Linux
-expect not "Darwin, proc root without self" "$nolane" "$tmp/p2" Darwin
-mkdir "$tmp/p2/self"
-expect worker "Darwin but /proc/self exists: the walk decides" "$nolane" "$tmp/p2" Darwin
-rmdir "$tmp/p2/self"
+mkdir "$tmp/empty-proc"
+expect worker "Darwin, proc root exists but is empty (no self): a Linux view with procfs hidden stays a worker" "$nolane" "$tmp/empty-proc" Darwin
+expect worker "Darwin, proc root exists, runner scope on a grandparent: the walk decides" "$nolane" "$tmp/p2" Darwin
+expect not "Darwin, proc root exists, clean chain: the walk decides" "$nolane" "$tmp/p1" Darwin
 if ! (
     export LANE_WORKER=1
     in_lane_worker "$nolane" "$tmp/no-proc-here" Darwin
@@ -208,6 +212,50 @@ entry() { # <script path under root>
 for e in scripts/verify.sh scripts/verify-shipped.sh scripts/verify-verus.sh; do
     entry "$e"
 done
+
+# --- 4b. entry-point level, with the helper's paths fixed by a wrapper (a test file in the fixture, not the environment):
+# the entry point is started with no LANE_* variable, its pid is read, a fake /proc tree is built for it, and it is released.
+pass_entry=scripts/verify-verus.sh # an entry whose body stops at once on its own (no prover, no input): the guard is all that decides
+run_entry() { # <uname> <proc: tree|none|empty> [cgroups of the script, its parent, its grandparent]
+    local d=$tmp/ep uname_s=$1 mode=$2 i
+    shift 2
+    rm -rf "$d"
+    mkdir -p "$d/scripts/lib" "$d/proc-fix"
+    mkdir -p "$d/$(dirname "$pass_entry")"
+    cp "$root/$pass_entry" "$d/$pass_entry"
+    sed 's/^    in_lane_worker() {/    _real_ilw() {/' "$root/scripts/lib/in-lane-worker.sh" > "$d/scripts/lib/in-lane-worker.sh"
+    local procdir=$d/proc-fix
+    [ "$mode" != none ] || procdir=$d/no-such-proc
+    cat >> "$d/scripts/lib/in-lane-worker.sh" << EOW
+in_lane_worker() {
+    echo \$\$ > "$d/pid"
+    read -r _ < "$d/go"
+    _real_ilw "$d/no-such-lane" "$procdir" "$uname_s"
+}
+EOW
+    mkfifo "$d/go"
+    (cd "$d" && env -u LANE_WORKER -u LANE_PROOFS_REFUSED VERUS=/nonexistent/verus VSTD_PATH=/nonexistent bash "$d/$pass_entry" > "$d/out" 2>&1) &
+    local bg=$!
+    for i in $(seq 1 100); do [ -s "$d/pid" ] && break; sleep 0.1; done
+    me=$(cat "$d/pid")
+    [ "$mode" != tree ] || fake_proc "$d/proc-fix" "$@"
+    me=$$
+    echo go > "$d/go"
+    entry_code=0
+    wait "$bg" || entry_code=$?
+    entry_out=$(cat "$d/out")
+}
+run_entry Linux tree "$clean" "$clean" "$clean"
+[ "$entry_code" != 75 ] || fail "entry point, clean tree, no worker anywhere: refused although nothing says worker: $entry_out"
+case $entry_out in *"refused inside a lane worker"*) fail "entry point, clean tree: refusal message printed: $entry_out" ;; esac
+run_entry Linux tree /user.slice/bq-4242.scope /user.slice/bq-wrap-1.scope /user.slice/lane-runner-ab12cd.scope
+[ "$entry_code" = 75 ] || fail "entry point, runner scope on a grandparent: exit $entry_code, wanted 75: $entry_out"
+run_entry Darwin none
+[ "$entry_code" != 75 ] || fail "entry point on Darwin with no proc root (the Mac): refused: $entry_out"
+run_entry Darwin empty
+[ "$entry_code" = 75 ] || fail "entry point, Darwin but a proc root that exists and is empty: exit $entry_code, wanted 75: $entry_out"
+run_entry Linux none
+[ "$entry_code" = 75 ] || fail "entry point on Linux with no proc root: exit $entry_code, wanted 75: $entry_out"
 
 # the mutants.sh stay untouched on purpose (coordinator 2026-11-19)
 while IFS= read -r m; do
