@@ -802,10 +802,7 @@ fn fast_step(
         println!("    waived: {w}");
     }
     if !ok {
-        let t = fs::read_to_string(
-            Path::new(out).join(format!("fast__{}.log", name.replace('/', "__"))),
-        )
-        .unwrap_or_default();
+        let t = step_log(out, name);
         for l in t.lines().rev().take(30).collect::<Vec<_>>().iter().rev() {
             println!("    {l}");
         }
@@ -833,16 +830,18 @@ fn tool_exists(t: &str) -> bool {
 /// A limit never lifts a step above its own timeout (the `t` of its `step(...)` call): it only ever cuts. `clippy` is built with
 /// 300 s (`fast::cargo_steps`), so its 240 is a real cut and takes effect; a step of its own 60 s, `fmt` or `diffgate`, keeps
 /// printing 60 whatever the table or the override says.
-/// `unit-tests` at 480 s is TEMPORARY and steps outside both rules above: it is not `ceil(p95 x 1.5)` of a measured week, and the
-/// step's own timeout was raised to 480 s with it (`fast::cargo_steps`), because a table limit of 480 on a step of its own 300
-/// still cuts at 300 and would have changed nothing. 480 s until LB-C027's bq gate slot is installed and proven, then the limit
-/// is re-measured in the slot and set so the slowest step uses at most 60 % of it. The reason is `lucina-server`: a root workspace
-/// member, so the plain `unit-tests` step is what the gate runs for it, and its 556 tests take 128 s at load 8 while at load in
-/// the high twenties they run over 240 s; three merges (JD-C018, LM-C008, CO-C003) failed or wait on this step, JD-C018 three
-/// times. Coordinator allow 2026-11-18 (GATE-02).
+/// `unit-tests` was one step doing two jobs until finding GATE-08 split it (merge job job_24cf4973dd74): `cargo test` builds and
+/// links the test binaries of the touched crates before it runs any of them, and that build was the wait — JD-C018 measured
+/// `cargo test` for `lucina-server` at 8 m 45 s under a 1-minute load of 24.59, with 40 s of tests in it
+/// (`/home/nez/scratch/platform-tools/jd-c018-tests.log`). So the temporary 480 s of GATE-02 is gone and the step is two rows:
+/// `unit-tests-build` at 1200 s, because a slow build is not a test failure and the room has to be somewhere, and `unit-tests`
+/// at the 240 s the measured week asks for, now timed alone. A build that runs past its 1200 s still fails the gate, so no merge
+/// lands unbuilt, but it is reported as `build too slow at load <1-min load average>: not a test verdict` (`gated_step`) rather
+/// than as a late test. Coordinator allow 2026-11-18 (GATE-08).
 const MERGE_STEP_LIMITS: &[(&str, u64)] = &[
-    ("clippy", 240),     // measured p95 151.6 s, merges 2026-11-11..17, GATE-02
-    ("unit-tests", 480), // TEMPORARY until LB-C027's bq gate slot; coordinator allow 2026-11-18, GATE-02
+    ("clippy", 480), // 480 s holds until the merge job warm-up runs clippy (GATE-13); then the limit is measured again and goes back to 240 s; coordinator allow 2026-11-18, GATE-13
+    ("unit-tests-build", 1200), // 20 min, a slow build is not a test failure: coordinator allow 2026-11-18, GATE-08
+    ("unit-tests", 240),        // the run, timed alone since GATE-08: coordinator allow 2026-11-18
 ];
 /// The limit of a step named in no table and no override.
 const MERGE_STEP_LIMIT_DEFAULT: u64 = 180;
@@ -915,8 +914,10 @@ fn merge_step_cap() -> u64 {
 
 /// One step of `check-fast`, with the merge-gate limit applied. `Some(entry)` is a failure. At the merge gate a step past its limit
 /// is a failure that says so (`past its N s limit at merge`), never a skip: the limit is `merge_step_limit` for the step — 180 by
-/// default, more for the two steps of `MERGE_STEP_LIMITS`, anything the override sets — and it never lifts the step above its own
+/// default, more for the steps of `MERGE_STEP_LIMITS`, anything the override sets — and it never lifts the step above its own
 /// timeout. This tree has no list of required steps, so the limit applies to every step, as it did before.
+/// The two steps of the split tests (GATE-08) are said in their own words: a build that ran out of its 1200 s is not a test that
+/// failed, and a run cut at its limit names the tests it was in the middle of.
 #[allow(clippy::too_many_arguments)]
 fn gated_step(
     name: &str,
@@ -953,13 +954,84 @@ fn gated_step(
         fs::read_to_string(Path::new(out).join(format!("fast__{}.json", name.replace('/', "__"))))
             .unwrap_or_default();
     if merge_gate && runner::report_field(&json, "outcome").as_deref() == Some("timeout") {
+        if name.starts_with("unit-tests-build") {
+            // Out of time, not out of failures: no test of this change ran at all. It still counts as the failure it is,
+            // because a merge must not land on binaries nobody built — the wording is only there so the reader does not
+            // go looking for a broken test.
+            let m = format!(
+                "{name}: build too slow at load {}: not a test verdict",
+                load_avg_1min()
+            );
+            println!("    {m}");
+            return Ok(Some(m));
+        }
         let m = format!(
             "{name}: past its {t} s limit at merge: the machine is loaded; retry when it is quieter, or run scripts/check-fast in the worktree"
         );
         println!("    {m}");
+        // The run step has been timed alone since GATE-08, so a cut here is a test that hangs or crawls and not a loaded
+        // machine building something: say which test the machine was busy with.
+        if name.starts_with("unit-tests") {
+            for l in running_tests(out, name) {
+                println!("    at the cut: {l}");
+            }
+        }
         return Ok(Some(m));
     }
     Ok(Some(name.to_string()))
+}
+
+/// The 1-minute load average, the figure a step that ran out of time is reported with: at load in the high twenties a build
+/// of 40 s of tests crosses 480 s (GATE-08, JD-C018), and the number is what tells that loaded machine from a hung test.
+/// `/proc/loadavg` is what `top` and `bq` read; where it cannot be read the message says so instead of guessing.
+fn load_avg_1min() -> String {
+    fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|t| t.split_whitespace().next().map(str::to_string))
+        .unwrap_or_else(|| "an unreadable load".to_string())
+}
+
+/// The log one `check-fast` step wrote: its own stdout and stderr, kept by the runner under the step's name.
+fn step_log(out: &str, name: &str) -> String {
+    fs::read_to_string(Path::new(out).join(format!("fast__{}.log", name.replace('/', "__"))))
+        .unwrap_or_default()
+}
+
+/// How many lines of the cut run step are printed: enough to name the hang, few enough to sit beside the 30 log lines
+/// `fast_step` already prints under a step that failed.
+const RUNNING_TESTS_LINES: usize = 5;
+
+/// What `cargo test` was in the middle of when the gate cut it. The harness writes
+/// `test <name> has been running for over 60 seconds` for every test still going when the minute is up, and the last lines
+/// that name a test or a test binary show how far the run had got, so a machine that was crawling through a crate and a
+/// crate with one hung test do not read the same.
+fn running_tests(out: &str, name: &str) -> Vec<String> {
+    let log = step_log(out, name);
+    let lines: Vec<&str> = log
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let warned: Vec<String> = lines
+        .iter()
+        .filter(|l| l.contains("has been running for"))
+        .take(RUNNING_TESTS_LINES)
+        .map(|l| l.to_string())
+        .collect();
+    let mut last: Vec<String> = lines
+        .iter()
+        .filter(|l| {
+            !l.contains("has been running for")
+                && (l.starts_with("test ")
+                    || l.starts_with("Running ")
+                    || l.starts_with("running "))
+        })
+        .rev()
+        .take(RUNNING_TESTS_LINES)
+        .map(|l| l.to_string())
+        .collect();
+    last.reverse();
+    warned.into_iter().chain(last).collect()
 }
 
 /// lagent's own `--allow` rules: they waive something of lagent's (a pipeline file, a spec
@@ -1367,6 +1439,183 @@ fn file_waiver_allows(
     (added, halt, summary)
 }
 
+/// The per-run directory of `check-fast`, taken away with this value (GATE-07): the trap that removes it on every exit, in
+/// the form Rust has. Until now only the last statement of a run that reached its end removed it, so a check that left
+/// early — a step it could not start, a proof toolchain it could not read, a panic — left `check-fast-<pid>` in `$TMPDIR`
+/// behind, with the tool's whole log and its own copy of the binary in it. The one exit no guard covers is a signal that
+/// kills the check itself: nothing of a dead process runs afterwards.
+struct RunDir(PathBuf);
+
+impl Drop for RunDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What `self_copy` wrote, as it wrote it: the length and an FNV-1a 64 hash of the bytes it copied (GATE-16). Checked once
+/// more by `verify_self_copy`, right before the first step execs the copy, so a copy that anything else wrote to between the
+/// two is not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CopyId {
+    len: u64,
+    hash: u64,
+}
+
+fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+const FNV_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Creates the directory a `check-fast` run lives in, `base/check-fast-<pid>`, as a directory this run made and nobody else
+/// can write (GATE-16). `base` is `temp_dir()`, which is `$TMPDIR` and so the caller's: a relative one, or `/`, is refused
+/// before anything is made. The directory is made with `mkdir(2)` at mode 0700 and never with `create_dir_all`, which
+/// reports success for a directory that is already there — and follows a symlink to one — so a name planted in a shared
+/// `/tmp` before the run (the pid is guessable) used to be accepted, and the copy of the tool the steps exec was then written
+/// into a place another process could write. An existing path of any kind fails the check; it is never reused. After the
+/// call, what stands there is looked at once with `lstat`: a real directory, owned by this uid, no group or world bits.
+/// `RunDir` takes it away only when this has returned `Ok`, so a failure removes nothing.
+fn make_run_dir(base: &Path, pid: u32) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    if !base.is_absolute() || base.parent().is_none() {
+        return Err(format!(
+            "{}: the temp directory must be an absolute path other than / (TMPDIR); refusing to make the run directory there",
+            base.display()
+        ));
+    }
+    let dir = base.join(format!("check-fast-{pid}"));
+    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(format!(
+                "{}: already exists; a run never reuses a directory it did not make (remove it if it is a leftover)",
+                dir.display()
+            ));
+        }
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    }
+    let m = fs::symlink_metadata(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // SAFETY: geteuid(2) takes no argument and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    if !m.file_type().is_dir() || m.file_type().is_symlink() {
+        return Err(format!(
+            "{}: not a real directory after it was made",
+            dir.display()
+        ));
+    }
+    if m.uid() != me {
+        return Err(format!(
+            "{}: owned by uid {}, not by this run's uid {me}",
+            dir.display(),
+            m.uid()
+        ));
+    }
+    if m.mode() & 0o077 != 0 {
+        return Err(format!(
+            "{}: mode {:o} gives group or world access",
+            dir.display(),
+            m.mode() & 0o7777
+        ));
+    }
+    Ok(dir)
+}
+
+/// A copy of this executable, under the run's own directory: the binary every step of a `check-fast` is started from
+/// (GATE-06). The tool lives at one path every worktree shares, and the launcher installs a new build into it by rename
+/// while another check may already be running; that rename takes the name away from the process that was started from it,
+/// and each step of the check is this same binary re-started as `__inner`. A copy made once, at the start, belongs to this
+/// run alone and no rebuild can reach it. The copy is chosen over keying the installed binary by its source id, because an
+/// id only separates *different* sources — a merge and its own lane build the same source and would still replace each other
+/// — and it is a copy and not a link, so that no write of another build reaches the bytes a step starts from, through the
+/// name or through the inode.
+///
+/// GATE-16: the copy is written with `O_EXCL` at mode 0700 into a `bin` directory made the same way (`make_run_dir` made the
+/// run's), so a name that is already there fails instead of being followed or overwritten, and nothing but this user can
+/// open it for writing. Its length and hash are returned, and `verify_self_copy` looks at them again before the first step.
+fn self_copy(dir: &Path) -> Result<(PathBuf, CopyId), String> {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let from = std::env::current_exe().map_err(|e| format!("this program: {e}"))?;
+    let bin = dir.join("bin");
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&bin)
+        .map_err(|e| format!("{}: {e}", bin.display()))?;
+    let to = bin.join("lucina-ci");
+    let mut src = fs::File::open(&from).map_err(|e| format!("{}: {e}", from.display()))?;
+    let mut dst = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&to)
+        .map_err(|e| format!("{}: {e}", to.display()))?;
+    let mut buf = vec![0u8; 1 << 16];
+    let (mut len, mut hash) = (0u64, FNV_BASIS);
+    loop {
+        let n = src
+            .read(&mut buf)
+            .map_err(|e| format!("{}: {e}", from.display()))?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n])
+            .map_err(|e| format!("{}: {e}", to.display()))?;
+        len += n as u64;
+        hash = fnv1a(hash, &buf[..n]);
+    }
+    dst.sync_all()
+        .map_err(|e| format!("{}: {e}", to.display()))?;
+    Ok((to, CopyId { len, hash }))
+}
+
+/// The copy is still the file `self_copy` wrote: a regular file (not a link), no group or world write, and the length and hash
+/// recorded when it was written (GATE-16). A mismatch fails the check before any step runs.
+fn verify_self_copy(path: &Path, id: CopyId) -> Result<(), String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !m.file_type().is_file() {
+        return Err(format!(
+            "{}: the tool copy is not a regular file any more",
+            path.display()
+        ));
+    }
+    if m.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{}: the tool copy became writable by others",
+            path.display()
+        ));
+    }
+    let mut f = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut buf = vec![0u8; 1 << 16];
+    let (mut len, mut hash) = (0u64, FNV_BASIS);
+    loop {
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        len += n as u64;
+        hash = fnv1a(hash, &buf[..n]);
+    }
+    if (CopyId { len, hash }) != id {
+        return Err(format!(
+            "{}: the tool copy changed after it was written (length {} hash {:016x}, written as length {} hash {:016x}); refusing to run its steps",
+            path.display(),
+            len,
+            hash,
+            id.len,
+            id.hash
+        ));
+    }
+    Ok(())
+}
+
 /// `check-fast [--base REF] [--proofs] [--all-proofs] [--mutants] [--no-build]`
 fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     let root = repo_root()?;
@@ -1405,10 +1654,14 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         changed.len()
     );
     let b = runner::budget(a.num("--mem-cap-gib", 8)?, None, runner::mem_total()?)?;
-    let out = std::env::temp_dir()
-        .join(format!("check-fast-{}", std::process::id()))
-        .display()
-        .to_string();
+    let out_dir = make_run_dir(&std::env::temp_dir(), std::process::id())?;
+    let _out_dir = RunDir(out_dir.clone());
+    let out = out_dir.display().to_string();
+    // Every step of this run goes through the copy from here on, and so does the `inventory` command below: the shared
+    // path this process was started from is no longer read (GATE-06).
+    let (own_copy, copy_id) = self_copy(&out_dir)?;
+    runner::install_step_exe(own_copy.clone());
+    let exe = own_copy.display().to_string();
     let none = runner::Toolchain {
         verus: String::new(),
         version: String::new(),
@@ -1435,6 +1688,9 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         }
         Ok(())
     };
+
+    // Once, right before the first step execs it: the copy is still what was written (GATE-16).
+    verify_self_copy(&own_copy, copy_id)?;
 
     if tool_exists("diffgate") {
         // `lagent merge --allow RULE=reason` hands the waiver to its own diffgate as `--allow` and to every
@@ -1621,10 +1877,6 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     }
 
     // The proofs the change reaches. Inventory first: a new proof must be listed.
-    let exe = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .display()
-        .to_string();
     if root.join(inventory::INVENTORY).exists() {
         step(
             "inventory",
@@ -1708,7 +1960,6 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             }
         }
     }
-    let _ = fs::remove_dir_all(&out);
     for s in &skipped {
         println!("skipped  {s}");
     }
@@ -1781,6 +2032,126 @@ fn cmd_perf(a: &Args) -> Result<i32, String> {
         bad += !ok as i32;
     }
     Ok((bad > 0) as i32)
+}
+
+#[cfg(test)]
+mod run_dir_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    /// A scratch directory of this test alone, removed on every exit, panics included.
+    struct Tmp(PathBuf);
+    impl Tmp {
+        fn new(tag: &str) -> Tmp {
+            let d = std::env::temp_dir().join(format!("rundir-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&d);
+            fs::create_dir_all(&d).unwrap();
+            Tmp(d)
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_run_directory_is_new_private_and_ours() {
+        let t = Tmp::new("ok");
+        let d = make_run_dir(&t.0, 4242).unwrap();
+        assert_eq!(d, t.0.join("check-fast-4242"));
+        let m = fs::symlink_metadata(&d).unwrap();
+        assert!(m.is_dir());
+        assert_eq!(m.mode() & 0o777, 0o700, "no group or world bits");
+    }
+
+    #[test]
+    fn a_run_directory_that_already_exists_fails_the_check_and_is_left_alone() {
+        let t = Tmp::new("exists");
+        let pre = t.0.join("check-fast-7");
+        fs::create_dir(&pre).unwrap();
+        fs::write(pre.join("theirs"), "x").unwrap();
+        let e = make_run_dir(&t.0, 7).unwrap_err();
+        assert!(e.contains("already exists"), "{e}");
+        assert!(pre.join("theirs").exists(), "never reused, never emptied");
+    }
+
+    #[test]
+    fn a_symlink_in_place_of_the_run_directory_fails_and_its_target_is_untouched() {
+        let t = Tmp::new("link");
+        let target = t.0.join("elsewhere");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, t.0.join("check-fast-9")).unwrap();
+        let e = make_run_dir(&t.0, 9).unwrap_err();
+        assert!(e.contains("already exists"), "{e}");
+        assert!(fs::read_dir(&target).unwrap().next().is_none());
+        // a dangling link is refused the same way
+        symlink(t.0.join("nowhere"), t.0.join("check-fast-10")).unwrap();
+        assert!(make_run_dir(&t.0, 10).is_err());
+    }
+
+    #[test]
+    fn a_relative_or_root_temp_dir_is_refused_before_anything_is_made() {
+        assert!(make_run_dir(Path::new(""), 1).is_err());
+        assert!(make_run_dir(Path::new("relative/tmp"), 1).is_err());
+        assert!(make_run_dir(Path::new(".."), 1).is_err());
+        let e = make_run_dir(Path::new("/"), 1).unwrap_err();
+        assert!(e.contains("other than /"), "{e}");
+        assert!(!Path::new("/check-fast-1").exists());
+    }
+
+    #[test]
+    fn the_tool_copy_is_exclusive_private_and_checked_before_it_is_run() {
+        let t = Tmp::new("copy");
+        let d = make_run_dir(&t.0, 11).unwrap();
+        let (copy, id) = self_copy(&d).unwrap();
+        let m = fs::symlink_metadata(&copy).unwrap();
+        assert!(m.is_file());
+        assert_eq!(m.mode() & 0o077, 0, "no group or world bits");
+        assert_eq!(m.len(), id.len);
+        verify_self_copy(&copy, id).unwrap();
+        // a second copy into the same directory fails: the name is never overwritten
+        assert!(self_copy(&d).is_err());
+        assert_eq!(fs::metadata(&copy).unwrap().len(), id.len);
+    }
+
+    #[test]
+    fn a_tampered_tool_copy_fails_the_check_by_content_by_length_and_by_link() {
+        let t = Tmp::new("tamper");
+        let d = make_run_dir(&t.0, 12).unwrap();
+        let (copy, id) = self_copy(&d).unwrap();
+        let good = fs::read(&copy).unwrap();
+        // one byte flipped, same length
+        let mut bad = good.clone();
+        bad[0] ^= 0xff;
+        fs::write(&copy, &bad).unwrap();
+        assert!(verify_self_copy(&copy, id).unwrap_err().contains("changed"));
+        // appended
+        let mut longer = good.clone();
+        longer.push(0);
+        fs::write(&copy, &longer).unwrap();
+        assert!(verify_self_copy(&copy, id).is_err());
+        // replaced by a symlink to a file with the right bytes
+        let real = t.0.join("real");
+        fs::write(&real, &good).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_file(&copy).unwrap();
+        symlink(&real, &copy).unwrap();
+        assert!(
+            verify_self_copy(&copy, id)
+                .unwrap_err()
+                .contains("regular file")
+        );
+        // made writable by others
+        fs::remove_file(&copy).unwrap();
+        fs::write(&copy, &good).unwrap();
+        fs::set_permissions(&copy, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            verify_self_copy(&copy, id)
+                .unwrap_err()
+                .contains("writable")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2407,29 +2778,34 @@ mod tests {
         }
     }
 
-    /// The two cargo steps have the room of their table row — `clippy` the week of merges measured, `unit-tests` the temporary
-    /// 480 of GATE-02; every other step is at 180.
+    /// The cargo steps have the room of their table row — `clippy` the week of merges measured, the split tests of GATE-08
+    /// 20 min to build and the 240 s the same week measured to run; every other step is at 180.
     #[test]
     fn merge_limits_are_per_step_with_an_180_default() {
         let no_override = MergeCaps::default();
         let limit = |n: &str| no_override.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
-        assert_eq!(limit("clippy"), 240);
-        assert_eq!(limit("unit-tests"), 480);
+        assert_eq!(limit("clippy"), 480);
+        assert_eq!(limit("unit-tests-build"), 1200);
+        assert_eq!(limit("unit-tests"), 240);
         assert_eq!(limit("diffgate"), 180);
         assert_eq!(limit("inventory"), 180);
+        // A per-crate step is named after its crate and by no row, split or not (GATE-08).
+        assert_eq!(limit("unit-tests-build-tools-ci-lucina-ci"), 180);
         assert_eq!(limit("unit-tests-tools-ci-lucina-ci"), 180);
         assert_eq!(limit("secrets"), 180);
     }
 
     /// A limit only ever cuts, never lifts: what the gate enforces is the step's own timeout or its limit, whichever is smaller.
-    /// The two cargo steps are built with 300 s and 480 s (`fast::cargo_steps`), so each table number takes effect; `fmt` and
+    /// The cargo steps are built with the timeouts of `fast::cargo_steps`, so each table number takes effect; `fmt` and
     /// `diffgate` are built with 60 and a step no table names keeps the 180 rather than the 300 it could run.
     #[test]
     fn a_merge_limit_cuts_a_step_s_own_timeout_and_never_lifts_it() {
         let no_override = MergeCaps::default();
         for (name, own, enforced) in [
-            ("clippy", 300_u64, 240_u64),
-            ("unit-tests", 480, 480),
+            ("clippy", 480_u64, 480_u64),
+            ("unit-tests-build", 1200, 1200),
+            ("unit-tests", 300, 240),
+            ("unit-tests-build-tools-ci-lucina-ci", 1200, 180),
             ("unit-tests-tools-ci-lucina-ci", 300, 180),
             ("fmt", 60, 60),
             ("diffgate", 60, 60),
@@ -2449,7 +2825,8 @@ mod tests {
         };
         let l = |n: &str| c.limit_of(n, MERGE_STEP_LIMIT_DEFAULT);
         assert_eq!(l("clippy"), 40);
-        assert_eq!(l("unit-tests"), 7, "7 beats the table's 480");
+        assert_eq!(l("unit-tests"), 7, "7 beats the table's 240");
+        assert_eq!(l("unit-tests-build"), 7, "7 beats the table's 1200");
         assert_eq!(l("secrets"), 7);
         assert_eq!(l("diffgate"), 7, "the override is every step");
         let nine = MergeCaps::parse("9");

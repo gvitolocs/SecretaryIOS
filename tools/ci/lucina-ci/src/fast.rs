@@ -115,16 +115,27 @@ pub fn cargo_steps(owners: &BTreeSet<Owner>, changed: &[String]) -> Vec<(String,
         steps.push((
             "clippy".to_string(),
             format!("out=$(cargo clippy --quiet --locked {p} --all-targets --no-deps --message-format=short 2>&1); rc=$?; if printf '%s\\n' \"$out\" | grep -E \"{re}\"; then exit 1; fi; exit $rc"),
-            300,
+            480, // the table row `("clippy", 480)` in main.rs MERGE_STEP_LIMITS may not exceed this (GATE-13)
         ));
+        // The tests are built and run as two steps (finding GATE-08): one `cargo test` builds and links the test binaries of
+        // the touched crates and only then runs them, and that build was the whole wait — JD-C018 measured `cargo test` for
+        // `lucina-server` at 8 m 45 s under a 1-minute load of 24.59, with 40 s of tests in it
+        // (`/home/nez/scratch/platform-tools/jd-c018-tests.log`). Both steps take the same flags and the same shared target
+        // dir, so the run finds exactly what the build left there.
+        // 1200 s, and the merge gate gives it the same 1200 s (`MERGE_STEP_LIMITS`, `main.rs`): a table limit only ever cuts,
+        // so the room a slow build needs has to be in the step too. Past it the gate says `build too slow at load <n>: not a
+        // test verdict` (`gated_step`) — a build is not a test, but it fails the merge all the same, so nothing lands unbuilt.
+        steps.push((
+            "unit-tests-build".to_string(),
+            format!("cargo test --no-run --quiet --locked {p} --lib"),
+            1200,
+        ));
+        // 300 s, the room this step had before the temporary 480 s of GATE-02, which was really a slow build wearing a test's
+        // clothes. The run alone is back at the 240 s the measured week asked for (coordinator allow 2026-11-18, GATE-08).
         steps.push((
             "unit-tests".to_string(),
             format!("cargo test --quiet --locked {p} --lib"),
-            // 480 s, not the 300 s of `clippy` above: a table limit never lifts a step above its own timeout, so the 480
-            // of the `unit-tests` row of `MERGE_STEP_LIMITS` (`main.rs`) takes effect only here. The 480 s holds until
-            // LB-C027's bq gate slot is installed and proven; the limit is then re-measured in that slot and set so the
-            // slowest step uses at most 60 percent of it (coordinator allow 2026-11-18, GATE-02).
-            480,
+            300,
         ));
     }
     for o in owners {
@@ -141,6 +152,13 @@ pub fn cargo_steps(owners: &BTreeSet<Owner>, changed: &[String]) -> Vec<(String,
                     "cargo clippy --quiet --locked --manifest-path {m} --all-targets -- -D warnings"
                 ),
                 300,
+            ));
+            // The same split as the workspace members, for this crate's own manifest. No table row names a per-crate step, so
+            // the gate keeps cutting both of these at the 180 default they ran under as one step.
+            steps.push((
+                format!("unit-tests-build-{d}"),
+                format!("cargo test --no-run --quiet --locked --manifest-path {m}"),
+                1200,
             ));
             steps.push((
                 format!("unit-tests-{d}"),
@@ -186,7 +204,7 @@ mod tests {
         .collect();
         let s = cargo_steps(&o, &["crates/a/src/lib.rs".to_string()]);
         assert!(s[1].1.contains("crates/a/src/lib\\.rs"));
-        assert_eq!(s.len(), 6);
+        assert_eq!(s.len(), 8);
         assert!(s[0].1.contains("-p a -p b"));
         assert!(
             s.iter()
@@ -195,6 +213,62 @@ mod tests {
         assert!(
             !s.iter().any(|x| x.1.contains("office")),
             "a crate we cannot build is not faked"
+        );
+    }
+
+    /// GATE-08: the tests are built by one step and run by the next, and the two are the same command but for `--no-run` —
+    /// the same crates, the same flags, so the run finds the binaries the build left in the shared target.
+    #[test]
+    fn the_tests_are_built_by_one_step_and_run_by_the_next() {
+        let o: BTreeSet<Owner> = [
+            Owner::Member("a".into()),
+            Owner::Standalone("tools/ci/x/Cargo.toml".into()),
+        ]
+        .into_iter()
+        .collect();
+        let s = cargo_steps(&o, &["crates/a/src/lib.rs".to_string()]);
+        let step = |n: &str| -> (String, u64) {
+            s.iter()
+                .find(|x| x.0 == n)
+                .map(|x| (x.1.clone(), x.2))
+                .unwrap_or_else(|| panic!("no step {n}: {s:?}"))
+        };
+        let (built, built_t) = step("unit-tests-build");
+        let (ran, ran_t) = step("unit-tests");
+        assert!(built.contains("cargo test --no-run"), "{built}");
+        assert_eq!(
+            built.replace("cargo test --no-run", "cargo test"),
+            ran,
+            "the run is the build but for --no-run"
+        );
+        assert!(
+            built_t == 1200 && ran_t == 300,
+            "the build has the room of its cap, the run is back at its own 300: {built_t} vs {ran_t}"
+        );
+        let (built_c, _) = step("unit-tests-build-tools-ci-x");
+        let (ran_c, _) = step("unit-tests-tools-ci-x");
+        assert!(
+            built_c.contains("--no-run --quiet --locked --manifest-path tools/ci/x/Cargo.toml"),
+            "{built_c}"
+        );
+        assert_eq!(
+            built_c.replace("cargo test --no-run", "cargo test"),
+            ran_c,
+            "the per-crate steps are split the same way"
+        );
+        // The build comes first: a run that had nothing built yet would build it itself and be timed for it.
+        let names: Vec<&str> = s.iter().map(|x| x.0.as_str()).collect();
+        assert!(
+            names.iter().position(|n| *n == "unit-tests-build")
+                < names.iter().position(|n| *n == "unit-tests"),
+            "unit-tests-build before unit-tests: {names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .position(|n| *n == "unit-tests-build-tools-ci-x")
+                < names.iter().position(|n| *n == "unit-tests-tools-ci-x"),
+            "the per-crate build before its run: {names:?}"
         );
     }
 
