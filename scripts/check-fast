@@ -99,7 +99,14 @@ CARGO_TARGET_DIR=$build cargo build --quiet --release --locked --manifest-path "
 mkdir -p "$tool/release"
 tmp=$tool/release/lucina-ci.tmp.$$
 trap 'rm -f "$tmp"' EXIT
-cp "$build/release/lucina-ci" "$tmp"
-chmod 0755 "$tmp"
-mv -f "$tmp" "$tool/release/lucina-ci"
+# GATE-16: the temp name is under a directory other processes may be able to write, and a symlink planted at it must not be
+# followed by the copy. It is removed first, `install` (which unlinks an existing destination and writes a new file, mode
+# 0755) makes the file, and the install refuses to go on if what stands there is not a plain file.
+rm -f "$tmp"
+install -m 0755 "$build/release/lucina-ci" "$tmp"
+if [ -L "$tmp" ] || [ ! -f "$tmp" ]; then
+    echo "check-fast: $tmp is not a plain file after the install; refusing to move it onto the tool" >&2
+    exit 2
+fi
+mv -fT "$tmp" "$tool/release/lucina-ci"
 exec "$tool/release/lucina-ci" check-fast "$@"
