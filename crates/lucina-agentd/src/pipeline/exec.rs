@@ -634,7 +634,7 @@ impl Exec {
         if let Some(note) = &ended.manager_note {
             self.say(note);
         }
-        if !ended.miss.is_empty() {
+        if !ended.miss.says_nothing() {
             self.say(&ended.miss.line());
         }
         if ended.left > 0 {
