@@ -74,6 +74,9 @@ bq_find() {
 # own mark (tools/bq/src/main.rs, ancestor_slot_class): BQ_SLOT and BQ_SLOT_PID are set, BQ_SLOT_PID is a live ancestor of this
 # shell, and the slot's meta file in the queue's state directory (<passwd home>/.cache/bq, never $HOME or BQ_DIR) names
 # pid=<BQ_SLOT_PID> and a class bq knows. Otherwise the argument is dropped and the run queues like any other.
+# Coupling: a nested check-fast is believed only if bq's state directory equals <passwd home>/.cache/bq. A bq run with BQ_DIR set,
+# or with a $HOME different from the passwd home, writes its slot records elsewhere, so a genuine nested run re-queues and stops with
+# exit 2 (queued twice, no slot record): it fails closed, never runs unqueued, and costs only availability.
 bq_slot_is_real() {
     local spid=${BQ_SLOT_PID:-} p=$$ stat rest n=0 meta
     [ -n "${BQ_SLOT:-}" ] || return 1
