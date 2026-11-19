@@ -2,7 +2,8 @@
 //!
 //! - **Live traffic:** the `event="jev_first"` lines in `lucina-rs.service`'s journal
 //!   ([`parse_log_line`], [`LiveStats`]): used vs fallback, reasons, intents, confidence buckets and
-//!   how often Jev agrees with the tier-0 rule.
+//!   how often Jev agrees with the tier-0 rule. Only a line of a real turn counts (`source`; the
+//!   replay endpoint writes its own), and the report says how many counted lines predate the field.
 //! - **Labelled replay:** the owner's labelled turns (`<labels dir>/cal-in.jsonl`, `labels.txt`,
 //!   `extras.jsonl`, 0600) through the running server's `/api/secretary/jev/route`, scored by
 //!   confidence bucket, per intent and for the JEV-first policy at several thresholds ([`score`]).
@@ -164,6 +165,10 @@ pub struct LiveStats {
     pub guards: BTreeMap<String, usize>,
     pub buckets: [usize; 5],
     pub no_confidence: usize,
+    /// Counted turns whose line has no `source`: from a server that did not yet write the field, so a
+    /// replay echo may be among them. The report names the number when it is not 0.
+    #[serde(default)]
+    pub no_source: usize,
     /// Turns with both a tier-0 rule and a Jev intent, and how many agree.
     pub tier0_compared: usize,
     pub tier0_agreed: usize,
@@ -278,7 +283,15 @@ impl YesNoStats {
 }
 
 impl LiveStats {
+    /// Count one line as live traffic: a turn's own, or a line from before the `source` field. A
+    /// replay of the labelled turns never counts, whatever else it says.
     pub fn add(&mut self, t: &LogTurn) {
+        if t.source.as_deref().is_some_and(|s| s != "turn") {
+            return;
+        }
+        if t.source.is_none() {
+            self.no_source += 1;
+        }
         self.turns += 1;
         if t.used {
             self.used += 1;
@@ -743,8 +756,17 @@ pub fn render(
     );
 
     let l = &cur.live;
+    // Lines from before the field may still be replay echoes: the report says how many it counted.
+    let before_source = if l.no_source == 0 {
+        String::new()
+    } else {
+        format!(
+            ", {} of them from before the source field (these include replay echoes)",
+            l.no_source
+        )
+    };
     let mut b = format!(
-        "**Live traffic** (journal, last {} days): {} turns, JEV-first used {} ({}), tier-0 agreement {} (of {}).\n\n",
+        "**Live traffic** (journal, last {} days): {} turns{before_source}, JEV-first used {} ({}), tier-0 agreement {} (of {}).\n\n",
         cur.days,
         l.turns,
         l.used_rate().map_or("-".into(), |x| format!("{:.0}%", x * 100.0)),
@@ -1158,6 +1180,51 @@ mod tests {
         assert_eq!(s.no_confidence, 1);
         // The unanswered turn still counts: tier-0 fired and Jev did not agree.
         assert_eq!((s.tier0_compared, s.tier0_agreed), (3, 1));
+    }
+
+    /// TURN-11: the replay endpoint writes the same line as a turn, and its echo is not live traffic.
+    #[test]
+    fn a_replay_line_is_not_live_traffic_an_older_line_is_and_is_named() {
+        let line = |source: &str, used: &str| {
+            format!(
+                r#"INFO lucina_jev::route: jev_first event="jev_first" source="{source}" used={used} intent=chat confidence=0.9 tier0=None guard="""#
+            )
+        };
+        let t = parse_log_line(&line("turn", "true")).unwrap();
+        assert_eq!(t.source.as_deref(), Some("turn"));
+        assert_eq!(
+            parse_log_line(&line("replay", "true"))
+                .unwrap()
+                .source
+                .as_deref(),
+            Some("replay")
+        );
+        let mut s = LiveStats::default();
+        s.add(&t);
+        s.add(&parse_log_line(&line("replay", "true")).unwrap());
+        s.add(&parse_log_line(&line("turn", "false")).unwrap());
+        assert_eq!((s.turns, s.used, s.no_source), (2, 1, 0), "the echo is out");
+        let dated = |live: LiveStats| Summary {
+            date: "2026-11-19".into(),
+            days: 7,
+            live,
+            replay: None,
+        };
+        let (_, body) = render(&dated(s.clone()), None, &[], None, None);
+        assert!(
+            body.contains("**Live traffic** (journal, last 7 days): 2 turns, JEV-first used 50%"),
+            "{body}"
+        );
+
+        // A line of a server that wrote no source (here `USED`, the pre-field journal sample): counted
+        // as live, and said so, because a replay of that day is indistinguishable from a turn.
+        s.add(&parse_log_line(USED).unwrap());
+        assert_eq!((s.turns, s.used, s.no_source), (3, 2, 1));
+        let (_, body) = render(&dated(s), None, &[], None, None);
+        assert!(
+            body.contains("3 turns, 1 of them from before the source field (these include replay echoes), JEV-first used 67%"),
+            "{body}"
+        );
     }
 
     #[test]
