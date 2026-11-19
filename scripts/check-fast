@@ -5,6 +5,81 @@
 # inventory. Verus runs on GitHub; --proofs runs the affected proofs here.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+# The build queue (HOST-11). Every check-fast runs as ONE job of the queue's `long` class, so that several of them at once
+# cannot stack up their steps outside the queue's slots (nezopt ran out of memory on 80 step scopes from concurrent runs). The
+# launcher re-runs itself through `bq run` and does the work in the job. It is already in a job exactly when BQ_SLOT is set AND
+# BQ_SLOT_PID names a live process that is an ANCESTOR of this shell (bq sets both on the job's command, every descendant
+# inherits them, and nothing else clears them; BQ_PRIORITY is NOT consulted: a queue change that strips it from a job's
+# children must not make the steps of a gate lose their slot). A BQ_SLOT set by hand, with no such ancestor, counts for
+# nothing, and no other variable skips the queue. Without any `bq` of ours (GitHub's runners, the Mac) the check runs directly
+# and says so first. A `bq` found is used only when it prints our own usage (`--class short|long|proof`): PATH holds the
+# Google Cloud SDK's BigQuery `/usr/bin/bq` on GitHub's runners.
+bq_is_ours() {
+    local bq_usage
+    [ -x "$1" ] || return 1
+    bq_usage=$(timeout 5 "$1" </dev/null 2>&1 || true)
+    # Our queue's usage offers `--class short|long|proof` and every option the call below passes; a queue that does not is
+    # not one this launcher can call as written, and is not taken.
+    case "$bq_usage" in
+        *'--class short|long|proof'*) ;;
+        *) return 1 ;;
+    esac
+    case "$bq_usage" in
+        *'--max-wait'*) ;;
+        *) return 1 ;;
+    esac
+    case "$bq_usage" in
+        *'--priority'*) ;;
+        *) return 1 ;;
+    esac
+    case "$bq_usage" in
+        *'--keep-env'*) ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+bq_find() {
+    local c
+    for c in "$(command -v bq 2>/dev/null || true)" "$HOME/.local/bin/bq"; do
+        if [ -n "$c" ] && bq_is_ours "$c"; then
+            printf '%s\n' "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+bq_inside_job() {
+    local spid=${BQ_SLOT_PID:-} p=$$ stat rest n=0
+    [ -n "${BQ_SLOT:-}" ] || return 1
+    case "$spid" in '' | *[!0-9]*) return 1 ;; esac
+    [ "$spid" -gt 1 ] || return 1
+    [ -d "/proc/$spid" ] || return 1
+    while [ "$p" -gt 1 ] && [ "$n" -lt 64 ]; do
+        [ "$p" = "$spid" ] && return 0
+        stat=$(<"/proc/$p/stat") 2>/dev/null || return 1
+        rest=${stat##*) } # after the command name, which may hold spaces and parentheses: "S ppid ..."
+        rest=${rest#* }
+        p=${rest%% *}
+        case "$p" in '' | *[!0-9]*) return 1 ;; esac
+        n=$((n + 1))
+    done
+    return 1
+}
+if ! bq_inside_job; then
+    if bqbin=$(bq_find); then
+        prio=normal
+        for arg in "$@"; do
+            if [ "$arg" = "--merge-gate" ]; then prio=gate; fi
+        done
+        self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+        # Whatever BQ_SLOT / BQ_SLOT_PID this shell holds did not come from a job it is in: the queue must not read them as one.
+        unset BQ_SLOT BQ_SLOT_PID
+        exec "$bqbin" run --class long --priority "$prio" --max-wait 3600 --keep-env GIT_CONFIG_COUNT \
+            --who "check-fast:$(basename "$root")" -- "$self" "$@"
+    fi
+    # On stderr, so that the stdout of a run is still the check's own bytes; it is the first line the run prints.
+    echo "check-fast: no bq on this host; running without the queue" >&2
+fi
 # One shared Cargo target for every worktree (the same one LucinaOS uses), so the loop adds no new large target directories on
 # nezopt. The launcher itself builds apart, in its own small target, because LucinaOS's launcher has the same package name.
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/.cache/lucina-check-target}

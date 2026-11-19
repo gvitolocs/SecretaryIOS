@@ -426,7 +426,17 @@ fn launcher() -> PathBuf {
 /// directory of its own (`SECRETARY_CI_TOOL_BUILD` then defaults to `<tool>-build` beside it).
 fn launcher_run(s: &Scratch) -> Command {
     let mut c = Command::new("bash");
-    c.arg(launcher())
+    c.arg(launcher());
+    launcher_env(&mut c, s);
+    c
+}
+
+/// The environment of a launcher run. The launcher queues itself through `bq` unless it is already inside a queue job: BQ_SLOT
+/// with a BQ_SLOT_PID that is a live ancestor. These tests judge the install and not the queue, so they stand in a job the way
+/// a nested one does: this test process, which is an ancestor of the launcher, holds the slot (HOST-11).
+fn launcher_env(c: &mut Command, s: &Scratch) {
+    c.env("BQ_SLOT", "test-0")
+        .env("BQ_SLOT_PID", std::process::id().to_string())
         .env(
             "PATH",
             format!(
@@ -438,8 +448,7 @@ fn launcher_run(s: &Scratch) -> Command {
         .env("SECRETARY_CI_TOOL_TARGET", s.at("tool"))
         .env("TMPDIR", s.tmp())
         .env_remove("SECRETARY_CI_TOOL_BUILD");
-    drop_lane_git_config(&mut c);
-    c
+    drop_lane_git_config(c);
 }
 
 /// The copy of the tool a run made for itself, wherever in its directory it put it.
