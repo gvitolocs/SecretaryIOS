@@ -1148,7 +1148,8 @@ mod tests {
             .with_writer(move || w.clone())
             .finish();
         tracing::subscriber::with_default(sub, run);
-        String::from_utf8_lossy(&buf.lock().unwrap().clone()).to_string()
+        let logged = buf.lock().unwrap().clone();
+        String::from_utf8_lossy(&logged).to_string()
     }
 
     /// TURN-11: a turn and a replay of the same text both log a `jev_first` line, and each says which
