@@ -696,6 +696,24 @@ pub(crate) fn announce_agentd(ctl: Option<&Path>, env: &[(OsString, OsString)]) 
     lines
 }
 
+/// The refusal reason of a pid whose `/proc/<pid>/exe` link could not be read: it is spared (fail
+/// closed) but it is not known to be agentd, so it still counts as left over (finding PIPE-06).
+const EXE_UNREADABLE: &str = "exe unreadable";
+
+/// Whether a pid with this refusal reason is still one of the step's processes: one that is not
+/// refused, or one refused only because its executable could not be read. A pid positively matched
+/// as agentd is not.
+fn counts_as_left(reason: Option<&str>) -> bool {
+    reason.is_none() || reason == Some(EXE_UNREADABLE)
+}
+
+/// The note a spared process that is still running gets in the job log.
+fn note_unreadable(miss: &mut Miss, pid: u32) {
+    miss.add_note(format!(
+        "pid {pid}: {EXE_UNREADABLE}, spared and still there"
+    ));
+}
+
 /// Why `target` is refused for its executable, or `None`. Runs when agentd's executable is known, and
 /// when agentd is wholly unidentified (no pid, no executable): then any process named `lucina-agentd` is
 /// refused. A process that has exited is not protected; a link that cannot be read is refused.
@@ -707,9 +725,7 @@ fn exe_refusal(target: u32, pid_unknown: bool) -> Option<&'static str> {
     }
     match read_exe(target) {
         ExeRead::Gone => None,
-        ExeRead::Unreadable(_) => {
-            Some("a process whose executable could not be read, refused rather than guessed at")
-        }
+        ExeRead::Unreadable(_) => Some(EXE_UNREADABLE),
         ExeRead::Path(p) => {
             if ident.contains(&p) {
                 Some("agentd's executable")
@@ -1183,7 +1199,7 @@ impl Step {
             v.extend(cgroup_pids(cg));
         }
         if let Some(a) = &self.agentd {
-            v.retain(|p| a.refuses(*p).is_none());
+            v.retain(|p| counts_as_left(a.refuses(*p)));
         }
         v.sort_unstable();
         v.dedup();
@@ -1293,6 +1309,13 @@ impl Step {
             if e >= grace + SLACK {
                 left = self.survivors();
                 break;
+            }
+        }
+        if let Some(a) = &self.agentd {
+            for p in &left {
+                if a.refuses(*p) == Some(EXE_UNREADABLE) {
+                    note_unreadable(&mut miss, *p);
+                }
             }
         }
         (miss, left.len())
@@ -2347,6 +2370,24 @@ mod tests {
             }
         }
         panic!("the copy of sh stayed busy");
+    }
+
+    /// PIPE-06: a pid spared only because its `exe` link could not be read is still one of the step's
+    /// processes — counted as left over and named with its pid — while a pid positively matched as
+    /// agentd is not counted.
+    #[test]
+    fn a_spared_process_with_an_unreadable_exe_is_left_over_and_named() {
+        assert!(counts_as_left(Some(EXE_UNREADABLE)));
+        assert!(counts_as_left(None));
+        assert!(!counts_as_left(Some("agentd's executable")));
+        assert!(!counts_as_left(Some("agentd's main pid")));
+        let mut miss = Miss::default();
+        note_unreadable(&mut miss, 4242);
+        let line = miss.line();
+        assert!(
+            line.contains("pid 4242") && line.contains("exe unreadable"),
+            "{line}"
+        );
     }
 
     /// Resets what a test of the identity sets, whatever the test does after it.
