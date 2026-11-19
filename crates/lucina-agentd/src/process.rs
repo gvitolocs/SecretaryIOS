@@ -40,19 +40,126 @@ pub struct Registry {
     dir: PathBuf,
 }
 
-/// Field 22 of `/proc/<pid>/stat`: the process start time in clock ticks.
-fn start_ticks(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = &stat[stat.rfind(')')? + 2..];
-    after_comm.split(' ').nth(19)?.parse().ok()
+/// What `/proc/<pid>/stat` says about a process: its parent, its process group and its
+/// start time in clock ticks (field 22).
+#[derive(Clone, Copy)]
+struct Stat {
+    ppid: u32,
+    pgrp: u32,
+    ticks: u64,
 }
 
-fn kill_group(pid: u32, signal: &str) {
-    let _ = std::process::Command::new("kill")
-        .args(["-s", signal, "--", &format!("-{pid}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+fn read_stat(pid: u32) -> Option<Stat> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After the `(comm)` field: state, ppid, pgrp, ... and the start time 20 fields on.
+    let after_comm = stat.get(stat.rfind(')')? + 2..)?;
+    let mut f = after_comm.split(' ');
+    let ppid = f.nth(1)?.parse().ok()?;
+    let pgrp = f.next()?.parse().ok()?;
+    let ticks = f.nth(16)?.parse().ok()?;
+    Some(Stat { ppid, pgrp, ticks })
+}
+
+/// The process start time in clock ticks.
+pub fn start_ticks(pid: u32) -> Option<u64> {
+    read_stat(pid).map(|s| s.ticks)
+}
+
+/// A pid as rustix wants it; `None` for 0 and 1 (never a group or init) and for values that
+/// don't fit.
+fn rustix_pid(pid: u32) -> Option<rustix::process::Pid> {
+    if pid <= 1 {
+        return None;
+    }
+    rustix::process::Pid::from_raw(i32::try_from(pid).ok()?)
+}
+
+/// Signal the process group led by `pid`. Only [`signal_tree`] calls this, after it has
+/// checked who the root is.
+fn kill_group(pid: u32, signal: rustix::process::Signal) {
+    if let Some(p) = rustix_pid(pid) {
+        let _ = rustix::process::kill_process_group(p, signal);
+    }
+}
+
+/// The processes of a provider's tree now, with their start times: the members of the
+/// root's process group, and everything below the root through parent links (an MCP
+/// server that started its own session is only found that way). The root is not in it.
+fn tree_of(root: u32, root_alive: bool) -> Vec<(u32, u64)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let all: Vec<(u32, Stat)> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()))
+        .filter_map(|p| read_stat(p).map(|s| (p, s)))
+        .collect();
+    // A group number can't be reused while a member lives, so a process in group `root` is
+    // in the root's group. Parent links only count while the root itself is alive: a gone
+    // root's number may be some other process's.
+    let mut found: std::collections::HashSet<u32> = all
+        .iter()
+        .filter(|(p, s)| s.pgrp == root && *p != root)
+        .map(|(p, _)| *p)
+        .collect();
+    if root_alive {
+        let mut frontier = vec![root];
+        while let Some(parent) = frontier.pop() {
+            for (p, s) in &all {
+                if s.ppid == parent && *p != root && found.insert(*p) {
+                    frontier.push(*p);
+                }
+            }
+        }
+    }
+    all.iter()
+        .filter(|(p, _)| found.contains(p))
+        .map(|(p, s)| (*p, s.ticks))
+        .collect()
+}
+
+/// Signal the listed processes, each only while it is still the process whose start
+/// time was read.
+fn kill_listed(list: &[(u32, u64)], signal: rustix::process::Signal) {
+    for &(pid, ticks) in list {
+        if start_ticks(pid) == Some(ticks) {
+            if let Some(p) = rustix_pid(pid) {
+                let _ = rustix::process::kill_process(p, signal);
+            }
+        }
+    }
+}
+
+/// Signal a provider process and everything under it, after checking that `pid` is still
+/// the process that started at `root_ticks` (recorded at spawn). If the number now belongs
+/// to another process (it was reused), nothing is signalled by it: not its group, not its
+/// children; that is logged. If the root is gone, the members of its group are signalled
+/// one by one, each by its own number and start time.
+/// Returns the processes found (to signal again later); empty when the root was reused.
+///
+/// A pidfd would close the window between this check and the signal for the root itself,
+/// but not for its group (a group is addressed by number); the start time is checked
+/// instead, and any provider process lives under agentd's own uid.
+pub fn signal_tree(pid: u32, root_ticks: u64, signal: rustix::process::Signal) -> Vec<(u32, u64)> {
+    let root = read_stat(pid);
+    if root.is_some_and(|s| s.ticks != root_ticks) {
+        tracing::warn!(
+            pid,
+            "provider pid was reused by another process: signalling nothing by it"
+        );
+        return Vec::new();
+    }
+    let tree = tree_of(pid, root.is_some());
+    if root.is_some() {
+        kill_group(pid, signal);
+    }
+    kill_listed(&tree, signal);
+    tree
+}
+
+/// End a provider process and everything below it.
+pub fn kill_tree(pid: u32, root_ticks: u64) {
+    signal_tree(pid, root_ticks, rustix::process::Signal::KILL);
 }
 
 impl Registry {
@@ -121,7 +228,7 @@ impl Registry {
             if let Some(rec) = rec {
                 if start_ticks(rec.pid) == Some(rec.start_ticks) {
                     tracing::warn!(pid = rec.pid, program = %rec.program, "reaping a provider process left by a previous daemon");
-                    kill_group(rec.pid, "KILL");
+                    kill_tree(rec.pid, rec.start_ticks);
                     killed.push(rec.pid);
                 }
             }
@@ -134,6 +241,8 @@ impl Registry {
 /// A running child. Dropping it kills its process group.
 pub struct Proc {
     pub pid: u32,
+    /// The root's start time at spawn: a signal by `pid` goes out only while it still matches.
+    root_ticks: Option<u64>,
     child: Option<Child>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     registry: Option<Registry>,
@@ -203,6 +312,7 @@ impl Proc {
         Ok((
             Proc {
                 pid,
+                root_ticks: start_ticks(pid),
                 child: Some(child),
                 stderr_tail: tail,
                 registry: registry.cloned(),
@@ -223,10 +333,22 @@ impl Proc {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        kill_group(self.pid, "TERM");
+        use rustix::process::Signal;
+        let root = self.root_ticks;
+        let tree = root
+            .map(|t| signal_tree(self.pid, t, Signal::TERM))
+            .unwrap_or_default();
         if tokio::time::timeout(grace, child.wait()).await.is_err() {
-            kill_group(self.pid, "KILL");
+            if let Some(t) = root {
+                signal_tree(self.pid, t, Signal::KILL);
+            }
             let _ = child.wait().await;
+        }
+        // Whatever outlived the provider (it left the group, or ignored TERM): what was
+        // listed, each only while it is the same process, and the group's remaining members.
+        kill_listed(&tree, Signal::KILL);
+        if let Some(t) = root {
+            signal_tree(self.pid, t, Signal::KILL);
         }
         if let Some(r) = &self.registry {
             r.forget(self.pid);
@@ -246,7 +368,9 @@ impl Proc {
 impl Drop for Proc {
     fn drop(&mut self) {
         if self.child.is_some() {
-            kill_group(self.pid, "KILL");
+            if let Some(t) = self.root_ticks {
+                kill_tree(self.pid, t);
+            }
             if let Some(r) = &self.registry {
                 r.forget(self.pid);
             }
@@ -340,6 +464,93 @@ mod tests {
             std::fs::read_dir(dir.path().join("procs")).unwrap().count(),
             0
         );
+    }
+
+    /// A `sleep` in a group of its own, started outside `Proc`: (child, its start time).
+    fn sleeper() -> (std::process::Child, u64) {
+        use std::os::unix::process::CommandExt;
+        let child = std::process::Command::new("sleep")
+            .arg("300")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let ticks = start_ticks(child.id()).expect("the sleeper's start time");
+        (child, ticks)
+    }
+
+    #[test]
+    fn a_reused_root_number_is_not_signalled() {
+        let (mut other, ticks) = sleeper();
+        let pid = other.id();
+        // The number now belongs to a process that started at another time than the one the
+        // provider had: the recycled-pid case, through the seam.
+        let found = signal_tree(pid, ticks + 1, rustix::process::Signal::KILL);
+        assert!(found.is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(alive(pid), "a process that is not the root was signalled");
+        // With the right start time the same call ends it.
+        signal_tree(pid, ticks, rustix::process::Signal::KILL);
+        let _ = other.wait();
+        assert!(!alive(pid));
+    }
+
+    #[test]
+    fn a_listed_descendant_whose_start_time_changed_is_not_signalled() {
+        let (mut other, ticks) = sleeper();
+        let pid = other.id();
+        kill_listed(&[(pid, ticks + 1)], rustix::process::Signal::KILL);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(alive(pid), "a reused descendant number was signalled");
+        kill_listed(&[(pid, ticks)], rustix::process::Signal::KILL);
+        let _ = other.wait();
+        assert!(!alive(pid));
+    }
+
+    #[tokio::test]
+    async fn a_child_that_left_the_process_group_is_found_below_the_root_and_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("child.pid");
+        let spec = Spec {
+            program: "sh".into(),
+            // `setsid` gives the sleep its own session and group; the shell stays its parent.
+            args: vec![
+                "-c".into(),
+                format!("setsid sleep 300 & echo $! > {}; wait", file.display()),
+            ],
+            cwd: dir.path().display().to_string(),
+            ..Spec::default()
+        };
+        let (mut proc_, _i, _o) = Proc::spawn(&spec, None).unwrap();
+        let mut child = 0;
+        for _ in 0..100 {
+            if let Some(p) = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+            {
+                child = p;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(child > 1 && alive(child));
+        // `$!` is written before `setsid` has run: wait until the child is in its own group.
+        let mut left = false;
+        for _ in 0..100 {
+            if read_stat(child).is_some_and(|s| s.pgrp != proc_.pid) {
+                left = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(left, "the child must be outside the provider's group");
+        proc_.shutdown(std::time::Duration::from_secs(2)).await;
+        for _ in 0..100 {
+            if !alive(child) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!alive(child), "the child that left the group survived");
     }
 
     #[tokio::test]

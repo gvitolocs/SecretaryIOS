@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::jev_route::{deterministic_intent, JEV_FIRST_MIN};
+use crate::jev_route::{deterministic_intent, jev_beats_rule_from, JEV_FIRST_MIN};
 
 /// Confidence buckets, `[lo, hi)`; the last one includes 1.0.
 pub const BUCKETS: [(f64, f64); 5] = [(0.0, 0.5), (0.5, 0.6), (0.6, 0.75), (0.75, 0.9), (0.9, 1.0)];
@@ -244,7 +244,10 @@ impl YesNoStats {
             }
         }
         // Past the gate: every outcome but a pass before it (not question-shaped, not yes/no, Jev down).
-        let past_gate = matches!(t.why.as_deref(), Some("live_lookup" | "not_in_facts" | "about_lucina"));
+        let past_gate = matches!(
+            t.why.as_deref(),
+            Some("live_lookup" | "not_in_facts" | "about_lucina")
+        );
         if t.outcome != "pass" || past_gate {
             self.yes_no += 1;
             if let Some(k) = &t.kind {
@@ -509,8 +512,27 @@ pub fn right(labels: &[String], intent: &str) -> bool {
 }
 
 /// Jev's accuracy by bucket and intent, the live router's, and the JEV-first policy's at each
-/// threshold (Jev's answer when sure and not `unknown`, unless a deterministic rule matched).
+/// threshold (Jev's answer when sure and not `unknown`, unless a deterministic rule matched and
+/// Jev's answer did not beat it — the same precedence [`crate::jev_route::jev_first`] uses).
 pub fn score(rows: &[Routed]) -> Replay {
+    score_from(
+        rows,
+        std::env::var("LUCINA_JEV_FIRST_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE").ok().as_deref(),
+        std::env::var("LUCINA_JEV_OVER_RULE_MIN").ok().as_deref(),
+    )
+}
+
+/// [`score`] with the four `LUCINA_JEV_*` values as arguments, like
+/// [`crate::jev_route::jev_first_from`]: a test names them instead of inheriting the environment.
+pub fn score_from(
+    rows: &[Routed],
+    first_min: Option<&str>,
+    first_intent_min: Option<&str>,
+    over_rule: Option<&str>,
+    over_rule_min: Option<&str>,
+) -> Replay {
     let mut r = Replay {
         turns: rows.len(),
         policy: POLICY_THRESHOLDS
@@ -533,9 +555,25 @@ pub fn score(rows: &[Routed]) -> Replay {
             }
             None => r.jev_missing += 1,
         }
-        let rule_keeps = x.tier0.as_deref().is_some_and(deterministic_intent);
+        let rule_keeps = x.tier0.as_deref().is_some_and(|t| {
+            deterministic_intent(t)
+                && !jev.is_none_or(|(j, c)| {
+                    jev_beats_rule_from(
+                        j,
+                        c,
+                        t,
+                        over_rule,
+                        over_rule_min,
+                        first_min,
+                        first_intent_min,
+                    )
+                })
+        });
+        // The replay does not model the MCP side-effect guard (`classify` returns plain chat there),
+        // so on MCP samples the report can name Jev's intent where the server answered chat.
         for (th, t) in &mut r.policy {
-            // The live rule: a sure, known intent, unless a deterministic route keeps the turn.
+            // The live rule: a sure, known intent, unless a deterministic route keeps the turn
+            // (which only a sure question of Jev's own intents takes over, never one that acts).
             let pick = jev
                 .filter(|&(j, c)| c >= *th && !j.is_empty() && j != "unknown" && !rule_keeps)
                 .map_or(x.routed.as_str(), |(j, _)| j);
@@ -966,7 +1004,10 @@ mod tests {
         assert_eq!(t.p_yes, Some(0.97));
         assert_eq!(t.jev_ms, Some(410));
         assert!(parse_yesno_line(&line("preview", "answer", "", "Some(0.97)")).is_none());
-        assert!(parse_log_line(&line("turn", "answer", "", "None")).is_none(), "not a jev_first line");
+        assert!(
+            parse_log_line(&line("turn", "answer", "", "None")).is_none(),
+            "not a jev_first line"
+        );
 
         let mut y = YesNoStats::default();
         y.add(&t);
@@ -974,7 +1015,10 @@ mod tests {
         y.add(&parse_yesno_line(&line("turn", "unsure", "", "Some(0.5)")).unwrap());
         y.add(&parse_yesno_line(&line("turn", "pass", "not_yes_no", "None")).unwrap());
         y.add(&parse_yesno_line(&line("turn", "pass", "live_lookup", "Some(0.5)")).unwrap());
-        assert_eq!((y.turns, y.yes_no, y.answered, y.answered_yes, y.unsure), (5, 4, 2, 1, 1));
+        assert_eq!(
+            (y.turns, y.yes_no, y.answered, y.answered_yes, y.unsure),
+            (5, 4, 2, 1, 1)
+        );
         assert_eq!(y.passes.get("not_yes_no"), Some(&1));
         assert_eq!(y.answered_rate(), Some(0.5));
         assert_eq!(y.mean_jev_ms(), Some(410));
@@ -986,13 +1030,31 @@ mod tests {
             .unwrap();
         assert_eq!(old.yesno, YesNoStats::default());
 
-        let mut a = Summary { date: "2026-10-22".into(), days: 7, live: LiveStats::default(), replay: None };
+        let mut a = Summary {
+            date: "2026-10-22".into(),
+            days: 7,
+            live: LiveStats::default(),
+            replay: None,
+        };
         let mut b = a.clone();
         b.date = "2026-10-29".into();
-        a.live.yesno = YesNoStats { yes_no: 20, answered: 16, ..YesNoStats::default() };
-        b.live.yesno = YesNoStats { yes_no: 20, answered: 10, ..YesNoStats::default() };
+        a.live.yesno = YesNoStats {
+            yes_no: 20,
+            answered: 16,
+            ..YesNoStats::default()
+        };
+        b.live.yesno = YesNoStats {
+            yes_no: 20,
+            answered: 10,
+            ..YesNoStats::default()
+        };
         let flags = drift(&a, &b);
-        assert!(flags.iter().any(|f| f.starts_with("yes/no questions Jev answered itself moved -30 points")), "{flags:?}");
+        assert!(
+            flags
+                .iter()
+                .any(|f| f.starts_with("yes/no questions Jev answered itself moved -30 points")),
+            "{flags:?}"
+        );
         let (_, body) = render(&b, Some(&a), &flags, None, None);
         assert!(body.contains("**Yes/no questions**"), "{body}");
     }
@@ -1011,6 +1073,13 @@ mod tests {
             routed: live.to_owned(),
             tier0: tier0.map(str::to_owned),
         }
+    }
+
+    /// `score_from` with the policy the replay tests judge named here, not inherited from the
+    /// process environment: the override over a deterministic route on, and Jev trusted from `0.9`
+    /// up. The other two values are what the code defaults them to (`None`).
+    fn scored(rows: &[Routed]) -> Replay {
+        score_from(rows, Some("0.9"), None, Some("1"), None)
     }
 
     #[test]
@@ -1144,7 +1213,7 @@ mod tests {
             ),
             routed("chat", None, "chat", None),
         ];
-        let r = score(&rows);
+        let r = scored(&rows);
         assert_eq!(r.turns, 6);
         assert_eq!(r.jev_missing, 1);
         assert_eq!(r.jev, Tally { n: 5, right: 2 });
@@ -1164,8 +1233,57 @@ mod tests {
 
     #[test]
     fn jev_policy_keeps_the_router_for_an_empty_intent() {
-        let r = score(&[routed("chat", Some(("", 0.99)), "chat", None)]);
+        let r = scored(&[routed("chat", Some(("", 0.99)), "chat", None)]);
         assert_eq!(r.policy[0], (0.6, Tally { n: 1, right: 1 }));
+    }
+
+    #[test]
+    fn jev_policy_replays_the_over_rule_precedence() {
+        // A sure answer of Jev's own intents takes the turn from the grocery rule it disagrees
+        // with, at every threshold; an unsure one leaves it with the rule.
+        let over = routed(
+            "grocery.shopping_list.query",
+            Some(("grocery.shopping_list.query", 0.99)),
+            "grocery.expense.query",
+            Some("grocery.expense.query"),
+        );
+        let r = scored(&[over]);
+        for (th, t) in r.policy {
+            assert_eq!((th, t), (th, Tally { n: 1, right: 1 }), "{th}");
+        }
+        let kept = routed(
+            "grocery.shopping_list.query",
+            Some(("grocery.shopping_list.query", 0.85)),
+            "grocery.expense.query",
+            Some("grocery.expense.query"),
+        );
+        let r = scored(&[kept]);
+        for (th, t) in r.policy {
+            assert_eq!((th, t), (th, Tally { n: 1, right: 0 }), "{th}");
+        }
+    }
+
+    /// TURN-01: the replay scores the same precedence the router uses. An answer that acts never
+    /// takes the turn from a deterministic route, so even at `0.99` the rule keeps it — and a sample
+    /// whose true label is that acting intent is wrong at every threshold, while Jev's own answer is
+    /// still judged right on its own.
+    #[test]
+    fn an_acting_jev_intent_leaves_the_turn_to_the_rule_at_every_threshold() {
+        let row = routed(
+            "grocery.shopping_list.add",
+            Some(("grocery.shopping_list.add", 0.99)),
+            "grocery.expense.query",
+            Some("grocery.expense.query"),
+        );
+        let r = scored(&[row]);
+        assert_eq!(
+            r.jev,
+            Tally { n: 1, right: 1 },
+            "Jev's intent was not the acting one it was scored as"
+        );
+        for (th, t) in r.policy {
+            assert_eq!((th, t), (th, Tally { n: 1, right: 0 }), "{th}");
+        }
     }
 
     #[test]

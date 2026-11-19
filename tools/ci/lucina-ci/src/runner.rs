@@ -166,6 +166,32 @@ fn read_trim(p: &Path) -> Option<String> {
     fs::read_to_string(p).ok().map(|s| s.trim().to_string())
 }
 
+/// The binary the steps of this process start from, when the check took a copy of itself before it began. Empty until
+/// `check-fast` fills it (`install_step_exe`).
+static STEP_EXE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Says which binary the steps of this run start from: the copy `check-fast` made in its own per-run directory (GATE-06).
+/// The tool lives at a path every worktree shares and the launcher installs a new build there while a check may already be
+/// running, and that rename takes the name away from the process started from it: each step of a `check-fast` is this same
+/// binary re-started as `__inner`, so a step that asked the path again died with
+/// `Failed to find executable .../release/lucina-ci (deleted)` (merge job job_fc4fabf8e6fe, four steps lost 0.1 s after
+/// `clippy`). A run of its own copy is what closes it — chosen over keying the installed binary by its source id, because
+/// the id only separates *different* sources: two runs of one source, which is what a merge and its own lane both build,
+/// still share a name and still replace each other, and a rebuild of the same source is exactly what was in flight.
+/// Unset elsewhere — a proof run on a runner, a selftest — where this process's own path is asked for, as it always was.
+pub fn install_step_exe(path: PathBuf) {
+    let _ = STEP_EXE.set(path);
+}
+
+/// The path to start `__inner` from: this run's own copy where there is one, else this process's executable.
+fn step_exe() -> Result<PathBuf, String> {
+    STEP_EXE
+        .get()
+        .cloned()
+        .or_else(|| std::env::current_exe().ok())
+        .ok_or_else(|| "cannot find this program's own executable".to_string())
+}
+
 /// The unit name `run_unit` asks systemd for, so the cgroup whose directory starts with this is one this launcher made
 /// for this step and may signal by pid. Anything else is a cgroup the check shares with whatever started it.
 const SCOPE_OUR_PREFIX: &str = "lucina-ci-";
@@ -858,7 +884,7 @@ fn scope_prefix() -> Result<Vec<String>, String> {
 /// message that names the step and the reason; no step is ever run uncapped, and `lucina-ci` never runs `sudo`
 /// (GATE-12). Before GATE-12 a check-fast step fell back to an uncapped process group, and `LUCINA_CI_NO_SCOPE` forced it.
 pub fn run_unit(spec: &Spec) -> Result<i32, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = step_exe()?;
     let prefix = scope_prefix().map_err(|why| {
         format!(
             "step {}: cannot get a memory-capped scope: {why}",
