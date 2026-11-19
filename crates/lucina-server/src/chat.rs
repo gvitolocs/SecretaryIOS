@@ -901,7 +901,8 @@ impl Turn<'_> {
     /// A fast route answered this spoken turn and dropped its context building with the sample it never
     /// got to keep. This is where that line is written instead: the same one [`crate::context::classify`]
     /// writes for the turns it finishes, from the same tier-0 rule and the same recent turns, and the
-    /// turn's mark makes it nothing when the building did get there first (CO-C009).
+    /// turn's mark makes it nothing when the building did get there first (CO-C009). The caller runs it
+    /// inside that mark ([`crate::voice::in_intent`]): outside it the turn would look unkept and write twice.
     fn record_turn_sample(
         &self,
         keys: crate::context::Keys<'_>,
@@ -1316,7 +1317,8 @@ async fn run_turn_scoped(
                 // The dropped building left its sample unwritten; and this is before the turn's own words
                 // join the recent turns, where the rule the classifier reads would not be the same one.
                 if let Some(slot) = slot {
-                    t.record_turn_sample(keys, &slot.verdict());
+                    let verdict = slot.verdict();
+                    crate::voice::in_intent(slot, || t.record_turn_sample(keys, &verdict));
                 }
                 // Jev answered the intent on its own: the step is over here, without the context building.
                 if let Some(intent) = intent_phase {

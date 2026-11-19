@@ -391,6 +391,13 @@ pub async fn with_intent<F: std::future::Future>(
     }
 }
 
+/// Runs `f` with `slot` as the turn's shared verdict, for the code that answers a spoken turn from
+/// outside its context building: a fast route keeps its sample on the same mark the building uses
+/// (CO-C009).
+pub fn in_intent<R>(slot: Arc<IntentSlot>, f: impl FnOnce() -> R) -> R {
+    INTENT.sync_scope(slot, f)
+}
+
 /// The spoken turn's intent verdict, waiting for the turn's own Jev call (capped by the caller): `Some(None)`
 /// when it gave none, `None` when this turn has no such call (the classifier then makes its own).
 pub async fn shared_intent() -> Option<SharedIntent> {
