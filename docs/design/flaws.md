@@ -76,7 +76,16 @@ that step's lane, not always the first one.
    busy` with nothing started. The create carries the idempotency key `flaw:<id>:<platform>:<claim number>`; a create that
    errors looks agentd up by labels before it gives anything back, and an agent that exists is attached. Every dispatch
    writes one line, `flaws: dispatched flaw=.. platform=.. caller=loop|post|mcp attempt=.. lane=.. agent=..`, and a
-   refusal one line with its reason. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
+   refusal one line with its reason.
+
+   What the SQL re-check in the claim counts, and what it does not: it counts *claims* (`fixing` rows without a session, and
+   triage agents the store tracks), not processes. An agent that agentd holds without a `fixing` row (a create whose answer was
+   lost, a target let go while its agent ran) is invisible to it. Three things protect against that: the dispatch lock, under
+   which the `alive` list and the claim are one step; the idempotency key, so a repeated create for one claim is the same agent
+   and never a second; and the sweep, which before a start stops any untracked agent already working on that target (and any
+   idle agent whose target no longer holds it), so a start never adds a second live agent to a target. A second process on the
+   file is covered by the SQL re-check alone, and its agentd-only agents are not: one agentd, one dispatching server is the
+   deployed shape. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
    probe says it has quota; it never comes back up to a cheaper step it started at. When no step from there down is ready,
    nothing starts this round. A server or core fix is one task and one commit for every client waiting on it.
 4. **Tell him.** Fixed, closed or blocked targets, once per change, in his chat and on his phone.
