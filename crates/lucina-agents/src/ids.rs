@@ -229,7 +229,9 @@ impl IdRow {
     }
 }
 
-/// The highest number issued for the kind and prefix, plus one (1 when none).
+/// The highest number on any row of the kind and prefix, annotation rows included, plus one
+/// (1 when none). A kept ledger line uses its number the same as any row: the next id is above
+/// it, and issuing that same id is refused.
 pub fn next_number(rows: &[IdRow], kind: Kind, prefix: &str) -> u32 {
     rows.iter()
         .filter_map(|r| parse_id(&r.id))
@@ -237,6 +239,13 @@ pub fn next_number(rows: &[IdRow], kind: Kind, prefix: &str) -> u32 {
         .map(|p| p.number)
         .max()
         .map_or(1, |n| n.saturating_add(1))
+}
+
+/// `true` when at least one row has `id` and every such row is an annotation. That id is not
+/// free to issue: [`next_number`] stays above it, and the store refuses to write it as a new id.
+pub fn held_only_by_annotation(rows: &[IdRow], id: &str) -> bool {
+    rows.iter().any(|r| r.id == id && r.is_annotation())
+        && !rows.iter().any(|r| r.id == id && !r.is_annotation())
 }
 
 /// A registry code is registered by an ordinary row of its kind, never by an annotation row.
@@ -320,11 +329,13 @@ pub fn check_new_area(rows: &[IdRow], code: &str, owner: &str, title: &str) -> R
     Ok(())
 }
 
-/// The kind of an id that has a first row, when `state` belongs to that kind.
+/// The kind of an id that has an ordinary row, when `state` belongs to that kind. An
+/// annotation row is not that row: an id known only by one is unknown, the same as an id
+/// with no row at all.
 pub fn check_state(rows: &[IdRow], id: &str, state: &str) -> Result<Kind, String> {
     let kind = rows
         .iter()
-        .find(|r| r.id == id)
+        .find(|r| r.id == id && !r.is_annotation())
         .map(|r| r.kind)
         .ok_or_else(|| format!("no id {id}"))?;
     if !states(kind).contains(&state) {
@@ -460,20 +471,21 @@ pub fn current(rows: &[IdRow]) -> Vec<IdView> {
 }
 
 /// The lead that owns an id: the prefix of a run, change or version, the owner of a finding's
-/// area, the code of a lead, the owner of an area; `None` when unknown.
+/// area, the code of a lead, the owner of an area; `None` when unknown. An annotation row does
+/// not make a code a lead or an area, and it does not name an area's owner.
 pub fn lead_of(rows: &[IdRow], id: &str) -> Option<String> {
     match parse_id(id) {
         Some(p) if p.kind != Kind::Finding => Some(p.prefix),
         Some(p) => lead_of(rows, &p.prefix),
         None => {
-            let row = rows.iter().find(|r| r.id == id)?;
+            let row = rows.iter().find(|r| r.id == id && !r.is_annotation())?;
             match row.kind {
                 Kind::Lead => Some(row.id.clone()),
                 Kind::Area => {
                     let owner = rows
                         .iter()
                         .rev()
-                        .find(|r| r.id == id && !r.by.is_empty())?
+                        .find(|r| r.id == id && !r.is_annotation() && !r.by.is_empty())?
                         .by
                         .clone();
                     Some(owner)
@@ -1239,6 +1251,32 @@ mod tests {
     }
 
     #[test]
+    fn check_state_treats_an_annotation_only_id_as_unknown() {
+        let rows = rows_of("XX-C001\tt\tchange\tdone\ta refused change\n");
+        assert!(rows[0].is_annotation(), "the refused line is an annotation");
+        assert_eq!(
+            check_state(&rows, "XX-C001", "open").unwrap_err(),
+            "no id XX-C001"
+        );
+        // An ordinary row is still the id, and a note of the same id does not hide it.
+        let mut both = rows_of("XX-C001\tt\tchange\topen\ta real change\n");
+        both.extend(rows);
+        assert_eq!(check_state(&both, "XX-C001", "merged"), Ok(Kind::Change));
+    }
+
+    #[test]
+    fn held_only_by_annotation_is_an_annotation_with_no_ordinary_row() {
+        let note = rows_of("XX-C001\tt\tchange\tdone\ta refused change\n");
+        assert!(held_only_by_annotation(&note, "XX-C001"));
+        assert!(!held_only_by_annotation(&note, "XX-C002"));
+        let ordinary = rows_of("XX-C001\tt\tchange\topen\ta real change\n");
+        assert!(!held_only_by_annotation(&ordinary, "XX-C001"));
+        let mut both = ordinary;
+        both.extend(note);
+        assert!(!held_only_by_annotation(&both, "XX-C001"));
+    }
+
+    #[test]
     fn models_are_normalised() {
         assert_eq!(normalize_model("Claude-Sonnet-5.5"), "claude-sonnet-5-5");
         assert_eq!(normalize_model("qwen3.8:27b"), "qwen3-8-27b");
@@ -1927,5 +1965,24 @@ GC\tJS\tgarbage collector, twice\nHOST\tLucinaJS: host objects (CRASH-04)\nREENT
         assert_eq!(lead_of(&rows, "LA").as_deref(), Some("LA"));
         assert_eq!(lead_of(&rows, "GC").as_deref(), Some("JS"));
         assert_eq!(lead_of(&rows, "nonsense"), None);
+    }
+
+    #[test]
+    fn lead_of_treats_an_annotation_only_code_as_unknown() {
+        let lead = rows_of("XX\tt\tlead\tstamp\ta refused lead\n");
+        assert!(lead[0].is_annotation());
+        assert_eq!(lead_of(&lead, "XX"), None);
+        // A `by` on the annotation does not name an owner: the line registered nothing.
+        let mut area = rows_of("HOST\tt\tarea\tstamp\ta refused area\n");
+        assert!(area[0].is_annotation());
+        area[0].by = "LA".into();
+        assert_eq!(lead_of(&area, "HOST"), None);
+        // An ordinary area still names its lead when a note of the same code sits after it
+        // and that note carries a different owner.
+        let mut rows = registry();
+        let mut note = rows_of("GC\tt\tarea\tstamp\tagain\n");
+        note[0].by = "ZZ".into();
+        rows.extend(note);
+        assert_eq!(lead_of(&rows, "GC").as_deref(), Some("JS"));
     }
 }

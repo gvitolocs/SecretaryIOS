@@ -25,11 +25,12 @@
 //! starts and follows a work job, `lead` for rows issued through `POST /ids`, `import` for rows
 //! read from a hand-kept ledger.
 //!
-//! An import never refuses a file: a line the rules of its kind do not allow is kept as an
-//! annotation row, and a line whose lead or area is not registered — the operator
-//! registers a lead with `lagent id lead add` before the import — is skipped and listed with the
-//! reason. Only a code that is both a lead's and an area's stops the whole request, for there
-//! every id of either kind it owns would be ambiguous.
+//! An import keeps a line the rules of its kind do not allow as an annotation row, and skips
+//! and lists a line whose lead or area is not registered — the operator registers a lead with
+//! `lagent id lead add` before the import. An ordinary lead line whose code is already an area
+//! stops the whole request and nothing is written: every id of either kind that code owns would
+//! be ambiguous. An areas line whose code is already a lead registers nothing and is skipped
+//! and listed, so the areas around it are still taken.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -40,9 +41,10 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use lucina_agents::ids::{
-    check_new, check_new_area, check_state, current, default_state, format_id, import_plan,
-    lead_code_clash, lead_of, next_number, parse_areas_tsv, parse_id, parse_tsv, states, trace,
-    trailers, IdRow, IdView, Kind, Ledger, LedgerRow, SkippedRow,
+    check_new, check_new_area, check_state, current, default_state, format_id,
+    held_only_by_annotation, import_plan, lead_code_clash, lead_of, next_number, parse_areas_tsv,
+    parse_id, parse_tsv, states, trace, trailers, IdRow, IdView, Kind, Ledger, LedgerRow,
+    SkippedRow,
 };
 use lucina_agents::work::WorkJob;
 use serde::Deserialize;
@@ -73,6 +75,11 @@ fn now() -> String {
 
 fn invalid(m: impl Into<String>) -> ManagerError {
     ManagerError::Invalid(m.into())
+}
+
+/// What issuing a new id says when a kept ledger line already uses that id.
+fn held_number_message(id: &str) -> String {
+    format!("{id} is held by a kept ledger line; see it with `lagent id show {id}`")
 }
 
 fn nonblank(v: Option<String>) -> Option<String> {
@@ -159,8 +166,9 @@ impl State {
         st
     }
 
+    /// An ordinary row of the id. An annotation names the id and does not make it exist.
     fn exists(&self, id: &str) -> bool {
-        self.rows.iter().any(|r| r.id == id)
+        self.rows.iter().any(|r| r.id == id && !r.is_annotation())
     }
 
     fn refuse_if_read_only(&self) -> Result<(), ManagerError> {
@@ -287,7 +295,9 @@ impl Ids {
     /// Issues the next id of `kind` (for a lead or an area row `prefix` is the new code) and
     /// appends its row. `build` gets the id and returns the row's fields; it runs while the
     /// store is locked, so it must be quick and must not call the store. `owner` is the
-    /// owning lead of a new area.
+    /// owning lead of a new area. A number an annotation already holds is not issued; the
+    /// refusal names the kept line. A lead or an area known only by an annotation is not
+    /// registered, so registering it still goes through [`check_new`].
     pub(super) fn issue(
         &self,
         kind: Kind,
@@ -315,6 +325,11 @@ impl Ids {
             _ => check_new(&st.rows, kind, prefix, &row.title),
         }
         .map_err(invalid)?;
+        // `next_number` is already above every row, annotations included. This is the refusal
+        // when the id about to be written is one a kept line holds and no ordinary row does.
+        if !matches!(kind, Kind::Lead | Kind::Area) && held_only_by_annotation(&st.rows, &row.id) {
+            return Err(invalid(held_number_message(&row.id)));
+        }
         if !states(kind).contains(&row.state.as_str()) {
             return Err(invalid(format!(
                 "state \"{}\" does not belong to a {kind}: use {}",
@@ -334,8 +349,9 @@ impl Ids {
         Ok(row)
     }
 
-    /// Appends a row with the id of an existing one (a state change). Only the fields the row
-    /// sets count: the view takes the latest non-empty value of each.
+    /// Appends a row with the id of an existing ordinary one (a state change). Only the fields
+    /// the row sets count: the view takes the latest non-empty value of each. An id that exists
+    /// only as annotations is unknown, the same as an id the store has never seen.
     pub(super) fn append(
         &self,
         id: &str,
@@ -357,8 +373,14 @@ impl Ids {
         Ok(row)
     }
 
+    /// The kind of an id's ordinary row. An annotation names the id and proves nothing, so an
+    /// id known only by one has no kind here.
     pub(super) fn kind_of(&self, id: &str) -> Option<Kind> {
-        self.lock().rows.iter().find(|r| r.id == id).map(|r| r.kind)
+        self.lock()
+            .rows
+            .iter()
+            .find(|r| r.id == id && !r.is_annotation())
+            .map(|r| r.kind)
     }
 
     /// The state of the id's latest row that is a row of its own. An annotation keeps a ledger
@@ -867,7 +889,8 @@ impl Manager {
         }))
     }
 
-    /// Whether `code` is a registered lead.
+    /// Whether `code` is a registered lead. An annotation does not register one:
+    /// [`Ids::kind_of`] skips it, so a lead known only by an annotation is not.
     pub(super) fn lead_registered(&self, code: &str) -> bool {
         self.ids().kind_of(code) == Some(Kind::Lead)
     }
@@ -1380,5 +1403,74 @@ mod tests {
             ids.latest_row("LA-R001").map(|(s, _)| s).as_deref(),
             Some("started")
         );
+    }
+
+    #[test]
+    fn the_refusal_for_a_held_number_names_the_ledger_line() {
+        assert_eq!(
+            held_number_message("XX-C001"),
+            "XX-C001 is held by a kept ledger line; see it with `lagent id show XX-C001`"
+        );
+    }
+
+    /// A lead, a change and an area that exist only as annotations. `kind_of` is what
+    /// `lead_registered` asks; none of the three is that kind of id.
+    #[test]
+    fn an_annotation_only_id_has_no_kind_and_takes_no_state_row() {
+        let d = dir();
+        let ids = open(d.path());
+        ids.import(
+            parse_tsv("XX.tsv", "XX\tt\tlead\tstamp\ta refused lead\n"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            ids.kind_of("XX"),
+            None,
+            "an annotation does not register a lead"
+        );
+        assert!(!ids.lock().exists("XX"));
+        // Registering the lead for real still goes through the ordinary checks.
+        ids.issue(Kind::Lead, "XX", None, "lead", |_| lead_row("XX"))
+            .unwrap();
+        ids.import(
+            parse_tsv("XX.tsv", "XX-C001\tt\tchange\tdone\ta refused change\n"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(ids.kind_of("XX-C001"), None);
+        assert!(!ids.lock().exists("XX-C001"));
+        let before = std::fs::read(file(d.path())).unwrap();
+        let err = ids
+            .append(
+                "XX-C001",
+                IdRow {
+                    state: "open".into(),
+                    ..IdRow::default()
+                },
+                "lead",
+            )
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "no id XX-C001");
+        assert_eq!(std::fs::read(file(d.path())).unwrap(), before);
+        let issued = ids
+            .issue(Kind::Change, "XX", None, "lead", |_| IdRow {
+                title: "the next change".into(),
+                ..IdRow::default()
+            })
+            .unwrap();
+        assert_eq!(issued.id, "XX-C002");
+        ids.import(
+            parse_areas_tsv("areas.tsv", "HOST\tnot-a-lead\tcovers\n"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            ids.kind_of("HOST"),
+            None,
+            "an annotation does not register an area"
+        );
+        assert!(!ids.lock().exists("HOST"));
     }
 }
