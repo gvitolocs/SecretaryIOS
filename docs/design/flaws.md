@@ -92,14 +92,18 @@ that step's lane, not always the first one.
    nothing and answer `409 dispatcher_busy` with `retry_after_s` (the worst-case time left of the hold; the MCP tool says
    "the dispatcher is busy, retry in N s. Nothing was started."). The minute loop never waits: it tries the lock and, if a
    request holds it, skips that tick and says `flaws: dispatcher busy, tick skipped` once per change of state, so ticks never
-   queue. Every call made under the lock has its own deadline (`Limits`): `GET /agents` 10 s, each stop and each archive 10 s,
-   the worktree create and the agent create 30 s each, the lookup by labels after a failed create 10 s, the ops record of an
-   opened breaker 10 s, one lane probe 20 s with all the probes of a hold under one 30 s budget (a probe that does not answer, or
+   queue. Every call made under the lock has its own deadline (`Limits`): `GET /agents` 5 s, each stop and each archive 5 s,
+   the worktree create and the agent create 25 s each, the lookup by labels after a failed create 5 s, the ops record of an
+   opened breaker 5 s, one lane probe 10 s with all the probes of a hold under one 15 s budget (a probe that does not answer, or
    that finds the budget spent, is not ready). Agents put away in one hold are bounded (`MAX_AWAY` = 3 for the sweep and the
    untracked agents of the target, 3 more extras after a failed create); an untracked agent that cannot be stopped in time
    stops the start on its target, which waits for the next tick. The owner's go for a gated flaw is asked before the lock is
-   taken. The sum, `MAX_HOLD`, is 10 + 3 x 20 + 30 + 2 x 30 + (10 + 3 x 20 + 10) = **240 s**. Moving the probes outside the lock is
-   a follow-up. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
+   taken. The sum, `MAX_HOLD`, is 5 + 3 x 10 + 15 + 2 x 25 + (5 + 3 x 10 + 5) = **140 s** (the first
+   draft had 240; a three-step chain whose every call hangs is the case it bounds). A hold is milliseconds when agentd and the
+   lanes answer. A request that cannot wait that long is told busy after 5 s; one whose client gives up earlier (the MCP client
+   waits 20 s) leaves its claim without an agent, which the stale-claim sweep looks up in agentd after 5 minutes. Requests
+   build their own probe memo (`dispatch_one` cannot share the tick's, which lives for one tick); only the lane breaker, in the
+   store, is shared. Moving the probes outside the lock is a follow-up. Try *n* starts on step *n* of the chain (capped at the last one) and walks **down** to the first step whose
    probe says it has quota; it never comes back up to a cheaper step it started at. When no step from there down is ready,
    nothing starts this round. A server or core fix is one task and one commit for every client waiting on it.
 4. **Tell him.** Fixed, closed or blocked targets, once per change, in his chat and on his phone.
@@ -127,6 +131,22 @@ answered `503 PROVIDER_TRIPPED` or `429 AGENT_LIMIT` (agentd's own breaker and c
 the walk finds no usable step at all does the target wait, so an outage leaves no trail of worktrees. Then it starts by itself.
 After a deploy, `lucina-rs flaws restore-lane-failures --since <rfc3339> [--apply]` lists, and with `--apply` resets, the
 blocked targets whose every failure since was a lane failure by the stored agent error text.
+
+**Lane failures that repeat (LA-C035 review).** A lane failure costs a target no attempt, but the second one on a target
+inside 24 hours backs it off 5 minutes and the third (`LANE_FAILURES_BEFORE_LEAD`) marks it `blocked`, "needs a lead", told once:
+an agent that ends with no tool call and no commit on a lane whose probe says ok would otherwise go round the half-open slot
+for ever. The breaker keeps its own back-off: a trial agent that fails shuts the lane again for 5 minutes, doubling per failed
+trial (`lane_breakers.until`, `fails`), and a lane is never healed in the tick that opened it. Only the trial agent (the claim a
+half-open lane let through, `lane_breakers.trial`) closes it, on a first turn that ran or a work-doing idle end. The ops
+record's key is the lane and how many times it has opened, never a time. Triage is covered the same way: a triage agent that
+ends on a sign-in failure, a limit or an unavailable provider opens its lane's breaker and leaves the flaw triage-due (given back,
+three times at most, as for a limit); any other end is an answer, as before.
+
+**Deploy notes.** (1) `restore-lane-failures --apply` sets `attempts` to 0, so a target that also failed for real reasons
+before `--since` gets those tries back; the dry run says so. A lead confirms the lane really signs in (one real agent turn,
+not `lane probe`, which said ok during the incident) before `--apply`. (2) The migration only adds columns and tables. A rollback
+to the old binary on the migrated database works, but it runs without any of this protection (no caps, no breaker, no lock): that
+is the reason to fix forward, not to roll back, if a problem shows after deploy.
 
 **The lane probe's cache (changed in LA-C035).** `LANE_OUT_FOR`, how long a lane that answered not-ready is remembered before
 it is probed again, went from 60 minutes to 5. It used to be the only memory of a lane being out, and an hour was cheap because
