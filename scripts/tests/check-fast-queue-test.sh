@@ -6,8 +6,8 @@
 # our usage, records its argv, runs a call of the class of the slot an ancestor really holds right there (as bq does) and any
 # other call in a slot of its own, and execs what follows the `--` with BQ_SLOT and BQ_SLOT_PID set. The passwd home is replaced
 # by a fixed directory in a copy of the launcher (make_launcher below); cargo, df and the built tool are stubs: nothing is built.
-#   (1) a plain run queues once with the byte-exact call: class long, priority normal, --max-wait 3600, the job's call marked;
-#   (2) --merge-gate asks for priority gate;
+#   (1) a plain run queues once with the byte-exact call: class long, priority normal, --max-wait 3600 (the merge gate: 300, tied to the Rust budget by budget.rs), the job's call marked;
+#   (2) --merge-gate asks for priority gate and --max-wait 300 (GATE-19);
 #   (3) a call nested in a job of the SAME class runs in place once; of ANOTHER class it queues in a slot of its own; neither loops;
 #   (4) a hand-set BQ_SLOT / BQ_SLOT_PID / BQ_PRIORITY decides nothing: the run still queues;
 #   (5) no bq anywhere (neither in the passwd home nor on PATH): runs directly and the first line says so;
@@ -158,7 +158,7 @@ echo "ok: (1) a plain run queues once with the byte-exact call, and the job's ow
 # (2) the merge gate.
 launch gate home "$tmp/base" -- "$L" --base HEAD^1 --merge-gate
 ran_ok gate
-want="home run --class long --priority gate --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD^1 --merge-gate"
+want="home run --class long --priority gate --max-wait 300 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq=1 --base HEAD^1 --merge-gate"
 [ "$(cat "$calls")" = "$want" ] || fail "(2) the gate call is not byte-exact: $(cat "$calls")"
 echo "ok: (2) --merge-gate asks for priority gate"
 
