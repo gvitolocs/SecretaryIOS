@@ -228,7 +228,9 @@ async fn clear_provider(
     Path(id): Path<String>,
 ) -> ApiResult {
     if !who(&m, &peer, &headers).is_owner() {
-        return Err(ManagerError::Forbidden("Only the owner clears a provider's breaker".into()).into());
+        return Err(
+            ManagerError::Forbidden("Only the owner clears a provider's breaker".into()).into(),
+        );
     }
     let cleared = m.clear_provider(&id);
     to_json(json!({"provider": id, "cleared": cleared}))

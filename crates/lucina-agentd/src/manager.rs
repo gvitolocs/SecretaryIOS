@@ -32,9 +32,9 @@ use crate::process::Registry;
 use crate::provider::{Provider, ProviderInfo, Session, SessionConfig};
 use crate::store::{Store, StoreError};
 
+mod breaker;
 mod external_agents;
 mod gate;
-mod breaker;
 mod handoff;
 mod ids;
 mod orch;
@@ -48,8 +48,8 @@ mod sessions;
 mod work;
 mod workspaces;
 
-pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
 pub use breaker::{Breaker, CapsConfig, Trip, CALLER_LABEL};
+pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
 pub use handoff::{
     CONTINUED_FROM_LABEL, CONTINUED_ON_LABEL, CONTINUED_PROVIDER_LABEL, HANDOFF_LABEL,
 };

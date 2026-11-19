@@ -1422,7 +1422,10 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             } else {
                 format!("Provider {provider} was not tripped")
             };
-            Ok(Output { text, json: Some(v) })
+            Ok(Output {
+                text,
+                json: Some(v),
+            })
         }
         Command::Providers(_) => {
             let v = client.get("/providers").await?;
