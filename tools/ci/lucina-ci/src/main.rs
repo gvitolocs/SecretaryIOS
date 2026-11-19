@@ -898,8 +898,8 @@ impl MergeCaps {
 }
 
 /// The merge-gate limit of one step: what `LUCINA_CHECK_FAST_MERGE_CAP_S` says, else the table, else 180.
-/// The clock is the step's OWN run time: `scripts/check-fast` takes its queue slot (`bq run --class short --max-wait ...`) before
-/// this binary starts, so a step's limit starts after the wait.
+/// The clock is the step's OWN run time: `scripts/check-fast` re-runs itself as ONE `bq run --class long --max-wait 3600` job and takes its
+/// slot before this binary starts, so a step's limit starts after the wait.
 fn merge_step_limit(name: &str) -> u64 {
     MergeCaps::from_env().limit_of(name, merge_step_cap())
 }

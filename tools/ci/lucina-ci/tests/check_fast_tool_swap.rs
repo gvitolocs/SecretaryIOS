@@ -415,39 +415,82 @@ fn check_fast(s: &Scratch, r: &Path, proofs: bool, hold: bool) -> Command {
     c
 }
 
-/// `scripts/check-fast`, the launcher under test: a shell script of the repository, not of the crate.
-fn launcher() -> PathBuf {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/check-fast");
-    assert!(p.is_file(), "no launcher at {}", p.display());
-    p
+/// The queue the launcher finds: the launcher looks for `bq` in the passwd home of its uid, never in `$HOME`, and these tests
+/// judge the install and not the queue, so the stand-in prints our usage and runs what follows the `--` in place.
+const QUEUE_STUB: &str = "#!/usr/bin/env bash
+if [ \"$#\" -eq 0 ]; then
+    echo 'usage: bq run --class short|long|proof [--lock PATH] [--who NAME] [--priority gate|normal] [--max-wait SECONDS] [--keep-env NAME] -- cmd args...'
+    exit 2
+fi
+while [ \"$1\" != \"--\" ]; do shift; done
+shift
+exec \"$@\"
+";
+
+/// `scripts/check-fast`, the launcher under test: a shell script of the repository, not of the crate. A copy of it, in a folder
+/// named like this repo, in which the one assignment of `qhome` (the passwd lookup of this uid's home, which a test cannot
+/// change) is the scratch directory — the fake home that holds `.local/bin/bq` and the `tool` the launcher installs into. Nothing
+/// else differs.
+fn launcher(s: &Scratch) -> PathBuf {
+    let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/check-fast");
+    let text = fs::read_to_string(&real).unwrap_or_else(|e| panic!("{}: {e}", real.display()));
+    let (mut out, mut skip, mut replaced) = (String::new(), false, false);
+    for line in text.lines() {
+        if line == "qhome=$(" {
+            out.push_str(&format!("qhome=\"{}\"\n", s.dir.display()));
+            (skip, replaced) = (true, true);
+            continue;
+        }
+        if skip {
+            skip = line != ") || qhome=\"\"";
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    assert!(
+        replaced && !skip,
+        "the home assignment is not in the launcher"
+    );
+    let repo = real.canonicalize().unwrap();
+    let name = repo
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap();
+    let to = s.at("pl").join(name).join("scripts/check-fast");
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    write_exec(&to, &out);
+    let bq = s.at(".local/bin/bq");
+    fs::create_dir_all(bq.parent().unwrap()).unwrap();
+    write_exec(&bq, QUEUE_STUB);
+    to
 }
 
 /// A run of the launcher: the stubs on PATH, the scratch `tool` directory as the shared install place, and no build
 /// directory of its own (`SECRETARY_CI_TOOL_BUILD` then defaults to `<tool>-build` beside it).
 fn launcher_run(s: &Scratch) -> Command {
     let mut c = Command::new("bash");
-    c.arg(launcher());
+    c.arg(launcher(s));
     launcher_env(&mut c, s);
     c
 }
 
-/// The environment of a launcher run. The launcher queues itself through `bq` unless it is already inside a queue job: BQ_SLOT
-/// with a BQ_SLOT_PID that is a live ancestor. These tests judge the install and not the queue, so they stand in a job the way
-/// a nested one does: this test process, which is an ancestor of the launcher, holds the slot (HOST-11).
+/// The environment of a launcher run.
 fn launcher_env(c: &mut Command, s: &Scratch) {
-    c.env("BQ_SLOT", "test-0")
-        .env("BQ_SLOT_PID", std::process::id().to_string())
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                s.bin().display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
-        .env("SECRETARY_CI_TOOL_TARGET", s.at("tool"))
-        .env("TMPDIR", s.tmp())
-        .env_remove("SECRETARY_CI_TOOL_BUILD");
+    c.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            s.bin().display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    )
+    .env("SECRETARY_CI_TOOL_TARGET", s.at("tool"))
+    .env("TMPDIR", s.tmp())
+    .env_remove("SECRETARY_CI_TOOL_BUILD");
     drop_lane_git_config(c);
 }
 
@@ -748,7 +791,7 @@ exit 0
         "-c",
         "ln -s \"$VICTIM\" \"$SECRETARY_CI_TOOL_TARGET/release/lucina-ci.tmp.$$\"; exec bash \"$0\"",
     ])
-    .arg(launcher())
+    .arg(launcher(&s))
     .env("VICTIM", &victim);
     launcher_env(&mut c, &s);
     let o = c.output().unwrap();

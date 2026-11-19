@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # scripts/tests/check-fast-queue-test.sh: scripts/check-fast runs as one job of the build queue's `long` class (HOST-11).
-# The queue is looked up as $HOME/.local/bin/bq first (if that file exists it MUST be ours, else the check fails), and a `bq`
-# on PATH only when it does not exist; no environment variable names or skips it. A stub `bq` prints our usage, records its
-# argv to a file, and execs what follows the `--` with BQ_SLOT and BQ_SLOT_PID set to its own pid, as the real one does.
-# cargo, df and the built tool are stubs too: nothing is built or queued.
-#   (1) a plain run goes through bq once: class long, priority normal, and the inner run does not queue again;
+# The queue is looked up in the passwd home of this uid (never $HOME): <home>/.local/bin/bq first, which MUST be ours or the check
+# fails with exit 2; a `bq` on PATH only when that file does not exist. The launcher always re-runs itself through `bq run
+# --class long`, marking the job's call with --queued-by-bq; no environment variable decides whether it queues. A stub `bq` prints
+# our usage, records its argv, runs a call of the class of the slot an ancestor really holds right there (as bq does) and any
+# other call in a slot of its own, and execs what follows the `--` with BQ_SLOT and BQ_SLOT_PID set. The passwd home is replaced
+# by a fixed directory in a copy of the launcher (make_launcher below); cargo, df and the built tool are stubs: nothing is built.
+#   (1) a plain run queues once with the byte-exact call: class long, priority normal, --max-wait 3600, the job's call marked;
 #   (2) --merge-gate asks for priority gate;
-#   (3) a run inside a bq job (the stub is an ANCESTOR of the launcher) makes no second call;
-#   (4) BQ_SLOT set by hand, its BQ_SLOT_PID dead, or alive but not an ancestor, still queues;
-#   (5) no bq anywhere (PATH without it, HOME in a temp dir): runs directly and the first line says so;
-#   (6) a bq of the wrong program (the Google Cloud SDK's) on PATH, none in HOME, is not taken;
-#   (7) $HOME/.local/bin/bq exists but is not ours: the check fails and runs nothing;
-#   (8) an ours-looking `bq` first on PATH while $HOME/.local/bin/bq exists: the HOME one is used;
-#   (9) a variable that names a queue (LUCINA_BQ) is not read: it neither supplies a queue nor skips one.
+#   (3) a call nested in a job of the SAME class runs in place once; of ANOTHER class it queues in a slot of its own; neither loops;
+#   (4) a hand-set BQ_SLOT / BQ_SLOT_PID / BQ_PRIORITY decides nothing: the run still queues;
+#   (5) no bq anywhere (neither in the passwd home nor on PATH): runs directly and the first line says so;
+#   (6) a bq of the wrong program (the Google Cloud SDK's) on PATH, none in the home, is not taken;
+#   (7) the home's bq exists but is not ours: the check fails with exit 2 and runs nothing;
+#   (8) an ours-looking bq first on PATH does not displace the home's; it is used only when the home has none;
+#   (9) LUCINA_BQ is not read;
+#   (10) $HOME decides nothing: a HOME without a bq, or none, still queues through the passwd home's bq;
+#   (11) a passwd home that cannot be resolved is a refusal with exit 2, not "no queue here".
 # Last line: `check-fast-queue-test: pass`.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -27,43 +31,89 @@ cleanup() {
 trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 ncalls() { wc -l < "$1" | tr -d ' '; }
+who=$(basename "$root")
 
 BQ_USAGE='usage: bq run --class short|long|proof [--lock PATH] [--cores N] [--mem 8G|none] [--exclusive] [--who NAME] [--priority gate|normal] [--max-wait SECONDS] [--keep-env NAME] -- cmd args...'
-mkdir -p "$tmp/home/.local/bin" "$tmp/nohome" "$tmp/base" "$tmp/pathbq" "$tmp/gcloud" "$tmp/build/release"
-# make_stub <file> <tag>: a queue in our usage's shape. The tag is the first word of what it records.
-make_stub() {
-    cat > "$1" <<STUB
+mkdir -p "$tmp/base" "$tmp/state" "$tmp/gcloud" "$tmp/pathbq" "$tmp/other"
+cat > "$tmp/stub.tpl" <<'STUB'
 #!/usr/bin/env bash
-if [ "\$#" -eq 0 ]; then
-    echo '$BQ_USAGE'
+# A queue in the shape of tools/bq. No arguments: the usage. `run`: record the call (first word: @TAG@), and then, as bq does, run
+# a call of the SAME class as the slot an ancestor really holds (its meta names this pid) right there, and any other call in a
+# slot of its own; exec what follows the `--` with BQ_SLOT and BQ_SLOT_PID set.
+if [ "$#" -eq 0 ]; then
+    echo '@USAGE@'
     exit 2
 fi
-echo "$2 \$*" >> "\$STUB_BQ_LOG"
-while [ "\$1" != "--" ]; do shift; done
+class=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    if [ "${args[$i]}" = --class ]; then class=${args[$((i + 1))]}; fi
+done
+nested=0
+if [ -n "${BQ_SLOT:-}" ] && [ "$BQ_SLOT" = "$class-0" ] && [ -f "$STUB_BQ_STATE/$BQ_SLOT.meta" ] &&
+    grep -qx "pid=${BQ_SLOT_PID:-}" "$STUB_BQ_STATE/$BQ_SLOT.meta" && [ -d "/proc/${BQ_SLOT_PID:-0}" ]; then
+    nested=1
+fi
+echo "@TAG@ $*" >> "$STUB_BQ_LOG"
+if [ "$nested" = 1 ]; then echo "@TAG@ in-place $class" >> "$STUB_BQ_LOG"; fi
+while [ "$1" != "--" ]; do shift; done
 shift
-export BQ_SLOT=long-0 BQ_SLOT_PID=\$\$
-exec "\$@"
+if [ "$nested" = 0 ]; then
+    echo "pid=$$" > "$STUB_BQ_STATE/$class-0.meta"
+    export BQ_SLOT="$class-0" BQ_SLOT_PID=$$
+fi
+exec "$@"
 STUB
+make_stub() { # make_stub <file> <tag>
+    sed -e "s#@TAG@#$2#g" -e "s#@USAGE@#$BQ_USAGE#" "$tmp/stub.tpl" > "$1"
     chmod +x "$1"
 }
-make_stub "$tmp/home/.local/bin/bq" home
+# make_launcher <fake home> <dir>: a copy of scripts/check-fast at <dir>/scripts/check-fast whose one assignment of `qhome` (the
+# passwd lookup of this uid's home, which a test cannot change) is a fixed directory. The folder is named like this repo, because
+# --who is its basename. Nothing else differs: the copy is refused unless exactly that assignment (4 lines out, 1 in) changed.
+make_launcher() {
+    local fake=$1 d=$2
+    mkdir -p "$d/scripts"
+    awk -v h="$fake" '
+        /^qhome=\$\($/ { print "qhome=\"" h "\""; skip = 1; next }
+        skip && /^\) \|\| qhome=""$/ { skip = 0; next }
+        skip { next }
+        { print }' "$root/scripts/check-fast" > "$d/scripts/check-fast"
+    chmod +x "$d/scripts/check-fast"
+    [ "$(diff "$root/scripts/check-fast" "$d/scripts/check-fast" | grep -c '^[<>]')" -eq 5 ] ||
+        fail "the launcher copy differs from the real one in more than its home assignment"
+}
+# mkhome <dir> [bq <tag> | badbq]: a home directory for a launcher copy, with the stand-in tool the launcher installs and runs.
+mkhome() {
+    mkdir -p "$1/.local/bin" "$1/tool-build/release"
+    printf '#!/usr/bin/env bash\necho "stub-ran $*"\n' > "$1/tool-build/release/lucina-ci"
+    chmod +x "$1/tool-build/release/lucina-ci"
+    case "${2:-}" in
+        bq) make_stub "$1/.local/bin/bq" "$3" ;;
+        badbq)
+            printf '#!/usr/bin/env bash\necho "ERROR: (bq) You do not currently have an active account selected." >&2\nexit 1\n' > "$1/.local/bin/bq"
+            chmod +x "$1/.local/bin/bq"
+            ;;
+    esac
+}
 make_stub "$tmp/pathbq/bq" path
-cat > "$tmp/gcloud/bq" <<'STUB'
-#!/usr/bin/env bash
-echo 'ERROR: (bq) You do not currently have an active account selected.' >&2
-exit 1
-STUB
+mkdir -p "$tmp/gcloud"
+printf '#!/usr/bin/env bash\necho "ERROR: (bq) You do not currently have an active account selected." >&2\nexit 1\n' > "$tmp/gcloud/bq"
 chmod +x "$tmp/gcloud/bq"
 printf '#!/usr/bin/env bash\necho Avail\necho 999G\n' > "$tmp/base/df"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/base/cargo"
-printf '#!/usr/bin/env bash\necho "stub-ran $*"\n' > "$tmp/build/release/lucina-ci"
-chmod +x "$tmp/base/df" "$tmp/base/cargo" "$tmp/build/release/lucina-ci"
-launcher=$root/scripts/check-fast
-who=$(basename "$root")
+chmod +x "$tmp/base/df" "$tmp/base/cargo"
 
-# launch <name> <dirs first on PATH> <home> [env assignment...] -- <command...>; leaves rc, out, err, calls.
+mkhome "$tmp/home" bq home
+mkhome "$tmp/nohome"
+mkhome "$tmp/badhome" badbq
+mkhome "$tmp/pathhome"
+for h in home nohome badhome pathhome; do make_launcher "$tmp/$h" "$tmp/pl-$h/$who"; done
+launcher_for() { echo "$tmp/pl-$1/$who/scripts/check-fast"; }
+
+# launch <name> <home name> <dirs first on PATH> [env assignment...] -- <command...>; leaves rc, out, err, calls.
 launch() {
-    local name=$1 first=$2 home=$3
+    local name=$1 h=$2 first=$3
     shift 3
     local envs=()
     while [ "$#" -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
@@ -72,104 +122,138 @@ launch() {
     : > "$calls"
     rc=0
     env -u BQ_SLOT -u BQ_SLOT_PID -u BQ_PRIORITY -u LUCINA_BQ ${envs[@]+"${envs[@]}"} \
-        HOME="$home" PATH="$first:/usr/bin:/bin" STUB_BQ_LOG="$calls" \
-        SECRETARY_CI_TOOL_TARGET="$tmp/tool" SECRETARY_CI_TOOL_BUILD="$tmp/build" \
+        PATH="$first:/usr/bin:/bin" STUB_BQ_LOG="$calls" STUB_BQ_STATE="$tmp/state" \
+        SECRETARY_CI_TOOL_TARGET="$tmp/$h/tool" SECRETARY_CI_TOOL_BUILD="$tmp/$h/tool-build" \
         "$@" > "$tmp/$name.out" 2> "$tmp/$name.err" || rc=$?
     out=$tmp/$name.out
     err=$tmp/$name.err
 }
-# ran_ok: the last launch exited 0 and the check ran.
+# ran_ok <case>: the last launch exited 0 and the check ran exactly once.
 ran_ok() {
     [ "$rc" -eq 0 ] || fail "($1) exit $rc: $(cat "$err")"
-    grep -qF "stub-ran check-fast" "$out" || fail "($1) the check never ran: out=$(cat "$out") err=$(cat "$err")"
+    [ "$(grep -c "stub-ran check-fast" "$out")" = 1 ] || fail "($1) the check did not run exactly once: out=$(cat "$out") err=$(cat "$err")"
+}
+# refused <case>: the last launch exited 2 and ran nothing.
+refused() {
+    [ "$rc" -eq 2 ] || fail "($1) expected the refusal's exit code 2, got $rc: $(cat "$err")"
+    if grep -q "stub-ran" "$out"; then fail "($1) the check ran: $(cat "$out")"; fi
 }
 home=$tmp/home
+L=$(launcher_for home)
 
-# (1) a plain run: one call, class long, priority normal; the run inside the job does not queue again.
-launch plain "$tmp/base" "$home" -- "$launcher" --base HEAD
+# (1) a plain run: one call, byte-exact.
+launch plain home "$tmp/base" -- "$L" --base HEAD
 ran_ok plain
-[ "$(ncalls "$calls")" = 1 ] || fail "(1) expected exactly one queue call: $(cat "$calls")"
-want="home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $launcher --base HEAD"
-[ "$(cat "$calls")" = "$want" ] || fail "(1) the queue call is not what was asked for: $(cat "$calls")"
-echo "ok: (1) a plain run queues once, class long, priority normal, and the inner run does not queue again"
+want="home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq --base HEAD"
+[ "$(cat "$calls")" = "$want" ] || fail "(1) the queue call is not byte-exact: $(cat "$calls")"
+echo "ok: (1) a plain run queues once with the byte-exact call, and the job's own run does not queue again"
 
 # (2) the merge gate.
-launch gate "$tmp/base" "$home" -- "$launcher" --base HEAD^1 --merge-gate
+launch gate home "$tmp/base" -- "$L" --base HEAD^1 --merge-gate
 ran_ok gate
-[ "$(ncalls "$calls")" = 1 ] || fail "(2) expected exactly one queue call: $(cat "$calls")"
-grep -qF -- "run --class long --priority gate --max-wait 3600 " "$calls" || fail "(2) a merge gate asks for priority gate: $(cat "$calls")"
+want="home run --class long --priority gate --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq --base HEAD^1 --merge-gate"
+[ "$(cat "$calls")" = "$want" ] || fail "(2) the gate call is not byte-exact: $(cat "$calls")"
 echo "ok: (2) --merge-gate asks for priority gate"
 
-# (3) nested: the launcher runs as a descendant (not the same process) of a live bq job: no second call. `bash -c '...; exit'`
-# keeps bash from exec'ing the launcher, so the stub's pid is an ancestor of it and not the launcher itself.
-launch nested "$tmp/base" "$home" -- "$home/.local/bin/bq" run --class long -- bash -c '"$@"; exit $?' sh "$launcher" --base HEAD
+# (3) nested. The outer stub call stands for a worker's `bq run -- scripts/check-fast`; `bash -c '...; exit'` keeps bash from
+# exec'ing the launcher, so the slot's holder is an ancestor of it. Same class: the launcher's own call runs in place (once), and
+# the run does not loop. Another class: the call queues in a slot of its own.
+launch nested home "$tmp/base" -- "$home/.local/bin/bq" run --class long -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
 ran_ok nested
-[ "$(ncalls "$calls")" = 1 ] || fail "(3) a run inside a bq job queued again: $(cat "$calls")"
-echo "ok: (3) a run inside a bq job makes no second queue call"
+[ "$(grep -c '^home in-place long$' "$calls")" = 1 ] || fail "(3) a nested call of the same class did not run in place exactly once: $(cat "$calls")"
+[ "$(grep -c -- "--queued-by-bq" "$calls")" = 1 ] || fail "(3) the launcher called the queue other than once: $(cat "$calls")"
+launch nested2 home "$tmp/base" -- "$home/.local/bin/bq" run --class short -- bash -c '"$@"; exit $?' sh "$L" --base HEAD
+ran_ok nested2
+if grep -q 'in-place' "$calls"; then fail "(3) a nested call of another class ran in place: $(cat "$calls")"; fi
+grep -qxF "home run --class long --priority normal --max-wait 3600 --keep-env GIT_CONFIG_COUNT --who check-fast:$who -- $L --queued-by-bq --base HEAD" "$calls" ||
+    fail "(3) the nested call of another class did not queue as class long: $(cat "$calls")"
+echo "ok: (3) nested in the same class runs in place once, in another class queues in its own slot; neither loops"
 
-# (4) BQ_SLOT set by hand: a dead holder, then a live process that is not an ancestor. Both still queue.
+# (4) hand-set BQ_SLOT / BQ_SLOT_PID / BQ_PRIORITY decide nothing: a dead holder, a live non-ancestor, no holder.
 dead=$(sh -c 'echo $$')
-launch dead "$tmp/base" "$home" BQ_SLOT=short-0 "BQ_SLOT_PID=$dead" -- "$launcher" --base HEAD
+launch dead home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$dead" -- "$L" --base HEAD
 ran_ok dead
-[ "$(ncalls "$calls")" = 1 ] || fail "(4) BQ_SLOT with a dead BQ_SLOT_PID did not queue exactly once: $(cat "$calls")"
+[ "$(grep -c '^home run ' "$calls")" = 1 ] || fail "(4) BQ_SLOT with a dead holder: $(cat "$calls")"
+if grep -q in-place "$calls"; then fail "(4) a dead holder ran in place: $(cat "$calls")"; fi
 sleep 60 &
 sleeper=$!
-launch alive "$tmp/base" "$home" BQ_SLOT=short-0 "BQ_SLOT_PID=$sleeper" -- "$launcher" --base HEAD
+launch alive home "$tmp/base" BQ_SLOT=long-0 "BQ_SLOT_PID=$sleeper" -- "$L" --base HEAD
 ran_ok alive
-[ "$(ncalls "$calls")" = 1 ] || fail "(4) BQ_SLOT naming a live non-ancestor did not queue exactly once: $(cat "$calls")"
-launch noslotpid "$tmp/base" "$home" BQ_SLOT=short-0 -- "$launcher" --base HEAD
+[ "$(grep -c '^home run ' "$calls")" = 1 ] || fail "(4) BQ_SLOT naming a live non-ancestor: $(cat "$calls")"
+if grep -q in-place "$calls"; then fail "(4) a live non-ancestor ran in place: $(cat "$calls")"; fi
+launch noslotpid home "$tmp/base" BQ_SLOT=long-0 -- "$L" --base HEAD
 ran_ok noslotpid
-[ "$(ncalls "$calls")" = 1 ] || fail "(4) BQ_SLOT alone did not queue exactly once: $(cat "$calls")"
-launch prio "$tmp/base" "$home" BQ_PRIORITY=gate -- "$launcher" --base HEAD
+[ "$(grep -c '^home run ' "$calls")" = 1 ] || fail "(4) BQ_SLOT alone: $(cat "$calls")"
+launch prio home "$tmp/base" BQ_PRIORITY=gate -- "$L" --base HEAD
 ran_ok prio
-[ "$(ncalls "$calls")" = 1 ] || fail "(4) BQ_PRIORITY must not skip the queue: $(cat "$calls")"
-echo "ok: (4) a hand-set BQ_SLOT (dead holder, live non-ancestor, no holder), or BQ_PRIORITY, still queues"
+grep -qF -- "--priority normal --max-wait 3600 --keep-env" "$calls" || fail "(4) BQ_PRIORITY changed the call: $(cat "$calls")"
+echo "ok: (4) a hand-set BQ_SLOT (dead holder, live non-ancestor, no holder) or BQ_PRIORITY changes nothing: still one queued call"
 
 # (5) no bq anywhere: runs directly, and the first line of output says so.
-launch none "$tmp/base" "$tmp/nohome" -- bash -c '"$@" 2>&1' sh "$launcher" --base HEAD
+L2=$(launcher_for nohome)
+launch none nohome "$tmp/base" -- bash -c '"$@" 2>&1' sh "$L2" --base HEAD
 ran_ok none
 [ "$(ncalls "$calls")" = 0 ] || fail "(5) no queue exists, yet it was called: $(cat "$calls")"
 first=$(head -n 1 "$out")
 [ "$first" = "check-fast: no bq on this host; running without the queue" ] || fail "(5) the first line of output is: $first"
 echo "ok: (5) without any bq the check runs directly and its first line says so"
 
-# (6) the other program called bq, on PATH, with none in HOME: not taken, and the same line.
-launch gcloud "$tmp/gcloud:$tmp/base" "$tmp/nohome" -- bash -c '"$@" 2>&1' sh "$launcher" --base HEAD
+# (6) the other program called bq, on PATH, with none in the home: not taken, and the same line.
+launch gcloud nohome "$tmp/gcloud:$tmp/base" -- bash -c '"$@" 2>&1' sh "$L2" --base HEAD
 ran_ok gcloud
 head -n 1 "$out" | grep -qF "no bq on this host" || fail "(6) a bq that is not ours was taken: $(cat "$out")"
 if grep -qF "active account" "$out"; then fail "(6) the other bq's error reached the reader: $(cat "$out")"; fi
 echo "ok: (6) a bq on PATH that is not our queue is not taken"
 
-# (7) $HOME/.local/bin/bq exists and is not ours: the check fails with a message and runs nothing, never a direct run.
-mkdir -p "$tmp/badhome/.local/bin"
-cp "$tmp/gcloud/bq" "$tmp/badhome/.local/bin/bq"
-launch badhome "$tmp/pathbq:$tmp/base" "$tmp/badhome" -- "$launcher" --base HEAD
-[ "$rc" -ne 0 ] || fail "(7) a bq in HOME that is not ours let the check run: $(cat "$out") $(cat "$err")"
-if grep -qF "stub-ran" "$out"; then fail "(7) the check ran: $(cat "$out")"; fi
+# (7) the home's bq exists and is not ours: exit 2, a message, nothing runs, never a direct run.
+launch badhome badhome "$tmp/pathbq:$tmp/base" -- "$(launcher_for badhome)" --base HEAD
+refused badhome
 [ "$(ncalls "$calls")" = 0 ] || fail "(7) a queue was called: $(cat "$calls")"
 grep -qF "not our build queue" "$err" || fail "(7) the refusal does not say why: $(cat "$err")"
-echo "ok: (7) a \$HOME/.local/bin/bq that is not ours fails the check and runs nothing"
+echo "ok: (7) a home bq that is not ours fails the check with exit 2 and runs nothing"
 
-# (8) an ours-looking bq first on PATH does not displace $HOME/.local/bin/bq.
-launch pathfirst "$tmp/pathbq:$tmp/base" "$home" -- "$launcher" --base HEAD
+# (8) an ours-looking bq first on PATH does not displace the home's.
+launch pathfirst home "$tmp/pathbq:$tmp/base" -- "$L" --base HEAD
 ran_ok pathfirst
-[ "$(ncalls "$calls")" = 1 ] || fail "(8) expected exactly one queue call: $(cat "$calls")"
-grep -q "^home " "$calls" || fail "(8) the bq in HOME was not the one used: $(cat "$calls")"
-# and a PATH bq is used when HOME has none
-launch pathonly "$tmp/pathbq:$tmp/base" "$tmp/nohome" -- "$launcher" --base HEAD
+grep -q "^home run " "$calls" || fail "(8) the bq in the home was not used: $(cat "$calls")"
+if grep -q "^path " "$calls"; then fail "(8) the bq on PATH was used as well: $(cat "$calls")"; fi
+launch pathonly pathhome "$tmp/pathbq:$tmp/base" -- "$(launcher_for pathhome)" --base HEAD
 ran_ok pathonly
-grep -q "^path " "$calls" || fail "(8) with no bq in HOME the one on PATH is used: $(cat "$calls")"
-echo "ok: (8) \$HOME/.local/bin/bq comes first; a bq on PATH only when HOME has none"
+grep -q "^path run " "$calls" || fail "(8) with no bq in the home the one on PATH is used: $(cat "$calls")"
+echo "ok: (8) the home's bq comes first; a bq on PATH only when the home has none"
 
-# (9) LUCINA_BQ is not read: pointing it at an ours-looking program neither supplies a queue nor skips the real one.
-mkdir -p "$tmp/other"
+# (9) LUCINA_BQ is not read: it neither supplies a queue nor displaces the real one.
 make_stub "$tmp/other/bq" other
-launch envbq "$tmp/base" "$tmp/nohome" LUCINA_BQ="$tmp/other/bq" -- bash -c '"$@" 2>&1' sh "$launcher" --base HEAD
+launch envbq nohome "$tmp/base" LUCINA_BQ="$tmp/other/bq" -- bash -c '"$@" 2>&1' sh "$L2" --base HEAD
 ran_ok envbq
 [ "$(ncalls "$calls")" = 0 ] || fail "(9) LUCINA_BQ supplied a queue: $(cat "$calls")"
-launch envbq2 "$tmp/base" "$home" LUCINA_BQ="$tmp/other/bq" -- "$launcher" --base HEAD
+launch envbq2 home "$tmp/base" LUCINA_BQ="$tmp/other/bq" -- "$L" --base HEAD
 ran_ok envbq2
-grep -q "^home " "$calls" || fail "(9) LUCINA_BQ displaced the queue in HOME: $(cat "$calls")"
+grep -q "^home run " "$calls" || fail "(9) the queue in the home was not used: $(cat "$calls")"
+if grep -q "^other " "$calls"; then fail "(9) LUCINA_BQ displaced the queue in the home: $(cat "$calls")"; fi
 echo "ok: (9) LUCINA_BQ is not read"
+
+# (10) $HOME decides nothing: a HOME with no bq, no HOME at all, and a HOME with a bq of its own that is not the passwd home's.
+launch homeenv home "$tmp/base" "HOME=$tmp/nohome" -- "$L" --base HEAD
+ran_ok homeenv
+grep -q "^home run " "$calls" || fail "(10) HOME=<dir without bq> skipped the queue: $(cat "$calls")"
+launch nohomeenv home "$tmp/base" -- env -u HOME "$L" --base HEAD
+ran_ok nohomeenv
+grep -q "^home run " "$calls" || fail "(10) an unset HOME skipped the queue: $(cat "$calls")"
+launch homeother nohome "$tmp/base" "HOME=$tmp/home" -- bash -c '"$@" 2>&1' sh "$L2" --base HEAD
+ran_ok homeother
+[ "$(ncalls "$calls")" = 0 ] || fail "(10) HOME named a queue: $(cat "$calls")"
+echo "ok: (10) \$HOME decides nothing: the passwd home's bq is the one looked up"
+
+# (11) a passwd home that cannot be resolved (empty, or not a directory) is a refusal with exit 2.
+make_launcher "" "$tmp/pl-empty/$who"
+make_launcher "$tmp/does-not-exist" "$tmp/pl-gone/$who"
+for h in empty gone; do
+    launch "res-$h" home "$tmp/base" -- "$(launcher_for "$h")" --base HEAD
+    refused "res-$h"
+    [ "$(ncalls "$calls")" = 0 ] || fail "(11) a queue was called: $(cat "$calls")"
+    grep -qF "cannot resolve the home directory" "$err" || fail "(11) the refusal does not say why: $(cat "$err")"
+done
+echo "ok: (11) an unresolvable passwd home is a refusal with exit 2"
 
 echo "check-fast-queue-test: pass"
