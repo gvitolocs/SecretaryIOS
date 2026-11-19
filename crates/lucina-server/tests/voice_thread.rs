@@ -477,25 +477,28 @@ async fn a_fast_spoken_owner_turn_keeps_exactly_one_sample() {
 
 #[tokio::test]
 async fn a_spoken_turn_answered_by_the_building_keeps_one_sample() {
-    // "chat" is not one of the fast intents: the context building answers and only `classify` can keep
-    // the line. One, not two: the route that did not answer must not add its own.
-    let jev = Fake::new().intent("ciao", "chat", 0.95);
+    // Jev's intent is not one of the quick commands, so the context building answers the turn and only
+    // `classify` can keep its line. One line, not two: the route that read the same verdict adds none.
+    let jev = Fake::new().intent("che ore sono?", "chat", 0.95);
     let server = fake_jev(&jev).await;
     let h = harness(chat_script(), with_jev(&server)).await;
-    let s = stream(&h, voice_body("ciao")).await;
-    let route = s.find("route");
+    let s = stream(&h, voice_body("che ore sono?")).await;
+    // The model's canned answer of the script, not a spoken template: this turn went the normal way.
     assert_eq!(
-        route["fast"].as_bool(),
-        Some(false),
-        "the route says {route}"
+        s.find("reply")["text"],
+        REPLY,
+        "a quick command answered this turn; the route says {}",
+        s.find("route")
     );
     let rows = sample_rows(&h.dir.path().join("jev-cal"), "the spoken turn").await;
     assert_eq!(
         rows.len(),
         1,
-        "the building and the route kept the same turn twice: {rows:?}"
+        "one turn kept {} lines, and both paths read the same verdict: {rows:?}",
+        rows.len()
     );
-    assert_eq!(rows[0]["message"], "ciao");
+    assert_eq!(rows[0]["message"], "che ore sono?");
+    assert_eq!(rows[0]["intent"], "chat");
 }
 
 #[tokio::test]
@@ -510,7 +513,11 @@ async fn an_agents_turn_through_mcp_keeps_no_sample() {
     let (status, _) = h
         .post(
             "/chat",
-            json!({"message": "dimmi che ore sono", "sessionId": "mcp-grok-coordinator", "channel": "ios"}),
+            json!({
+                "message": "dimmi che ore sono",
+                "sessionId": "mcp-grok-coordinator",
+                "channel": "ios",
+            }),
         )
         .await;
     assert!(
@@ -531,7 +538,8 @@ async fn an_agents_turn_through_mcp_keeps_no_sample() {
 
 #[test]
 fn only_the_owners_own_turns_are_kept_as_samples() {
-    use lucina_memory::{OwnerIds, TurnFacts, TurnSurface};
+    use lucina_memory::surface::OwnerIds;
+    use lucina_memory::{TurnFacts, TurnSurface};
     let owner = OwnerIds::default();
     let own = TurnSurface::classify(&TurnFacts::secretary("ios", true, None), &owner);
     assert!(lucina_server::context::sample_turn(&own, "secretary_app"));
