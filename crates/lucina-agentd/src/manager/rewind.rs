@@ -200,6 +200,8 @@ impl Manager {
             idempotency_key: req.idempotency_key,
             allow_main_checkout: req.allow_main_checkout && caller.is_owner(),
             seed_context: Some(context.attachment.text.clone()),
+            // A fork counts toward the caps like a create, for whoever asked for it.
+            created_by: Some(caller.origin()),
             ..CreateRequest::default()
         };
         self.prepare_create(caller, &mut create)?;

@@ -14,7 +14,8 @@
 //!    warning with the stable message `provider breaker tripped` (agentd has no ops-record
 //!    helper).
 //! 3. **Create caps** ([`CapsConfig`]): counted are only agents made through
-//!    [`Manager::create`] by the create route (`CreateRequest::created_by` set by the API)
+//!    [`Manager::create`] with a caller (`CreateRequest::created_by`: set by the create route, by
+//!    a fork for the forking caller, and by a schedule fire for the schedule's owner)
 //!    for which agentd spawns a provider process. NOT counted: worker runs of
 //!    `lagent work start` (lane's own pool is their limit), merge and deploy jobs (the
 //!    pipeline's `lagent-job` units), `claude-session` and other external agents (nothing
@@ -145,12 +146,14 @@ impl Drop for Slot {
     }
 }
 
-/// An agent that counts toward the caps: live (starting, running or idle) and a provider
-/// process agentd spawns.
+/// An agent that counts toward the caps: live (starting, running or idle), a provider process
+/// agentd spawns, and made for a caller (it carries [`CALLER_LABEL`], which only `create` with
+/// `created_by` sets). A hand-off continuation carries none, so it never counts.
 fn counts(a: &Agent) -> bool {
     let r = &a.record;
     !r.internal
         && !r.external
+        && r.labels.contains_key(CALLER_LABEL)
         && r.archived_at.is_none()
         && !ext::is_session(&r.provider)
         && r.provider != ext::PROVIDER

@@ -665,11 +665,18 @@ impl Manager {
             labels,
             mode_id: config.mode_id.clone(),
             thinking_option_id: config.thinking_option_id.clone(),
+            // A fire counts toward the host cap and its owner's per-caller cap.
+            created_by: Some(s.created_by.clone()),
             ..CreateRequest::default()
         };
         let archive = config.archive_on_finish.unwrap_or(true);
         let result = match self.create(req).await {
-            Err(e) => Err(fail(None, e.to_string())),
+            Err(e) => {
+                if matches!(e, ManagerError::TooManyAgents(_) | ManagerError::ProviderUnavailable(_)) {
+                    tracing::warn!(schedule = %s.id, run = run_id, reason = %e, "scheduled run skipped");
+                }
+                Err(fail(None, e.to_string()))
+            }
             Ok(snap) => {
                 let id = snap.id.clone();
                 let _ = self.update_schedule(&s.id, |sched| {
