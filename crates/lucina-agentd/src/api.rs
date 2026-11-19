@@ -131,6 +131,8 @@ impl From<ManagerError> for ApiError {
             ManagerError::CodexNotAllowed(_) => StatusCode::FORBIDDEN,
             ManagerError::JunoToolRefused(_) => StatusCode::FORBIDDEN,
             ManagerError::WorkNotFound(_) | ManagerError::IdNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::TooManyAgents(_) => StatusCode::TOO_MANY_REQUESTS,
+            ManagerError::ProviderUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -162,6 +164,7 @@ pub fn router(manager: Manager) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/providers", get(providers))
+        .route("/providers/{id}/clear", post(clear_provider))
         .route("/agents", get(list).post(create))
         .route("/agents/items", get(items))
         .route("/agents/{id}", get(inspect).delete(delete).patch(rename))
@@ -214,6 +217,23 @@ async fn health() -> Json<Value> {
 
 async fn providers(State(m): State<Manager>) -> ApiResult {
     to_json(m.providers())
+}
+
+/// `POST /providers/{id}/clear` (`lagent providers clear <provider>`): the owner lets agents start
+/// for a provider whose breaker tripped (see `manager/breaker.rs`).
+async fn clear_provider(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    if !who(&m, &peer, &headers).is_owner() {
+        return Err(
+            ManagerError::Forbidden("Only the owner clears a provider's breaker".into()).into(),
+        );
+    }
+    let cleared = m.clear_provider(&id);
+    to_json(json!({"provider": id, "cleared": cleared}))
 }
 
 #[derive(Deserialize, Default)]
@@ -273,6 +293,8 @@ async fn create(
     }
     req.prompt = req.prompt.map(quote);
     let caller = who(&m, &peer, &headers);
+    // The create caps count by this identity; never from the body.
+    req.created_by = Some(caller.origin());
     let notify = m.prepare_create(&caller, &mut req)? && notify_on_finish.unwrap_or(true);
     let prompted = req.prompt.as_deref().is_some_and(|p| !p.trim().is_empty());
     let snap = m.create(req).await?;

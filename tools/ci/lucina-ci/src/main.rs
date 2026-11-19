@@ -7,6 +7,7 @@
 //!   lucina-ci gate --plan F --reports D        every planned unit verified on this commit?
 //!   lucina-ci merge-check ...                  the lagent merge gate: did GitHub verify this commit?
 
+mod budget;
 mod fast;
 mod inventory;
 mod runner;
@@ -741,6 +742,7 @@ fn main() -> ExitCode {
         "portable-workspace" => cmd_portable_workspace(&a),
         "snapshot" => cmd_snapshot(&a),
         "check-fast" => cmd_check_fast(&a),
+        "merge-gate-budget" => budget::cmd_merge_gate_budget(),
         "perf" => cmd_perf(&a),
         "__alloc" => cmd_alloc(&a),
         _ => Err(format!("unknown command {cmd}")),
@@ -845,6 +847,16 @@ const MERGE_STEP_LIMITS: &[(&str, u64)] = &[
 ];
 /// The limit of a step named in no table and no override.
 const MERGE_STEP_LIMIT_DEFAULT: u64 = 180;
+/// The own timeouts, in seconds, of the steps `cmd_check_fast` builds itself (the cargo steps have theirs in `fast::cargo_steps`).
+/// They are constants, and not literals at the call sites, so that `budget::merge_gate_worst_case_secs` adds up the very numbers
+/// the steps run under (GATE-19).
+const DIFFGATE_STEP_TIMEOUT_S: u64 = 60;
+const SHELLCHECK_STEP_TIMEOUT_S: u64 = 30;
+const ACTIONLINT_STEP_TIMEOUT_S: u64 = 30;
+const SECRETS_STEP_TIMEOUT_S: u64 = 60;
+const INVENTORY_STEP_TIMEOUT_S: u64 = 30;
+/// `merge-gate-budget`, run when a change edits `.lucina/pipeline.toml` (`budget::pipeline_changed`).
+const MERGE_GATE_BUDGET_STEP_TIMEOUT_S: u64 = 30;
 /// A step that used more than this share of its limit prints `near-limit`, so the next raise of a number comes from a line in
 /// the log rather than from a merge that failed.
 const MERGE_NEAR_LIMIT_SHARE: f64 = 0.8;
@@ -898,8 +910,8 @@ impl MergeCaps {
 }
 
 /// The merge-gate limit of one step: what `LUCINA_CHECK_FAST_MERGE_CAP_S` says, else the table, else 180.
-/// The clock is the step's OWN run time: `scripts/check-fast` takes its queue slot (`bq run --class short --max-wait ...`) before
-/// this binary starts, so a step's limit starts after the wait.
+/// The clock is the step's OWN run time: `scripts/check-fast` re-runs itself as ONE `bq run --class long --max-wait 3600` job and takes its
+/// slot before this binary starts, so a step's limit starts after the wait.
 fn merge_step_limit(name: &str) -> u64 {
     MergeCaps::from_env().limit_of(name, merge_step_cap())
 }
@@ -1776,7 +1788,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 "diffgate",
                 &format!("echo {} >&2; exit 1", shell_quote(&m)),
                 "script",
-                60,
+                DIFFGATE_STEP_TIMEOUT_S,
                 &none,
                 &[],
                 &mut failed,
@@ -1792,7 +1804,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 "diffgate",
                 &diffgate_command(&base, &allows),
                 "script",
-                60,
+                DIFFGATE_STEP_TIMEOUT_S,
                 &none,
                 &waived,
                 &mut failed,
@@ -1809,6 +1821,16 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         .iter()
         .filter_map(|p| fast::owner_of(&root, &members, p))
         .collect();
+    let standalone = owners
+        .iter()
+        .filter(|o| matches!(o, fast::Owner::Standalone(_)))
+        .count();
+    if merge_gate && standalone > budget::ASSUMED_STANDALONE_CRATES {
+        println!(
+            "check-fast: this change touches {standalone} standalone crates; the merge-gate budget (`lucina-ci merge-gate-budget`, outer limit timeout_min in .lucina/pipeline.toml) assumes {}, so the gate may be killed by the outer limit",
+            budget::ASSUMED_STANDALONE_CRATES
+        );
+    }
     for o in &owners {
         if let fast::Owner::Other(d) = o {
             skipped.push(format!(
@@ -1834,7 +1856,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
                 "shellcheck",
                 &format!("shellcheck -S error {}", sh.join(" ")),
                 "script",
-                30,
+                SHELLCHECK_STEP_TIMEOUT_S,
                 &none,
                 &[],
                 &mut failed,
@@ -1848,7 +1870,7 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             "actionlint",
             "actionlint -color=false .github/workflows/*.yml",
             "script",
-            30,
+            ACTIONLINT_STEP_TIMEOUT_S,
             &none,
             &[],
             &mut failed,
@@ -1870,19 +1892,39 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             let cmd = format!(
                 "for f in {list}; do gitleaks dir --no-banner --redact {config} \"$f\" || exit 1; done"
             );
-            step("secrets", &cmd, "script", 60, &none, &[], &mut failed)?;
+            step(
+                "secrets",
+                &cmd,
+                "script",
+                SECRETS_STEP_TIMEOUT_S,
+                &none,
+                &[],
+                &mut failed,
+            )?;
         }
     } else {
         skipped.push("secret scan: gitleaks not installed here".into());
     }
 
+    // A merge that edits the pipeline file is checked against the budget the gate's outer limit must hold (GATE-19).
+    if merge_gate && budget::pipeline_changed(&changed) {
+        step(
+            "merge-gate-budget",
+            &format!("{exe} merge-gate-budget"),
+            "script",
+            MERGE_GATE_BUDGET_STEP_TIMEOUT_S,
+            &none,
+            &[],
+            &mut failed,
+        )?;
+    }
     // The proofs the change reaches. Inventory first: a new proof must be listed.
     if root.join(inventory::INVENTORY).exists() {
         step(
             "inventory",
             &format!("{exe} inventory --check"),
             "script",
-            30,
+            INVENTORY_STEP_TIMEOUT_S,
             &none,
             &[],
             &mut failed,

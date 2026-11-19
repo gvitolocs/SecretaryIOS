@@ -101,6 +101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pipeline: lucina_agentd::pipeline::Config::from_env(&state_dir),
         devices: lucina_agentd::devices::Config::from_env(&state_dir),
         work: lucina_agentd::manager::WorkConfig::from_env(&state_dir),
+        caps: lucina_agentd::manager::CapsConfig::from_env(),
+        breaker_file: Some(state_dir.join("provider-breaker.json")),
     };
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();

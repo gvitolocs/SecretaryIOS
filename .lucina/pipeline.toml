@@ -30,13 +30,16 @@ paths = []
 run = "bash scripts/gate-github-checks.sh"
 timeout_min = 5
 
-# The fast local check on the merged result: only what the change touched, capped (docs/ci/SHIFT-LEFT.md). The queue is shared,
-# so a step is capped at 180 s at the merge, and a step past its limit FAILS the merge (it is never skipped).
+# The fast local check on the merged result: only what the change touched, capped (docs/ci/SHIFT-LEFT.md). Every step has its own
+# limit at the merge (180 s unless a table in tools/ci/lucina-ci names more; the unit-tests build gets 20 minutes), and a step past
+# its limit FAILS the merge (it is never skipped). timeout_min is the limit of the whole run and must hold all those limits added
+# up, plus the wait for the build queue and a margin: `lucina-ci merge-gate-budget` prints the sum, and a test in lucina-ci fails
+# when this number is below it. Raise it only together with the step limits.
 [[gate]]
 name = "fast local check"
 paths = []
 run = "bash scripts/check-fast --base HEAD^1 --merge-gate"
-timeout_min = 12
+timeout_min = 70
 
 # The deploy scripts' own tests (deploy/**/test-*.sh): a stub systemctl and curl, nothing installed,
 # started or stopped. check-fast shellchecks those files but runs no test, so without this a watchdog

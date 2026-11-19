@@ -117,6 +117,10 @@ pub fn spawn_daemon(dir: &Path) -> Guard {
 pub fn spawn_daemon_env(dir: &Path, env: &[(&str, String)]) -> Guard {
     let socket = dir.join("agentd.sock");
     let child = Command::new(AGENTD)
+        // The caps are the defaults, whatever the developer's shell exports.
+        .env_remove("LUCINA_AGENTD_MAX_AGENTS_PER_CALLER")
+        .env_remove("LUCINA_AGENTD_MAX_CREATES_PER_MINUTE")
+        .env_remove("LUCINA_AGENTD_MAX_AGENTS_HOST")
         .envs(env.iter().map(|(k, v)| (k.to_string(), v.clone())))
         .args([
             "--state-dir",

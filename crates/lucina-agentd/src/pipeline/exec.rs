@@ -46,6 +46,7 @@ pub fn run(dir: &Path) -> i32 {
             return 2;
         }
     };
+    x.announce_agentd();
     let outcome = x.job();
     x.say(&format!("{}: {}", outcome.code, outcome.message));
     let ok = outcome.ok;
@@ -237,6 +238,16 @@ impl Exec {
         }
         self.waivers = Some(path.clone());
         path
+    }
+
+    /// PIPE-05: agentd identity, read once for the whole job, and the one line the job log gets of it.
+    fn announce_agentd(&mut self) {
+        let (mut env, _) = self.built_env();
+        env.push((OsString::from("PATH"), self.path.clone().into()));
+        let ctl = self.resolve("systemctl");
+        for line in kill::announce_agentd(ctl.as_deref(), &env) {
+            self.say(&line);
+        }
     }
 
     /// Finish cleanup while the executor still holds the job's flock, regardless of outcome.

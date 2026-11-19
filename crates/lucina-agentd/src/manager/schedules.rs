@@ -27,7 +27,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use lucina_agents::envelope;
-use lucina_agents::schedule::{Cadence, Isolation, NewAgentConfig, RunStatus, Schedule, ScheduleStatus, Target};
+use lucina_agents::schedule::{
+    Cadence, Isolation, NewAgentConfig, RunStatus, Schedule, ScheduleStatus, Target,
+};
 use lucina_agents::worktree_guard::Trigger;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -107,14 +109,20 @@ fn invalid(m: impl Into<String>) -> ManagerError {
 }
 
 fn trim_name(v: Option<&str>) -> Option<String> {
-    v.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    v.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 impl Manager {
     // -- storage ------------------------------------------------------------------
 
     fn sched_lock(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.inner.orch.schedule_lock.lock().unwrap_or_else(|p| p.into_inner())
+        self.inner
+            .orch
+            .schedule_lock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
     }
 
     fn put_schedule(&self, s: &Schedule) -> Result<(), ManagerError> {
@@ -135,7 +143,14 @@ impl Manager {
         let json: Option<String> = self
             .inner
             .store
-            .with_db(|db| db.query_row("SELECT record FROM schedules WHERE id = ?1", params![id], |r| r.get(0)).optional())
+            .with_db(|db| {
+                db.query_row(
+                    "SELECT record FROM schedules WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
             .ok()
             .flatten();
         json.and_then(|j| serde_json::from_str(&j).ok())
@@ -156,11 +171,16 @@ impl Manager {
     }
 
     pub fn schedule(&self, id: &str) -> Result<Schedule, ManagerError> {
-        self.get_schedule(id).ok_or_else(|| ManagerError::ScheduleNotFound(format!("Schedule not found: {id}")))
+        self.get_schedule(id)
+            .ok_or_else(|| ManagerError::ScheduleNotFound(format!("Schedule not found: {id}")))
     }
 
     /// Read, change and write one schedule under the schedule lock.
-    fn update_schedule<T>(&self, id: &str, f: impl FnOnce(&mut Schedule) -> Result<T, ManagerError>) -> Result<(Schedule, T), ManagerError> {
+    fn update_schedule<T>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut Schedule) -> Result<T, ManagerError>,
+    ) -> Result<(Schedule, T), ManagerError> {
         let _g = self.sched_lock();
         let mut s = self.schedule(id)?;
         let out = f(&mut s)?;
@@ -195,10 +215,18 @@ impl Manager {
             (Some(c), None, None) => c.clone(),
             (None, Some(expr), None) => Cadence::Cron {
                 expression: expr.trim().to_string(),
-                timezone: Some(input.timezone.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(owner_timezone)),
+                timezone: Some(
+                    input
+                        .timezone
+                        .clone()
+                        .filter(|t| !t.trim().is_empty())
+                        .unwrap_or_else(owner_timezone),
+                ),
             },
             (None, None, Some(ms)) => Cadence::Every { every_ms: ms },
-            (None, None, None) => return Err(invalid("A schedule needs `cron`, `everyMs` or `cadence`")),
+            (None, None, None) => {
+                return Err(invalid("A schedule needs `cron`, `everyMs` or `cadence`"))
+            }
             _ => return Err(invalid("Give only one of `cron`, `everyMs` and `cadence`")),
         };
         calc::validate(&cadence).map_err(ManagerError::Invalid)?;
@@ -208,15 +236,28 @@ impl Manager {
     fn target_of(&self, caller: &Caller, input: &ScheduleInput) -> Result<Target, ManagerError> {
         let target = match (&input.target, &input.agent_id, &input.provider) {
             (Some(t), None, None) => t.clone(),
-            (None, Some(a), None) => Target::Agent { agent_id: a.clone() },
+            (None, Some(a), None) => Target::Agent {
+                agent_id: a.clone(),
+            },
             (None, None, Some(p)) => {
                 let (cwd, workspace_id) = match (&input.cwd, &input.workspace_id) {
                     (_, Some(w)) => {
-                        let ws = self.inner.workspaces.get(w).filter(|w| w.archived_at.is_none()).ok_or_else(|| ManagerError::Workspace(crate::workspaces::WsError::NotFound(format!("Workspace not found: {w}"))))?;
+                        let ws = self
+                            .inner
+                            .workspaces
+                            .get(w)
+                            .filter(|w| w.archived_at.is_none())
+                            .ok_or_else(|| {
+                                ManagerError::Workspace(crate::workspaces::WsError::NotFound(
+                                    format!("Workspace not found: {w}"),
+                                ))
+                            })?;
                         (ws.cwd, Some(w.clone()))
                     }
                     (Some(c), None) => (c.clone(), None),
-                    (None, None) => return Err(invalid("A new-agent schedule needs `cwd` or `workspaceId`")),
+                    (None, None) => {
+                        return Err(invalid("A new-agent schedule needs `cwd` or `workspaceId`"))
+                    }
                 };
                 let (provider, model) = super::split_provider(p, input.model.clone());
                 Target::NewAgent {
@@ -233,17 +274,27 @@ impl Manager {
                     },
                 }
             }
-            (None, None, None) => return Err(invalid("A schedule needs a `target`, an `agentId` (heartbeat) or a `provider` (new agent)")),
-            _ => return Err(invalid("Give only one of `target`, `agentId` and `provider`")),
+            (None, None, None) => return Err(invalid(
+                "A schedule needs a `target`, an `agentId` (heartbeat) or a `provider` (new agent)",
+            )),
+            _ => {
+                return Err(invalid(
+                    "Give only one of `target`, `agentId` and `provider`",
+                ))
+            }
         };
         match (&target, caller) {
-            (Target::Agent { agent_id }, Caller::Agent(me)) if agent_id != me => {
-                Err(ManagerError::ScheduleForbidden("An agent can only give itself heartbeats".into()))
-            }
-            (Target::Agent { .. }, Caller::Mcp(_)) => Err(ManagerError::ScheduleForbidden("Heartbeats are set by the agent itself or the owner".into())),
+            (Target::Agent { agent_id }, Caller::Agent(me)) if agent_id != me => Err(
+                ManagerError::ScheduleForbidden("An agent can only give itself heartbeats".into()),
+            ),
+            (Target::Agent { .. }, Caller::Mcp(_)) => Err(ManagerError::ScheduleForbidden(
+                "Heartbeats are set by the agent itself or the owner".into(),
+            )),
             (Target::Agent { agent_id }, _) => {
                 let agents = self.lock();
-                let a = agents.get(agent_id).ok_or_else(|| ManagerError::NotFound(agent_id.clone()))?;
+                let a = agents
+                    .get(agent_id)
+                    .ok_or_else(|| ManagerError::NotFound(agent_id.clone()))?;
                 if a.record.archived_at.is_some() {
                     return Err(invalid(format!("Agent {agent_id} is archived")));
                 }
@@ -259,16 +310,32 @@ impl Manager {
     }
 
     /// Supervision and labels for what a non-owner caller schedules.
-    fn supervise_schedule(&self, caller: &Caller, target: &mut Target, labels: &mut BTreeMap<String, String>) -> Result<(), ManagerError> {
+    fn supervise_schedule(
+        &self,
+        caller: &Caller,
+        target: &mut Target,
+        labels: &mut BTreeMap<String, String>,
+    ) -> Result<(), ManagerError> {
         if caller.is_owner() {
             return Ok(());
         }
         if let Caller::Agent(me) = caller {
             labels.retain(|k, _| !k.starts_with("lucina.") && !k.starts_with("paseo."));
             if let Target::NewAgent { .. } = target {
-                let depth = self.lock().get(me).and_then(|a| a.record.labels.get(DEPTH_LABEL).and_then(|d| d.parse::<u32>().ok())).unwrap_or(0);
+                let depth = self
+                    .lock()
+                    .get(me)
+                    .and_then(|a| {
+                        a.record
+                            .labels
+                            .get(DEPTH_LABEL)
+                            .and_then(|d| d.parse::<u32>().ok())
+                    })
+                    .unwrap_or(0);
                 if depth >= MAX_DEPTH {
-                    return Err(ManagerError::DelegationDepth("Subagents can't schedule new agents".into()));
+                    return Err(ManagerError::DelegationDepth(
+                        "Subagents can't schedule new agents".into(),
+                    ));
                 }
                 labels.insert(DEPTH_LABEL.into(), (depth + 1).to_string());
                 labels.insert(ORIGIN_LABEL.into(), format!("agent:{me}"));
@@ -286,9 +353,15 @@ impl Manager {
 
     /// Paseo `create` / `createOrReplace`: a named schedule from the same creator with
     /// the same target is refreshed in place instead of duplicated.
-    pub fn create_schedule(&self, caller: &Caller, input: ScheduleInput) -> Result<Schedule, ManagerError> {
+    pub fn create_schedule(
+        &self,
+        caller: &Caller,
+        input: ScheduleInput,
+    ) -> Result<Schedule, ManagerError> {
         if matches!(caller, Caller::Unknown) || *caller == Caller::Agent(String::new()) {
-            return Err(ManagerError::ScheduleForbidden("This caller can only read schedules".into()));
+            return Err(ManagerError::ScheduleForbidden(
+                "This caller can only read schedules".into(),
+            ));
         }
         let prompt = input.prompt.trim().to_string();
         if prompt.is_empty() {
@@ -303,24 +376,33 @@ impl Manager {
         self.supervise_schedule(caller, &mut target, &mut labels)?;
         let now = Utc::now();
         let expires_at = match (input.expires_at.as_deref(), input.expires_in_ms) {
-            (Some(e), _) => Some(iso(calc::parse_iso(e).ok_or_else(|| invalid(format!("Invalid expiresAt: {e}")))?)),
+            (Some(e), _) => Some(iso(
+                calc::parse_iso(e).ok_or_else(|| invalid(format!("Invalid expiresAt: {e}")))?
+            )),
             (None, Some(ms)) => Some(iso(now + chrono::Duration::milliseconds(ms as i64))),
             (None, None) => None,
         };
         let name = trim_name(input.name.as_deref().or(input.title.as_deref()));
-        let next = calc::first_run(&cadence, input.run_on_create, now).map_err(ManagerError::Invalid)?;
+        let next =
+            calc::first_run(&cadence, input.run_on_create, now).map_err(ManagerError::Invalid)?;
         let created_by = caller.origin();
         let _g = self.sched_lock();
         if let Some(n) = &name {
             let existing = self.schedules().into_iter().find(|s| {
-                s.status != ScheduleStatus::Completed && s.name.as_deref() == Some(n.as_str()) && s.target == target && s.created_by == created_by
+                s.status != ScheduleStatus::Completed
+                    && s.name.as_deref() == Some(n.as_str())
+                    && s.target == target
+                    && s.created_by == created_by
             });
             if let Some(mut s) = existing {
                 s.cadence = calc::merge_timezone(&s.cadence, cadence);
                 s.prompt = prompt;
                 s.status = ScheduleStatus::Active;
                 s.paused_at = None;
-                s.next_run_at = Some(calc::first_run(&s.cadence, input.run_on_create, now).map_err(ManagerError::Invalid)?);
+                s.next_run_at = Some(
+                    calc::first_run(&s.cadence, input.run_on_create, now)
+                        .map_err(ManagerError::Invalid)?,
+                );
                 s.expires_at = expires_at;
                 s.max_runs = input.max_runs;
                 s.labels.extend(labels);
@@ -353,12 +435,20 @@ impl Manager {
 
     pub fn pause_schedule(&self, caller: &Caller, id: &str) -> Result<Schedule, ManagerError> {
         self.check_own(caller, id)?;
-        Ok(self.update_schedule(id, |s| calc::pause(s, Utc::now()).map_err(ManagerError::ScheduleConflict))?.0)
+        Ok(self
+            .update_schedule(id, |s| {
+                calc::pause(s, Utc::now()).map_err(ManagerError::ScheduleConflict)
+            })?
+            .0)
     }
 
     pub fn resume_schedule(&self, caller: &Caller, id: &str) -> Result<Schedule, ManagerError> {
         self.check_own(caller, id)?;
-        Ok(self.update_schedule(id, |s| calc::resume(s, Utc::now()).map_err(ManagerError::ScheduleConflict))?.0)
+        Ok(self
+            .update_schedule(id, |s| {
+                calc::resume(s, Utc::now()).map_err(ManagerError::ScheduleConflict)
+            })?
+            .0)
     }
 
     pub fn delete_schedule(&self, caller: &Caller, id: &str) -> Result<(), ManagerError> {
@@ -374,9 +464,16 @@ impl Manager {
     /// Paseo `update`: `name` (null or "" clears), `prompt`, `cadence` / `cron` /
     /// `timezone` / `everyMs`, `maxRuns` (null clears), `expiresAt` (null clears),
     /// `newAgentConfig` (new-agent schedules only).
-    pub fn update_schedule_with(&self, caller: &Caller, id: &str, patch: &Value) -> Result<Schedule, ManagerError> {
+    pub fn update_schedule_with(
+        &self,
+        caller: &Caller,
+        id: &str,
+        patch: &Value,
+    ) -> Result<Schedule, ManagerError> {
         self.check_own(caller, id)?;
-        let patch = patch.as_object().ok_or_else(|| invalid("Expected a JSON object"))?;
+        let patch = patch
+            .as_object()
+            .ok_or_else(|| invalid("Expected a JSON object"))?;
         let mut target_patch = None;
         if let Some(cfg) = patch.get("newAgentConfig") {
             target_patch = Some(cfg.clone());
@@ -384,21 +481,39 @@ impl Manager {
         let (s, _) = self.update_schedule(id, |s| {
             let now = Utc::now();
             if let Some(p) = patch.get("prompt") {
-                let p = p.as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or_else(|| invalid("Schedule prompt is required"))?;
+                let p = p
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| invalid("Schedule prompt is required"))?;
                 s.prompt = p.to_string();
             }
             if let Some(n) = patch.get("name") {
                 s.name = trim_name(n.as_str());
             }
             let cadence = if let Some(c) = patch.get("cadence") {
-                Some(serde_json::from_value::<Cadence>(c.clone()).map_err(|e| invalid(format!("cadence: {e}")))?)
+                Some(
+                    serde_json::from_value::<Cadence>(c.clone())
+                        .map_err(|e| invalid(format!("cadence: {e}")))?,
+                )
             } else if let Some(expr) = patch.get("cron").and_then(Value::as_str) {
-                let tz = patch.get("timezone").and_then(Value::as_str).map(str::to_string);
-                Some(Cadence::Cron { expression: expr.trim().to_string(), timezone: tz })
+                let tz = patch
+                    .get("timezone")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Some(Cadence::Cron {
+                    expression: expr.trim().to_string(),
+                    timezone: tz,
+                })
             } else if let Some(ms) = patch.get("everyMs").and_then(Value::as_u64) {
                 Some(Cadence::Every { every_ms: ms })
-            } else if let (Some(tz), Cadence::Cron { expression, .. }) = (patch.get("timezone").and_then(Value::as_str), &s.cadence) {
-                Some(Cadence::Cron { expression: expression.clone(), timezone: Some(tz.to_string()) })
+            } else if let (Some(tz), Cadence::Cron { expression, .. }) =
+                (patch.get("timezone").and_then(Value::as_str), &s.cadence)
+            {
+                Some(Cadence::Cron {
+                    expression: expression.clone(),
+                    timezone: Some(tz.to_string()),
+                })
             } else {
                 None
             };
@@ -411,18 +526,28 @@ impl Manager {
             if let Some(m) = patch.get("maxRuns") {
                 s.max_runs = match m {
                     Value::Null => None,
-                    v => Some(v.as_u64().filter(|n| *n > 0 && *n <= u32::MAX as u64).ok_or_else(|| invalid("maxRuns must be a positive integer"))? as u32),
+                    v => Some(
+                        v.as_u64()
+                            .filter(|n| *n > 0 && *n <= u32::MAX as u64)
+                            .ok_or_else(|| invalid("maxRuns must be a positive integer"))?
+                            as u32,
+                    ),
                 };
             }
             if let Some(e) = patch.get("expiresAt") {
                 s.expires_at = match e {
                     Value::Null => None,
-                    v => Some(iso(v.as_str().and_then(calc::parse_iso).ok_or_else(|| invalid("Invalid expiresAt"))?)),
+                    v => Some(iso(v
+                        .as_str()
+                        .and_then(calc::parse_iso)
+                        .ok_or_else(|| invalid("Invalid expiresAt"))?)),
                 };
             }
             if let Some(cfg) = &target_patch {
                 let Target::NewAgent { config } = &mut s.target else {
-                    return Err(invalid("new-agent config updates are only valid for new-agent target schedules"));
+                    return Err(invalid(
+                        "new-agent config updates are only valid for new-agent target schedules",
+                    ));
                 };
                 apply_config(config, cfg)?;
             }
@@ -435,14 +560,17 @@ impl Manager {
             let mut t = s.target.clone();
             let mut labels = BTreeMap::new();
             if let Err(e) = self.supervise_schedule(caller, &mut t, &mut labels) {
-                let _ = self.update_schedule(id, |s| calc::pause(s, Utc::now()).map_err(ManagerError::ScheduleConflict));
+                let _ = self.update_schedule(id, |s| {
+                    calc::pause(s, Utc::now()).map_err(ManagerError::ScheduleConflict)
+                });
                 return Err(e);
             }
-            return Ok(self.update_schedule(id, |s| {
-                s.target = t;
-                Ok(())
-            })?
-            .0);
+            return Ok(self
+                .update_schedule(id, |s| {
+                    s.target = t;
+                    Ok(())
+                })?
+                .0);
         }
         Ok(s)
     }
@@ -450,14 +578,22 @@ impl Manager {
     // -- running ----------------------------------------------------------------------
 
     /// Paseo `runOnce`: one run now, the cadence untouched.
-    pub async fn run_schedule_once(&self, caller: &Caller, id: &str) -> Result<Schedule, ManagerError> {
+    pub async fn run_schedule_once(
+        &self,
+        caller: &Caller,
+        id: &str,
+    ) -> Result<Schedule, ManagerError> {
         self.check_own(caller, id)?;
         let s = self.schedule(id)?;
         if s.status == ScheduleStatus::Completed {
-            return Err(ManagerError::ScheduleConflict(format!("Schedule {id} is already completed")));
+            return Err(ManagerError::ScheduleConflict(format!(
+                "Schedule {id} is already completed"
+            )));
         }
         if !self.reserve_schedule(id) {
-            return Err(ManagerError::ScheduleConflict(format!("Schedule {id} is already running")));
+            return Err(ManagerError::ScheduleConflict(format!(
+                "Schedule {id} is already running"
+            )));
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         let started = self.update_schedule(id, |s| {
@@ -482,11 +618,21 @@ impl Manager {
     }
 
     fn reserve_schedule(&self, id: &str) -> bool {
-        self.inner.orch.running_schedules.lock().unwrap_or_else(|p| p.into_inner()).insert(id.to_string())
+        self.inner
+            .orch
+            .running_schedules
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.to_string())
     }
 
     fn release_schedule(&self, id: &str) {
-        self.inner.orch.running_schedules.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
+        self.inner
+            .orch
+            .running_schedules
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
     }
 
     /// One tick: complete what is due to complete, start what is due to run.
@@ -495,12 +641,22 @@ impl Manager {
             if s.status != ScheduleStatus::Active || s.next_run_at.is_none() {
                 continue;
             }
-            if self.inner.orch.running_schedules.lock().unwrap_or_else(|p| p.into_inner()).contains(&s.id) {
+            if self
+                .inner
+                .orch
+                .running_schedules
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&s.id)
+            {
                 continue;
             }
             // A heartbeat whose agent was archived or deleted ends (Paseo `completeForAgent`).
             if let Target::Agent { agent_id } = &s.target {
-                let gone = self.lock().get(agent_id).is_none_or(|a| a.record.archived_at.is_some());
+                let gone = self
+                    .lock()
+                    .get(agent_id)
+                    .is_none_or(|a| a.record.archived_at.is_some());
                 if gone {
                     let _ = self.update_schedule(&s.id, |s| {
                         if s.status != ScheduleStatus::Completed {
@@ -520,7 +676,11 @@ impl Manager {
                 });
                 continue;
             }
-            if s.next_run_at.as_deref().and_then(calc::parse_iso).is_some_and(|n| n > now) {
+            if s.next_run_at
+                .as_deref()
+                .and_then(calc::parse_iso)
+                .is_some_and(|n| n > now)
+            {
                 continue;
             }
             if !self.reserve_schedule(&s.id) {
@@ -547,12 +707,21 @@ impl Manager {
         tokio::spawn(async move {
             let now = Utc::now();
             for s in manager.schedules() {
-                if let Ok((_, (dirty, archive))) = manager.update_schedule(&s.id, |s| Ok(calc::recover(s, now))) {
+                if let Ok((_, (dirty, archive))) =
+                    manager.update_schedule(&s.id, |s| Ok(calc::recover(s, now)))
+                {
                     if dirty {
                         tracing::info!(schedule = %s.id, "repaired a schedule after the restart");
                     }
                     if let Some(w) = archive {
-                        if let Err(e) = manager.archive_workspace(&w, Trigger::Archive, Some("scheduled run interrupted by a restart".into())).await {
+                        if let Err(e) = manager
+                            .archive_workspace(
+                                &w,
+                                Trigger::Archive,
+                                Some("scheduled run interrupted by a restart".into()),
+                            )
+                            .await
+                        {
                             tracing::warn!(workspace = %w, error = %e, "could not archive an interrupted scheduled workspace");
                         }
                     }
@@ -575,8 +744,26 @@ impl Manager {
             Target::NewAgent { config } => self.run_new_agent(&s, &run_id, config).await,
         };
         let end = match result {
-            Ok((agent_id, output)) => RunEnd { status: RunStatus::Succeeded, agent_id: Some(agent_id), output, error: None, target_gone: false, manual },
-            Err(RunError { agent_id, message, gone }) => RunEnd { status: RunStatus::Failed, agent_id, output: None, error: Some(message), target_gone: gone, manual },
+            Ok((agent_id, output)) => RunEnd {
+                status: RunStatus::Succeeded,
+                agent_id: Some(agent_id),
+                output,
+                error: None,
+                target_gone: false,
+                manual,
+            },
+            Err(RunError {
+                agent_id,
+                message,
+                gone,
+            }) => RunEnd {
+                status: RunStatus::Failed,
+                agent_id,
+                output: None,
+                error: Some(message),
+                target_gone: gone,
+                manual,
+            },
         };
         if let Err(e) = self.update_schedule(&s.id, |sched| {
             calc::finish_run(sched, &run_id, end, Utc::now());
@@ -586,14 +773,38 @@ impl Manager {
         }
     }
 
-    async fn run_heartbeat(&self, s: &Schedule, run_id: &str, agent_id: &str) -> Result<(String, Option<String>), RunError> {
-        let fail = |m: String| RunError { agent_id: Some(agent_id.to_string()), message: m, gone: false };
+    async fn run_heartbeat(
+        &self,
+        s: &Schedule,
+        run_id: &str,
+        agent_id: &str,
+    ) -> Result<(String, Option<String>), RunError> {
+        let fail = |m: String| RunError {
+            agent_id: Some(agent_id.to_string()),
+            message: m,
+            gone: false,
+        };
         {
             let agents = self.lock();
             match agents.get(agent_id) {
-                None => return Err(RunError { agent_id: None, message: format!("Agent {agent_id} no longer exists"), gone: true }),
-                Some(a) if a.record.archived_at.is_some() => return Err(RunError { message: format!("Agent {agent_id} is archived"), gone: true, ..fail(String::new()) }),
-                Some(a) if matches!(a.k.status, lucina_agents::AgentStatus::Running) || !a.pending.is_empty() => {
+                None => {
+                    return Err(RunError {
+                        agent_id: None,
+                        message: format!("Agent {agent_id} no longer exists"),
+                        gone: true,
+                    })
+                }
+                Some(a) if a.record.archived_at.is_some() => {
+                    return Err(RunError {
+                        message: format!("Agent {agent_id} is archived"),
+                        gone: true,
+                        ..fail(String::new())
+                    })
+                }
+                Some(a)
+                    if matches!(a.k.status, lucina_agents::AgentStatus::Running)
+                        || !a.pending.is_empty() =>
+                {
                     return Err(fail(format!("Agent {agent_id} already has an active run")))
                 }
                 _ => {}
@@ -601,9 +812,22 @@ impl Manager {
         }
         let body = envelope::schedule_fire_body(s.name.as_deref(), &s.id, run_id, &s.prompt);
         let prompt = envelope::format_system_notification(&body);
-        self.inner.orch.quiet_turns.lock().unwrap_or_else(|p| p.into_inner()).insert(agent_id.to_string());
-        if let Err(e) = self.send(agent_id, &prompt, ActiveTurnBehavior::Steer).await {
-            self.inner.orch.quiet_turns.lock().unwrap_or_else(|p| p.into_inner()).remove(agent_id);
+        self.inner
+            .orch
+            .quiet_turns
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(agent_id.to_string());
+        if let Err(e) = self
+            .send(agent_id, &prompt, ActiveTurnBehavior::Steer)
+            .await
+        {
+            self.inner
+                .orch
+                .quiet_turns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(agent_id);
             return Err(fail(e.to_string()));
         }
         let done = self.wait(agent_id, None, false).await;
@@ -611,18 +835,50 @@ impl Manager {
         self.take_quiet_turn(agent_id);
         let done = done.map_err(|e| fail(e.to_string()))?;
         match done.status {
-            "permission" => Err(fail(format!("Scheduled agent {agent_id} is waiting for permission"))),
-            "error" => Err(fail(done.last_message.or(done.error).unwrap_or_else(|| format!("Scheduled agent {agent_id} failed")))),
-            _ => Ok((agent_id.to_string(), done.last_message.filter(|m| !m.trim().is_empty()).map(|m| m.trim().to_string()))),
+            "permission" => Err(fail(format!(
+                "Scheduled agent {agent_id} is waiting for permission"
+            ))),
+            "error" => {
+                Err(fail(done.last_message.or(done.error).unwrap_or_else(
+                    || format!("Scheduled agent {agent_id} failed"),
+                )))
+            }
+            _ => Ok((
+                agent_id.to_string(),
+                done.last_message
+                    .filter(|m| !m.trim().is_empty())
+                    .map(|m| m.trim().to_string()),
+            )),
         }
     }
 
-    async fn run_new_agent(&self, s: &Schedule, run_id: &str, config: &NewAgentConfig) -> Result<(String, Option<String>), RunError> {
-        let fail = |agent_id: Option<String>, m: String| RunError { agent_id, message: m, gone: false };
+    async fn run_new_agent(
+        &self,
+        s: &Schedule,
+        run_id: &str,
+        config: &NewAgentConfig,
+    ) -> Result<(String, Option<String>), RunError> {
+        let fail = |agent_id: Option<String>, m: String| RunError {
+            agent_id,
+            message: m,
+            gone: false,
+        };
         match std::fs::metadata(&config.cwd) {
             Ok(m) if m.is_dir() => {}
-            Ok(_) => return Err(RunError { agent_id: None, message: format!("Working directory {} is not a directory", config.cwd), gone: true }),
-            Err(_) => return Err(RunError { agent_id: None, message: format!("Working directory {} no longer exists", config.cwd), gone: true }),
+            Ok(_) => {
+                return Err(RunError {
+                    agent_id: None,
+                    message: format!("Working directory {} is not a directory", config.cwd),
+                    gone: true,
+                })
+            }
+            Err(_) => {
+                return Err(RunError {
+                    agent_id: None,
+                    message: format!("Working directory {} no longer exists", config.cwd),
+                    gone: true,
+                })
+            }
         }
         let isolation = config.isolation.unwrap_or_default();
         let provider = match &config.model {
@@ -639,7 +895,10 @@ impl Manager {
                     background: true,
                     ..CreateWorkspace::default()
                 };
-                let (w, _) = self.create_workspace(req).await.map_err(|e| fail(None, e.to_string()))?;
+                let (w, _) = self
+                    .create_workspace(req)
+                    .await
+                    .map_err(|e| fail(None, e.to_string()))?;
                 (Some(w.workspace_id), w.cwd)
             }
             Isolation::Local => (config.workspace_id.clone(), config.cwd.clone()),
@@ -653,7 +912,12 @@ impl Manager {
                 Ok(())
             });
         }
-        let mut labels: BTreeMap<String, String> = s.labels.iter().filter(|(k, _)| k.as_str() != lucina_agents::schedule::DROPPED_RUNS_LABEL).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut labels: BTreeMap<String, String> = s
+            .labels
+            .iter()
+            .filter(|(k, _)| k.as_str() != lucina_agents::schedule::DROPPED_RUNS_LABEL)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         labels.insert(SCHEDULE_LABEL.into(), s.id.clone());
         labels.insert(RUN_LABEL.into(), run_id.to_string());
         let req = CreateRequest {
@@ -665,11 +929,21 @@ impl Manager {
             labels,
             mode_id: config.mode_id.clone(),
             thinking_option_id: config.thinking_option_id.clone(),
+            // A fire counts toward the host cap and its owner's per-caller cap.
+            created_by: Some(s.created_by.clone()),
             ..CreateRequest::default()
         };
         let archive = config.archive_on_finish.unwrap_or(true);
         let result = match self.create(req).await {
-            Err(e) => Err(fail(None, e.to_string())),
+            Err(e) => {
+                if matches!(
+                    e,
+                    ManagerError::TooManyAgents(_) | ManagerError::ProviderUnavailable(_)
+                ) {
+                    tracing::warn!(schedule = %s.id, run = run_id, reason = %e, "scheduled run skipped");
+                }
+                Err(fail(None, e.to_string()))
+            }
             Ok(snap) => {
                 let id = snap.id.clone();
                 let _ = self.update_schedule(&s.id, |sched| {
@@ -683,10 +957,23 @@ impl Manager {
                     Ok(done) => match done.status {
                         "permission" => {
                             // Kept for the owner to answer (module docs).
-                            return Err(fail(Some(id.clone()), format!("Scheduled agent {id} is waiting for permission")));
+                            return Err(fail(
+                                Some(id.clone()),
+                                format!("Scheduled agent {id} is waiting for permission"),
+                            ));
                         }
-                        "error" => Err(fail(Some(id.clone()), done.last_message.or(done.error).unwrap_or_else(|| format!("Scheduled agent {id} failed")))),
-                        _ => Ok((id, done.last_message.filter(|m| !m.trim().is_empty()).map(|m| m.trim().to_string()))),
+                        "error" => Err(fail(
+                            Some(id.clone()),
+                            done.last_message
+                                .or(done.error)
+                                .unwrap_or_else(|| format!("Scheduled agent {id} failed")),
+                        )),
+                        _ => Ok((
+                            id,
+                            done.last_message
+                                .filter(|m| !m.trim().is_empty())
+                                .map(|m| m.trim().to_string()),
+                        )),
                     },
                 }
             }
@@ -698,7 +985,14 @@ impl Manager {
             };
             match (isolation, &workspace_id, agent) {
                 (Isolation::Worktree, Some(w), _) => {
-                    if let Err(e) = self.archive_workspace(w, Trigger::Archive, Some("scheduled run finished".into())).await {
+                    if let Err(e) = self
+                        .archive_workspace(
+                            w,
+                            Trigger::Archive,
+                            Some("scheduled run finished".into()),
+                        )
+                        .await
+                    {
                         tracing::warn!(workspace = %w, error = %e, "could not archive a scheduled workspace");
                     }
                 }
@@ -715,7 +1009,12 @@ impl Manager {
 
     /// Whether `id`'s current turn is a heartbeat's (no "finished" push); clears it.
     pub(super) fn take_quiet_turn(&self, id: &str) -> bool {
-        self.inner.orch.quiet_turns.lock().unwrap_or_else(|p| p.into_inner()).remove(id)
+        self.inner
+            .orch
+            .quiet_turns
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id)
     }
 }
 
@@ -727,7 +1026,11 @@ struct RunError {
 
 /// Paseo `applyNewAgentConfig`.
 fn apply_config(config: &mut NewAgentConfig, patch: &Value) -> Result<(), ManagerError> {
-    let str_of = |k: &str| patch.get(k).map(|v| v.as_str().map(str::trim).unwrap_or("").to_string());
+    let str_of = |k: &str| {
+        patch
+            .get(k)
+            .map(|v| v.as_str().map(str::trim).unwrap_or("").to_string())
+    };
     if let Some(p) = str_of("provider") {
         if p.is_empty() {
             return Err(invalid("provider cannot be empty"));
@@ -754,7 +1057,9 @@ fn apply_config(config: &mut NewAgentConfig, patch: &Value) -> Result<(), Manage
         config.archive_on_finish = Some(a);
     }
     if let Some(i) = patch.get("isolation") {
-        config.isolation = Some(serde_json::from_value(i.clone()).map_err(|e| invalid(format!("isolation: {e}")))?);
+        config.isolation = Some(
+            serde_json::from_value(i.clone()).map_err(|e| invalid(format!("isolation: {e}")))?,
+        );
     }
     Ok(())
 }

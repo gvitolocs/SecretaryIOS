@@ -415,23 +415,74 @@ fn check_fast(s: &Scratch, r: &Path, proofs: bool, hold: bool) -> Command {
     c
 }
 
-/// `scripts/check-fast`, the launcher under test: a shell script of the repository, not of the crate.
-fn launcher() -> PathBuf {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/check-fast");
-    assert!(p.is_file(), "no launcher at {}", p.display());
-    p
+/// The queue the launcher finds: the launcher looks for `bq` in the passwd home of its uid, never in `$HOME`, and these tests
+/// judge the install and not the queue, so the stand-in prints our usage and writes the slot record bq would (the launcher believes its own marker only against it) and runs what follows the `--` in place.
+const QUEUE_STUB: &str = "#!/usr/bin/env bash
+if [ \"$#\" -eq 0 ]; then
+    echo 'usage: bq run --class short|long|proof [--lock PATH] [--who NAME] [--priority gate|normal] [--max-wait SECONDS] [--keep-env NAME] -- cmd args...'
+    exit 2
+fi
+while [ \"$1\" != \"--\" ]; do shift; done
+shift
+h=$(cd \"$(dirname \"$0\")/../..\" && pwd)
+mkdir -p \"$h/.cache/bq\"
+printf 'pid=%s\\nclass=long\\n' \"$$\" > \"$h/.cache/bq/long-0.meta\"
+export BQ_SLOT=long-0 BQ_SLOT_PID=$$
+exec \"$@\"
+";
+
+/// `scripts/check-fast`, the launcher under test: a shell script of the repository, not of the crate. A copy of it, in a folder
+/// named like this repo, in which the one assignment of `qhome` (the passwd lookup of this uid's home, which a test cannot
+/// change) is the scratch directory — the fake home that holds `.local/bin/bq` and the `tool` the launcher installs into. Nothing
+/// else differs.
+fn launcher(s: &Scratch) -> PathBuf {
+    let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/check-fast");
+    let text = fs::read_to_string(&real).unwrap_or_else(|e| panic!("{}: {e}", real.display()));
+    let (mut out, mut skip, mut replaced) = (String::new(), false, false);
+    for line in text.lines() {
+        if line == "qhome=$(" {
+            out.push_str(&format!("qhome=\"{}\"\n", s.dir.display()));
+            (skip, replaced) = (true, true);
+            continue;
+        }
+        if skip {
+            skip = line != ") || qhome=\"\"";
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    assert!(
+        replaced && !skip,
+        "the home assignment is not in the launcher"
+    );
+    let repo = real.canonicalize().unwrap();
+    let name = repo
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap();
+    let to = s.at("pl").join(name).join("scripts/check-fast");
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    write_exec(&to, &out);
+    let bq = s.at(".local/bin/bq");
+    fs::create_dir_all(bq.parent().unwrap()).unwrap();
+    write_exec(&bq, QUEUE_STUB);
+    to
 }
 
 /// A run of the launcher: the stubs on PATH, the scratch `tool` directory as the shared install place, and no build
 /// directory of its own (`SECRETARY_CI_TOOL_BUILD` then defaults to `<tool>-build` beside it).
 fn launcher_run(s: &Scratch) -> Command {
     let mut c = Command::new("bash");
-    c.arg(launcher());
+    c.arg(launcher(s));
     launcher_env(&mut c, s);
     c
 }
 
-/// The environment of a launcher run, for a `Command` the caller built itself.
+/// The environment of a launcher run.
 fn launcher_env(c: &mut Command, s: &Scratch) {
     c.env(
         "PATH",
@@ -610,6 +661,14 @@ fn the_per_run_directory_holds_the_run_and_leaves_nothing_behind() {
     }
 }
 
+/// The stand-in build the launcher-install tests use: it leaves its artifact where the install reads from.
+const BUILD_STUB: &str = r#"#!/usr/bin/env bash
+mkdir -p "$CARGO_TARGET_DIR/release"
+printf '#!/usr/bin/env bash\necho TOOL-VERSION-built\n' > "$CARGO_TARGET_DIR/release/lucina-ci"
+chmod 0755 "$CARGO_TARGET_DIR/release/lucina-ci"
+exit 0
+"#;
+
 /// (b), first half: the launcher never writes the shared name it replaces. A hard link to the previous install catches it —
 /// a write through the path would go through the link and change the bytes a run in flight is executing; a rename cannot.
 #[test]
@@ -673,6 +732,9 @@ exit 0
 fn a_failed_build_leaves_the_installed_tool_whole_and_no_partial_file_behind() {
     let s = Scratch::new("build-failed");
     fs::create_dir_all(s.at("tool/release")).unwrap();
+    for d in ["tool", "tool/release"] {
+        fs::set_permissions(s.at(d), fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let installed = s.at("tool/release/lucina-ci");
     let previous = "#!/usr/bin/env bash\necho PREVIOUS-INSTALL\n";
     write_exec(&installed, previous);
@@ -719,24 +781,19 @@ exit 101
     );
 }
 
-/// GATE-16: the install's temp name is `lucina-ci.tmp.<pid of the launcher's shell>`, in a directory other processes may be
-/// able to write, and a symlink planted at it before the copy must not be followed. A wrapper plants the link under its own pid
-/// and execs the launcher, which keeps that pid, so the name is the very one the launcher will use. The file the link points
-/// at keeps its bytes, and what is installed is the new build, a plain file.
+/// GATE-16: the install's temp name is made by mktemp, in a directory other processes may be able to write, so nothing can be
+/// planted at it ahead of the copy. The old predictable name (`lucina-ci.tmp.<pid of the launcher's shell>`) is planted as a
+/// symlink anyway — a wrapper plants it under its own pid and execs the launcher, which keeps that pid: the file the link points
+/// at keeps its bytes, the link is left as it was, and what is installed is the new build, a plain file.
 #[test]
-fn a_symlink_planted_at_the_install_temp_name_is_not_followed() {
+fn a_symlink_planted_at_the_old_install_temp_name_is_not_followed() {
     let s = Scratch::new("tmplink");
     write_exec(&s.bin().join("df"), "#!/usr/bin/env bash\necho '  999G'\n");
-    write_exec(
-        &s.bin().join("cargo"),
-        r#"#!/usr/bin/env bash
-mkdir -p "$CARGO_TARGET_DIR/release"
-printf '#!/usr/bin/env bash\necho TOOL-VERSION-built\n' > "$CARGO_TARGET_DIR/release/lucina-ci"
-chmod 0755 "$CARGO_TARGET_DIR/release/lucina-ci"
-exit 0
-"#,
-    );
+    write_exec(&s.bin().join("cargo"), BUILD_STUB);
     fs::create_dir_all(s.at("tool/release")).unwrap();
+    for d in ["tool", "tool/release"] {
+        fs::set_permissions(s.at(d), fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let victim = s.at("victim");
     fs::write(&victim, "VICTIM-BEFORE").unwrap();
     let mut c = Command::new("bash");
@@ -744,7 +801,7 @@ exit 0
         "-c",
         "ln -s \"$VICTIM\" \"$SECRETARY_CI_TOOL_TARGET/release/lucina-ci.tmp.$$\"; exec bash \"$0\"",
     ])
-    .arg(launcher())
+    .arg(launcher(&s))
     .env("VICTIM", &victim);
     launcher_env(&mut c, &s);
     let o = c.output().unwrap();
@@ -767,9 +824,79 @@ exit 0
         "the installed tool is a plain file, not the link"
     );
     assert!(read(&installed).contains("TOOL-VERSION-built"));
+    let left: Vec<String> = names(&s.at("tool/release"))
+        .into_iter()
+        .filter(|n| n != "lucina-ci")
+        .collect();
     assert_eq!(
-        names(&s.at("tool/release")),
-        vec!["lucina-ci".to_string()],
-        "the planted link did not survive beside the tool"
+        left.len(),
+        1,
+        "only the planted link is left beside the tool: {left:?}"
     );
+    let link = s.at("tool/release").join(&left[0]);
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the planted link is as it was"
+    );
+}
+
+/// GATE-16: the directory the tool is installed into and run from is chosen by `SECRETARY_CI_TOOL_TARGET` / `_BUILD`; one that
+/// is not under the home directory (as written or as it resolves), or is writable by group or others, is refused with exit 2
+/// before anything is built or written there. Owned-by-someone-else is the same refusal and needs another uid to show.
+#[test]
+fn a_tool_directory_outside_the_home_or_open_to_others_is_refused() {
+    let s = Scratch::new("tooldir");
+    let outside = Scratch::new("tooldir-outside");
+    write_exec(&s.bin().join("df"), "#!/usr/bin/env bash\necho '  999G'\n");
+    write_exec(&s.bin().join("cargo"), BUILD_STUB);
+    let refused = |c: &mut Command, why: &str| {
+        let o = c.output().unwrap();
+        let said = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(2), "{why}: {said}");
+        assert!(
+            !String::from_utf8_lossy(&o.stdout).contains("TOOL-VERSION"),
+            "{why}: the tool ran"
+        );
+        said
+    };
+    // 1. written outside the home: nothing is made there
+    let mut c = launcher_run(&s);
+    c.env("SECRETARY_CI_TOOL_TARGET", outside.at("tool"));
+    let said = refused(&mut c, "a tool directory outside the home");
+    assert!(said.contains("not under the home directory"), "{said}");
+    assert!(
+        !outside.at("tool").exists(),
+        "the launcher made a directory outside the home"
+    );
+    // 2. a link under the home that resolves outside it
+    std::os::unix::fs::symlink(&outside.dir, s.at("tool")).unwrap();
+    fs::create_dir_all(outside.at("release")).unwrap();
+    for d in ["", "release"] {
+        fs::set_permissions(outside.at(d), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let said = refused(&mut launcher_run(&s), "a link out of the home");
+    assert!(said.contains("not under the home directory"), "{said}");
+    assert!(
+        names(&outside.at("release")).is_empty(),
+        "something was installed through the link"
+    );
+    fs::remove_file(s.at("tool")).unwrap();
+    // 3. under the home but open to group and others
+    fs::create_dir_all(s.at("tool/release")).unwrap();
+    for d in ["tool", "tool/release"] {
+        fs::set_permissions(s.at(d), fs::Permissions::from_mode(0o775)).unwrap();
+    }
+    let said = refused(&mut launcher_run(&s), "a group-writable tool directory");
+    assert!(said.contains("writable by group or others"), "{said}");
+    assert!(
+        names(&s.at("tool/release")).is_empty(),
+        "something was installed into it"
+    );
+    fs::set_permissions(s.at("tool/release"), fs::Permissions::from_mode(0o757)).unwrap();
+    fs::set_permissions(s.at("tool"), fs::Permissions::from_mode(0o755)).unwrap();
+    let said = refused(&mut launcher_run(&s), "a world-writable release directory");
+    assert!(said.contains("writable by group or others"), "{said}");
 }
