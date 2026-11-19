@@ -2031,6 +2031,21 @@ pub struct Restorable {
     pub last_error: String,
 }
 
+/// A blocked target the restore command could not judge, and why.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Skipped {
+    pub flaw_id: String,
+    pub platform: Platform,
+    pub reason: String,
+}
+
+/// What the restore command found: the targets it lists (or resets) and the ones it left.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoreReport {
+    pub listed: Vec<Restorable>,
+    pub skipped: Vec<Skipped>,
+}
+
 /// `lucina-rs flaws restore-lane-failures --since <rfc3339> [--apply]`: the blocked targets whose
 /// failures since that time were all lane failures under the dispatcher's classification, judged
 /// by the stored agent error text. A target is listed only when every agent started on it since
@@ -2042,36 +2057,85 @@ pub async fn restore_lane_failures(
     since: &str,
     apply: bool,
     errors: &dyn ErrorSource,
-) -> Result<Vec<Restorable>, FlawError> {
+) -> Result<RestoreReport, FlawError> {
     let since = chrono::DateTime::parse_from_rfc3339(since.trim())
         .map_err(|e| FlawError::Invalid(format!("--since must be an RFC 3339 time: {e}")))?
         .with_timezone(&Utc)
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut found = Vec::new();
+    let mut skipped = Vec::new();
     for look in flaws.blocked_since(&since)? {
+        let mut skip = |reason: String| {
+            skipped.push(Skipped {
+                flaw_id: look.flaw.id.clone(),
+                platform: look.target.platform,
+                reason,
+            })
+        };
         if look.failures.iter().any(|f| f.kind == "task") {
+            skip(format!(
+                "a counted task failure is on record since {since}: the agent worked, a lead decides"
+            ));
             continue;
         }
         if look.agents.is_empty() && look.failures.is_empty() {
+            skip(format!(
+                "no `started` event with an `agent` key and no recorded failure since {since}"
+            ));
             continue;
         }
+        // What the target itself kept of its last end, for when agentd can no longer say: the
+        // stored `last_error`, else the text of its last `released` event.
+        let stored = look.target.last_error.clone().or_else(|| {
+            flaws.get(&look.flaw.id).ok().and_then(|d| {
+                d.events
+                    .iter()
+                    .rev()
+                    .filter(|e| e.kind == "released" && e.platform == Some(look.target.platform))
+                    .find_map(|e| {
+                        e.detail["error"]
+                            .as_str()
+                            .or_else(|| e.detail["why"].as_str())
+                            .map(str::to_owned)
+                    })
+            })
+        });
         let mut texts: Vec<String> = look
             .failures
             .iter()
             .filter_map(|f| f.error.clone())
             .collect();
-        let mut all_lane = look.failures.iter().all(|f| f.kind == "lane");
+        let mut why_not: Option<String> = None;
         for a in &look.agents {
-            match errors.agent_error(a).await {
+            let text = match errors.agent_error(a).await {
+                Some(e) => Some(e),
+                // agentd no longer holds it: the failure rows, then the target's own record.
+                None => look
+                    .failures
+                    .iter()
+                    .find(|f| f.agent.as_deref() == Some(a.as_str()))
+                    .and_then(|f| f.error.clone())
+                    .or_else(|| stored.clone().filter(|t| lane_reason(t).is_some())),
+            };
+            match text {
+                Some(e) if lane_reason(&e).is_some() => texts.push(e),
                 Some(e) => {
-                    all_lane &= lane_reason(&e).is_some();
-                    texts.push(e);
+                    why_not = Some(format!(
+                        "agent {a} ended on an error that is not a lane failure: {}",
+                        clip(&e, 120)
+                    ));
+                    break;
                 }
-                // No text, no proof: it is left for a lead.
-                None => all_lane = false,
+                None => {
+                    why_not = Some(format!(
+                        "agentd no longer holds agent {a}, and no stored error text names the lane"
+                    ));
+                    break;
+                }
             }
         }
-        if !all_lane {
+        if let Some(why) = why_not {
+            skip(why);
             continue;
         }
         found.push(Restorable {
@@ -2091,7 +2155,10 @@ pub async fn restore_lane_failures(
             )?;
         }
     }
-    Ok(found)
+    Ok(RestoreReport {
+        listed: found,
+        skipped,
+    })
 }
 
 // ---------------------------------------------------------------- CLI
@@ -4706,7 +4773,8 @@ mod tests {
         );
         let since = "2000-01-01T00:00:00Z";
         // Dry run: the list, and no change.
-        let found = restore_lane_failures(&s, since, false, &src).await.unwrap();
+        let report = restore_lane_failures(&s, since, false, &src).await.unwrap();
+        let found = report.listed.clone();
         assert_eq!(
             found,
             vec![Restorable {
@@ -4716,6 +4784,28 @@ mod tests {
                 last_error: SIGN_IN.into(),
             }]
         );
+        // LA-C035 F4: this test used to pin the silence about the others. Now each target that
+        // cannot be judged is said, with its flaw, platform and why.
+        let reasons: HashMap<String, String> = report
+            .skipped
+            .iter()
+            .map(|k| (k.flaw_id.clone(), k.reason.clone()))
+            .collect();
+        assert_eq!(report.skipped.len(), 3, "{:?}", report.skipped);
+        assert!(
+            reasons[&real.id].contains("not a lane failure")
+                && reasons[&real.id].contains("tests do not pass"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[&unknown.id].contains("agentd no longer holds agent u0"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[&mixed.id].contains("agent m1 ended on an error that is not a lane failure"),
+            "{reasons:?}"
+        );
+        assert!(report.skipped.iter().all(|k| k.platform == Platform::Web));
         for f in [&victim, &real, &unknown, &mixed] {
             assert_eq!(
                 target(&s, &f.id, Platform::Web).status,
@@ -4725,7 +4815,8 @@ mod tests {
         }
         // Apply: exactly the listed one.
         let applied = restore_lane_failures(&s, since, true, &src).await.unwrap();
-        assert_eq!(applied, found);
+        assert_eq!(applied.listed, found);
+        assert_eq!(applied.skipped, report.skipped);
         let t = target(&s, &victim.id, Platform::Web);
         assert_eq!(
             (t.status, t.attempts, t.next_try_at),
@@ -4743,5 +4834,64 @@ mod tests {
         assert!(restore_lane_failures(&s, "yesterday", false, &src)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn restore_says_why_a_target_with_nothing_to_judge_is_left() {
+        // A dry run of "0 listed" must not read as "no victims" (LA-C035 F4).
+        let s = Flaws::in_memory().unwrap();
+        let f = due(&s, "never started", Platform::Web, None);
+        // Blocked by hand, with no agent ever started and no failure recorded.
+        s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
+        s.release(&f.id, Platform::Web, "x", 1, "d").unwrap();
+        let src = Errors(HashMap::new());
+        let r = restore_lane_failures(&s, "2000-01-01T00:00:00Z", false, &src)
+            .await
+            .unwrap();
+        assert!(r.listed.is_empty());
+        assert_eq!(r.skipped.len(), 1);
+        assert!(
+            r.skipped[0].reason.contains("no `started` event"),
+            "{:?}",
+            r.skipped
+        );
+        // A task failure on record is left to a lead, and says so.
+        let g = due(&s, "worked", Platform::Web, None);
+        let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
+        s.attach(&g.id, Platform::Web, "w", "g0", &policy().chain[0], "d")
+            .unwrap();
+        s.fail_task_if(&g.id, Platform::Web, &t.claim_ref(), "tests fail", 1, "d")
+            .unwrap();
+        let r = restore_lane_failures(&s, "2000-01-01T00:00:00Z", false, &src)
+            .await
+            .unwrap();
+        assert!(
+            r.skipped
+                .iter()
+                .any(|k| k.flaw_id == g.id && k.reason.contains("counted task failure")),
+            "{:?}",
+            r.skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_falls_back_to_the_stored_error_when_agentd_cannot_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("flaws.db");
+        let s = Flaws::open(&db).unwrap();
+        let f = blocked_the_old_way(&s, "stored", ["s0", "s1"]);
+        // agentd holds neither agent; the target kept the text of its last end.
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE flaw_targets SET last_error = ?1 WHERE flaw_id = ?2",
+                rusqlite::params![SIGN_IN, f.id],
+            )
+            .unwrap();
+        let r = restore_lane_failures(&s, "2000-01-01T00:00:00Z", false, &Errors(HashMap::new()))
+            .await
+            .unwrap();
+        assert_eq!(r.listed.len(), 1, "{:?}", r.skipped);
+        assert_eq!(r.listed[0].last_error, SIGN_IN);
     }
 }

@@ -1044,7 +1044,7 @@ async fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
                 &lucina_server::flaws::SocketErrors,
             )
             .await?;
-            for r in &found {
+            for r in &found.listed {
                 println!(
                     "{}\t{}\t{}\t{}",
                     r.flaw_id,
@@ -1053,14 +1053,25 @@ async fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
                     r.last_error.replace(['\n', '\t'], " ")
                 );
             }
-            eprintln!(
-                "{} target(s) {}",
-                found.len(),
+            // A target that cannot be judged is said, one line each, so that "0 listed" is never
+            // mistaken for "no victims".
+            for k in &found.skipped {
+                println!(
+                    "skipped\t{}\t{}\t{}",
+                    k.flaw_id,
+                    k.platform,
+                    k.reason.replace(['\n', '\t'], " ")
+                );
+            }
+            println!(
+                "{} listed{}, {} skipped",
+                found.listed.len(),
                 if apply {
-                    "reset"
+                    " and reset"
                 } else {
-                    "would be reset (run with --apply)"
-                }
+                    " (run with --apply to reset them)"
+                },
+                found.skipped.len()
             );
             return Ok(());
         }
