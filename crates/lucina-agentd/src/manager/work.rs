@@ -463,6 +463,15 @@ fn scope_decision(
 
 const SCOPE_PREFIX: &str = "lucina-work-";
 
+/// The user slice every work scope joins (finding HOST-11: 16 uncapped scopes plus builds caused
+/// a global out-of-memory on nezopt). `build.slice` is a user slice that LB manages
+/// (MemoryHigh=34G, CPUWeight=30), shared with bq jobs, lane attempts and check-fast steps.
+const SCOPE_SLICE: &str = "--slice=build.slice";
+/// The CPU cap of one work scope (HOST-11), passed as `-p CPUQuota=...`.
+const SCOPE_CPU_QUOTA: &str = "CPUQuota=400%";
+/// The memory cap of one work scope (HOST-11), passed as `-p MemoryMax=...`.
+const SCOPE_MEMORY_MAX: &str = "MemoryMax=12G";
+
 /// The transient unit name of a job: `lucina-work-<id>`. The id may hold lower-case letters,
 /// digits and `-` only; anything else is refused.
 fn scope_unit(id: &str) -> Result<String, String> {
@@ -511,7 +520,8 @@ fn lane_run_args(job: &WorkJob) -> Result<Vec<OsString>, String> {
 }
 
 /// The program and arguments of the start. With a scope (`Some(unit)`) the list is
-/// `systemd-run --user --scope --quiet --collect --unit <unit> -- <lane> <run arguments>`: a
+/// `systemd-run --user --scope --quiet --collect --unit <unit> --slice=build.slice -p CPUQuota=400%
+/// -p MemoryMax=12G -- <lane> <run arguments>` (HOST-11 caps): a
 /// scope, not a service, because `lane run` exits at once and the runner it leaves must live
 /// on in a control group outside the daemon's unit. Without one it is `<lane> <run arguments>`.
 /// No test here can show the control-group behaviour itself; it is proved live after deploy.
@@ -530,6 +540,11 @@ fn run_argv(scope: Option<&str>, lane: &Path, run_args: &[OsString]) -> Vec<OsSt
             .map(OsString::from),
         );
         v.push(unit.into());
+        v.push(SCOPE_SLICE.into());
+        for p in [SCOPE_CPU_QUOTA, SCOPE_MEMORY_MAX] {
+            v.push("-p".into());
+            v.push(p.into());
+        }
         v.push("--".into());
     }
     v.push(lane.into());
@@ -2614,7 +2629,7 @@ deep-codex = ["qoder", "codex-a"]
         assert_eq!(plain[1..], args[..]);
         let scoped = run_argv(Some("lucina-work-wk-0123456789ab"), lane, &args);
         assert_eq!(
-            scoped[..8],
+            scoped[..13],
             os(&[
                 "systemd-run",
                 "--user",
@@ -2623,11 +2638,16 @@ deep-codex = ["qoder", "codex-a"]
                 "--collect",
                 "--unit",
                 "lucina-work-wk-0123456789ab",
+                "--slice=build.slice",
+                "-p",
+                "CPUQuota=400%",
+                "-p",
+                "MemoryMax=12G",
                 "--"
             ])[..]
         );
-        assert_eq!(scoped[8], OsString::from("/bin/lane"));
-        assert_eq!(scoped[9..], args[..]);
+        assert_eq!(scoped[13], OsString::from("/bin/lane"));
+        assert_eq!(scoped[14..], args[..]);
         let mut chained = sample_job();
         chained.lane = None;
         assert!(lane_run_args(&chained).is_err());
@@ -2635,6 +2655,27 @@ deep-codex = ["qoder", "codex-a"]
         assert!(lane_run_args(&chained)
             .unwrap()
             .ends_with(&os(&["--verify", "true"])));
+    }
+
+    #[test]
+    fn the_scope_carries_the_host_11_caps_before_the_double_dash() {
+        let args = os(&["run"]);
+        let lane = Path::new("/bin/lane");
+        let scoped = run_argv(Some("lucina-work-wk-0123456789ab"), lane, &args);
+        let dd = scoped.iter().position(|a| a == "--").unwrap();
+        for want in ["--slice=build.slice", "CPUQuota=400%", "MemoryMax=12G"] {
+            let at = scoped.iter().position(|a| a == want).unwrap_or(usize::MAX);
+            assert!(at < dd, "{want} must come before --: {scoped:?}");
+        }
+        let plain = run_argv(None, lane, &args);
+        for no in [
+            "--slice=build.slice",
+            "CPUQuota=400%",
+            "MemoryMax=12G",
+            "-p",
+        ] {
+            assert!(!plain.iter().any(|a| a == no), "{no} in {plain:?}");
+        }
     }
 
     #[test]
