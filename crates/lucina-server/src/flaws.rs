@@ -1567,7 +1567,8 @@ async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probe
         // An attempt counts whether it worked or not: a create that fails is as much agentd's
         // work as one that succeeds, and a failing one must not be retried in a loop.
         started += 1;
-        match start_fix(
+        // A refusal or failure is said already, by the claim's refusal or `task not started`.
+        if let Ok(t) = start_fix(
             flaws,
             policy,
             step,
@@ -1579,15 +1580,11 @@ async fn dispatch_phase(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probe
         )
         .await
         {
-            Ok(t) => {
-                load.add(
-                    t.agent.clone().unwrap_or_else(|| format!("claim:{id}:{p}")),
-                    Some(&lane),
-                    Some(&pick.repo),
-                );
-            }
-            // Said already, by the claim's refusal or `task not started`.
-            Err(_) => {}
+            load.add(
+                t.agent.clone().unwrap_or_else(|| format!("claim:{id}:{p}")),
+                Some(&lane),
+                Some(&pick.repo),
+            );
         }
     }
 }
