@@ -2,14 +2,14 @@
 # reachable only through the proxy that runs the device-check subrequest. Never forward, bridge or
 # expose it on another interface or on the tailnet.
 #
-# PROPOSAL (JD-C008), not installed. lucina-updates: the read-only update channel server
+# PROPOSAL, not installed. lucina-updates: the read-only update channel server
 # (crates/lucina-updates). It serves manifest and artefact bytes from ~/data/lucina-updates, holds no
-# key, signs and verifies nothing, and writes nothing. User unit on nezopt:
+# key, signs and verifies nothing, and writes nothing. User unit on the host that runs the sidecar:
 #   install -m 0755 target/release/lucina-updates ~/.local/bin/
 #   cp deploy/lucina-updates.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now lucina-updates
 #
-# Loopback only (127.0.0.1:8811); the p1 Caddy block in deploy/lucina-updates/Caddyfile.snippet is the
+# Loopback only (127.0.0.1:8811); the proxy host Caddy block in deploy/lucina-updates/Caddyfile.snippet is the
 # only client and does the device check (forward_auth /v1/auth/updates).
 [Unit]
 Description=Lucina update channel server (read-only) on 127.0.0.1:8811
