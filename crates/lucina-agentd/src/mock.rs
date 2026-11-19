@@ -301,6 +301,12 @@ fn quota_failure(prompt: &str) -> bool {
     prompt.trim_start().to_lowercase().starts_with("emit synthetic quota failure")
 }
 
+/// A prompt that starts with "emit synthetic auth failure": the expired login that opened AGENT-01
+/// (the provider breaker, `manager/breaker.rs`).
+fn auth_failure(prompt: &str) -> bool {
+    prompt.trim_start().to_lowercase().starts_with("emit synthetic auth failure")
+}
+
 fn turn_failure(prompt: &str) -> bool {
     has_phrase(prompt, &["emit synthetic turn failure", "emit a synthetic turn failure"])
 }
@@ -682,6 +688,8 @@ enum Script {
     Failure,
     /// Claude's weekly-limit stop, word for word (agent 16d5ad63, 2026-11-02).
     QuotaFailure,
+    /// The login expired (agent failures of 2026-11-19).
+    AuthFailure,
     Streaming(String, u64),
     Settled(String),
     PlanApproval,
@@ -805,6 +813,21 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                     provider: MOCK_ID.into(),
                     turn_id: Some(c.turn_id.clone()),
                     error: "Requested mock provider failure".into(),
+                    code: None,
+                    diagnostic: None,
+                })
+            });
+        }
+        Script::AuthFailure => {
+            if !ctx.active() {
+                return;
+            }
+            ctx.started();
+            ctx.end(|c| {
+                c.emit(StreamEvent::TurnFailed {
+                    provider: MOCK_ID.into(),
+                    turn_id: Some(c.turn_id.clone()),
+                    error: "Failed to authenticate: OAuth session expired and could not be refreshed".into(),
                     code: None,
                     diagnostic: None,
                 })
@@ -1017,7 +1040,9 @@ impl Session for MockSession {
                 return Err(ProviderError::new("Mock load-test provider already has an active turn"));
             }
             g.turn = Some(Turn { id: turn_id.clone(), task: None, started: false, cycle: 0, emitted_tokens: 0 });
-            if quota_failure(prompt) {
+            if auth_failure(prompt) {
+                Script::AuthFailure
+            } else if quota_failure(prompt) {
                 Script::QuotaFailure
             } else if turn_failure(prompt) {
                 Script::Failure

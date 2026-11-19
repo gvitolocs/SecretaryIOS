@@ -71,8 +71,8 @@ pub enum Command {
     Delete(TargetArgs),
     /// Show detailed information about an agent
     Inspect { id: String },
-    /// List providers
-    Providers,
+    /// List providers; `providers clear <provider>` clears a provider whose breaker tripped
+    Providers(ProvidersArgs),
     /// Manage permission requests
     #[command(subcommand)]
     Permit(PermitCommand),
@@ -269,6 +269,22 @@ pub struct CloneArgs {
     /// https or ssh
     #[arg(long)]
     pub protocol: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ProvidersArgs {
+    #[command(subcommand)]
+    pub command: Option<ProvidersCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProvidersCommand {
+    /// Let agents start for a provider again after its breaker tripped (a turn failed on
+    /// authentication, or on a quota): owner only
+    Clear {
+        /// Provider id
+        provider: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1395,7 +1411,20 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 json: Some(data),
             })
         }
-        Command::Providers => {
+        Command::Providers(ProvidersArgs {
+            command: Some(ProvidersCommand::Clear { provider }),
+        }) => {
+            let v = client
+                .post(&format!("/providers/{provider}/clear"), &json!({}))
+                .await?;
+            let text = if v["cleared"] == true {
+                format!("Provider {provider} cleared: agents may start for it again")
+            } else {
+                format!("Provider {provider} was not tripped")
+            };
+            Ok(Output { text, json: Some(v) })
+        }
+        Command::Providers(_) => {
             let v = client.get("/providers").await?;
             let list = v.as_array().cloned().unwrap_or_default();
             let rows: Vec<Vec<String>> = list

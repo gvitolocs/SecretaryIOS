@@ -34,6 +34,7 @@ use crate::store::{Store, StoreError};
 
 mod external_agents;
 mod gate;
+mod breaker;
 mod handoff;
 mod ids;
 mod orch;
@@ -48,6 +49,7 @@ mod work;
 mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
+pub use breaker::{Breaker, CapsConfig, Trip, CALLER_LABEL};
 pub use handoff::{
     CONTINUED_FROM_LABEL, CONTINUED_ON_LABEL, CONTINUED_PROVIDER_LABEL, HANDOFF_LABEL,
 };
@@ -84,6 +86,11 @@ pub struct Options {
     pub devices: crate::devices::Config,
     /// Work jobs run through `lane` (`LUCINA_AGENTD_LANE`).
     pub work: WorkConfig,
+    /// The create caps (`LUCINA_AGENTD_MAX_AGENTS_PER_CALLER`, `LUCINA_AGENTD_MAX_CREATES_PER_MINUTE`,
+    /// `LUCINA_AGENTD_MAX_AGENTS_HOST`); see [`breaker`].
+    pub caps: CapsConfig,
+    /// Where the provider breaker keeps its state (`<state>/provider-breaker.json`); `None`: memory only.
+    pub breaker_file: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -100,6 +107,8 @@ impl Default for Options {
             ),
             devices: crate::devices::Config::default(),
             work: WorkConfig::default(),
+            caps: CapsConfig::from_env(),
+            breaker_file: None,
         }
     }
 }
@@ -265,6 +274,12 @@ pub enum ManagerError {
     /// asks before each call, and no preapproved juno tool.
     #[error("The Juno shell tool needs a Claude agent in a mode that asks before each call ({0})")]
     JunoToolRefused(String),
+    /// A create over a cap (HTTP 429).
+    #[error("{0}")]
+    TooManyAgents(String),
+    /// The provider's breaker is tripped (HTTP 503).
+    #[error("{0}")]
+    ProviderUnavailable(String),
 }
 
 impl ManagerError {
@@ -305,6 +320,8 @@ impl ManagerError {
             ManagerError::JunoToolRefused(_) => "JUNO_TOOL_REFUSED",
             ManagerError::WorkNotFound(_) => "WORK_NOT_FOUND",
             ManagerError::IdNotFound(_) => "ID_NOT_FOUND",
+            ManagerError::TooManyAgents(_) => "AGENT_LIMIT",
+            ManagerError::ProviderUnavailable(_) => "PROVIDER_TRIPPED",
         }
     }
 }
@@ -461,6 +478,11 @@ pub struct CreateRequest {
     /// the body).
     #[serde(skip)]
     pub seed_context: Option<String>,
+    /// Who asked for the agent (the API's caller identity: `local`, `device:<id>`, `agent:<id>`):
+    /// set by the create route, never from the body. Only a create carrying it is counted by the
+    /// create caps (see [`breaker`]).
+    #[serde(skip)]
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -520,6 +542,9 @@ struct Agent {
     subagents: Vec<provider_subagents::Sub>,
     /// A rewind is changing the agent: no new turn starts until it is done.
     rewinding: bool,
+    /// The agent failed and gave up its session (and its provider processes); a new
+    /// prompt starts a new one.
+    released: bool,
 }
 
 impl Agent {
@@ -549,6 +574,9 @@ struct Inner {
     work: work::Work,
     /// The identifiers of runs, changes, versions and findings.
     ids: ids::Ids,
+    /// Providers whose last turn failed on authentication or a quota ([`breaker`]).
+    breaker: Breaker,
+    caps: breaker::Caps,
 }
 
 #[derive(Clone)]
@@ -676,6 +704,7 @@ impl Manager {
         let devices = crate::devices::Devices::open(options.devices.clone());
         let work = work::Work::open(options.work.clone());
         let ids = ids::Ids::open(&options.work.dir);
+        let breaker = Breaker::open(options.breaker_file.clone());
         let manager = Manager {
             inner: Arc::new(Inner {
                 workspaces,
@@ -685,6 +714,8 @@ impl Manager {
                 devices,
                 work,
                 ids,
+                breaker,
+                caps: Default::default(),
                 store,
                 providers,
                 lanes,
@@ -748,6 +779,7 @@ impl Manager {
                 gate_running: false,
                 gate_again: false,
                 rewinding: false,
+                released: false,
             };
             manager.lock().insert(agent.record.id.clone(), agent);
         }
@@ -1168,6 +1200,9 @@ impl Manager {
                     .transition(agent, Event::TurnCompleted, None)
                     .map(|_| ());
                 agent.active_turn = None;
+                if r.is_ok() {
+                    self.breaker_observe_success(&agent.record.provider);
+                }
                 if r.is_ok() && agent.turn_base.is_some() && !agent.record.internal {
                     self.gate_turn_completed(agent);
                 }
@@ -1190,6 +1225,8 @@ impl Manager {
                     if let Some((class, detector)) = self.handoff_check(agent) {
                         self.spawn_handoff(agent_id.to_string(), class, detector);
                     }
+                    self.breaker_observe_failure(agent);
+                    self.release_if_errored(agent);
                 }
                 r
             }
@@ -1295,6 +1332,14 @@ impl Manager {
                 .into_iter()
                 .filter(|(_, p, _)| self.inner.providers.contains_key(*p))
                 .collect();
+            let mut tripped = None;
+            lanes.retain(|(_, p, _)| match self.check_breaker(p) {
+                Ok(()) => true,
+                Err(e) => {
+                    tripped.get_or_insert(e);
+                    false
+                }
+            });
             let chain_cwd = if req.cwd.trim().is_empty() {
                 req.workspace_id
                     .as_deref()
@@ -1312,6 +1357,9 @@ impl Manager {
                 lanes.retain(|(_, p, _)| *p != "codex");
             }
             let Some((first_name, first_provider, first_lane)) = lanes.first().cloned() else {
+                if let Some(e) = tripped {
+                    return Err(e);
+                }
                 return Err(ManagerError::Invalid(format!(
                     "no lane of chain \"{category}\" can run here"
                 )));
@@ -1374,6 +1422,22 @@ impl Manager {
             .get(&provider_id)
             .cloned()
             .ok_or_else(|| ManagerError::UnknownProvider(provider_id.clone()))?;
+        self.check_breaker(&provider_id)?;
+        // Caps (see `breaker`): only a create from the create route, for an agent whose provider
+        // process agentd spawns. The slot is held from here until the agent is in the table.
+        req.labels.remove(CALLER_LABEL);
+        let spawns = !req.claude_session
+            && !req.external
+            && !req.internal
+            && provider_id != ext::PROVIDER
+            && !ext::is_session(&provider_id);
+        let mut slot = match (&req.created_by, spawns) {
+            (Some(caller), true) => {
+                req.labels.insert(CALLER_LABEL.into(), caller.clone());
+                Some(self.reserve_slot(caller)?)
+            }
+            _ => None,
+        };
         let info = provider.info();
         // The Juno shell tool only ever attaches to a Claude agent in a mode that
         // asks before each call, with no juno tool preapproved (fork lands here too).
@@ -1496,10 +1560,15 @@ impl Manager {
                 gate_again: false,
                 subagents: Vec::new(),
                 rewinding: false,
+                released: false,
             };
             self.persist(&mut agent);
             self.publish_state(&agent);
             agents.insert(id.clone(), agent);
+            // In the table now: it counts as an agent, no longer as a reservation.
+            if let Some(slot) = slot.as_mut() {
+                slot.commit();
+            }
         }
         let (tx, rx) = mpsc::unbounded_channel();
         match provider.create_session(config, tx).await {
@@ -1556,7 +1625,7 @@ impl Manager {
 
     /// Load a closed agent's session again (Paseo `ensureAgentLoaded`).
     async fn ensure_loaded(&self, id: &str) -> Result<Arc<dyn Session>, ManagerError> {
-        let (record, needs_resume) = {
+        let (record, released) = {
             let mut agents = self.lock();
             let agent = agents
                 .get_mut(id)
@@ -1564,11 +1633,15 @@ impl Manager {
             if let Some(s) = &agent.session {
                 return Ok(s.clone());
             }
-            self.transition(agent, Event::Resume, None)?;
+            // An agent that failed and gave up its session stays in `error`; it gets a new
+            // session here, and its next turn starts from `error`.
+            let released = agent.released && agent.k.status == AgentStatus::Error;
+            if !released {
+                self.transition(agent, Event::Resume, None)?;
+            }
             self.publish_state(agent);
-            (agent.record.clone(), true)
+            (agent.record.clone(), released)
         };
-        debug_assert!(needs_resume);
         let provider = self
             .inner
             .providers
@@ -1588,7 +1661,11 @@ impl Manager {
         match result {
             Ok(session) => {
                 agent.session = Some(session.clone());
-                self.transition(agent, Event::HandshakeDone, None)?;
+                if released {
+                    agent.released = false;
+                } else {
+                    self.transition(agent, Event::HandshakeDone, None)?;
+                }
                 self.persist(agent);
                 self.publish_state(agent);
                 drop(agents);
@@ -1597,7 +1674,9 @@ impl Manager {
                 Ok(session)
             }
             Err(e) => {
-                self.transition(agent, Event::LoadFailed, Some(&e.0))?;
+                if !released {
+                    self.transition(agent, Event::LoadFailed, Some(&e.0))?;
+                }
                 self.persist(agent);
                 self.publish_state(agent);
                 Err(ManagerError::Provider(e.0))
@@ -1667,6 +1746,10 @@ impl Manager {
                         failed.then(|| self.handoff_check(agent)).flatten()
                     {
                         self.spawn_handoff(id.to_string(), class, detector);
+                    }
+                    if failed {
+                        self.breaker_observe_failure(agent);
+                        self.release_if_errored(agent);
                     }
                     self.persist(agent);
                     self.publish_state(agent);
@@ -2214,6 +2297,7 @@ impl Manager {
         }
         if let Some(a) = self.lock().get_mut(&id) {
             a.chain_active = false;
+            self.release_if_errored(a);
         }
         self.bump();
     }

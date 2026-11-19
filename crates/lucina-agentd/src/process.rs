@@ -47,14 +47,80 @@ fn start_ticks(pid: u32) -> Option<u64> {
     after_comm.split(' ').nth(19)?.parse().ok()
 }
 
-fn kill_group(pid: u32, signal: &str) {
-    let _ = std::process::Command::new("kill")
-        .args(["-s", signal, "--", &format!("-{pid}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+/// A pid as rustix wants it; `None` for 0 and 1 (never a group or init) and for values that
+/// don't fit.
+fn rustix_pid(pid: u32) -> Option<rustix::process::Pid> {
+    if pid <= 1 {
+        return None;
+    }
+    rustix::process::Pid::from_raw(i32::try_from(pid).ok()?)
 }
 
+/// Signal the process group led by `pid` (the provider is its own group leader).
+fn kill_group(pid: u32, signal: rustix::process::Signal) {
+    if let Some(p) = rustix_pid(pid) {
+        let _ = rustix::process::kill_process_group(p, signal);
+    }
+}
+
+/// Every process below `root` in the process tree now, with its start time (so a
+/// later signal never reaches a pid that was reused), read from `/proc`.
+/// This reaches what left the provider's process group (an MCP server that
+/// started its own session) as long as its parent chain is still intact.
+fn descendants(root: u32) -> Vec<(u32, u64)> {
+    let mut parent_of: std::collections::HashMap<u32, u32> = Default::default();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    for e in entries.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let Some(after) = stat.rfind(')').map(|i| &stat[i + 2..]) else {
+            continue;
+        };
+        if let Some(ppid) = after.split(' ').nth(1).and_then(|p| p.parse::<u32>().ok()) {
+            parent_of.insert(pid, ppid);
+        }
+    }
+    let mut found: Vec<u32> = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(p) = frontier.pop() {
+        for (&child, &parent) in &parent_of {
+            if parent == p && child != root && !found.contains(&child) {
+                found.push(child);
+                frontier.push(child);
+            }
+        }
+    }
+    found
+        .into_iter()
+        .filter_map(|p| start_ticks(p).map(|t| (p, t)))
+        .collect()
+}
+
+/// Signal the listed processes, each only while it is still the process whose start
+/// time was read.
+fn kill_listed(list: &[(u32, u64)], signal: rustix::process::Signal) {
+    for &(pid, ticks) in list {
+        if start_ticks(pid) == Some(ticks) {
+            if let Some(p) = rustix_pid(pid) {
+                let _ = rustix::process::kill_process(p, signal);
+            }
+        }
+    }
+}
+
+/// End a provider process and everything below it: its process group, and the
+/// descendants that left the group. Safe API only (rustix), no `kill` child process.
+pub fn kill_tree(pid: u32) {
+    let tree = descendants(pid);
+    kill_group(pid, rustix::process::Signal::KILL);
+    kill_listed(&tree, rustix::process::Signal::KILL);
+}
 impl Registry {
     pub fn open(state_dir: &Path) -> std::io::Result<Self> {
         let dir = state_dir.join("procs");
@@ -121,7 +187,7 @@ impl Registry {
             if let Some(rec) = rec {
                 if start_ticks(rec.pid) == Some(rec.start_ticks) {
                     tracing::warn!(pid = rec.pid, program = %rec.program, "reaping a provider process left by a previous daemon");
-                    kill_group(rec.pid, "KILL");
+                    kill_tree(rec.pid);
                     killed.push(rec.pid);
                 }
             }
@@ -223,11 +289,15 @@ impl Proc {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        kill_group(self.pid, "TERM");
+        let tree = descendants(self.pid);
+        kill_group(self.pid, rustix::process::Signal::TERM);
         if tokio::time::timeout(grace, child.wait()).await.is_err() {
-            kill_group(self.pid, "KILL");
+            kill_group(self.pid, rustix::process::Signal::KILL);
             let _ = child.wait().await;
         }
+        // Whatever outlived the provider (it left the group, or ignored TERM).
+        kill_listed(&tree, rustix::process::Signal::KILL);
+        kill_group(self.pid, rustix::process::Signal::KILL);
         if let Some(r) = &self.registry {
             r.forget(self.pid);
         }
@@ -246,7 +316,7 @@ impl Proc {
 impl Drop for Proc {
     fn drop(&mut self) {
         if self.child.is_some() {
-            kill_group(self.pid, "KILL");
+            kill_tree(self.pid);
             if let Some(r) = &self.registry {
                 r.forget(self.pid);
             }
