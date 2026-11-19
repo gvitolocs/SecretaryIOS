@@ -187,7 +187,10 @@ impl Trace {
 
     /// The timeline's `meta.voice`: the request's `base` (`turnId`, `ms`) plus the route with every layer.
     pub fn meta(&self, base: Option<&Value>) -> Value {
-        let mut v = base.cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        let mut v = base
+            .cloned()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
         let i = self.inner();
         if let Some(r) = &i.route {
             let mut route = r.meta_json();
@@ -395,12 +398,18 @@ pub async fn scope<F: std::future::Future>(sink: Option<Arc<VoiceSink>>, fut: F)
 
 /// A gate for a spoken turn's context building: a future wrapped by [`gated`] waits at [`hold`] until the
 /// returned sender sends `true`.
-pub fn gate() -> (tokio::sync::watch::Sender<bool>, tokio::sync::watch::Receiver<bool>) {
+pub fn gate() -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::sync::watch::Receiver<bool>,
+) {
     tokio::sync::watch::channel(false)
 }
 
 /// Runs `fut` behind `rx`'s gate.
-pub async fn gated<F: std::future::Future>(rx: tokio::sync::watch::Receiver<bool>, fut: F) -> F::Output {
+pub async fn gated<F: std::future::Future>(
+    rx: tokio::sync::watch::Receiver<bool>,
+    fut: F,
+) -> F::Output {
     GATE.scope(rx, fut).await
 }
 
