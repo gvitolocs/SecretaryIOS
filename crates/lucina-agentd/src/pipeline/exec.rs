@@ -128,6 +128,142 @@ impl Drop for Scratch {
     }
 }
 
+/// How long a gate that takes a bq slot waits for the grant, as bq's own `--max-wait` (LA-C038,
+/// WORK-26). The merge job holds the repo's merge lock while it waits, so every other merge of that
+/// repo queues behind it: a half-hour wait for the one gate slot is a host problem to surface, not
+/// to sit in.
+const BQ_QUEUE_CAP_SECS: u64 = 1800;
+
+/// How long `bq` gets to print its usage when the executor asks whether the file at the home
+/// directory is ours (as `scripts/check-fast` asks it).
+const BQ_USAGE_CAP: Duration = Duration::from_secs(5);
+
+/// The two names the executor hands the wrapped job: the gate command, and the marker file the job
+/// writes first. Both are read and unset by the wrapper before the gate command starts, so the gate
+/// sees neither. The command travels in a name and not in bq's argv because `systemd-run` expands
+/// the braced `${…}` of an argv it is given, and a gate's text is not ours to rewrite.
+const SLOT_COMMAND_VAR: &str = "LAGENT_GATE_COMMAND";
+const SLOT_GRANT_VAR: &str = "LAGENT_GATE_GRANT";
+
+/// Where the executor finds `bq`: `<passwd home>/.local/bin/bq`, the way `scripts/check-fast` finds
+/// it, and never `PATH`, `$HOME` or a variable a step or a repo could set. A field of the executor so
+/// that a test stands a fake in.
+#[derive(Clone, Debug)]
+enum BqSource {
+    Home,
+    /// The file to use (`None`: there is none).
+    Fixed(Option<PathBuf>),
+}
+
+/// What looking for `bq` found.
+#[derive(Debug, PartialEq, Eq)]
+enum BqFind {
+    Found(PathBuf),
+    /// No `bq` here (GitHub's runners, a scratch repo on a host without it): the gate runs as it always did.
+    Missing(String),
+    /// A file is there and does not print bq's usage: the gate is refused.
+    Refused(String),
+}
+
+/// A gate that takes a bq slot: the command line that starts it as the job of a `bq run`, and the
+/// marker that job writes first.
+struct SlotRun {
+    name: String,
+    wrapper: String,
+    marker: PathBuf,
+    queue_cap_secs: u64,
+}
+
+/// Does `usage` read as the usage of our `bq`: the class list and the options a gate's call passes?
+fn bq_usage_is_ours(usage: &str) -> bool {
+    ["--class short|long|proof", "--max-wait", "--priority"]
+        .iter()
+        .all(|w| usage.contains(w))
+}
+
+/// The wrapper text a gate step runs (`bash -c <this>`): `bq run --class long --priority gate
+/// --max-wait <cap> --who <who> -- bash -c <script> bash`, replacing the step's shell by `bq`. bq
+/// starts the script as its job once it holds the slot, with `BQ_SLOT` and `BQ_SLOT_PID` set; the
+/// script writes the marker (a temporary file renamed into place, so the executor never reads half
+/// of it), unsets the two names it was handed and `exec`s the gate command as `bash -c <command>
+/// bash`, the shape every gate step has. A marker that cannot be written ends the job with 97
+/// instead of running a gate whose clock never starts.
+fn slot_wrapper(bq: &Path, who: &str, cap_secs: u64) -> String {
+    let script = format!(
+        "m=${SLOT_GRANT_VAR}; c=${SLOT_COMMAND_VAR}; unset {SLOT_COMMAND_VAR} {SLOT_GRANT_VAR}; \
+         {{ printf %s \"$BQ_SLOT\" > \"$m.tmp\" && mv \"$m.tmp\" \"$m\"; }} || exit 97; \
+         exec bash -c \"$c\" bash"
+    );
+    format!(
+        "exec {} run --class long --priority gate --max-wait {cap_secs} --who {} -- bash -c {} bash",
+        repo::shell_quote(&bq.display().to_string()),
+        repo::shell_quote(who),
+        repo::shell_quote(&script)
+    )
+}
+
+/// The home directory of this uid from the passwd entry, as `scripts/check-fast` reads it: never
+/// `$HOME`.
+fn passwd_home() -> Option<PathBuf> {
+    let uid = rustix::process::getuid().as_raw();
+    let from_line = |l: &str| {
+        let f: Vec<&str> = l.split(':').collect();
+        (f.len() >= 6 && f[2].parse::<u32>().ok() == Some(uid) && !f[5].is_empty())
+            .then(|| PathBuf::from(f[5]))
+    };
+    let asked = Command::new("/usr/bin/getent")
+        .args(["passwd", &uid.to_string()])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().find_map(from_line));
+    asked.or_else(|| {
+        std::fs::read_to_string("/etc/passwd")
+            .ok()?
+            .lines()
+            .find_map(from_line)
+    })
+}
+
+/// Does the program at `bq` print bq's usage when run without arguments, within [`BQ_USAGE_CAP`]?
+fn bq_prints_usage(bq: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut child) = Command::new(bq)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return false;
+    };
+    let t = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if t.elapsed() < BQ_USAGE_CAP => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+    let mut text = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut text);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut text);
+    }
+    bq_usage_is_ours(&text)
+}
+
 struct Exec {
     spec: Spec,
     log: File,
@@ -156,6 +292,11 @@ struct Exec {
     /// The job's own scratch, and so a step's `TMPDIR` where the inherited one is not usable
     /// ([`Exec::job_scratch`]).
     step_tmp: Option<PathBuf>,
+    /// Where bq is looked for (BqSource), how long a gate waits for its slot, and how many
+    /// grant markers this job has made (each gate run has its own).
+    bq: BqSource,
+    bq_queue_cap_secs: u64,
+    grants: u32,
 }
 
 struct Members {
@@ -189,6 +330,15 @@ impl Exec {
             kill_grace: KILL_GRACE,
             user_scope: None,
             step_tmp: None,
+            // A test run never asks the real queue: an executor built for a test has no bq unless the
+            // test gives it one.
+            bq: if cfg!(test) {
+                BqSource::Fixed(None)
+            } else {
+                BqSource::Home
+            },
+            bq_queue_cap_secs: BQ_QUEUE_CAP_SECS,
+            grants: 0,
             spec,
             log,
             path,
@@ -741,6 +891,7 @@ impl Exec {
                 .env(SLOT_GRANT_VAR, &s.marker);
             let _ = std::fs::remove_file(&s.marker);
         }
+        let started_at = Instant::now();
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -784,19 +935,6 @@ impl Exec {
         let ended = step.run_to_end(&mut child, cap, grace);
         if let Some(s) = slot {
             let _ = std::fs::remove_file(&s.marker);
-            // Never granted and not ended by its limit: the wait itself is what failed (bq's own
-            // `--max-wait`, or bq refusing the job), and the limit of the gate was never in play.
-            if ended.granted_after.is_none() && !ended.timed_out {
-                if let Some(code) = ended.status.filter(|s| !s.success()) {
-                    let waited = format!(
-                        "waited for a bq slot for {} s without a grant (bq exit {})",
-                        started_at.elapsed().as_secs(),
-                        code.code().map_or("signal".to_string(), |c| c.to_string())
-                    );
-                    self.say(&format!("failed: {waited}"));
-                    return Some(waited);
-                }
-            }
         }
         // Only now is the scope a fact: the unit was seen as the step's control group, or it never was and
         // the step is worked by its process group alone whatever the name at its start said.
