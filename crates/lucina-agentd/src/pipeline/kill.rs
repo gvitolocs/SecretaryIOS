@@ -333,10 +333,9 @@ pub(crate) fn group_pids(pgid: u32) -> Vec<u32> {
     out
 }
 
-/// Every pid in `cg` and in every control group under it, this process's own excluded by the
-/// screen. A step's child can `mkdir` inside its own delegated scope and move a grandchild into
-/// it, which drops that grandchild from the scope's list for good, so this descends.
-fn cgroup_pids(cg: &Path) -> Vec<u32> {
+/// Every pid named by `cgroup.procs` in `cg` and in every control group under it, unscreened: the
+/// sweep's refusal has to see this process and its kin, which [`cgroup_pids`] drops.
+fn raw_cgroup_pids(cg: &Path) -> Vec<u32> {
     let mut out = Vec::new();
     let mut dirs = vec![cg.to_path_buf()];
     while let Some(d) = dirs.pop() {
@@ -350,10 +349,70 @@ fn cgroup_pids(cg: &Path) -> Vec<u32> {
             dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
         }
     }
-    out.retain(|p| listable(*p) && !is_zombie(*p));
     out.sort_unstable();
     out.dedup();
     out
+}
+
+/// Every pid in `cg` and in every control group under it, this process's own excluded by the
+/// screen. A step's child can `mkdir` inside its own delegated scope and move a grandchild into
+/// it, which drops that grandchild from the scope's list for good, so this descends.
+fn cgroup_pids(cg: &Path) -> Vec<u32> {
+    let mut out = raw_cgroup_pids(cg);
+    out.retain(|p| listable(*p) && !is_zombie(*p));
+    out
+}
+
+/// The parent and the process group of `pid`, from its `/proc` entry.
+fn parent_and_group(pid: u32) -> Option<(u32, u32)> {
+    let t = fs::read(format!("/proc/{pid}/stat")).ok()?;
+    let t = String::from_utf8_lossy(&t);
+    let mut f = stat_after_comm(&t);
+    let _state = f.next()?;
+    let ppid = f.next()?.parse().ok()?;
+    let pgid = f.next()?.parse().ok()?;
+    Some((ppid, pgid))
+}
+
+/// How many parents up the chain is followed from this process: far past any real depth, so the
+/// walk is bounded even when `/proc` answers nonsense.
+const ANCESTOR_HOPS: usize = 64;
+
+/// This process's ancestors, nearest first, ending at pid 1 or after [`ANCESTOR_HOPS`].
+fn ancestors() -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut at = std::process::id();
+    for _ in 0..ANCESTOR_HOPS {
+        let Some((ppid, _)) = parent_and_group(at) else {
+            break;
+        };
+        if ppid == 0 || out.contains(&ppid) {
+            break;
+        }
+        out.push(ppid);
+        at = ppid;
+    }
+    out
+}
+
+/// Why `pid` may not take a `cgroup.kill` with it, or `None` when it may: pid 1, this process, a
+/// member of this process's group, and this process's parent and every ancestor above it. The
+/// executor stands in a `lagent-job` unit under the user manager, where its parent is that manager
+/// and agentd's main pid is not an ancestor; run as a plain child (no systemd) its parent *is*
+/// agentd. Either way the daemon is protected where it can be known — through the ancestor chain —
+/// and never guessed at. `chain` is that chain, read once by the caller.
+fn protected_reason(pid: u32, pgid: u32, chain: &[u32]) -> Option<&'static str> {
+    if pid == 1 {
+        Some("pid 1")
+    } else if pid == std::process::id() {
+        Some("this process, the job's executor")
+    } else if chain.contains(&pid) {
+        Some("a parent of this process")
+    } else if parent_and_group(pid).map(|(_, g)| g) == Some(pgid) && !is_zombie(pid) {
+        Some("a member of this process's group")
+    } else {
+        None
+    }
 }
 
 /// SIGKILL of the step's control group and of every group under it, through `cgroup.kill`: no
@@ -361,9 +420,43 @@ fn cgroup_pids(cg: &Path) -> Vec<u32> {
 /// names. Safe to aim at the step's own scope because `systemd-run --scope` execs its payload
 /// into it: the scope holds the step and nothing else — the executor of the job stands outside
 /// it, unlike a `lucina-ci` launcher, which is why there is nothing here to gather out of it.
+///
+/// But a step of the daemon's own uid can write any pid it may signal into its scope's
+/// `cgroup.procs`, and `cgroup.kill` takes every process of the tree: so before anything is
+/// written the whole tree is read, and a tree that holds a pid this process must never kill (see
+/// [`protected_reason`]) — or one this process cannot screen at all, its own ids unreadable — gets
+/// no `cgroup.kill`. The refusal is a [`Miss`] that names the pid, and every other pid of the tree
+/// is signalled one by one through the screened pid route instead (finding PIPE-01). The read and
+/// the write are not atomic: a pid moved in between is the window the pid routes share.
+///
 /// A refusal is reported, not swallowed: a scope this user was not delegated answers it for
 /// every write, and then the signals by group and by pid are all there is.
 fn kill_cgroup_tree(cg: &Path, miss: &mut Miss) {
+    let pids = raw_cgroup_pids(cg);
+    let Some((_, pgid)) = own_ids() else {
+        miss.add_cgroup(format!(
+            "this process's own ids could not be read, so the tree {} was not swept through cgroup.kill",
+            cg.display()
+        ));
+        // The pid route screens by the same ids, so it would refuse every one of these as well.
+        return;
+    };
+    let chain = ancestors();
+    let found = pids
+        .iter()
+        .find_map(|p| protected_reason(*p, pgid, &chain).map(|why| (*p, why)));
+    if let Some((pid, why)) = found {
+        miss.add_cgroup(format!(
+            "pid {pid} ({why}) is in the tree {}, so it was not swept through cgroup.kill; its other pids were signalled one by one",
+            cg.display()
+        ));
+        for p in pids {
+            if protected_reason(p, pgid, &chain).is_none() {
+                signal_pid(p, Signal::KILL, miss);
+            }
+        }
+        return;
+    }
     let mut dirs = vec![cg.to_path_buf()];
     while let Some(d) = dirs.pop() {
         let f = d.join("cgroup.kill");
@@ -793,6 +886,7 @@ mod tests {
 
     use super::*;
     use crate::testutil::write_exec;
+    use std::os::unix::process::CommandExt;
 
     /// Ends `child` and reaps it, whatever the test below did or failed to do before it got there.
     struct Reap(Child);
@@ -1341,6 +1435,119 @@ mod tests {
             matches!(&ended.scope, Sighting::NeverSeen(u) if u == unit),
             "a control group with a `.` segment is not this step's tree: {:?}",
             ended.scope
+        );
+    }
+
+    /// A fake scope tree: a directory with a `cgroup.procs` naming `pids`, and a subdirectory with
+    /// its own naming `sub_pids`. `cgroup.kill` is whatever the code under test writes there, so its
+    /// absence is the proof that nothing was written.
+    fn fake_scope(dir: &Path, pids: &[u32], sub_pids: &[u32]) -> PathBuf {
+        let cg = dir.join("fake.scope");
+        let sub = cg.join("inner");
+        fs::create_dir_all(&sub).unwrap();
+        let list = |p: &[u32]| p.iter().map(|p| format!("{p}\n")).collect::<String>();
+        fs::write(cg.join("cgroup.procs"), list(pids)).unwrap();
+        fs::write(sub.join("cgroup.procs"), list(sub_pids)).unwrap();
+        cg
+    }
+
+    fn wait_gone(child: &mut Child, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.try_wait().expect("waitpid works").is_some() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{what} was never signalled");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// PIPE-01: a step of the daemon's uid can write the daemon's pid into its scope's
+    /// `cgroup.procs`, and `cgroup.kill` would then take the daemon with the step. The pid here is this
+    /// very process, in a nested group of the tree: the tree is not written, the refusal names the
+    /// pid, and the step's other process is still ended, by the pid route.
+    #[test]
+    fn a_tree_holding_this_process_gets_no_cgroup_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = Command::new("/bin/sleep")
+            .arg("300")
+            .process_group(0)
+            .spawn()
+            .expect("sleep starts");
+        let child_pid = child.id();
+        let mut child = Reap(child);
+        let own = std::process::id();
+        let cg = fake_scope(dir.path(), &[child_pid], &[own]);
+
+        let mut miss = Miss::default();
+        kill_cgroup_tree(&cg, &mut miss);
+
+        assert!(
+            !cg.join("cgroup.kill").exists() && !cg.join("inner/cgroup.kill").exists(),
+            "cgroup.kill was written on a tree that held this process"
+        );
+        let line = miss.line();
+        assert!(
+            line.contains(&format!("pid {own} ")) && line.contains("not swept through cgroup.kill"),
+            "the refusal does not name the protected pid: {line}"
+        );
+        wait_gone(&mut child.0, "the step's other process");
+    }
+
+    /// The same sweep of a tree with nothing protected in it is the `cgroup.kill` of every directory
+    /// of the tree, as it was.
+    #[test]
+    fn a_tree_without_a_protected_pid_is_swept_through_cgroup_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = Command::new("/bin/sleep")
+            .arg("300")
+            .process_group(0)
+            .spawn()
+            .expect("sleep starts");
+        let child_pid = child.id();
+        let child = Reap(child);
+        let cg = fake_scope(dir.path(), &[child_pid], &[]);
+
+        let mut miss = Miss::default();
+        kill_cgroup_tree(&cg, &mut miss);
+
+        assert_eq!(fs::read(cg.join("cgroup.kill")).unwrap(), b"1\n");
+        assert_eq!(fs::read(cg.join("inner/cgroup.kill")).unwrap(), b"1\n");
+        assert!(miss.is_empty(), "{}", miss.line());
+        drop(child);
+    }
+
+    /// With this process's own ids unreadable nothing can be screened, so nothing is swept: a tree
+    /// that cannot be proved clear gets no `cgroup.kill`.
+    #[test]
+    fn a_tree_is_not_swept_when_own_ids_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = Command::new("/bin/sleep")
+            .arg("300")
+            .process_group(0)
+            .spawn()
+            .expect("sleep starts");
+        let child_pid = child.id();
+        let mut child = Reap(child);
+        let cg = fake_scope(dir.path(), &[child_pid], &[]);
+
+        let mut miss = Miss::default();
+        refuse_own_ids(true);
+        kill_cgroup_tree(&cg, &mut miss);
+        refuse_own_ids(false);
+
+        assert!(
+            !cg.join("cgroup.kill").exists(),
+            "cgroup.kill was written by a process that could not screen the tree"
+        );
+        assert!(
+            miss.line().contains("own ids could not be read"),
+            "{}",
+            miss.line()
+        );
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "the step was signalled unscreened"
         );
     }
 }
