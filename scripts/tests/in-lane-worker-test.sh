@@ -123,6 +123,20 @@ expect worker "no lane, runner scope on a grandparent" "$nolane" "$tmp/p2"
 printf '#!/bin/sh\nsleep 30\n' > "$tmp/lane-hang"
 chmod 0755 "$tmp/lane-hang"
 expect worker "a lane that hangs counts as a worker" "$tmp/lane-hang" "$tmp/p1"
+# a fake `timeout` first on PATH that exits 1 changes nothing: the helper calls /usr/bin/timeout by absolute path
+mkdir "$tmp/fakebin"
+printf '#!/bin/sh\nexit 1\n' > "$tmp/fakebin/timeout"
+chmod 0755 "$tmp/fakebin/timeout"
+if ! (
+    PATH="$tmp/fakebin:$PATH"
+    unset LANE_WORKER LANE_PROOFS_REFUSED
+    in_lane_worker "$tmp/lane0" "$tmp/p1"
+); then fail "a fake timeout first on PATH (exit 1) skipped the lane trigger"; fi
+# a timeout path that is missing or not executable: worker (argument for the tests only)
+if ! (
+    unset LANE_WORKER LANE_PROOFS_REFUSED
+    in_lane_worker "$tmp/lane1" "$tmp/p1" "" "$tmp/no-such-timeout"
+); then fail "a missing timeout binary must count as worker"; fi
 # st=124: `--help` answers at once, `in-worker` sleeps past the timeout: worker
 printf '#!/bin/sh\n[ "$2" = --help ] && exit 0\nsleep 30\n' > "$tmp/lane-slow"
 chmod 0755 "$tmp/lane-slow"
