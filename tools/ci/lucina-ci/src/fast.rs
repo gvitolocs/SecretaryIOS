@@ -85,6 +85,57 @@ pub fn owner_of(root: &Path, members: &BTreeSet<String>, path: &str) -> Option<O
     None
 }
 
+/// The directory (relative to the repository root) of the workspace member whose package is `name`.
+pub fn member_dir(root: &Path, members: &BTreeSet<String>, name: &str) -> Option<String> {
+    members.iter().find_map(|d| {
+        let text = fs::read_to_string(root.join(d).join("Cargo.toml")).ok()?;
+        (package_name(&text).as_deref() == Some(name)).then(|| d.clone())
+    })
+}
+
+/// The integration tests of a crate directory: each top-level `tests/*.rs` file, and each `tests/<dir>/main.rs`, as a path
+/// relative to the repository root, sorted.
+pub fn integration_test_files(root: &Path, crate_dir: &str) -> Vec<String> {
+    let tests = root.join(crate_dir).join("tests");
+    let mut found = Vec::new();
+    let Ok(rd) = fs::read_dir(&tests) else {
+        return found;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let p = e.path();
+        if p.is_file() && name.ends_with(".rs") {
+            found.push(format!("{crate_dir}/tests/{name}"));
+        } else if p.is_dir() && p.join("main.rs").is_file() {
+            found.push(format!("{crate_dir}/tests/{name}/main.rs"));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The one line that says the gate's unit-test steps (`cargo test --lib`) did not run the integration tests of the touched
+/// workspace crates; `None` when there are none. `files` is sorted, `crates` are package names.
+pub fn integration_tests_note(files: &[String], crates: &[String]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = files.iter().take(8).map(String::as_str).collect();
+    let more = if files.len() > 8 {
+        format!(" and {} more", files.len() - 8)
+    } else {
+        String::new()
+    };
+    let p: Vec<String> = crates.iter().map(|c| format!("-p {c}")).collect();
+    Some(format!(
+        "check-fast: integration tests of touched crates were NOT run at this gate: {} file(s): {}{} (run them with: cargo test {} --tests)",
+        files.len(),
+        shown.join(" "),
+        more,
+        p.join(" ")
+    ))
+}
+
 /// Steps to run, as (name, shell command, timeout in seconds).
 pub fn cargo_steps(owners: &BTreeSet<Owner>, changed: &[String]) -> Vec<(String, String, u64)> {
     let mut steps = Vec::new();
@@ -275,5 +326,19 @@ mod tests {
     #[test]
     fn nothing_to_do_means_no_steps() {
         assert!(cargo_steps(&BTreeSet::new(), &[]).is_empty());
+    }
+
+    #[test]
+    fn integration_note_lists_at_most_eight_and_counts_the_rest() {
+        assert_eq!(integration_tests_note(&[], &["a".into()]), None);
+        let one = integration_tests_note(&["c/tests/a.rs".into()], &["a".into()]).unwrap();
+        assert!(one.contains("NOT run at this gate: 1 file(s): c/tests/a.rs (run them with: cargo test -p a --tests)"), "{one}");
+        let many: Vec<String> = (0..10).map(|i| format!("c/tests/t{i}.rs")).collect();
+        let n = integration_tests_note(&many, &["a".into(), "b".into()]).unwrap();
+        assert!(
+            n.contains("10 file(s)") && n.contains("t7.rs and 2 more") && !n.contains("t8.rs"),
+            "{n}"
+        );
+        assert!(n.contains("cargo test -p a -p b --tests"), "{n}");
     }
 }

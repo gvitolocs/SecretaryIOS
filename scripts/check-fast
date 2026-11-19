@@ -165,9 +165,23 @@ if [ "$queued" = 0 ]; then
     # On stderr, so that the stdout of a run is still the check's own bytes; it is the first line the run prints.
     echo "check-fast: no bq on this host; running without the queue" >&2
 fi
-# One shared Cargo target for every worktree (the same one LucinaOS uses), so the loop adds no new large target directories on
-# nezopt. The launcher itself builds apart, in its own small target, because LucinaOS's launcher has the same package name.
-export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$qhome/.cache/lucina-check-target}
+# One Cargo target PER WORKTREE, all under one cache root. Cargo gives a workspace member the same artifact hash in every worktree, so a
+# target shared by worktrees on different commits let one worktree's build make cargo judge another worktree's sources fresh: a check
+# could pass or fail on code that was not in its worktree (GATE-24; LucinaOS fixed the same thing on 2026-11-11). The first check in a
+# new worktree compiles its dependencies once. The launcher itself still builds apart, in its own small target, because LucinaOS's
+# launcher has the same package name. This repo has no sweeper: LucinaOS's check-fast sweeps the whole cache root (in-use aware),
+# which includes these wt-* children.
+cache_root=${LUCINA_CHECK_CACHE:-$qhome/.cache/lucina-check-target}
+wt_id=wt-$(printf '%s' "$root" | sha1sum | cut -c1-10)
+if [ -n "${CARGO_TARGET_DIR:-}" ] && [ "${CARGO_TARGET_DIR#"$cache_root"/}" = "$CARGO_TARGET_DIR" ] && [ "${LUCINA_CHECK_ALLOW_TARGET:-}" != 1 ]; then
+    echo "check-fast: warning: CARGO_TARGET_DIR=$CARGO_TARGET_DIR (inherited) is outside $cache_root; a target shared with other worktrees can hold another commit's artifacts (set LUCINA_CHECK_ALLOW_TARGET=1 to silence this)." >&2
+fi
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$cache_root/$wt_id}
+mkdir -p "$CARGO_TARGET_DIR"
+touch "$CARGO_TARGET_DIR/.last-used"
+# No incremental compilation: the caches rarely get reused and were nearly half the old shared target's size (40 of 89 GiB on 2026-11-11,
+# when nezopt's disk ran short). A caller that sets CARGO_INCREMENTAL keeps its value.
+export CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-0}
 export LUCINA_CI_CPU_QUOTA=${LUCINA_CI_CPU_QUOTA:-400%}
 free=$(df --output=avail -BG "$qhome" | tail -1 | tr -dc 0-9)
 [ "$free" -ge 20 ] || { echo "check-fast: only ${free} GiB free; refusing to build" >&2; exit 2; }
