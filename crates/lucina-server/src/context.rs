@@ -121,8 +121,8 @@ pub fn record_jev_sample(
     }
     // The classifier consults Jev when JEV is first or when a tier-0 rule double-checks it (`classify`):
     // only such a verdict is one of its own answers, and only such an answer is a sample.
-    let wanted = crate::jev_route::jev_first_enabled()
-        || rule.as_ref().is_none_or(crate::jev_route::checks_tier0);
+    let wanted =
+        crate::jev_route::jev_first_enabled() || rule.is_none_or(crate::jev_route::checks_tier0);
     let Some(verdict) = jev else {
         return;
     };

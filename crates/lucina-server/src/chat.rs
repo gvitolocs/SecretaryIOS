@@ -910,10 +910,11 @@ impl Turn<'_> {
     ) {
         let text = keys.intent_text.unwrap_or(&self.message);
         let recent = crate::context::classifier_recent(self.st, &self.surface, keys, Utc::now());
+        let rule = lucina_intent::tier0::classify_tier0(text, &recent, &self.st.cfg.intent);
         crate::context::record_jev_sample(
             self.st,
             crate::context::sample_turn(&self.surface, &self.session),
-            &lucina_intent::tier0::classify_tier0(text, &recent, &self.st.cfg.intent),
+            rule.as_ref(),
             text,
             self.planner_platform(),
             verdict,
