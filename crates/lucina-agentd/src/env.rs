@@ -242,4 +242,17 @@ mod tests {
         assert!(!names(&built).contains(&"FAKE_DEPLOY_TOKEN".to_string()));
         assert_eq!(not_passed, 1);
     }
+
+    /// PIPE-05: agentd identity variables are for the executor alone; a step never sees them.
+    #[test]
+    fn agentd_identity_variables_are_not_passed_to_a_step() {
+        let src = source(&[
+            ("PATH", "/bin"),
+            ("LUCINA_AGENTD_PID", "42"),
+            ("LUCINA_AGENTD_EXE", "/home/nez/.local/bin/lucina-agentd"),
+        ]);
+        let (built, not_passed) = scrubbed_env_from(src, &[]);
+        assert_eq!(names(&built), vec!["PATH".to_string()]);
+        assert_eq!(not_passed, 2);
+    }
 }

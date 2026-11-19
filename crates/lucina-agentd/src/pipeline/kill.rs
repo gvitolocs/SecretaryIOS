@@ -440,6 +440,288 @@ fn set_agentd_env_pid(pid: Option<u32>) {
     AGENTD_ENV_PID.with(|c| c.set(pid));
 }
 
+/// The name of the variable that carries agentd's own executable path from the daemon, next to
+/// [`AGENTD_PID_VAR`] (`manager::pipeline::start_runner`): the fallback of agentd's identity when the
+/// user manager gives no usable pid. It is not on the environment allowlist, so a step never sees it.
+const AGENTD_EXE_VAR: &str = "LUCINA_AGENTD_EXE";
+/// The file name agentd's executable has. The infisical broker is the unit's main process for a moment
+/// before it execs agentd, and its executable must never be taken for agentd's.
+const AGENTD_BIN: &str = "lucina-agentd";
+/// What the kernel appends to the `/proc/<pid>/exe` link of a binary a deploy has replaced.
+const DELETED: &str = " (deleted)";
+
+/// `p` without a trailing ` (deleted)`.
+fn strip_deleted(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    PathBuf::from(s.strip_suffix(DELETED).unwrap_or(&s))
+}
+
+/// Whether `p` (with ` (deleted)` removed) is named `lucina-agentd`.
+fn is_agentd_name(p: &Path) -> bool {
+    strip_deleted(p)
+        .file_name()
+        .is_some_and(|n| n == AGENTD_BIN)
+}
+
+/// agentd's executable as the daemon gave it at the job's start, read once, by name only.
+#[cfg(not(test))]
+fn agentd_env_exe() -> Option<PathBuf> {
+    static EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    EXE.get_or_init(|| {
+        std::env::var_os(AGENTD_EXE_VAR)
+            .filter(|v| !v.is_empty())
+            .map(|v| strip_deleted(Path::new(&v)))
+    })
+    .clone()
+}
+
+// The seam of [`agentd_env_exe`].
+#[cfg(test)]
+thread_local! {
+    static AGENTD_ENV_EXE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn agentd_env_exe() -> Option<PathBuf> {
+    AGENTD_ENV_EXE.with(|c| c.borrow().clone())
+}
+
+#[cfg(test)]
+fn set_agentd_env_exe(exe: Option<PathBuf>) {
+    AGENTD_ENV_EXE.with(|c| *c.borrow_mut() = exe);
+}
+
+/// agentd's executable paths (at most the manager's and the daemon's), read once for the job.
+#[cfg(not(test))]
+static IDENTITY: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(not(test))]
+fn identity_get() -> Vec<PathBuf> {
+    IDENTITY.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+#[cfg(not(test))]
+fn identity_set(v: Vec<PathBuf>) {
+    if let Ok(mut g) = IDENTITY.lock() {
+        *g = v;
+    }
+}
+
+// In a test the identity is the test thread's own.
+#[cfg(test)]
+thread_local! {
+    static IDENTITY: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn identity_get() -> Vec<PathBuf> {
+    IDENTITY.with(|c| c.borrow().clone())
+}
+
+#[cfg(test)]
+fn identity_set(v: Vec<PathBuf>) {
+    IDENTITY.with(|c| *c.borrow_mut() = v);
+}
+
+/// What reading `/proc/<pid>/exe` said.
+#[derive(Debug, PartialEq, Eq)]
+enum ExeRead {
+    /// The executable, ` (deleted)` removed.
+    Path(PathBuf),
+    /// The process has exited: not protected.
+    Gone,
+    /// Any other failure (`EACCES` and so on): the pid is refused, not guessed at.
+    Unreadable(String),
+}
+
+/// `ENOENT` and `ESRCH` mean the process is gone; every other error leaves it unknown.
+fn classify_exe_error(raw: Option<i32>, text: &str) -> ExeRead {
+    match raw {
+        Some(c) if c == Errno::NOENT.raw_os_error() || c == Errno::SRCH.raw_os_error() => {
+            ExeRead::Gone
+        }
+        _ => ExeRead::Unreadable(text.to_string()),
+    }
+}
+
+fn read_exe(pid: u32) -> ExeRead {
+    match fs::read_link(format!("/proc/{pid}/exe")) {
+        Ok(p) => ExeRead::Path(strip_deleted(&p)),
+        Err(e) => classify_exe_error(e.raw_os_error(), &e.to_string()),
+    }
+}
+
+/// agentd's executable, from the manager's `MainPID` and from the daemon's variable. A path whose name
+/// is not `lucina-agentd` is no identity from either source, and is said (the broker's own executable
+/// is the unit's main process in the instant before it execs agentd). The manager's comes first; when
+/// the two differ both are kept, and said.
+fn resolve_exe(manager_pid: Option<u32>, notes: &mut Vec<String>) -> Vec<(PathBuf, &'static str)> {
+    let mut v: Vec<(PathBuf, &'static str)> = Vec::new();
+    if let Some(p) = manager_pid {
+        match read_exe(p) {
+            ExeRead::Path(e) if is_agentd_name(&e) => v.push((e, "manager")),
+            ExeRead::Path(e) => notes.push(format!(
+                "the executable of MainPID {p} is {}, not {AGENTD_BIN}: refused as agentd's identity",
+                e.display()
+            )),
+            ExeRead::Gone => notes.push(format!(
+                "MainPID {p} had exited before its executable was read"
+            )),
+            ExeRead::Unreadable(why) => notes.push(format!(
+                "the executable of MainPID {p} could not be read ({why})"
+            )),
+        }
+    }
+    if let Some(e) = agentd_env_exe() {
+        if !is_agentd_name(&e) {
+            notes.push(format!(
+                "{AGENTD_EXE_VAR} names {}, not {AGENTD_BIN}: refused as agentd's identity",
+                e.display()
+            ));
+        } else if !v.iter().any(|(x, _)| *x == e) {
+            if let Some((m, _)) = v.first() {
+                notes.push(format!(
+                    "agentd's executable differs: {} from the manager, {} from the start; both are refused",
+                    m.display(),
+                    e.display()
+                ));
+            }
+            v.push((e, "start"));
+        }
+    }
+    v
+}
+
+/// Reads agentd's identity once and keeps it for the job: returns what was read, or nothing when the
+/// identity is already known or still unknown (then the next sweep that has a manager answer tries again).
+fn establish_identity(
+    manager_pid: Option<u32>,
+    notes: &mut Vec<String>,
+) -> Vec<(PathBuf, &'static str)> {
+    if !identity_get().is_empty() {
+        return Vec::new();
+    }
+    let v = resolve_exe(manager_pid, notes);
+    identity_set(v.iter().map(|(p, _)| p.clone()).collect());
+    v
+}
+
+/// The one ask of the user manager for agentd's `MainPID`: the answer, or the note why there is none.
+fn ask_main_pid(
+    ctl: Option<&Path>,
+    env: &[(OsString, OsString)],
+    notes: &mut Vec<String>,
+) -> Option<u32> {
+    let Some(ctl) = ctl else {
+        notes.push(
+            "agentd's pid was not asked of the user manager: there is no systemctl".to_string(),
+        );
+        return None;
+    };
+    match bounded_ask(
+        ctl,
+        &["--user", "show", "-p", "MainPID", "--value", AGENTD_UNIT],
+        env,
+    ) {
+        Err(why) => {
+            notes.push(format!("the user manager's MainPID of {AGENTD_UNIT} {why}"));
+            None
+        }
+        Ok(a) => match a.parse::<u32>() {
+            Ok(p) if p > 0 => Some(p),
+            Ok(_) => {
+                notes.push(format!(
+                    "the user manager answered MainPID 0 for {AGENTD_UNIT} (no answer)"
+                ));
+                None
+            }
+            Err(_) => {
+                notes.push(format!(
+                    "the user manager's MainPID of {AGENTD_UNIT} was not a number"
+                ));
+                None
+            }
+        },
+    }
+}
+
+/// agentd's pid and where it came from: the manager's, else the daemon's when that process is alive.
+fn choose_pid(from_manager: Option<u32>, notes: &mut Vec<String>) -> (Option<u32>, &'static str) {
+    match (from_manager, agentd_env_pid()) {
+        (Some(p), _) => (Some(p), "manager"),
+        (None, Some(p)) if Path::new(&format!("/proc/{p}")).exists() => {
+            notes.push(format!(
+                "agentd's pid {p} is the fallback the daemon gave at the job's start ({AGENTD_PID_VAR})"
+            ));
+            (Some(p), "start")
+        }
+        (None, Some(p)) => {
+            notes.push(format!(
+                "agentd's pid is unknown: {AGENTD_PID_VAR} names {p}, which is not alive, so agentd is not protected beyond this process's own ancestors"
+            ));
+            (None, "")
+        }
+        (None, None) => {
+            notes.push(format!(
+                "agentd's pid is unknown ({AGENTD_PID_VAR} is missing or not a number), so it is not protected beyond this process's own ancestors"
+            ));
+            (None, "")
+        }
+    }
+}
+
+/// At the executor's start: asks the manager once, reads agentd's identity once, and returns the lines
+/// for the job log — `agentd: pid <p> from <manager|start>, exe <path> from <manager|start>` first, then
+/// whatever the reading had to say.
+pub(crate) fn announce_agentd(ctl: Option<&Path>, env: &[(OsString, OsString)]) -> Vec<String> {
+    let mut notes = Vec::new();
+    let from_manager = ask_main_pid(ctl, env, &mut notes);
+    let (pid, src) = choose_pid(from_manager, &mut notes);
+    let exes = establish_identity(from_manager, &mut notes);
+    let pid_s = match pid {
+        Some(p) => format!("pid {p} from {src}"),
+        None => "pid unknown".to_string(),
+    };
+    let exe_s = if exes.is_empty() {
+        "exe unknown".to_string()
+    } else {
+        exes.iter()
+            .map(|(p, s)| format!("exe {} from {s}", p.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut lines = vec![format!("agentd: {pid_s}, {exe_s}")];
+    lines.extend(notes);
+    lines
+}
+
+/// Why `target` is refused for its executable, or `None`. Runs when agentd's executable is known, and
+/// when agentd is wholly unidentified (no pid, no executable): then any process named `lucina-agentd` is
+/// refused. A process that has exited is not protected; a link that cannot be read is refused.
+fn exe_refusal(target: u32, pid_unknown: bool) -> Option<&'static str> {
+    let ident = identity_get();
+    let unidentified = pid_unknown && ident.is_empty();
+    if ident.is_empty() && !pid_unknown {
+        return None;
+    }
+    match read_exe(target) {
+        ExeRead::Gone => None,
+        ExeRead::Unreadable(_) => {
+            Some("a process whose executable could not be read, refused rather than guessed at")
+        }
+        ExeRead::Path(p) => {
+            if ident.contains(&p) {
+                Some("agentd's executable")
+            } else if unidentified && is_agentd_name(&p) {
+                Some("named lucina-agentd while agentd is unidentified")
+            } else {
+                None
+            }
+        }
+    }
+}
+
 // The seam between the screen of a tree and its write, in which a test changes the tree.
 #[cfg(test)]
 thread_local! {
@@ -465,9 +747,20 @@ pub(crate) struct AgentdIds {
 }
 
 impl AgentdIds {
-    /// Why `target` (a pid, or a group id) is agentd's, or `None`.
+    /// agentd's pid is not known (no process has pid 0): only its executable, if that is known, screens.
+    fn unknown() -> Self {
+        AgentdIds { pid: 0, pgid: None }
+    }
+
+    /// Neither agentd's pid nor its executable is known: a `cgroup.kill` cannot be screened.
+    fn unidentified(&self) -> bool {
+        self.pid == 0 && identity_get().is_empty()
+    }
+
+    /// Why `target` (a pid, or a group id) is agentd's, or `None`. The executable is screened on every
+    /// route, whether or not the pid matches the known one.
     fn refuses(&self, target: u32) -> Option<&'static str> {
-        if target == self.pid {
+        if self.pid != 0 && target == self.pid {
             Some("agentd's main pid")
         } else if self.pgid == Some(target) {
             Some("agentd's process group")
@@ -477,7 +770,7 @@ impl AgentdIds {
         {
             Some("a member of agentd's process group")
         } else {
-            None
+            exe_refusal(target, self.pid == 0)
         }
     }
 }
@@ -643,6 +936,18 @@ fn kill_cgroup_tree(cg: &Path, miss: &mut Miss) {
         chain: ancestors(),
         agentd: miss.guard,
     };
+    if miss.guard.is_some_and(|a| a.unidentified()) {
+        // PIPE-05: with neither agentd's pid nor its executable known, no tree can be shown clear of
+        // agentd, so none is written: the pids go one by one through the screened route, which also
+        // refuses any process named `lucina-agentd`.
+        miss.add_note("agentd unidentified: no cgroup.kill".to_string());
+        for p in scan_cgroup(cg).1 {
+            if protected_reason(p, &prot).is_none() {
+                signal_pid(p, Signal::KILL, miss);
+            }
+        }
+        return;
+    }
     let refusal = |pids: &[u32]| {
         pids.iter()
             .find_map(|p| protected_reason(*p, &prot).map(|why| (*p, why)))
@@ -929,62 +1234,17 @@ impl Step {
         }
         self.agentd_at = Some(Instant::now());
         let mut notes = Vec::new();
-        let from_manager = match &self.ctl {
-            None => {
-                notes.push(
-                    "agentd's pid was not asked of the user manager: there is no systemctl"
-                        .to_string(),
-                );
-                None
-            }
-            Some(ctl) => match bounded_ask(
-                ctl,
-                &["--user", "show", "-p", "MainPID", "--value", AGENTD_UNIT],
-                &self.env,
-            ) {
-                Err(why) => {
-                    notes.push(format!("the user manager's MainPID of {AGENTD_UNIT} {why}"));
-                    None
-                }
-                Ok(a) => match a.parse::<u32>() {
-                    Ok(p) if p > 0 => Some(p),
-                    Ok(_) => {
-                        notes.push(format!(
-                            "the user manager answered MainPID 0 for {AGENTD_UNIT} (no answer)"
-                        ));
-                        None
-                    }
-                    Err(_) => {
-                        notes.push(format!(
-                            "the user manager's MainPID of {AGENTD_UNIT} was not a number"
-                        ));
-                        None
-                    }
-                },
-            },
-        };
-        let pid = match (from_manager, agentd_env_pid()) {
-            (Some(p), _) => Some(p),
-            (None, Some(p)) if Path::new(&format!("/proc/{p}")).exists() => {
-                notes.push(format!(
-                    "agentd's pid {p} is the fallback the daemon gave at the job's start ({AGENTD_PID_VAR})"
-                ));
-                Some(p)
-            }
-            (None, Some(p)) => {
-                notes.push(format!(
-                    "agentd's pid is unknown: {AGENTD_PID_VAR} names {p}, which is not alive, so agentd is not protected beyond this process's own ancestors"
-                ));
-                None
-            }
-            (None, None) => {
-                notes.push(format!(
-                    "agentd's pid is unknown ({AGENTD_PID_VAR} is missing or not a number), so it is not protected beyond this process's own ancestors"
-                ));
-                None
-            }
-        };
-        self.agentd = pid.map(|p| agentd_ids(p, &mut notes));
+        let from_manager = ask_main_pid(self.ctl.as_deref(), &self.env, &mut notes);
+        let (pid, _) = choose_pid(from_manager, &mut notes);
+        // The identity is read once for the job, from the first manager answer; a sweep that finds it
+        // still unknown tries again.
+        if identity_get().is_empty() {
+            let _ = establish_identity(from_manager, &mut notes);
+        }
+        self.agentd = Some(match pid {
+            Some(p) => agentd_ids(p, &mut notes),
+            None => AgentdIds::unknown(),
+        });
         self.agentd_notes = notes;
     }
 
@@ -993,7 +1253,7 @@ impl Step {
     fn round(&mut self, force: bool) -> Miss {
         self.guard_round(force);
         let mut miss = Miss {
-            guard: self.agentd,
+            guard: Some(self.agentd.unwrap_or_else(AgentdIds::unknown)),
             ..Miss::default()
         };
         for n in self.agentd_notes.clone() {
@@ -2052,12 +2312,277 @@ mod tests {
 
         let miss = step.kill();
 
-        assert!(cg.join("cgroup.kill").exists());
+        // PIPE-05: with neither the pid nor the executable known nothing can be shown clear of agentd,
+        // so the tree is not written (this asserted `exists()` while the sweep failed open).
+        assert!(!cg.join("cgroup.kill").exists());
         assert!(miss.is_empty(), "{}", miss.line());
         assert!(!miss.says_nothing());
         let line = miss.line();
         assert!(line.contains("agentd's pid is unknown"), "{line}");
+        assert!(
+            line.contains("agentd unidentified: no cgroup.kill"),
+            "{line}"
+        );
         assert!(!line.contains("writes were refused"), "{line}");
+    }
+
+    /// A process running a copy of a small binary at `dir/<name>`, in a group of its own, ended and
+    /// reaped on every path. Argument zero stays `sleep`, because the host's `sleep` is one applet of a
+    /// multicall binary that picks it by that name.
+    fn start_copy(dir: &Path, name: &str) -> (Reap, PathBuf) {
+        use std::os::unix::process::CommandExt;
+        let path = dir.join(name);
+        fs::copy("/bin/sleep", &path).expect("sleep is copied");
+        // A file another thread's fork holds open for writing cannot be executed for a moment (ETXTBSY).
+        for _ in 0..100 {
+            match Command::new(&path)
+                .arg0("sleep")
+                .arg("300")
+                .process_group(0)
+                .spawn()
+            {
+                Ok(c) => return (Reap(c), path),
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(e) => panic!("the copy of sleep does not start: {e}"),
+            }
+        }
+        panic!("the copy of sleep stayed busy");
+    }
+
+    /// Resets what a test of the identity sets, whatever the test does after it.
+    struct IdentityGuard;
+
+    impl IdentityGuard {
+        fn new() -> Self {
+            identity_set(Vec::new());
+            set_agentd_env_exe(None);
+            set_agentd_env_pid(None);
+            IdentityGuard
+        }
+    }
+
+    impl Drop for IdentityGuard {
+        fn drop(&mut self) {
+            identity_set(Vec::new());
+            set_agentd_env_exe(None);
+            set_agentd_env_pid(None);
+        }
+    }
+
+    /// PIPE-05, the coordinator's case: the manager answers nothing, the pid given at the start is stale,
+    /// and agentd is a process running the binary the daemon named, in a group of its own inside the
+    /// swept tree. The tree gets no `cgroup.kill`, the stand-in is not signalled, the log names it as
+    /// agentd's executable, and the step's own process still dies by the pid route.
+    #[test]
+    fn agentd_is_refused_by_its_executable_when_no_pid_is_known() {
+        let _g = IdentityGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (stand_in, exe) = start_copy(dir.path(), "lucina-agentd");
+        let mut stand_in = stand_in;
+        let mut victim = sleeper();
+        let answer = dir.path().join("mainpid");
+        fs::write(&answer, "0\n").unwrap();
+        let ctl = fake_systemctl(dir.path(), &answer);
+        let cg = fake_scope(dir.path(), &[victim.0.id(), stand_in.0.id()], &[]);
+        let mut step = Step::new(gone_pid(), None, Some(ctl));
+        step.cg = Some(cg.clone());
+        set_agentd_env_pid(Some(gone_pid()));
+        set_agentd_env_exe(Some(exe));
+
+        let miss = step.kill();
+
+        assert!(
+            !cg.join("cgroup.kill").exists() && !cg.join("inner/cgroup.kill").exists(),
+            "cgroup.kill was written on a tree that held agentd's executable"
+        );
+        let line = miss.line();
+        assert!(
+            line.contains(&format!("pid {} (agentd's executable)", stand_in.0.id())),
+            "{line}"
+        );
+        wait_gone(&mut victim.0, "the step's own process");
+        assert!(
+            stand_in.0.try_wait().unwrap().is_none(),
+            "the stand-in for agentd was signalled"
+        );
+    }
+
+    /// A deploy replaced agentd's file: the link of the old process reads `… (deleted)`, which is
+    /// removed before the comparison.
+    #[test]
+    fn a_deleted_executable_link_is_still_agentd() {
+        let _g = IdentityGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (child, exe) = start_copy(dir.path(), "lucina-agentd");
+        fs::remove_file(&exe).unwrap();
+        assert_eq!(read_exe(child.0.id()), ExeRead::Path(exe.clone()));
+        identity_set(vec![exe]);
+
+        assert_eq!(
+            AgentdIds::unknown().refuses(child.0.id()),
+            Some("agentd's executable")
+        );
+    }
+
+    /// The screen does not over-refuse: with agentd's executable known, a step's own process running
+    /// another binary is killed, and a tree with nothing protected in it gets its `cgroup.kill`.
+    #[test]
+    fn a_step_process_of_another_binary_is_not_refused() {
+        let _g = IdentityGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (_stand_in, exe) = start_copy(dir.path(), "lucina-agentd");
+        identity_set(vec![exe]);
+        let victim = sleeper();
+        let cg = fake_scope(dir.path(), &[victim.0.id()], &[]);
+        assert_eq!(AgentdIds::unknown().refuses(victim.0.id()), None);
+
+        let mut miss = Miss {
+            guard: Some(AgentdIds::unknown()),
+            ..Miss::default()
+        };
+        kill_cgroup_tree(&cg, &mut miss);
+
+        assert_eq!(fs::read(cg.join("cgroup.kill")).unwrap(), b"1\n");
+        assert!(miss.says_nothing(), "{}", miss.line());
+    }
+
+    /// An exited process is not protected; any other failure to read the link is refused.
+    #[test]
+    fn an_unreadable_executable_link_is_refused_and_an_exited_process_is_not() {
+        assert_eq!(classify_exe_error(Some(2), "x"), ExeRead::Gone);
+        assert_eq!(classify_exe_error(Some(3), "x"), ExeRead::Gone);
+        assert_eq!(
+            classify_exe_error(Some(13), "permission denied"),
+            ExeRead::Unreadable("permission denied".into())
+        );
+        assert_eq!(
+            classify_exe_error(None, "odd"),
+            ExeRead::Unreadable("odd".into())
+        );
+        assert_eq!(read_exe(4_000_000_000), ExeRead::Gone);
+    }
+
+    /// Neither the pid nor the executable known, a process named `lucina-agentd` is left alone by the
+    /// pid route, another is killed, and no tree is written.
+    #[test]
+    fn with_agentd_unidentified_only_processes_not_named_agentd_are_signalled() {
+        let _g = IdentityGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut named, _) = start_copy(dir.path(), "lucina-agentd");
+        let mut victim = sleeper();
+        let cg = fake_scope(dir.path(), &[victim.0.id(), named.0.id()], &[]);
+
+        let mut miss = Miss {
+            guard: Some(AgentdIds::unknown()),
+            ..Miss::default()
+        };
+        kill_cgroup_tree(&cg, &mut miss);
+
+        assert!(!cg.join("cgroup.kill").exists());
+        assert!(
+            miss.line().contains("agentd unidentified: no cgroup.kill"),
+            "{}",
+            miss.line()
+        );
+        wait_gone(&mut victim.0, "the step's own process");
+        assert!(named.0.try_wait().unwrap().is_none());
+    }
+
+    /// With the manager silent at the start, the identity is the daemon's variable, and the line says
+    /// `from start` for the pid and for the executable.
+    #[test]
+    fn the_identity_falls_back_to_the_daemons_variable_and_the_line_says_so() {
+        let _g = IdentityGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (stand_in, exe) = start_copy(dir.path(), "lucina-agentd");
+        let answer = dir.path().join("mainpid");
+        fs::write(&answer, "\n").unwrap();
+        let ctl = fake_systemctl(dir.path(), &answer);
+        set_agentd_env_pid(Some(stand_in.0.id()));
+        set_agentd_env_exe(Some(exe.clone()));
+
+        let lines = announce_agentd(Some(&ctl), &[]);
+
+        assert_eq!(
+            lines[0],
+            format!(
+                "agentd: pid {} from start, exe {} from start",
+                stand_in.0.id(),
+                exe.display()
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(identity_get(), vec![exe]);
+    }
+
+    /// The manager's `MainPID` names a process running agentd's binary: pid and executable are both
+    /// from the manager.
+    #[test]
+    fn the_line_says_manager_when_the_manager_names_agentd() {
+        let _g = IdentityGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (stand_in, exe) = start_copy(dir.path(), "lucina-agentd");
+        let answer = dir.path().join("mainpid");
+        fs::write(&answer, format!("{}\n", stand_in.0.id())).unwrap();
+        let ctl = fake_systemctl(dir.path(), &answer);
+
+        let lines = announce_agentd(Some(&ctl), &[]);
+
+        assert_eq!(
+            lines[0],
+            format!(
+                "agentd: pid {} from manager, exe {} from manager",
+                stand_in.0.id(),
+                exe.display()
+            ),
+            "{lines:?}"
+        );
+    }
+
+    /// At service start `MainPID` is the broker's, which execs agentd a moment later: its executable is
+    /// not agentd's identity. The note names it, and the identity is the daemon's path, which screens the
+    /// real stand-in in the tree.
+    #[test]
+    fn a_brokers_executable_never_becomes_agentds_identity() {
+        let _g = IdentityGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (broker, broker_exe) = start_copy(dir.path(), "infisical-broker");
+        let (mut stand_in, exe) = start_copy(dir.path(), "lucina-agentd");
+        let mut victim = sleeper();
+        let answer = dir.path().join("mainpid");
+        fs::write(&answer, format!("{}\n", broker.0.id())).unwrap();
+        let ctl = fake_systemctl(dir.path(), &answer);
+        set_agentd_env_exe(Some(exe.clone()));
+        let cg = fake_scope(dir.path(), &[victim.0.id(), stand_in.0.id()], &[]);
+        let mut step = Step::new(gone_pid(), None, Some(ctl));
+        step.cg = Some(cg.clone());
+
+        let miss = step.kill();
+
+        assert_eq!(identity_get(), vec![exe]);
+        let line = miss.line();
+        assert!(
+            line.contains("infisical-broker") && line.contains("refused as agentd's identity"),
+            "{line}"
+        );
+        assert!(
+            line.contains(&format!("pid {} (agentd's executable)", stand_in.0.id())),
+            "{line}"
+        );
+        assert!(!cg.join("cgroup.kill").exists());
+        wait_gone(&mut victim.0, "the step's own process");
+        assert!(stand_in.0.try_wait().unwrap().is_none());
+        // The same rule for the fallback: a variable naming the broker is no identity either.
+        identity_set(Vec::new());
+        set_agentd_env_exe(Some(broker_exe));
+        let mut notes = Vec::new();
+        assert!(resolve_exe(None, &mut notes).is_empty());
+        assert!(
+            notes.iter().any(|n| n.contains("infisical-broker")),
+            "{notes:?}"
+        );
     }
 
     /// Finding 5: agentd's group cannot be read (the pid is not a process) and the note says so.
