@@ -426,20 +426,25 @@ fn launcher() -> PathBuf {
 /// directory of its own (`SECRETARY_CI_TOOL_BUILD` then defaults to `<tool>-build` beside it).
 fn launcher_run(s: &Scratch) -> Command {
     let mut c = Command::new("bash");
-    c.arg(launcher())
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                s.bin().display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
-        .env("SECRETARY_CI_TOOL_TARGET", s.at("tool"))
-        .env("TMPDIR", s.tmp())
-        .env_remove("SECRETARY_CI_TOOL_BUILD");
-    drop_lane_git_config(&mut c);
+    c.arg(launcher());
+    launcher_env(&mut c, s);
     c
+}
+
+/// The environment of a launcher run, for a `Command` the caller built itself.
+fn launcher_env(c: &mut Command, s: &Scratch) {
+    c.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            s.bin().display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    )
+    .env("SECRETARY_CI_TOOL_TARGET", s.at("tool"))
+    .env("TMPDIR", s.tmp())
+    .env_remove("SECRETARY_CI_TOOL_BUILD");
+    drop_lane_git_config(c);
 }
 
 /// The copy of the tool a run made for itself, wherever in its directory it put it.
