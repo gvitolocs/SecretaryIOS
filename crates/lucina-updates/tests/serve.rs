@@ -679,3 +679,165 @@ async fn readers_only_ever_see_one_complete_manifest_while_it_is_replaced_by_ren
     assert!(swaps > 10, "the writer barely ran ({swaps} swaps)");
     assert_eq!(total[0] + total[1], 600);
 }
+
+/// A small store of its own for the tests below: real directories sit exactly where a path that
+/// slipped through a check would lead, so removing the check turns a 404 into a 200.
+/// The temporary directory is removed by its drop guard, also when an assertion fails.
+async fn mini_store(setup: impl FnOnce(&Path)) -> (tempfile::TempDir, String) {
+    let tmp = tempfile::Builder::new()
+        .prefix("lucina-updates-test-")
+        .tempdir()
+        .unwrap();
+    let store = tmp.path().join("store");
+    fs::create_dir_all(&store).unwrap();
+    setup(&store);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let app = lucina_updates::app(&store).unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (tmp, addr)
+}
+
+fn put_manifest(store: &Path, product: &str, channel: &str) {
+    let d = store.join(product).join(channel);
+    fs::create_dir_all(&d).unwrap();
+    fs::write(d.join("manifest"), b"REAL MANIFEST").unwrap();
+}
+
+#[tokio::test]
+async fn non_ascii_path_segments_are_refused() {
+    // directories with a non-ASCII name and real manifests inside: served if the check were gone
+    let (_tmp, addr) = mini_store(|s| {
+        put_manifest(s, "\u{e9}", "stable");
+        put_manifest(s, "lucina", "caf\u{e9}");
+    })
+    .await;
+    assert_eq!(
+        raw(&addr, "GET", "/v1/updates/lucina/stable/manifest", &[])
+            .await
+            .status,
+        404,
+        "the store has no such channel; the control is below"
+    );
+    for p in [
+        // a raw 0xC3 byte alone (not valid UTF-8)
+        b"/v1/updates/lucina\xc3/stable/manifest".as_slice(),
+        // a UTF-8 multi-byte name, raw: U+00E9 is 0xC3 0xA9
+        b"/v1/updates/\xc3\xa9/stable/manifest",
+        b"/v1/updates/lucina/caf\xc3\xa9/manifest",
+    ] {
+        let r = raw_bytes(&addr, "GET", p, &[]).await;
+        // the HTTP layer may answer 400 before the handler; either way, never the file
+        assert!(r.status == 400 || r.status == 404, "{p:?} -> {}", r.status);
+        assert!(!String::from_utf8_lossy(&r.body).contains("REAL"), "{p:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_double_encoded_dot_is_refused() {
+    // a directory literally named `%252e`: it would be served if `%` were let through
+    let (_tmp, addr) = mini_store(|s| {
+        put_manifest(s, "%252e", "stable");
+        put_manifest(s, "lucina", "%252e");
+        put_manifest(s, "lucina", "stable");
+    })
+    .await;
+    assert_eq!(
+        raw(&addr, "GET", "/v1/updates/lucina/stable/manifest", &[])
+            .await
+            .status,
+        200
+    );
+    for p in [
+        "/v1/updates/%252e/stable/manifest",
+        "/v1/updates/lucina/%252e/manifest",
+        "/v1/updates/lucina/%252e%252e/manifest",
+        "/v1/updates/lucina/stable/%252e%252e/stable/manifest",
+    ] {
+        let r = raw(&addr, "GET", p, &[]).await;
+        assert_eq!(r.status, 404, "{p}");
+        assert!(!String::from_utf8_lossy(&r.body).contains("REAL"), "{p}");
+    }
+}
+
+#[tokio::test]
+async fn over_long_segments_are_refused() {
+    let long = "a".repeat(33);
+    let ok32 = "a".repeat(32);
+    let (_tmp, addr) = mini_store(|s| {
+        put_manifest(s, &long, "stable");
+        put_manifest(s, "lucina", &long);
+        put_manifest(s, &ok32, "stable");
+    })
+    .await;
+    // the 33-character slug is refused as product and as channel, the 32-character one is served
+    assert_eq!(
+        raw(
+            &addr,
+            "GET",
+            &format!("/v1/updates/{long}/stable/manifest"),
+            &[]
+        )
+        .await
+        .status,
+        404
+    );
+    assert_eq!(
+        raw(
+            &addr,
+            "GET",
+            &format!("/v1/updates/lucina/{long}/manifest"),
+            &[]
+        )
+        .await
+        .status,
+        404
+    );
+    assert_eq!(
+        raw(
+            &addr,
+            "GET",
+            &format!("/v1/updates/{ok32}/stable/manifest"),
+            &[]
+        )
+        .await
+        .status,
+        200
+    );
+    // a path of 8 KiB: no file name can be that long, so this only proves it is refused cleanly
+    // (404 from the handler, or 414 if the HTTP layer objects first) and does not crash the server
+    let huge = format!("/v1/updates/{}/stable/manifest", "a".repeat(8 * 1024));
+    let r = raw(&addr, "GET", &huge, &[]).await;
+    assert!(r.status == 404 || r.status == 414, "{}", r.status);
+    let huge = format!(
+        "/v1/updates/lucina/stable/artefacts/{}.bin",
+        "0".repeat(8 * 1024)
+    );
+    let r = raw(&addr, "GET", &huge, &[]).await;
+    assert!(r.status == 404 || r.status == 414, "{}", r.status);
+    assert_eq!(
+        raw(&addr, "GET", "/v1/updates/lucina/stable/manifest", &[])
+            .await
+            .status,
+        404
+    );
+}
+
+#[tokio::test]
+async fn options_and_connect_are_refused() {
+    let (_tmp, addr) = mini_store(|s| put_manifest(s, "lucina", "stable")).await;
+    let p = "/v1/updates/lucina/stable/manifest";
+    assert_eq!(raw(&addr, "GET", p, &[]).await.status, 200);
+    // OPTIONS on a valid route: the handler answers 405 with `Allow: GET, HEAD`
+    let r = raw(&addr, "OPTIONS", p, &[]).await;
+    assert_eq!(r.status, 405);
+    assert_eq!(r.h("allow"), Some("GET, HEAD"));
+    assert!(!String::from_utf8_lossy(&r.body).contains("REAL"));
+    // CONNECT with an origin-form target: the handler answers 405 too; the HTTP layer may refuse
+    // it first with 400. Never 200 with the manifest.
+    let r = raw(&addr, "CONNECT", p, &[]).await;
+    assert!(r.status == 405 || r.status == 400, "{}", r.status);
+    assert!(!String::from_utf8_lossy(&r.body).contains("REAL"));
+}
