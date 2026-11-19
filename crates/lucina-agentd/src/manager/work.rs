@@ -33,6 +33,10 @@ use crate::now_iso;
 const RUN_LIMIT: Duration = Duration::from_secs(60);
 /// How long `lane status`, `lane ls` and `git rev-parse` may take.
 const QUERY_LIMIT: Duration = Duration::from_secs(20);
+/// How long `systemctl --user show build.slice` may take; no answer counts as "not loaded".
+const SLICE_LIMIT: Duration = Duration::from_secs(5);
+/// How long a "build.slice is not loaded" answer is believed before it is looked up again.
+const SLICE_RECHECK: Duration = Duration::from_secs(60);
 /// Polls in a row that `lane status` must fail before a job can be lost.
 const LOST_MISSES: u32 = 3;
 const DAY: i64 = 24 * 3600;
@@ -112,6 +116,9 @@ pub(super) struct Work {
     /// and what the clock said then, per key, tied to the saved time it was counted from (not
     /// kept over a restart).
     seen: Mutex<HashMap<String, Counted>>,
+    /// What the last look for `build.slice` found: `(loaded, when)`. A loaded answer stays; a
+    /// "not loaded" one is looked up again once it is a minute old (WORK-25).
+    slice: Mutex<Option<(bool, Instant)>>,
 }
 
 /// One saved time as this daemon counts it: the age the clock gave at the first look, and the
@@ -164,6 +171,7 @@ impl Work {
             blocked: AtomicBool::new(blocked),
             status_limit: Duration::from_secs(status_secs.unwrap_or(QUERY_LIMIT.as_secs()).max(1)),
             seen: Mutex::new(HashMap::new()),
+            slice: Mutex::new(None),
         }
     }
 
@@ -463,6 +471,19 @@ fn scope_decision(
 
 const SCOPE_PREFIX: &str = "lucina-work-";
 
+/// The user slice every work scope joins (finding HOST-11: 16 uncapped scopes plus builds caused
+/// a global out-of-memory on nezopt). `build.slice` is a user slice that LB manages
+/// (MemoryHigh=34G, CPUWeight=30), shared with bq jobs, lane attempts and check-fast steps.
+const SCOPE_SLICE: &str = "--slice=build.slice";
+/// The unit name of [`SCOPE_SLICE`], as `systemctl --user` knows it.
+const SCOPE_SLICE_UNIT: &str = "build.slice";
+/// Why a start is refused when the slice is missing (WORK-25).
+const SLICE_REFUSAL: &str = "build.slice is not loaded in the user manager; agentd puts every work run in it (HOST-11). Provision it (see deploy/lucina-agentd/README or LB) or start agentd with LUCINA_AGENTD_WORK_SCOPE=off.";
+/// The CPU cap of one work scope (HOST-11), passed as `-p CPUQuota=...`.
+const SCOPE_CPU_QUOTA: &str = "CPUQuota=400%";
+/// The memory cap of one work scope (HOST-11), passed as `-p MemoryMax=...`.
+const SCOPE_MEMORY_MAX: &str = "MemoryMax=12G";
+
 /// The transient unit name of a job: `lucina-work-<id>`. The id may hold lower-case letters,
 /// digits and `-` only; anything else is refused.
 fn scope_unit(id: &str) -> Result<String, String> {
@@ -511,7 +532,8 @@ fn lane_run_args(job: &WorkJob) -> Result<Vec<OsString>, String> {
 }
 
 /// The program and arguments of the start. With a scope (`Some(unit)`) the list is
-/// `systemd-run --user --scope --quiet --collect --unit <unit> -- <lane> <run arguments>`: a
+/// `systemd-run --user --scope --quiet --collect --unit <unit> --slice=build.slice -p CPUQuota=400%
+/// -p MemoryMax=12G -- <lane> <run arguments>` (HOST-11 caps): a
 /// scope, not a service, because `lane run` exits at once and the runner it leaves must live
 /// on in a control group outside the daemon's unit. Without one it is `<lane> <run arguments>`.
 /// No test here can show the control-group behaviour itself; it is proved live after deploy.
@@ -530,6 +552,11 @@ fn run_argv(scope: Option<&str>, lane: &Path, run_args: &[OsString]) -> Vec<OsSt
             .map(OsString::from),
         );
         v.push(unit.into());
+        v.push(SCOPE_SLICE.into());
+        for p in [SCOPE_CPU_QUOTA, SCOPE_MEMORY_MAX] {
+            v.push("-p".into());
+            v.push(p.into());
+        }
         v.push("--".into());
     }
     v.push(lane.into());
@@ -793,6 +820,39 @@ impl Manager {
         })
     }
 
+    /// Whether the user unit `build.slice` is known to the user manager. Asked once and kept; a
+    /// "not loaded" answer is asked again after a minute. A host without `systemctl` on `PATH`
+    /// is not asked (it cannot be checked, and `systemd-run` reports its own failure).
+    async fn slice_loaded(&self) -> bool {
+        let Some(systemctl) = crate::process::resolve_program("systemctl") else {
+            return true;
+        };
+        if let Some((loaded, at)) = *self.work().slice.lock().unwrap() {
+            if loaded || at.elapsed() < SLICE_RECHECK {
+                return loaded;
+            }
+        }
+        let mut cmd = clean_command(systemctl);
+        cmd.args([
+            "--user",
+            "show",
+            SCOPE_SLICE_UNIT,
+            "-p",
+            "LoadState",
+            "--value",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+        let loaded = match tokio::time::timeout(SLICE_LIMIT, cmd.output()).await {
+            Ok(Ok(out)) => {
+                out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "loaded"
+            }
+            _ => false,
+        };
+        *self.work().slice.lock().unwrap() = Some((loaded, Instant::now()));
+        loaded
+    }
+
     /// Starts a work job: stores the spec, then `lane run` with it on stdin.
     pub async fn work_start(&self, req: StartWork) -> Result<WorkJob, ManagerError> {
         let lane_bin = self.work_lane()?.to_path_buf();
@@ -802,6 +862,9 @@ impl Manager {
             std::env::var_os("XDG_RUNTIME_DIR").is_some(),
         )
         .map_err(ManagerError::Invalid)?;
+        if scoped && !self.slice_loaded().await {
+            return Err(ManagerError::Invalid(SLICE_REFUSAL.into()));
+        }
         if let Some(w) = skipped {
             static WARNED: AtomicBool = AtomicBool::new(false);
             if !WARNED.swap(true, Ordering::Relaxed) {
@@ -2614,7 +2677,7 @@ deep-codex = ["qoder", "codex-a"]
         assert_eq!(plain[1..], args[..]);
         let scoped = run_argv(Some("lucina-work-wk-0123456789ab"), lane, &args);
         assert_eq!(
-            scoped[..8],
+            scoped[..13],
             os(&[
                 "systemd-run",
                 "--user",
@@ -2623,11 +2686,16 @@ deep-codex = ["qoder", "codex-a"]
                 "--collect",
                 "--unit",
                 "lucina-work-wk-0123456789ab",
+                "--slice=build.slice",
+                "-p",
+                "CPUQuota=400%",
+                "-p",
+                "MemoryMax=12G",
                 "--"
             ])[..]
         );
-        assert_eq!(scoped[8], OsString::from("/bin/lane"));
-        assert_eq!(scoped[9..], args[..]);
+        assert_eq!(scoped[13], OsString::from("/bin/lane"));
+        assert_eq!(scoped[14..], args[..]);
         let mut chained = sample_job();
         chained.lane = None;
         assert!(lane_run_args(&chained).is_err());
@@ -2635,6 +2703,27 @@ deep-codex = ["qoder", "codex-a"]
         assert!(lane_run_args(&chained)
             .unwrap()
             .ends_with(&os(&["--verify", "true"])));
+    }
+
+    #[test]
+    fn the_scope_carries_the_host_11_caps_before_the_double_dash() {
+        let args = os(&["run"]);
+        let lane = Path::new("/bin/lane");
+        let scoped = run_argv(Some("lucina-work-wk-0123456789ab"), lane, &args);
+        let dd = scoped.iter().position(|a| a == "--").unwrap();
+        for want in ["--slice=build.slice", "CPUQuota=400%", "MemoryMax=12G"] {
+            let at = scoped.iter().position(|a| a == want).unwrap_or(usize::MAX);
+            assert!(at < dd, "{want} must come before --: {scoped:?}");
+        }
+        let plain = run_argv(None, lane, &args);
+        for no in [
+            "--slice=build.slice",
+            "CPUQuota=400%",
+            "MemoryMax=12G",
+            "-p",
+        ] {
+            assert!(!plain.iter().any(|a| a == no), "{no} in {plain:?}");
+        }
     }
 
     #[test]
