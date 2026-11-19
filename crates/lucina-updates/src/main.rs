@@ -31,15 +31,17 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
     if !cli.addr.ip().is_loopback() {
-        bail!("--addr {}: lucina-updates listens on loopback only", cli.addr);
+        bail!(
+            "--addr {}: lucina-updates listens on loopback only",
+            cli.addr
+        );
     }
     let store = match cli.store {
         Some(s) => s,
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set; pass --store")?)
             .join("data/lucina-updates"),
     };
-    let app = lucina_updates::app(&store)
-        .with_context(|| format!("store {}", store.display()))?;
+    let app = lucina_updates::app(&store).with_context(|| format!("store {}", store.display()))?;
     let listener = tokio::net::TcpListener::bind(cli.addr)
         .await
         .with_context(|| format!("bind {}", cli.addr))?;

@@ -71,7 +71,9 @@ fn valid_slug(s: &str) -> bool {
 /// `^[a-z0-9]{1,8}(\.[a-z0-9]{1,8})?$`
 fn valid_ext(s: &str) -> bool {
     let part = |p: &str| {
-        (1..=8).contains(&p.len()) && p.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        (1..=8).contains(&p.len())
+            && p.bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
     };
     match s.split_once('.') {
         None => part(s),
@@ -94,7 +96,9 @@ pub fn parse_route(path: &str) -> Option<Route<'_>> {
         [product, channel, "artefacts", name] if valid_slug(product) && valid_slug(channel) => {
             let (sha, ext) = name.split_at_checked(64)?;
             let ext = ext.strip_prefix('.')?;
-            if sha.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            if sha
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
                 && valid_ext(ext)
             {
                 Some(Route::Artefact {
@@ -232,9 +236,7 @@ async fn handle(State(st): State<Arc<Inner>>, req: Request) -> Response {
     };
     let file = match opened {
         Ok(Ok(f)) => f,
-        Ok(Err(Refusal::NotFound)) => {
-            return plain(StatusCode::NOT_FOUND, "not found\n")
-        }
+        Ok(Err(Refusal::NotFound)) => return plain(StatusCode::NOT_FOUND, "not found\n"),
         Ok(Err(Refusal::Io(e))) => {
             tracing::error!(path = req.uri().path(), error = %e, "open failed");
             return plain(StatusCode::INTERNAL_SERVER_ERROR, "error\n");
@@ -273,7 +275,12 @@ fn base_headers(r: &mut Response, cache: &'static str) {
 
 async fn serve_manifest(file: File, len: u64, head: bool, path: &str) -> Response {
     if len > MANIFEST_MAX {
-        tracing::error!(path, len, max = MANIFEST_MAX, "manifest over the cap: publisher bug, not served");
+        tracing::error!(
+            path,
+            len,
+            max = MANIFEST_MAX,
+            "manifest over the cap: publisher bug, not served"
+        );
         return plain(StatusCode::INTERNAL_SERVER_ERROR, "error\n");
     }
     // One read from the one open file: a rename over `manifest` meanwhile cannot mix versions.
@@ -284,7 +291,10 @@ async fn serve_manifest(file: File, len: u64, head: bool, path: &str) -> Respons
         return plain(StatusCode::INTERNAL_SERVER_ERROR, "error\n");
     }
     if buf.len() as u64 > MANIFEST_MAX {
-        tracing::error!(path, "manifest grew over the cap while read: publisher bug, not served");
+        tracing::error!(
+            path,
+            "manifest grew over the cap while read: publisher bug, not served"
+        );
         return plain(StatusCode::INTERNAL_SERVER_ERROR, "error\n");
     }
     let n = buf.len();
@@ -475,7 +485,10 @@ mod tests {
             "/v1/updates/lucinanet/stable/artefacts/".into(),
             format!("/v1/updates/lucinanet/stable/artefacts//{sha}.bin"),
             format!("/v1/updates/lucinanet/stable/artefacts/{}.bin", &sha[..63]),
-            format!("/v1/updates/lucinanet/stable/artefacts/{}.bin", "A".repeat(64)),
+            format!(
+                "/v1/updates/lucinanet/stable/artefacts/{}.bin",
+                "A".repeat(64)
+            ),
             format!("/v1/updates/lucinanet/stable/artefacts/{sha}"),
             format!("/v1/updates/lucinanet/stable/artefacts/{sha}.BIN"),
             format!("/v1/updates/lucinanet/stable/artefacts/{sha}.bin.gz.x"),

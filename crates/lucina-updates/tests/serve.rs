@@ -174,11 +174,16 @@ impl Ctx {
         let sparse_sha = sha(b"sparse");
         let stable = store.join("lucina/stable");
         fs::create_dir_all(stable.join("artefacts")).unwrap();
-        fs::write(stable.join("manifest"), b"fake manifest bytes, not signed\n").unwrap();
+        fs::write(
+            stable.join("manifest"),
+            b"fake manifest bytes, not signed\n",
+        )
+        .unwrap();
         fs::write(stable.join(format!("artefacts/{blob_sha}.bin")), &blob).unwrap();
         // a sparse 5 GiB file with a marker above 4 GiB
         {
-            let mut f = fs::File::create(stable.join(format!("artefacts/{sparse_sha}.tar.gz"))).unwrap();
+            let mut f =
+                fs::File::create(stable.join(format!("artefacts/{sparse_sha}.tar.gz"))).unwrap();
             f.set_len(GIB4 + (1 << 30)).unwrap();
             f.seek(SeekFrom::Start(GIB4 + 100)).unwrap();
             f.write_all(MARK).unwrap();
@@ -295,7 +300,12 @@ async fn path_traversal_is_refused() {
         assert!(r.status == 400 || r.status == 404, "{p:?} -> {}", r.status);
     }
     // the control: the same store, a clean path
-    assert_eq!(cx.get("/v1/updates/lucina/stable/manifest", &[]).await.status, 200);
+    assert_eq!(
+        cx.get("/v1/updates/lucina/stable/manifest", &[])
+            .await
+            .status,
+        200
+    );
     cx.done();
 }
 
@@ -327,24 +337,33 @@ async fn bad_artefact_names_are_404() {
     let sha = cx.blob_sha.clone();
     let d = "/v1/updates/lucina/stable/artefacts";
     for name in [
-        format!("{}.bin", &sha[..63]),                  // 63 digits
-        format!("{sha}0.bin"),                          // 65 digits
-        format!("{}.bin", sha.to_uppercase()),          // uppercase hex
-        format!("{sha}.BIN"),                           // uppercase extension
-        format!("{sha}.exe!"),                          // bad extension character
-        format!("{sha}.verylongext"),                   // extension over 8
-        format!("{sha}"),                               // no extension
-        format!("{sha}."),                              // empty extension
-        format!("{sha}.bin.gz.extra"),                  // extra suffix
-        format!("{sha}.bin/"),                          // trailing slash
-        format!("{sha}.bin/x"),                         // a path under a file
-        format!("x{sha}.bin"),                          // prefix
-        format!("{}g.bin", &sha[..63]),                 // not hex
+        format!("{}.bin", &sha[..63]),         // 63 digits
+        format!("{sha}0.bin"),                 // 65 digits
+        format!("{}.bin", sha.to_uppercase()), // uppercase hex
+        format!("{sha}.BIN"),                  // uppercase extension
+        format!("{sha}.exe!"),                 // bad extension character
+        format!("{sha}.verylongext"),          // extension over 8
+        format!("{sha}"),                      // no extension
+        format!("{sha}."),                     // empty extension
+        format!("{sha}.bin.gz.extra"),         // extra suffix
+        format!("{sha}.bin/"),                 // trailing slash
+        format!("{sha}.bin/x"),                // a path under a file
+        format!("x{sha}.bin"),                 // prefix
+        format!("{}g.bin", &sha[..63]),        // not hex
     ] {
-        assert_eq!(cx.get(&format!("{d}/{name}"), &[]).await.status, 404, "{name}");
+        assert_eq!(
+            cx.get(&format!("{d}/{name}"), &[]).await.status,
+            404,
+            "{name}"
+        );
     }
     // a well-formed name for a file that does not exist
-    assert_eq!(cx.get(&format!("{d}/{}.bin", "0".repeat(64)), &[]).await.status, 404);
+    assert_eq!(
+        cx.get(&format!("{d}/{}.bin", "0".repeat(64)), &[])
+            .await
+            .status,
+        404
+    );
     assert_eq!(cx.get(&cx.art(), &[]).await.status, 200);
     cx.done();
 }
@@ -354,8 +373,8 @@ async fn symlinks_are_never_followed() {
     let cx = Ctx::new(true).await;
     let d = "/v1/updates/lucina/stable/artefacts";
     for p in [
-        format!("{d}/{SYM_SHA}.bin"),        // file symlink to a file outside the store
-        format!("{d}/{INSTORE_SHA}.bin"),    // file symlink to a file inside the store
+        format!("{d}/{SYM_SHA}.bin"), // file symlink to a file outside the store
+        format!("{d}/{INSTORE_SHA}.bin"), // file symlink to a file inside the store
         "/v1/updates/lucina/sym/manifest".to_string(), // manifest symlink to outside
         "/v1/updates/lucina/linked/manifest".to_string(), // directory component symlink
         format!("/v1/updates/lucina/linked/artefacts/{}.bin", cx.blob_sha),
@@ -387,7 +406,10 @@ async fn directories_are_404_with_no_listing() {
         let r = cx.get(p, &[]).await;
         assert_eq!(r.status, 404, "{p}");
         let body = String::from_utf8_lossy(&r.body).into_owned();
-        assert!(!body.contains(&cx.blob_sha) && !body.contains("manifest"), "{p}: {body}");
+        assert!(
+            !body.contains(&cx.blob_sha) && !body.contains("manifest"),
+            "{p}: {body}"
+        );
     }
     cx.done();
 }
@@ -489,7 +511,12 @@ async fn head_matches_get_with_no_body() {
         assert!(h.body.is_empty(), "{p}");
         assert!(!g.body.is_empty());
         let strip = |r: &Resp| -> Vec<(String, String)> {
-            let mut v: Vec<_> = r.headers.iter().filter(|(k, _)| k != "date").cloned().collect();
+            let mut v: Vec<_> = r
+                .headers
+                .iter()
+                .filter(|(k, _)| k != "date")
+                .cloned()
+                .collect();
             v.sort();
             v
         };
@@ -537,14 +564,22 @@ async fn a_manifest_over_16_kib_is_not_served() {
     let big = cx.get("/v1/updates/lucina/big/manifest", &[]).await;
     assert_eq!(big.status, 500);
     assert!(big.body.len() < 100, "no manifest bytes in the error");
-    assert_eq!(raw(&cx.addr, "HEAD", "/v1/updates/lucina/big/manifest", &[]).await.status, 500);
+    assert_eq!(
+        raw(&cx.addr, "HEAD", "/v1/updates/lucina/big/manifest", &[])
+            .await
+            .status,
+        500
+    );
     cx.done();
 }
 
 #[tokio::test]
 async fn range_above_4_gib_is_not_truncated() {
     let cx = Ctx::new(true).await;
-    let p = format!("/v1/updates/lucina/stable/artefacts/{}.tar.gz", cx.sparse_sha);
+    let p = format!(
+        "/v1/updates/lucina/stable/artefacts/{}.tar.gz",
+        cx.sparse_sha
+    );
     let total = GIB4 + (1 << 30);
     let (a, b) = (GIB4 + 100, GIB4 + 100 + MARK.len() as u64 - 1);
     let r = cx.get(&p, &[("Range", &format!("bytes={a}-{b}"))]).await;
@@ -566,7 +601,10 @@ async fn the_whole_store_is_read_only() {
     let cx = Ctx::new(true).await;
     // every kind of request, then the same tree
     let art = cx.art();
-    let sparse = format!("/v1/updates/lucina/stable/artefacts/{}.tar.gz", cx.sparse_sha);
+    let sparse = format!(
+        "/v1/updates/lucina/stable/artefacts/{}.tar.gz",
+        cx.sparse_sha
+    );
     for p in [
         art.as_str(),
         sparse.as_str(),
