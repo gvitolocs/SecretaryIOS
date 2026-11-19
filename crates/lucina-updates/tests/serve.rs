@@ -737,7 +737,11 @@ async fn non_ascii_path_segments_are_refused() {
 
 #[tokio::test]
 async fn a_double_encoded_dot_is_refused() {
-    // a directory literally named `%252e`: it would be served if `%` were let through
+    // Two layers refuse this: the `%` rule in parse_route and, independently, valid_slug (a slug has no
+    // `%`). This test pins the behaviour (the request is refused and the store directory named `%252e`
+    // is never served); it cannot isolate the `%` rule, because every path with a `%` is also refused by
+    // the stricter validators. The lead mutation check (2026-11-19) showed the test still passes with the
+    // `%` rule removed.
     let (_tmp, addr) = mini_store(|s| {
         put_manifest(s, "%252e", "stable");
         put_manifest(s, "lucina", "%252e");
