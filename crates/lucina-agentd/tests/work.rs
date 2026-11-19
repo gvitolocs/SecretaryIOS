@@ -2033,7 +2033,10 @@ fn a_caller_holding_six_live_work_runs_can_still_create_an_agent() {
         ids.push(job["id"].as_str().unwrap().to_string());
     }
     for id in &ids {
-        f.status(id, &lane_status(id, "running", json!({"final_lane": "qoder"})));
+        f.status(
+            id,
+            &lane_status(id, "running", json!({"final_lane": "qoder"})),
+        );
         wait_state(&d, id, "running");
     }
     let list = lagent_json(&d, &["work", "ls"]);
@@ -2054,7 +2057,11 @@ fn a_caller_holding_six_live_work_runs_can_still_create_an_agent() {
         &body,
         "http://x/agents",
     ]));
-    assert!(out.stdout.ends_with("\n200"), "create refused: {}", out.stdout);
+    assert!(
+        out.stdout.ends_with("\n200"),
+        "create refused: {}",
+        out.stdout
+    );
 }
 
 /// A stand-in `systemctl` in the daemon's tool directory: it appends its arguments to

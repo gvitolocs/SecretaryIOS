@@ -31,7 +31,9 @@ use lucina_agents::jsstr;
 use lucina_agents::permission::{
     ActionIntent, ActionVariant, Behavior, PermissionAction, PermissionKind, PermissionRequest,
 };
-use lucina_agents::timeline::{SearchDetail, SearchMode, SearchToolName, ToolCall, ToolCallDetail, ToolCallStatus};
+use lucina_agents::timeline::{
+    SearchDetail, SearchMode, SearchToolName, ToolCall, ToolCallDetail, ToolCallStatus,
+};
 use lucina_agents::types::{AgentMode, Capabilities, PersistenceHandle, RuntimeInfo};
 use lucina_agents::{PermissionResponse, StreamEvent, TimelineItem, Usage};
 use serde_json::{json, Map, Value};
@@ -40,7 +42,9 @@ use tokio::task::JoinHandle;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::provider::{EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Rewind, Session, SessionConfig};
+use crate::provider::{
+    EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Rewind, Session, SessionConfig,
+};
 use crate::workspaces::files::resolve;
 
 pub const MOCK_ID: &str = "mock";
@@ -80,20 +84,103 @@ struct Model {
 }
 
 const MODELS: &[Model] = &[
-    Model { id: "five-minute-stream", label: "Five minute stream", selectable: true, default: true, thinking_default: Some("low"), duration_ms: DEFAULT_DURATION_MS, interval_ms: 40, burst: None },
-    Model { id: "thirty-minute-stream", label: "Thirty minute stream", selectable: true, default: false, thinking_default: None, duration_ms: 30 * 60 * 1000, interval_ms: 50, burst: None },
-    Model { id: "legacy-five-minute-stream", label: "Legacy five minute stream", selectable: false, default: false, thinking_default: Some("low"), duration_ms: DEFAULT_DURATION_MS, interval_ms: 40, burst: None },
-    Model { id: "one-minute-stream", label: "One minute stream", selectable: true, default: false, thinking_default: None, duration_ms: 60_000, interval_ms: 40, burst: None },
-    Model { id: "bursty-stream", label: "Bursty stream", selectable: true, default: false, thinking_default: None, duration_ms: 60_000, interval_ms: 0, burst: Some(Burst { min_tokens: 1, max_tokens: 40, gap_ms: 90 }) },
-    Model { id: "ten-second-stream", label: "Ten second stream", selectable: true, default: false, thinking_default: Some("low"), duration_ms: 10_000, interval_ms: 5, burst: None },
-    Model { id: "max-only-thinking-stream", label: "Max-only thinking stream", selectable: true, default: false, thinking_default: Some("max"), duration_ms: 10_000, interval_ms: 5, burst: None },
-    Model { id: "e2e-fast-stream", label: "E2E fast stream", selectable: false, default: false, thinking_default: None, duration_ms: 2000, interval_ms: 20, burst: None },
+    Model {
+        id: "five-minute-stream",
+        label: "Five minute stream",
+        selectable: true,
+        default: true,
+        thinking_default: Some("low"),
+        duration_ms: DEFAULT_DURATION_MS,
+        interval_ms: 40,
+        burst: None,
+    },
+    Model {
+        id: "thirty-minute-stream",
+        label: "Thirty minute stream",
+        selectable: true,
+        default: false,
+        thinking_default: None,
+        duration_ms: 30 * 60 * 1000,
+        interval_ms: 50,
+        burst: None,
+    },
+    Model {
+        id: "legacy-five-minute-stream",
+        label: "Legacy five minute stream",
+        selectable: false,
+        default: false,
+        thinking_default: Some("low"),
+        duration_ms: DEFAULT_DURATION_MS,
+        interval_ms: 40,
+        burst: None,
+    },
+    Model {
+        id: "one-minute-stream",
+        label: "One minute stream",
+        selectable: true,
+        default: false,
+        thinking_default: None,
+        duration_ms: 60_000,
+        interval_ms: 40,
+        burst: None,
+    },
+    Model {
+        id: "bursty-stream",
+        label: "Bursty stream",
+        selectable: true,
+        default: false,
+        thinking_default: None,
+        duration_ms: 60_000,
+        interval_ms: 0,
+        burst: Some(Burst {
+            min_tokens: 1,
+            max_tokens: 40,
+            gap_ms: 90,
+        }),
+    },
+    Model {
+        id: "ten-second-stream",
+        label: "Ten second stream",
+        selectable: true,
+        default: false,
+        thinking_default: Some("low"),
+        duration_ms: 10_000,
+        interval_ms: 5,
+        burst: None,
+    },
+    Model {
+        id: "max-only-thinking-stream",
+        label: "Max-only thinking stream",
+        selectable: true,
+        default: false,
+        thinking_default: Some("max"),
+        duration_ms: 10_000,
+        interval_ms: 5,
+        burst: None,
+    },
+    Model {
+        id: "e2e-fast-stream",
+        label: "E2E fast stream",
+        selectable: false,
+        default: false,
+        thinking_default: None,
+        duration_ms: 2000,
+        interval_ms: 20,
+        burst: None,
+    },
 ];
 
 /// Paseo `resolveModelProfile`: an unknown id gets the first model.
 fn profile(model_id: &str) -> Profile {
-    let m = MODELS.iter().find(|m| m.id == model_id).unwrap_or(&MODELS[0]);
-    Profile { duration_ms: m.duration_ms, interval_ms: m.interval_ms, burst: m.burst }
+    let m = MODELS
+        .iter()
+        .find(|m| m.id == model_id)
+        .unwrap_or(&MODELS[0]);
+    Profile {
+        duration_ms: m.duration_ms,
+        interval_ms: m.interval_ms,
+        burst: m.burst,
+    }
 }
 
 /// Paseo `nextBurstSize` (a deterministic hash, JS 32-bit semantics).
@@ -176,11 +263,20 @@ fn edit_diff(file: &str) -> String {
 enum CycleEvent {
     Assistant(String),
     Reasoning(String),
-    Tool { call_id: String, name: &'static str, detail: Box<ToolCallDetail>, running: bool },
+    Tool {
+        call_id: String,
+        name: &'static str,
+        detail: Box<ToolCallDetail>,
+        running: bool,
+    },
     Usage,
 }
 
-fn search_detail(file_paths: Option<Vec<String>>, num_files: Option<u64>, num_matches: Option<u64>) -> ToolCallDetail {
+fn search_detail(
+    file_paths: Option<Vec<String>>,
+    num_files: Option<u64>,
+    num_matches: Option<u64>,
+) -> ToolCallDetail {
     ToolCallDetail::Search(SearchDetail {
         query: "scrollToEnd".into(),
         tool_name: Some(SearchToolName::Grep),
@@ -199,14 +295,22 @@ fn search_detail(file_paths: Option<Vec<String>>, num_files: Option<u64>, num_ma
 
 /// Paseo `buildCycleQueue`.
 fn cycle_queue(turn_id: &str, cycle: u64) -> Vec<CycleEvent> {
-    let mut q: Vec<CycleEvent> = tokenize(&intro_paragraph(cycle)).into_iter().map(CycleEvent::Assistant).collect();
+    let mut q: Vec<CycleEvent> = tokenize(&intro_paragraph(cycle))
+        .into_iter()
+        .map(CycleEvent::Assistant)
+        .collect();
     q.extend(tokenize(REASONING).into_iter().map(CycleEvent::Reasoning));
     let read_file = "packages/app/src/components/conversation-list.tsx";
     let read_id = format!("{turn_id}:read:{cycle}");
     q.push(CycleEvent::Tool {
         call_id: read_id.clone(),
         name: "read",
-        detail: Box::new(ToolCallDetail::Read { file_path: read_file.into(), content: None, offset: None, limit: None }),
+        detail: Box::new(ToolCallDetail::Read {
+            file_path: read_file.into(),
+            content: None,
+            offset: None,
+            limit: None,
+        }),
         running: true,
     });
     q.push(CycleEvent::Tool {
@@ -221,7 +325,12 @@ fn cycle_queue(turn_id: &str, cycle: u64) -> Vec<CycleEvent> {
         running: false,
     });
     let grep_id = format!("{turn_id}:grep:{cycle}");
-    q.push(CycleEvent::Tool { call_id: grep_id.clone(), name: "grep", detail: Box::new(search_detail(None, None, None)), running: true });
+    q.push(CycleEvent::Tool {
+        call_id: grep_id.clone(),
+        name: "grep",
+        detail: Box::new(search_detail(None, None, None)),
+        running: true,
+    });
     q.push(CycleEvent::Tool {
         call_id: grep_id,
         name: "grep",
@@ -235,7 +344,11 @@ fn cycle_queue(turn_id: &str, cycle: u64) -> Vec<CycleEvent> {
         )),
         running: false,
     });
-    q.extend(tokenize(MID_PARAGRAPH).into_iter().map(CycleEvent::Assistant));
+    q.extend(
+        tokenize(MID_PARAGRAPH)
+            .into_iter()
+            .map(CycleEvent::Assistant),
+    );
     let edit_file = "packages/app/src/hooks/use-scroll-anchor.ts";
     let edit = ToolCallDetail::Edit {
         file_path: edit_file.into(),
@@ -244,8 +357,18 @@ fn cycle_queue(turn_id: &str, cycle: u64) -> Vec<CycleEvent> {
         unified_diff: Some(edit_diff(edit_file)),
     };
     let edit_id = format!("{turn_id}:edit:{cycle}");
-    q.push(CycleEvent::Tool { call_id: edit_id.clone(), name: "edit", detail: Box::new(edit.clone()), running: true });
-    q.push(CycleEvent::Tool { call_id: edit_id, name: "edit", detail: Box::new(edit), running: false });
+    q.push(CycleEvent::Tool {
+        call_id: edit_id.clone(),
+        name: "edit",
+        detail: Box::new(edit.clone()),
+        running: true,
+    });
+    q.push(CycleEvent::Tool {
+        call_id: edit_id,
+        name: "edit",
+        detail: Box::new(edit),
+        running: false,
+    });
     let shell = ToolCallDetail::Shell {
         command: "node scripts/simulate-stream-burst.mjs".into(),
         cwd: Some("/tmp/paseo-mock-load".into()),
@@ -253,20 +376,47 @@ fn cycle_queue(turn_id: &str, cycle: u64) -> Vec<CycleEvent> {
         exit_code: Some(Some(0.into())),
     };
     let shell_id = format!("{turn_id}:bash:{cycle}");
-    q.push(CycleEvent::Tool { call_id: shell_id.clone(), name: "bash", detail: Box::new(shell.clone()), running: true });
-    q.push(CycleEvent::Tool { call_id: shell_id, name: "bash", detail: Box::new(shell), running: false });
-    q.extend(tokenize(CLOSING_PARAGRAPH).into_iter().map(CycleEvent::Assistant));
+    q.push(CycleEvent::Tool {
+        call_id: shell_id.clone(),
+        name: "bash",
+        detail: Box::new(shell.clone()),
+        running: true,
+    });
+    q.push(CycleEvent::Tool {
+        call_id: shell_id,
+        name: "bash",
+        detail: Box::new(shell),
+        running: false,
+    });
+    q.extend(
+        tokenize(CLOSING_PARAGRAPH)
+            .into_iter()
+            .map(CycleEvent::Assistant),
+    );
     q.push(CycleEvent::Usage);
     q
 }
 
 /// Paseo `buildBurstyStreamQueue`.
 fn bursty_queue(cycle: u64) -> Vec<CycleEvent> {
-    let text = [intro_paragraph(cycle), MID_PARAGRAPH.to_string(), CLOSING_PARAGRAPH.to_string()].join("\n\n");
-    tokenize(&text).into_iter().map(CycleEvent::Assistant).collect()
+    let text = [
+        intro_paragraph(cycle),
+        MID_PARAGRAPH.to_string(),
+        CLOSING_PARAGRAPH.to_string(),
+    ]
+    .join("\n\n");
+    tokenize(&text)
+        .into_iter()
+        .map(CycleEvent::Assistant)
+        .collect()
 }
 
-fn tool_item(call_id: &str, name: &str, detail: ToolCallDetail, status: ToolCallStatus) -> TimelineItem {
+fn tool_item(
+    call_id: &str,
+    name: &str,
+    detail: ToolCallDetail,
+    status: ToolCallStatus,
+) -> TimelineItem {
     TimelineItem::ToolCall(Box::new(ToolCall {
         agent_message: None,
         call_id: call_id.to_string(),
@@ -298,17 +448,29 @@ fn has_phrase(prompt: &str, phrase_variants: &[&str]) -> bool {
 /// A prompt that starts with "emit synthetic quota failure" (only at the start, so a
 /// continuation that quotes the task doesn't fail again).
 fn quota_failure(prompt: &str) -> bool {
-    prompt.trim_start().to_lowercase().starts_with("emit synthetic quota failure")
+    prompt
+        .trim_start()
+        .to_lowercase()
+        .starts_with("emit synthetic quota failure")
 }
 
 /// A prompt that starts with "emit synthetic auth failure": the expired login that opened AGENT-01
 /// (the provider breaker, `manager/breaker.rs`).
 fn auth_failure(prompt: &str) -> bool {
-    prompt.trim_start().to_lowercase().starts_with("emit synthetic auth failure")
+    prompt
+        .trim_start()
+        .to_lowercase()
+        .starts_with("emit synthetic auth failure")
 }
 
 fn turn_failure(prompt: &str) -> bool {
-    has_phrase(prompt, &["emit synthetic turn failure", "emit a synthetic turn failure"])
+    has_phrase(
+        prompt,
+        &[
+            "emit synthetic turn failure",
+            "emit a synthetic turn failure",
+        ],
+    )
 }
 
 /// "lucina mock write <path>=<text>" (Lucina only): the rest of the line.
@@ -316,29 +478,50 @@ fn write_file(prompt: &str) -> Option<(String, String)> {
     let rest = prompt.split("lucina mock write ").nth(1)?.lines().next()?;
     let (path, text) = rest.split_once('=')?;
     let path = path.trim();
-    (!path.is_empty() && !path.contains("..") && !path.starts_with('/')).then(|| (path.to_string(), text.to_string()))
+    (!path.is_empty() && !path.contains("..") && !path.starts_with('/'))
+        .then(|| (path.to_string(), text.to_string()))
 }
 
 /// "lucina mock mcp permission <server>/<tool>" (Lucina only).
 fn mcp_permission(prompt: &str) -> Option<(String, String)> {
-    let rest = prompt.split("lucina mock mcp permission ").nth(1)?.split_whitespace().next()?;
+    let rest = prompt
+        .split("lucina mock mcp permission ")
+        .nth(1)?
+        .split_whitespace()
+        .next()?;
     let (server, tool) = rest.split_once('/')?;
     (!server.is_empty() && !tool.is_empty()).then(|| (server.to_string(), tool.to_string()))
 }
 
 fn plan_approval(prompt: &str) -> bool {
-    has_phrase(prompt, &["emit synthetic plan approval", "emit a synthetic plan approval"])
+    has_phrase(
+        prompt,
+        &[
+            "emit synthetic plan approval",
+            "emit a synthetic plan approval",
+        ],
+    )
 }
 
 fn questions(prompt: &str) -> Option<Value> {
     let w = words(prompt);
-    let hit = ["emit synthetic question", "emit a synthetic question"].iter().any(|p| w.contains(p));
+    let hit = ["emit synthetic question", "emit a synthetic question"]
+        .iter()
+        .any(|p| w.contains(p));
     if !hit {
         return None;
     }
-    let free = ["free-write", "free write", "freewrite", "freeform", "text-only", "text only", "textonly"]
-        .iter()
-        .any(|p| w.contains(p));
+    let free = [
+        "free-write",
+        "free write",
+        "freewrite",
+        "freeform",
+        "text-only",
+        "text only",
+        "textonly",
+    ]
+    .iter()
+    .any(|p| w.contains(p));
     if free {
         return Some(json!([
             {"question":"What is the GitHub private repo URL to push to?","header":"repoUrl","options":[],"multiSelect":false,"placeholder":"git@github.com:user/repo.git"},
@@ -363,7 +546,9 @@ fn questions(prompt: &str) -> Option<Value> {
 
 /// `delay synthetic user message by (\d+)ms`, capped at 2000.
 fn user_message_delay_ms(prompt: &str) -> u64 {
-    number_after(prompt, "delay synthetic user message by ", "ms").map(|n| n.min(2000)).unwrap_or(0)
+    number_after(prompt, "delay synthetic user message by ", "ms")
+        .map(|n| n.min(2000))
+        .unwrap_or(0)
 }
 
 /// `emit (\d+) assistant messages before synthetic user message`, capped at 500.
@@ -448,8 +633,14 @@ fn structured_branch_name(prompt: &str) -> Option<Value> {
     }
     let branch = branch.trim_matches('-');
     let branch: String = branch.chars().take(100).collect();
-    let branch = if branch.is_empty() { "mock-task".to_string() } else { branch };
-    Some(json!({"title": if title.is_empty() { "Mock task".to_string() } else { title }, "branch": branch}))
+    let branch = if branch.is_empty() {
+        "mock-task".to_string()
+    } else {
+        branch
+    };
+    Some(
+        json!({"title": if title.is_empty() { "Mock task".to_string() } else { title }, "branch": branch}),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -462,14 +653,19 @@ fn modes() -> Vec<AgentMode> {
         AgentMode {
             id: "load-test".into(),
             label: "Load Test".into(),
-            description: Some("Streams repeated markdown, reasoning, and tool calls for app stress testing".into()),
+            description: Some(
+                "Streams repeated markdown, reasoning, and tool calls for app stress testing"
+                    .into(),
+            ),
             icon: Some("ShieldOff".into()),
             color_tier: Some("dangerous".into()),
         },
         AgentMode {
             id: "approval-test".into(),
             label: "Approval Test".into(),
-            description: Some("Alternate development-only permission mode for preference tests".into()),
+            description: Some(
+                "Alternate development-only permission mode for preference tests".into(),
+            ),
             icon: Some("ShieldCheck".into()),
             color_tier: Some("safe".into()),
         },
@@ -516,8 +712,16 @@ impl Provider for MockProvider {
         }
     }
 
-    async fn create_session(&self, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
-        Ok(Arc::new(MockSession::new(uuid::Uuid::new_v4().to_string(), config, events)))
+    async fn create_session(
+        &self,
+        config: SessionConfig,
+        events: EventSink,
+    ) -> Result<Arc<dyn Session>, ProviderError> {
+        Ok(Arc::new(MockSession::new(
+            uuid::Uuid::new_v4().to_string(),
+            config,
+            events,
+        )))
     }
 
     async fn resume_session(
@@ -528,15 +732,25 @@ impl Provider for MockProvider {
     ) -> Result<Arc<dyn Session>, ProviderError> {
         if let Some(meta) = &handle.metadata {
             if config.model.is_none() {
-                config.model = meta.get("model").and_then(Value::as_str).map(str::to_string);
+                config.model = meta
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
             if config.mode_id.is_none() {
-                config.mode_id = meta.get("modeId").and_then(Value::as_str).map(str::to_string);
+                config.mode_id = meta
+                    .get("modeId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
         }
         let session = MockSession::new(handle.session_id.clone(), config, events);
         if let Some(saved) = handle.metadata.as_ref().and_then(|m| m.get("checkpoints")) {
-            session.inner.lock().unwrap_or_else(|p| p.into_inner()).checkpoints = serde_json::from_value(saved.clone()).unwrap_or_default();
+            session
+                .inner
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .checkpoints = serde_json::from_value(saved.clone()).unwrap_or_default();
         }
         Ok(Arc::new(session))
     }
@@ -548,14 +762,27 @@ pub struct MockAltProvider;
 #[async_trait]
 impl Provider for MockAltProvider {
     fn info(&self) -> ProviderInfo {
-        ProviderInfo { id: MOCK_ALT_ID.into(), label: "Mock Alt".into(), ..MockProvider.info() }
+        ProviderInfo {
+            id: MOCK_ALT_ID.into(),
+            label: "Mock Alt".into(),
+            ..MockProvider.info()
+        }
     }
 
-    async fn create_session(&self, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
+    async fn create_session(
+        &self,
+        config: SessionConfig,
+        events: EventSink,
+    ) -> Result<Arc<dyn Session>, ProviderError> {
         MockProvider.create_session(config, events).await
     }
 
-    async fn resume_session(&self, handle: &PersistenceHandle, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
+    async fn resume_session(
+        &self,
+        handle: &PersistenceHandle,
+        config: SessionConfig,
+        events: EventSink,
+    ) -> Result<Arc<dyn Session>, ProviderError> {
         MockProvider.resume_session(handle, config, events).await
     }
 }
@@ -583,8 +810,14 @@ impl Provider for MockSlowProvider {
         }
     }
 
-    async fn create_session(&self, _config: SessionConfig, _events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
-        Err(ProviderError::new("Mock slow provider is dev-only; sessions are not supported."))
+    async fn create_session(
+        &self,
+        _config: SessionConfig,
+        _events: EventSink,
+    ) -> Result<Arc<dyn Session>, ProviderError> {
+        Err(ProviderError::new(
+            "Mock slow provider is dev-only; sessions are not supported.",
+        ))
     }
 
     async fn resume_session(
@@ -593,7 +826,9 @@ impl Provider for MockSlowProvider {
         _config: SessionConfig,
         _events: EventSink,
     ) -> Result<Arc<dyn Session>, ProviderError> {
-        Err(ProviderError::new("Mock slow provider is dev-only; sessions are not supported."))
+        Err(ProviderError::new(
+            "Mock slow provider is dev-only; sessions are not supported.",
+        ))
     }
 }
 
@@ -655,7 +890,11 @@ impl MockSession {
             .get("mockAssistantResponses")
             .and_then(Value::as_array)
             .filter(|a| a.iter().all(Value::is_string))
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let streaming_interval_ms = fv
             .get("mockStreamingAssistantIntervalMs")
@@ -716,7 +955,10 @@ impl TurnCtx {
     }
 
     fn active(&self) -> bool {
-        self.lock().turn.as_ref().is_some_and(|t| t.id == self.turn_id)
+        self.lock()
+            .turn
+            .as_ref()
+            .is_some_and(|t| t.id == self.turn_id)
     }
 
     fn emit(&self, ev: StreamEvent) {
@@ -724,7 +966,11 @@ impl TurnCtx {
     }
 
     fn timeline(&self, item: TimelineItem) {
-        self.emit(StreamEvent::Timeline { provider: MOCK_ID.into(), item, turn_id: Some(self.turn_id.clone()) });
+        self.emit(StreamEvent::Timeline {
+            provider: MOCK_ID.into(),
+            item,
+            turn_id: Some(self.turn_id.clone()),
+        });
     }
 
     fn started(&self) {
@@ -739,7 +985,10 @@ impl TurnCtx {
             }
         };
         if first {
-            self.emit(StreamEvent::TurnStarted { provider: MOCK_ID.into(), turn_id: Some(self.turn_id.clone()) });
+            self.emit(StreamEvent::TurnStarted {
+                provider: MOCK_ID.into(),
+                turn_id: Some(self.turn_id.clone()),
+            });
         }
     }
 
@@ -749,13 +998,24 @@ impl TurnCtx {
         }
         self.started();
         let message_id = uuid::Uuid::new_v4().to_string();
-        self.lock().checkpoints.push(Checkpoint { message_id: message_id.clone(), writes: Vec::new() });
-        self.timeline(TimelineItem::UserMessage { text: prompt.to_string(), message_id: Some(message_id), client_message_id });
+        self.lock().checkpoints.push(Checkpoint {
+            message_id: message_id.clone(),
+            writes: Vec::new(),
+        });
+        self.timeline(TimelineItem::UserMessage {
+            text: prompt.to_string(),
+            message_id: Some(message_id),
+            client_message_id,
+        });
     }
 
     fn usage(&self) -> Usage {
         let g = self.lock();
-        let (cycle, tokens) = g.turn.as_ref().map(|t| (t.cycle, t.emitted_tokens)).unwrap_or((0, 0));
+        let (cycle, tokens) = g
+            .turn
+            .as_ref()
+            .map(|t| (t.cycle, t.emitted_tokens))
+            .unwrap_or((0, 0));
         Usage {
             input_tokens: Some((cycle * 32).into()),
             output_tokens: Some(tokens.into()),
@@ -786,7 +1046,11 @@ impl TurnCtx {
     fn finish_with_usage(&self) {
         let usage = self.usage();
         self.end(|c| {
-            c.emit(StreamEvent::TurnCompleted { provider: MOCK_ID.into(), turn_id: Some(c.turn_id.clone()), usage: Some(usage) })
+            c.emit(StreamEvent::TurnCompleted {
+                provider: MOCK_ID.into(),
+                turn_id: Some(c.turn_id.clone()),
+                usage: Some(usage),
+            })
         });
     }
 
@@ -797,7 +1061,10 @@ impl TurnCtx {
     }
 
     fn assistant(&self, text: String) {
-        self.timeline(TimelineItem::AssistantMessage { text, message_id: Some(self.message_id.clone()) });
+        self.timeline(TimelineItem::AssistantMessage {
+            text,
+            message_id: Some(self.message_id.clone()),
+        });
     }
 }
 
@@ -827,7 +1094,9 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                 c.emit(StreamEvent::TurnFailed {
                     provider: MOCK_ID.into(),
                     turn_id: Some(c.turn_id.clone()),
-                    error: "Failed to authenticate: OAuth session expired and could not be refreshed".into(),
+                    error:
+                        "Failed to authenticate: OAuth session expired and could not be refreshed"
+                            .into(),
                     code: None,
                     diagnostic: None,
                 })
@@ -855,7 +1124,13 @@ async fn run_script(ctx: TurnCtx, script: Script) {
             }
             ctx.started();
             ctx.assistant(text);
-            ctx.end(|c| c.emit(StreamEvent::TurnCompleted { provider: MOCK_ID.into(), turn_id: Some(c.turn_id.clone()), usage: None }));
+            ctx.end(|c| {
+                c.emit(StreamEvent::TurnCompleted {
+                    provider: MOCK_ID.into(),
+                    turn_id: Some(c.turn_id.clone()),
+                    usage: None,
+                })
+            });
         }
         Script::Streaming(text, interval) => {
             for token in tokenize(&text) {
@@ -883,17 +1158,34 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                 kind: PermissionKind::Plan,
                 title: Some("Plan".into()),
                 description: Some("Review the proposed plan before implementation starts.".into()),
-                input: Some(json_map(json!({"plan": "1. Add the (c) README note.\n2. Run --name=\"my repo\".\n3. Verify ---buzz in the diff."}))),
+                input: Some(json_map(
+                    json!({"plan": "1. Add the (c) README note.\n2. Run --name=\"my repo\".\n3. Verify ---buzz in the diff."}),
+                )),
                 detail: None,
                 suggestions: None,
                 actions: Some(vec![
-                    PermissionAction { id: "implement".into(), label: "Implement".into(), behavior: Behavior::Allow, variant: Some(ActionVariant::Primary), intent: Some(ActionIntent::Implement) },
-                    PermissionAction { id: "dismiss".into(), label: "Dismiss".into(), behavior: Behavior::Deny, variant: Some(ActionVariant::Secondary), intent: Some(ActionIntent::Dismiss) },
+                    PermissionAction {
+                        id: "implement".into(),
+                        label: "Implement".into(),
+                        behavior: Behavior::Allow,
+                        variant: Some(ActionVariant::Primary),
+                        intent: Some(ActionIntent::Implement),
+                    },
+                    PermissionAction {
+                        id: "dismiss".into(),
+                        label: "Dismiss".into(),
+                        behavior: Behavior::Deny,
+                        variant: Some(ActionVariant::Secondary),
+                        intent: Some(ActionIntent::Dismiss),
+                    },
                 ]),
                 metadata: Some(json_map(json!({"source": "mock_plan_approval"}))),
             };
             ctx.lock().pending.push(request.clone());
-            ctx.emit(StreamEvent::PermissionRequested { provider: MOCK_ID.into(), request: Box::new(request) });
+            ctx.emit(StreamEvent::PermissionRequested {
+                provider: MOCK_ID.into(),
+                request: Box::new(request),
+            });
         }
         Script::Questions(questions) => {
             if !ctx.active() {
@@ -914,7 +1206,10 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                 metadata: Some(json_map(json!({"source": "mock_questions"}))),
             };
             ctx.lock().pending.push(request.clone());
-            ctx.emit(StreamEvent::PermissionRequested { provider: MOCK_ID.into(), request: Box::new(request) });
+            ctx.emit(StreamEvent::PermissionRequested {
+                provider: MOCK_ID.into(),
+                request: Box::new(request),
+            });
         }
         Script::Cycle(profile) => run_cycles(ctx, profile).await,
         Script::WriteFile(path, text) => {
@@ -925,10 +1220,19 @@ async fn run_script(ctx: TurnCtx, script: Script) {
             let root = std::path::PathBuf::from(ctx.lock().cwd.clone());
             // Inside the session's directory, and remembered for a files rewind.
             let written = resolve(&root, &path).and_then(|full| {
-                let before = std::fs::read(&full).ok().map(|b| base64::engine::general_purpose::STANDARD.encode(b));
-                full.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&full, &text)).map_err(|e| e.to_string())?;
+                let before = std::fs::read(&full)
+                    .ok()
+                    .map(|b| base64::engine::general_purpose::STANDARD.encode(b));
+                full.parent()
+                    .map(std::fs::create_dir_all)
+                    .unwrap_or(Ok(()))
+                    .and_then(|_| std::fs::write(&full, &text))
+                    .map_err(|e| e.to_string())?;
                 if let Some(last) = ctx.lock().checkpoints.last_mut() {
-                    last.writes.push(FileWrite { path: path.clone(), before });
+                    last.writes.push(FileWrite {
+                        path: path.clone(),
+                        before,
+                    });
                 }
                 Ok(())
             });
@@ -937,7 +1241,13 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                 Err(e) => format!("Could not write {path}: {e}"),
             };
             ctx.assistant(reply);
-            ctx.end(|c| c.emit(StreamEvent::TurnCompleted { provider: MOCK_ID.into(), turn_id: Some(c.turn_id.clone()), usage: None }));
+            ctx.end(|c| {
+                c.emit(StreamEvent::TurnCompleted {
+                    provider: MOCK_ID.into(),
+                    turn_id: Some(c.turn_id.clone()),
+                    usage: None,
+                })
+            });
         }
         Script::McpPermission(server, tool) => {
             if !ctx.active() {
@@ -958,7 +1268,10 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                 metadata: None,
             };
             ctx.lock().pending.push(request.clone());
-            ctx.emit(StreamEvent::PermissionRequested { provider: MOCK_ID.into(), request: Box::new(request) });
+            ctx.emit(StreamEvent::PermissionRequested {
+                provider: MOCK_ID.into(),
+                request: Box::new(request),
+            });
         }
     }
 }
@@ -985,7 +1298,10 @@ async fn run_cycles(ctx: TurnCtx, profile: Profile) {
             ctx.finish_with_usage();
             return;
         }
-        let this_tick = profile.burst.map(|b| next_burst_size(&b, burst_index)).unwrap_or(1);
+        let this_tick = profile
+            .burst
+            .map(|b| next_burst_size(&b, burst_index))
+            .unwrap_or(1);
         burst_index += 1;
         for _ in 0..this_tick {
             if queue.is_empty() {
@@ -999,7 +1315,12 @@ async fn run_cycles(ctx: TurnCtx, profile: Profile) {
                         None => return,
                     }
                 };
-                queue = if profile.burst.is_some() { bursty_queue(cycle) } else { cycle_queue(&ctx.turn_id, cycle) }.into();
+                queue = if profile.burst.is_some() {
+                    bursty_queue(cycle)
+                } else {
+                    cycle_queue(&ctx.turn_id, cycle)
+                }
+                .into();
             }
             let Some(ev) = queue.pop_front() else { break };
             match ev {
@@ -1011,17 +1332,33 @@ async fn run_cycles(ctx: TurnCtx, profile: Profile) {
                     ctx.count_token();
                     ctx.timeline(TimelineItem::Reasoning { text });
                 }
-                CycleEvent::Tool { call_id, name, detail, running } => {
-                    let status = if running { ToolCallStatus::Running } else { ToolCallStatus::Completed };
+                CycleEvent::Tool {
+                    call_id,
+                    name,
+                    detail,
+                    running,
+                } => {
+                    let status = if running {
+                        ToolCallStatus::Running
+                    } else {
+                        ToolCallStatus::Completed
+                    };
                     ctx.timeline(tool_item(&call_id, name, *detail, status));
                 }
                 CycleEvent::Usage => {
                     let usage = ctx.usage();
-                    ctx.emit(StreamEvent::UsageUpdated { provider: MOCK_ID.into(), turn_id: Some(ctx.turn_id.clone()), usage });
+                    ctx.emit(StreamEvent::UsageUpdated {
+                        provider: MOCK_ID.into(),
+                        turn_id: Some(ctx.turn_id.clone()),
+                        usage,
+                    });
                 }
             }
         }
-        let wait = profile.burst.map(|b| b.gap_ms).unwrap_or(profile.interval_ms);
+        let wait = profile
+            .burst
+            .map(|b| b.gap_ms)
+            .unwrap_or(profile.interval_ms);
         tokio::time::sleep(Duration::from_millis(wait)).await;
     }
 }
@@ -1032,14 +1369,26 @@ impl Session for MockSession {
         self.id.clone()
     }
 
-    async fn start_turn(&self, prompt: &str, client_message_id: Option<String>) -> Result<String, ProviderError> {
+    async fn start_turn(
+        &self,
+        prompt: &str,
+        client_message_id: Option<String>,
+    ) -> Result<String, ProviderError> {
         let turn_id = uuid::Uuid::new_v4().to_string();
         let script = {
             let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             if g.turn.is_some() {
-                return Err(ProviderError::new("Mock load-test provider already has an active turn"));
+                return Err(ProviderError::new(
+                    "Mock load-test provider already has an active turn",
+                ));
             }
-            g.turn = Some(Turn { id: turn_id.clone(), task: None, started: false, cycle: 0, emitted_tokens: 0 });
+            g.turn = Some(Turn {
+                id: turn_id.clone(),
+                task: None,
+                started: false,
+                cycle: 0,
+                emitted_tokens: 0,
+            });
             if auth_failure(prompt) {
                 Script::AuthFailure
             } else if quota_failure(prompt) {
@@ -1049,7 +1398,11 @@ impl Session for MockSession {
             } else if let Some(text) = g.streaming_response.clone() {
                 Script::Streaming(text, g.streaming_interval_ms)
             } else if !g.responses.is_empty() || g.response.is_some() {
-                let text = if g.responses.is_empty() { g.response.clone().unwrap_or_default() } else { g.responses.remove(0) };
+                let text = if g.responses.is_empty() {
+                    g.response.clone().unwrap_or_default()
+                } else {
+                    g.responses.remove(0)
+                };
                 Script::Settled(text)
             } else if let Some(answer) = structured_branch_name(prompt) {
                 Script::Settled(answer.to_string())
@@ -1128,7 +1481,12 @@ impl Session for MockSession {
     }
 
     async fn interrupt(&self) -> Result<(), ProviderError> {
-        let turn = self.inner.lock().unwrap_or_else(|p| p.into_inner()).turn.take();
+        let turn = self
+            .inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .turn
+            .take();
         if let Some(turn) = turn {
             if let Some(task) = turn.task {
                 task.abort();
@@ -1142,7 +1500,11 @@ impl Session for MockSession {
         Ok(())
     }
 
-    async fn respond_permission(&self, request_id: &str, response: PermissionResponse) -> Result<(), ProviderError> {
+    async fn respond_permission(
+        &self,
+        request_id: &str,
+        response: PermissionResponse,
+    ) -> Result<(), ProviderError> {
         let (request, turn_id) = {
             let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             let Some(i) = g.pending.iter().position(|p| p.id == request_id) else {
@@ -1157,7 +1519,12 @@ impl Session for MockSession {
             resolution: response,
         });
         if let Some(turn_id) = turn_id {
-            let ctx = TurnCtx { inner: self.inner.clone(), events: self.events.clone(), turn_id, message_id: String::new() };
+            let ctx = TurnCtx {
+                inner: self.inner.clone(),
+                events: self.events.clone(),
+                turn_id,
+                message_id: String::new(),
+            };
             let _ = request.kind;
             ctx.finish_with_usage();
         }
@@ -1169,8 +1536,15 @@ impl Session for MockSession {
         if let Some(e) = &g.rewind_error {
             return Err(ProviderError::new(e.clone()));
         }
-        let Some(at) = g.checkpoints.iter().position(|c| c.message_id == rewind.message_id) else {
-            return Err(ProviderError::new(format!("Mock rewind target {} was not found in session history", rewind.message_id)));
+        let Some(at) = g
+            .checkpoints
+            .iter()
+            .position(|c| c.message_id == rewind.message_id)
+        else {
+            return Err(ProviderError::new(format!(
+                "Mock rewind target {} was not found in session history",
+                rewind.message_id
+            )));
         };
         // Files first, as Paseo's Claude does for `both`: the checkpoints it needs go with the conversation.
         if rewind.mode.changes_files() {
@@ -1186,7 +1560,10 @@ impl Session for MockSession {
         (prompt == HANDLED_COMMAND).then(|| {
             vec![StreamEvent::Timeline {
                 provider: MOCK_ID.into(),
-                item: TimelineItem::AssistantMessage { text: "Mock command handled".into(), message_id: None },
+                item: TimelineItem::AssistantMessage {
+                    text: "Mock command handled".into(),
+                    message_id: None,
+                },
                 turn_id: None,
             }]
         })
@@ -1214,12 +1591,20 @@ impl Session for MockSession {
             provider: MOCK_ID.into(),
             session_id: self.id.clone(),
             native_handle: None,
-            metadata: Some(json_map(json!({"model": g.model, "modeId": g.mode, "checkpoints": g.checkpoints}))),
+            metadata: Some(json_map(
+                json!({"model": g.model, "modeId": g.mode, "checkpoints": g.checkpoints}),
+            )),
         }
     }
 
     fn current_mode(&self) -> Option<String> {
-        Some(self.inner.lock().unwrap_or_else(|p| p.into_inner()).mode.clone())
+        Some(
+            self.inner
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .mode
+                .clone(),
+        )
     }
 }
 
@@ -1228,13 +1613,20 @@ impl Session for MockSession {
 fn restore_files(root: &std::path::Path, checkpoints: &[Checkpoint]) -> Result<(), ProviderError> {
     let mut plan = Vec::new();
     for write in checkpoints.iter().rev().flat_map(|c| c.writes.iter().rev()) {
-        plan.push((resolve(root, &write.path).map_err(ProviderError::new)?, write));
+        plan.push((
+            resolve(root, &write.path).map_err(ProviderError::new)?,
+            write,
+        ));
     }
     for (full, write) in plan {
-        let fail = |e: std::io::Error| ProviderError::new(format!("Could not restore {}: {e}", write.path));
+        let fail = |e: std::io::Error| {
+            ProviderError::new(format!("Could not restore {}: {e}", write.path))
+        };
         match &write.before {
             Some(saved) => {
-                let bytes = base64::engine::general_purpose::STANDARD.decode(saved).map_err(|e| ProviderError::new(e.to_string()))?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(saved)
+                    .map_err(|e| ProviderError::new(e.to_string()))?;
                 if let Some(dir) = full.parent() {
                     std::fs::create_dir_all(dir).map_err(fail)?;
                 }
@@ -1255,7 +1647,10 @@ mod tests {
 
     #[test]
     fn tokenize_like_paseo() {
-        assert_eq!(tokenize("Hello wonderful world  "), vec!["Hello", " wond", "erfu", "l", " world", "  "]);
+        assert_eq!(
+            tokenize("Hello wonderful world  "),
+            vec!["Hello", " wond", "erfu", "l", " world", "  "]
+        );
         assert_eq!(tokenize("## Cycle 1"), vec!["##", " Cycle", " 1"]);
         assert_eq!(tokenize("").len(), 0);
         let joined: String = tokenize(MID_PARAGRAPH).concat();
@@ -1264,10 +1659,17 @@ mod tests {
 
     #[test]
     fn burst_sizes_in_range_and_deterministic() {
-        let b = Burst { min_tokens: 1, max_tokens: 40, gap_ms: 90 };
+        let b = Burst {
+            min_tokens: 1,
+            max_tokens: 40,
+            gap_ms: 90,
+        };
         let sizes: Vec<u32> = (0..50).map(|i| next_burst_size(&b, i)).collect();
         assert!(sizes.iter().all(|s| (1..=40).contains(s)));
-        assert_eq!(sizes, (0..50).map(|i| next_burst_size(&b, i)).collect::<Vec<_>>());
+        assert_eq!(
+            sizes,
+            (0..50).map(|i| next_burst_size(&b, i)).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1275,14 +1677,34 @@ mod tests {
         assert!(turn_failure("please EMIT a synthetic  turn failure now"));
         assert!(plan_approval("emit synthetic plan approval"));
         assert!(questions("emit synthetic questions").is_some());
-        assert_eq!(questions("emit synthetic question free-write").unwrap().as_array().unwrap().len(), 2);
-        assert_eq!(user_message_delay_ms("delay synthetic user message by 9000ms"), 2000);
-        assert_eq!(assistant_messages_before_user("emit 3 assistant messages before synthetic user message"), Some(3));
-        assert!(settled_image_markdown("emit settled assistant image markdown: ![a](b.png)").is_some());
+        assert_eq!(
+            questions("emit synthetic question free-write")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            user_message_delay_ms("delay synthetic user message by 9000ms"),
+            2000
+        );
+        assert_eq!(
+            assistant_messages_before_user(
+                "emit 3 assistant messages before synthetic user message"
+            ),
+            Some(3)
+        );
+        assert!(
+            settled_image_markdown("emit settled assistant image markdown: ![a](b.png)").is_some()
+        );
         let answer = structured_branch_name(
             "Generate a title and a git branch name for a coding agent\nReturn JSON only with fields 'title' and 'branch'.\n<user-prompt>\n\"Fix the Login bug!\"\n</user-prompt>",
         )
         .unwrap();
-        assert_eq!(answer, json!({"title": "Fix the Login bug!", "branch": "fix-the-login-bug"}));
+        assert_eq!(
+            answer,
+            json!({"title": "Fix the Login bug!", "branch": "fix-the-login-bug"})
+        );
     }
 }
