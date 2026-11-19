@@ -511,6 +511,11 @@ fn lane_run_args(job: &WorkJob) -> Result<Vec<OsString>, String> {
     a.extend(["--workspace".into(), (&job.workspace).into()]);
     a.extend(["--owner".into(), (&job.lead).into()]);
     a.extend(["--cost".into(), job.cost.as_str().into()]);
+    // `lane` knows only owner and normal (LB-C064): an owner run tells it so its bq calls get owner
+    // priority. High and backlog are agentd's own ordering and stay here.
+    if job.priority == Priority::Owner {
+        a.extend(["--priority".into(), "owner".into()]);
+    }
     // The ids as flags: they win over the environment `lane` may carry.
     if let (Some(run), Some(change)) = (&job.run_id, &job.change) {
         a.extend([
@@ -2703,6 +2708,25 @@ deep-codex = ["qoder", "codex-a"]
         assert!(lane_run_args(&chained)
             .unwrap()
             .ends_with(&os(&["--verify", "true"])));
+    }
+
+    #[test]
+    fn an_owner_job_tells_lane_its_priority_and_no_other_job_does() {
+        let mut owner = sample_job();
+        owner.priority = Priority::Owner;
+        let args = lane_run_args(&owner).unwrap();
+        let at = args.iter().position(|a| a == "--priority").unwrap();
+        assert_eq!(args[at + 1], OsString::from("owner"));
+        // Placed with the other flags, before the ids and the verify command.
+        assert!(at < args.iter().position(|a| a == "--expect-file").unwrap());
+        for p in [Priority::High, Priority::Normal, Priority::Backlog] {
+            let mut job = sample_job();
+            job.priority = p;
+            assert!(!lane_run_args(&job)
+                .unwrap()
+                .iter()
+                .any(|a| a == "--priority"));
+        }
     }
 
     #[test]
