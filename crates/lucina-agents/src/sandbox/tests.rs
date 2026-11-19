@@ -1335,13 +1335,14 @@ fn the_generator_puts_both_tmpfs_mounts_before_every_bind() {
         .collect();
     assert_eq!(tmpfs.len(), 2, "{a:?}");
     let last_tmpfs = *tmpfs.last().unwrap();
-    // The system binds come first, but none may be at or under /tmp or the home.
+    // Earlier binds are allowed, but none may be at or under a path a tmpfs then covers.
+    let covered: Vec<&Path> = tmpfs.iter().map(|i| Path::new(&a[i + 1])).collect();
     let before: Vec<&[String]> = a[..last_tmpfs]
         .windows(3)
         .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
         .collect();
     for w in before {
         let t = Path::new(&w[2]);
-        assert!(!t.starts_with("/tmp") && !t.starts_with(HOME), "{w:?}");
+        assert!(!covered.iter().any(|c| t.starts_with(c)), "{w:?}");
     }
 }
