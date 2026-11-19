@@ -343,7 +343,7 @@ async fn bad_artefact_names_are_404() {
         format!("{sha}.BIN"),                  // uppercase extension
         format!("{sha}.exe!"),                 // bad extension character
         format!("{sha}.verylongext"),          // extension over 8
-        format!("{sha}"),                      // no extension
+        sha.to_string(),                      // no extension
         format!("{sha}."),                     // empty extension
         format!("{sha}.bin.gz.extra"),         // extra suffix
         format!("{sha}.bin/"),                 // trailing slash
@@ -641,7 +641,7 @@ async fn readers_only_ever_see_one_complete_manifest_while_it_is_replaced_by_ren
             let mut n = 0u32;
             while !stop.load(Ordering::Relaxed) {
                 let tmp = dir.join("manifest.tmp");
-                fs::write(&tmp, if i % 2 == 0 { &b } else { &a }).unwrap();
+                fs::write(&tmp, if i.is_multiple_of(2) { &b } else { &a }).unwrap();
                 fs::rename(&tmp, dir.join("manifest")).unwrap();
                 i += 1;
                 n += 1;

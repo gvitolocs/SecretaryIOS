@@ -39,6 +39,7 @@ One bq job ran (`~/scratch/jd-c008/check.log`, `check.sh`): `cargo test -p lucin
 (unit: 2 passed; serve.rs: 17 passed, 0 failed). `cargo test -p secretary-server auth`, clippy and rustfmt did not
 finish before the job was cancelled: NOT VERIFIED (the secretary-server gate and its 4 new tests, clippy, rustfmt).
 - The first run warned `unused import: Read` in lib.rs; removed by a text edit afterwards, not recompiled.
-- Cargo.lock is not committed (cargo adds the new package on first build; commit it after a build).
+- Cargo.lock is committed (commit 2db30f84 swept in the new package entry).
+- The lead check ran `cargo test -p secretary-server auth`, whose filter skipped the four gate tests in `tests/updates_auth.rs` (no "auth" in their names); run them as `cargo test -p secretary-server --test updates_auth`.
 - The brief's `rustfmt --edition 2024` disagrees with the crates' edition 2021 (import order only); files were
   formatted with 2021.
