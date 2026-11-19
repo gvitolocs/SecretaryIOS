@@ -109,6 +109,8 @@ pub fn presence_block(st: &AppState, prompt: &str) -> String {
 /// ([`prepare_keyed`] computes it); only such a turn may start something.
 /// `device`: the device the owner is talking through (`crate::device::jev_device_of_turn`), a fact in Jev's state.
 /// `sample`: a real turn of the owner's own, whose Jev answer is kept (`jev_samples`).
+/// `source`: what the `jev_first` line says the text came from, `"turn"` or `"replay"` (the drift
+/// report counts live traffic from a turn alone, `crate::jev_drift`).
 #[allow(clippy::too_many_arguments)]
 pub async fn classify(
     st: &AppState,
@@ -120,6 +122,7 @@ pub async fn classify(
     mcp: bool,
     owner_turn: bool,
     sample: bool,
+    source: &'static str,
 ) -> Classification {
     let s = &st.cfg.intent;
     let t = TurnInput {
@@ -187,9 +190,14 @@ pub async fn classify(
                     "an acting intent overrode the rule {}",
                     overrode_rule
                 );
-                tracing::info!(target: "lucina_jev::route", event = "jev_first", used = true,
-                    intent = %c.intent, confidence, tier0 = ?rule.as_ref().map(|r| r.intent.as_str()),
-                    overrode_rule = %overrode_rule, guard, "jev_first");
+                crate::jev_route::log_jev_first_used(
+                    source,
+                    &c.intent,
+                    confidence,
+                    rule.as_ref().map(|r| r.intent.as_str()),
+                    &overrode_rule,
+                    guard,
+                );
                 if guard.ends_with(":chat") {
                     return chat(confidence);
                 }
@@ -203,9 +211,12 @@ pub async fn classify(
                 return c;
             }
             Err(reason) => {
-                tracing::info!(target: "lucina_jev::route", event = "jev_first", used = false, reason,
-                    intent = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1),
-                    tier0 = ?rule.as_ref().map(|r| r.intent.as_str()), "jev_first fallback");
+                crate::jev_route::log_jev_first_fallback(
+                    source,
+                    reason,
+                    pick,
+                    rule.as_ref().map(|r| r.intent.as_str()),
+                );
                 let deterministic = rule
                     .as_ref()
                     .is_some_and(crate::jev_route::deterministic_rule);
@@ -539,6 +550,7 @@ pub async fn prepare_keyed(
             surface.caller().is_some(),
             owner_turn,
             owner && surface.caller().is_none() && !crate::selftest::is_session(session),
+            "turn",
         )
         .await;
         let (p, r) = policy::resolve(&c, first_after_idle, st.cfg.intent.confidence_min);
