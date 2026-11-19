@@ -1207,6 +1207,12 @@ impl Exec {
                 &self.spec.allow,
                 self.spec.full,
             );
+            // PIPE-09: the plan log always says whether `--full` was set, not only when it changes a gate.
+            self.say(if self.spec.full {
+                "merge: --full set"
+            } else {
+                "merge: --full not set"
+            });
             for n in &notes {
                 self.say(n);
             }
@@ -2301,6 +2307,32 @@ mod tests {
             ),
             "{log}"
         );
+    }
+
+    /// PIPE-09: the plan log says whether `--full` was set, in both cases.
+    #[test]
+    fn the_plan_log_says_whether_full_was_set() {
+        for full in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let root = root.path();
+            let (_origin, repo) = gate_repo(root);
+            git(&repo, &["checkout", "-q", "-b", "topic"]);
+            let head = commit(&repo, "b.txt", "b\n", "add b");
+            let mut s = spec(root, &repo, "topic", &head);
+            s.full = full;
+            let dir = root.join("job-full");
+            std::fs::create_dir_all(&dir).unwrap();
+            let out = Exec::open(&dir, s).unwrap().merge();
+            assert_eq!(out.code, "MERGED", "{}", out.message);
+            let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+            let (says, not) = if full {
+                ("merge: --full set", "merge: --full not set")
+            } else {
+                ("merge: --full not set", "merge: --full set\n")
+            };
+            assert!(log.contains(says), "{log}");
+            assert!(!log.contains(not), "{log}");
+        }
     }
 
     #[test]
