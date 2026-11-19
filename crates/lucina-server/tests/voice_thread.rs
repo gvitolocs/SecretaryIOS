@@ -338,6 +338,26 @@ async fn a_voice_turn_lands_in_the_lucina_voice_thread() {
     assert_eq!(page["data"]["items"].as_array().unwrap().len(), 4);
 }
 
+/// What a directory holds at this moment, names and sizes only: the failure message of the wait below.
+fn dir_contents(dir: &std::path::Path) -> String {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => return format!("unreadable ({e})"),
+    };
+    let listed: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            let size = e.metadata().map(|m| m.len()).unwrap_or_default();
+            format!("{} ({} bytes)", e.file_name().to_string_lossy(), size)
+        })
+        .collect();
+    if listed.is_empty() {
+        "nothing".to_owned()
+    } else {
+        listed.join(", ")
+    }
+}
+
 #[tokio::test]
 async fn an_owner_turn_keeps_jevs_answer_in_the_servers_data_dir() {
     let jev = Fake::new().intent("che ore sono?", "temporal_query", 0.97);
@@ -345,13 +365,27 @@ async fn an_owner_turn_keeps_jevs_answer_in_the_servers_data_dir() {
     let h = harness(chat_script(), with_jev(&server)).await;
     stream(&h, voice_body("che ore sono?")).await;
     let dir = h.dir.path().join("jev-cal");
+    // The sample is written by a blocking task spawned off the turn (`jev_samples::record`), so on a
+    // loaded host it can be seconds late: the wait is bounded by a deadline, not by a turn count.
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(30);
     let mut body = String::new();
-    for _ in 0..100 {
+    loop {
         if let Some(Ok(entry)) = std::fs::read_dir(&dir).ok().and_then(|mut d| d.next()) {
             body = std::fs::read_to_string(entry.path()).unwrap();
         }
         if !body.is_empty() {
             break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "waited {:?} for the sample file the server writes in the background into {} \
+                 (`jev_samples::record`), and the body stayed empty; at the deadline the directory \
+                 held: {}",
+                started.elapsed(),
+                dir.display(),
+                dir_contents(&dir),
+            );
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
