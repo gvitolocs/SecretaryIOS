@@ -62,6 +62,9 @@ pub fn bucket(confidence: f64) -> usize {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogTurn {
     pub used: bool,
+    /// What wrote the line: `"turn"` of the owner's, `"replay"` from the replay endpoint, `None` for
+    /// a line from a server that did not yet write the field.
+    pub source: Option<String>,
     pub reason: Option<String>,
     pub intent: Option<String>,
     pub confidence: Option<f64>,
@@ -142,6 +145,7 @@ pub fn parse_log_line(line: &str) -> Option<LogTurn> {
     };
     Some(LogTurn {
         used,
+        source: text("source"),
         reason: text("reason"),
         intent: text("intent"),
         confidence: get("confidence").and_then(|c| c.parse().ok()),
@@ -1089,6 +1093,7 @@ mod tests {
             t,
             LogTurn {
                 used: true,
+                source: None,
                 reason: None,
                 intent: Some("temporal_query".into()),
                 confidence: Some(0.77),

@@ -17,7 +17,10 @@
 //!   route ([`deterministic_intent`]) keeps the turn against an answer Jev is not sure of, has no
 //!   option for, or that would start something ([`acts`]); a sure question of Jev's own intents wins
 //!   over it from [`JEV_OVER_RULE_MIN`] up (`LUCINA_JEV_OVER_RULE`, `LUCINA_JEV_OVER_RULE_MIN`).
-//!   Each decision is one `event="jev_first"` log line. `POST /api/secretary/jev/route` replays a
+//!   Each decision is one `event="jev_first"` log line, which says where its text came from
+//!   (`source`: `"turn"` of the owner's, `"replay"` from the replay endpoint below) — the drift report
+//!   counts live traffic from a turn alone.
+//!   `POST /api/secretary/jev/route` replays a
 //!   text through the same path. The weekly check is `lucina-rs jev drift-report`
 //!   (`docs/lucina-rust/JEV-ROUTING.md`); it only suggests new thresholds.
 
@@ -468,6 +471,34 @@ pub fn jev_first_from(
         return Err("below_threshold");
     }
     Ok(())
+}
+
+/// The one `event="jev_first"` line of a turn JEV-first routed. `source` is the caller's word for
+/// what the text was, passed the way the `jev_yesno` line's is (`"turn"`, `"replay"`):
+/// [`crate::jev_drift`] counts live traffic from a turn alone.
+pub fn log_jev_first_used(
+    source: &'static str,
+    intent: &str,
+    confidence: f64,
+    tier0: Option<&str>,
+    overrode_rule: &str,
+    guard: &str,
+) {
+    tracing::info!(target: "lucina_jev::route", event = "jev_first", source, used = true,
+        intent = %intent, confidence, tier0 = ?tier0, overrode_rule = %overrode_rule, guard,
+        "jev_first");
+}
+
+/// The one `event="jev_first"` line of a turn JEV-first did not route; `reason` is [`jev_first`]'s.
+pub fn log_jev_first_fallback(
+    source: &'static str,
+    reason: &'static str,
+    jev: Option<(&str, f64)>,
+    tier0: Option<&str>,
+) {
+    tracing::info!(target: "lucina_jev::route", event = "jev_first", source, used = false, reason,
+        intent = ?jev.map(|p| p.0), confidence = ?jev.map(|p| p.1), tier0 = ?tier0,
+        "jev_first fallback");
 }
 
 /// Jev's sure answer replaces the tier-0 rule's.
@@ -1017,6 +1048,64 @@ mod tests {
             "reads stay"
         );
         assert!(!mcp_falls_back_to_chat(&rule("chat"), "cursor_task"));
+    }
+
+    /// The lines logged inside `run`, captured on this thread only so a parallel test cannot fill
+    /// the buffer.
+    fn logged(run: impl FnOnce()) -> String {
+        use std::io::Write as _;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct W(Arc<Mutex<Vec<u8>>>);
+        impl Write for W {
+            fn write(&mut self, d: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(d);
+                Ok(d.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let w = W(buf.clone());
+        let sub = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, run);
+        String::from_utf8_lossy(&buf.lock().unwrap().clone()).to_string()
+    }
+
+    /// TURN-11: a turn and a replay of the same text both log a `jev_first` line, and each says which
+    /// it was — the field `jev_drift` reads to keep the labelled replay out of the live count.
+    #[test]
+    fn the_jev_first_line_says_whether_a_turn_or_a_replay_wrote_it() {
+        let text = logged(|| {
+            log_jev_first_used("turn", "chat", 0.9, Some("schedule_reminder"), "", "");
+            log_jev_first_fallback(
+                "replay",
+                "below_threshold",
+                Some(("chat", 0.6)),
+                Some("schedule_reminder"),
+            );
+        });
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains(r#"event="jev_first""#))
+            .collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        let turn = crate::jev_drift::parse_log_line(lines[0]).expect("the turn line");
+        let replay = crate::jev_drift::parse_log_line(lines[1]).expect("the replay line");
+        assert_eq!((turn.source.as_deref(), turn.used), (Some("turn"), true));
+        assert_eq!(turn.tier0.as_deref(), Some("schedule_reminder"));
+        assert_eq!(
+            (replay.source.as_deref(), replay.used),
+            (Some("replay"), false)
+        );
+        assert_eq!(replay.reason.as_deref(), Some("below_threshold"));
+        assert_eq!(replay.confidence, Some(0.6));
     }
 
     #[test]
