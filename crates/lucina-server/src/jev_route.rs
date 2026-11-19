@@ -448,14 +448,36 @@ pub fn jev_first_from(
     over_rule: Option<&str>,
     over_rule_min: Option<&str>,
 ) -> Result<(), &'static str> {
+    jev_first_rule_from(
+        jev,
+        rule.map(|r| r.intent.as_str()),
+        first_min,
+        first_intent_min,
+        over_rule,
+        over_rule_min,
+    )
+}
+
+/// [`jev_first_from`] with the tier-0 rule as its intent name, the way [`deterministic_intent`] is
+/// the rule's own test by name. The decision is the same one - the rule enters it only through
+/// whether it is deterministic and what it is called - so the drift report's replay takes it from the
+/// response's `tier0` string without rebuilding a classification it has no text for.
+pub fn jev_first_rule_from(
+    jev: Option<(&str, f64)>,
+    rule: Option<&str>,
+    first_min: Option<&str>,
+    first_intent_min: Option<&str>,
+    over_rule: Option<&str>,
+    over_rule_min: Option<&str>,
+) -> Result<(), &'static str> {
     let Some((intent, confidence)) = jev else {
         return Err("jev_unavailable");
     };
-    if let Some(r) = rule.filter(|r| deterministic_rule(r)) {
+    if let Some(r) = rule.filter(|r| deterministic_intent(r)) {
         if !jev_beats_rule_from(
             intent,
             confidence,
-            &r.intent,
+            r,
             over_rule,
             over_rule_min,
             first_min,
@@ -985,6 +1007,57 @@ mod tests {
             jev_first_from(unsure, Some(&spending), Some("0.95"), None, None, None),
             Err("deterministic_rule")
         );
+    }
+
+    /// TURN-11: deciding by the rule's name is the same decision the turn path makes, on every shape
+    /// a replay response can carry.
+    #[test]
+    fn jev_first_by_the_rules_name_is_the_same_decision() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let args = [
+            (None, None, None, None),
+            (Some("0.95"), None, None, None),
+            (None, None, Some("off"), None),
+            (None, None, None, Some("0.95")),
+        ];
+        for (first_min, first_intent_min, over_rule, over_rule_min) in args {
+            for rule_intent in [
+                None,
+                Some("grocery.expense.query"),
+                Some("computer_task"),
+                Some("schedule_reminder"),
+                Some("chat"),
+            ] {
+                let rule = rule_intent.map(|t| {
+                    lucina_intent::tier0::from_model_json(
+                        &json!({"intent": t, "confidence": 1.0}),
+                        "x",
+                        "",
+                        &s,
+                    )
+                });
+                assert_eq!(
+                    rule.as_ref().map(|r| r.intent.as_str()),
+                    rule_intent,
+                    "the rule reaches the decision by its name only"
+                );
+                for jev in [
+                    None,
+                    Some(("", 0.99)),
+                    Some(("unknown", 0.99)),
+                    Some(("chat", 0.99)),
+                    Some(("computer_task", 0.99)),
+                    Some(("grocery.shopping_list.query", 0.95)),
+                    Some(("grocery.shopping_list.query", 0.8)),
+                ] {
+                    assert_eq!(
+                        jev_first_from(jev, rule.as_ref(), first_min, first_intent_min, over_rule, over_rule_min),
+                        jev_first_rule_from(jev, rule_intent, first_min, first_intent_min, over_rule, over_rule_min),
+                        "{jev:?} against {rule_intent:?} with {first_min:?} {first_intent_min:?} {over_rule:?} {over_rule_min:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
