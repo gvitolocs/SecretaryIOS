@@ -15,6 +15,8 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 # against its own slot record (tools/bq/src/main.rs, ancestor_slot_class), and a launcher that read the mark itself would be
 # believing a caller's word on a weaker test. BQ_* names also reach the job unscrubbed (tools/bq/src/main.rs:1794-1799; the
 # scrub list is :133), so keying on them would let any caller skip the queue.
+# A start inside a bq slot of a class other than long or gate is refused (bq_foreign_class below); that refusal also keys on BQ_SLOT,
+# BQ_SLOT_PID and the slot record, so a caller who clears BQ_SLOT only reverts to queueing, never to a skip.
 # The queue is looked up in the home directory of the real uid from the passwd entry, never in $HOME (a caller's HOME decides
 # nothing here): $QHOME/.local/bin/bq first, which must print our usage or the check FAILS (exit 2) and runs nothing; a `bq`
 # on PATH only when that file does not exist, and only if it prints our usage (PATH holds the Google Cloud SDK's BigQuery
@@ -79,6 +81,7 @@ bq_find() {
 # exit 2 (queued twice, no slot record): it fails closed, never runs unqueued, and costs only availability.
 bq_slot_is_real() {
     local spid=${BQ_SLOT_PID:-} p=$$ stat rest n=0 meta
+    slot_class=
     [ -n "${BQ_SLOT:-}" ] || return 1
     case "$BQ_SLOT" in */* | .*) return 1 ;; esac
     case "$spid" in '' | *[!0-9]*) return 1 ;; esac
@@ -87,7 +90,9 @@ bq_slot_is_real() {
     meta=$qhome/.cache/bq/$BQ_SLOT.meta
     [ -f "$meta" ] || return 1
     grep -qx "pid=$spid" "$meta" || return 1
-    grep -qxE 'class=(gate|short|long|proof|node)' "$meta" || return 1
+    # With an argument the class need not be one bq knows: the caller reads it from slot_class and decides.
+    if [ -z "${1:-}" ]; then grep -qxE 'class=(gate|short|long|proof|node)' "$meta" || return 1; fi
+    slot_class=$(sed -n 's/^class=//p' "$meta" | head -n 1)
     while [ "$p" -gt 1 ] && [ "$n" -lt 64 ]; do
         [ "$p" = "$spid" ] && return 0
         stat=$(<"/proc/$p/stat") 2>/dev/null || return 1
@@ -99,6 +104,20 @@ bq_slot_is_real() {
     done
     return 1
 }
+# A start inside a slot that bq really holds for a class other than long or gate is refused at once. check-fast queues itself in
+# the long class: started inside a short, proof or node slot it would wait for a long slot while keeping the first one, and
+# the jobs queued behind that slot would wait for it. A record with any other class is treated the same way. A hand-set BQ_SLOT
+# A failed check exits 1 (lucina-ci check-fast); this refusal exits 2 and says no check ran. It keys on BQ_SLOT, BQ_SLOT_PID and the
+# slot record, so a caller who clears BQ_SLOT only goes back to queueing, never to a skip.
+bq_foreign_class() {
+    bq_slot_is_real any || return 1
+    case "$slot_class" in long | gate) return 1 ;; esac
+    return 0
+}
+if bq_foreign_class; then
+    echo "check-fast: refused, no check ran (exit 2, not a result about the change): it was started inside a bq slot of class $slot_class. Run scripts/check-fast directly; it queues itself in the long class." >&2
+    exit 2
+fi
 # The argument carries how many times this run has been through the queue (--queued-by-bq=N; a typed bare --queued-by-bq is 0). A
 # run that still finds no real slot after being queued twice stops (exit 2) instead of going round again: a queue whose state
 # directory is not the one looked up here would otherwise send the launcher through it for ever.
