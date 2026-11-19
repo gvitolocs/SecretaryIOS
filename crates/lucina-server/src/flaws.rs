@@ -1171,6 +1171,16 @@ async fn ended(
             }
         }
         Ended::Task(why) => {
+            // An agent that provably worked got through its first turn: if it was the trial
+            // agent of a half-open lane, that lane works again, whatever became of the task. (A
+            // trial that went straight to `idle` never shows `running` to a tick.)
+            if let Some(lane) = t.lane.as_deref() {
+                if flaws.lane_state(lane).ok() == Some(LaneState::HalfOpen)
+                    && flaws.lane_close(lane).unwrap_or(false)
+                {
+                    tracing::info!(lane, agent, "flaws: the trial agent got through its first turn and went idle; the lane is closed");
+                }
+            }
             let _ = flaws.fail_task_if(
                 &flaw.id,
                 p,
@@ -4893,5 +4903,38 @@ mod tests {
             .unwrap();
         assert_eq!(r.listed.len(), 1, "{:?}", r.skipped);
         assert_eq!(r.listed[0].last_error, SIGN_IN);
+    }
+
+    #[tokio::test]
+    async fn a_trial_agent_that_goes_straight_to_idle_closes_the_half_open_lane() {
+        // LA-C035 F2: only `running` closed it, and `heal_lanes` probes only open lanes, so a trial
+        // that ended its turn between two ticks left the lane half-open for good.
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        let clock = with_clock(&s);
+        due(&s, "emoji", Platform::Web, None);
+        s.lane_open("claude-sonnet", SIGN_IN).unwrap();
+        tick(&s, &p, &h).await;
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::HalfOpen);
+        assert_eq!(h.agents.lock().unwrap().len(), 1, "the one trial agent");
+        // Its first turn worked and it went idle before the next tick looked.
+        h.worked.lock().unwrap().insert("ag0".into());
+        h.status.lock().unwrap().insert("ag0".into(), "idle".into());
+        clock.fetch_add(1, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Closed);
+        // An idle trial that did no work and said nothing is not proof: the lane opens again.
+        s.lane_open("claude-sonnet", "again").unwrap();
+        s.lane_half_open("claude-sonnet").unwrap();
+        clock.fetch_add(10, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        let n = h.agents.lock().unwrap().len();
+        h.status
+            .lock()
+            .unwrap()
+            .insert(format!("ag{}", n - 1), "idle".into());
+        // (its probe does not pass now, so the same tick does not half-open it again)
+        *h.out.lock().unwrap() = true;
+        tick(&s, &p, &h).await;
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
     }
 }
