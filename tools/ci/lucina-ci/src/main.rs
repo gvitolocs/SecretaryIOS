@@ -10,6 +10,7 @@
 mod budget;
 mod fast;
 mod inventory;
+mod keyscan;
 mod runner;
 mod snapshot;
 mod verdict;
@@ -734,6 +735,7 @@ fn main() -> ExitCode {
     let a = Args(all);
     let r = match cmd.as_str() {
         "inventory" => cmd_inventory(&a),
+        "key-scan" => keyscan::cmd(&a.0),
         "plan" => cmd_plan(&a),
         "run" => cmd_run(&a),
         "selftest" => cmd_selftest(&a),
@@ -1876,6 +1878,11 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             &mut failed,
         )?;
     }
+    // The key formats of tools/ci/key-patterns.txt fail on any touched file, with no allowlist and without gitleaks: the
+    // gitleaks pass after it is the second line, not the first (docs/ci/SHIFT-LEFT.md).
+    let quote = |p: &String| format!("'{}'", p.replace('\'', "'\\''"));
+    let scan_list = existing.iter().map(quote).collect::<Vec<_>>().join(" ");
+    let mut secrets_cmd = format!("{} key-scan --root . {scan_list}", own_copy.display());
     if tool_exists("gitleaks") {
         let config = if root.join(".gitleaks.toml").exists() {
             "--config .gitleaks.toml"
@@ -1885,25 +1892,27 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         let list = existing
             .iter()
             .filter(|p| !p.starts_with("third_party/"))
-            .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
+            .map(quote)
             .collect::<Vec<_>>()
             .join(" ");
         if !list.is_empty() {
-            let cmd = format!(
-                "for f in {list}; do gitleaks dir --no-banner --redact {config} \"$f\" || exit 1; done"
-            );
-            step(
-                "secrets",
-                &cmd,
-                "script",
-                SECRETS_STEP_TIMEOUT_S,
-                &none,
-                &[],
-                &mut failed,
-            )?;
+            secrets_cmd.push_str(&format!(
+                " && for f in {list}; do gitleaks dir --no-banner --redact {config} \"$f\" || exit 1; done"
+            ));
         }
     } else {
-        skipped.push("secret scan: gitleaks not installed here".into());
+        skipped.push("secret scan: gitleaks not installed here (key-scan still ran)".into());
+    }
+    if !scan_list.is_empty() {
+        step(
+            "secrets",
+            &secrets_cmd,
+            "script",
+            SECRETS_STEP_TIMEOUT_S,
+            &none,
+            &[],
+            &mut failed,
+        )?;
     }
 
     // A merge that edits the pipeline file is checked against the budget the gate's outer limit must hold (GATE-19).

@@ -1,0 +1,12 @@
+# Provider key formats that key-scan (tools/ci/lucina-ci/src/keyscan.rs) refuses in any tracked text file, tests included. One line: kind TAB regex.
+# Convention: the regex is valid for the Rust regex crate. "Not preceded by an alphanumeric character" is the prefix (?:^|[^A-Za-z0-9]) and the key itself is capture group 1.
+# Lines starting with # and blank lines are skipped. This file holds no key-shaped literal: each line is a pattern, not a sample.
+# The same file is kept byte-identical in the sibling repositories that share the scanner.
+google-api-key	(?:^|[^A-Za-z0-9])(AIza[0-9A-Za-z_-]{35})
+github-token	(?:^|[^A-Za-z0-9])(gh[pousr]_[A-Za-z0-9]{36,})
+github-pat	(?:^|[^A-Za-z0-9])(github_pat_[A-Za-z0-9_]{22,})
+aws-key	(?:^|[^A-Za-z0-9])((?:AKIA|ASIA)[0-9A-Z]{16})
+slack-token	(?:^|[^A-Za-z0-9])(xox[abposr]-[0-9A-Za-z-]{10,})
+openai-key	(?:^|[^A-Za-z0-9])(sk-(?:proj-)?[A-Za-z0-9_-]{20,})
+pem-private-key	(?:^|[^A-Za-z0-9])(-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED) )?PRIVATE KEY(?: BLOCK)?-----)
+jwt	(?:^|[^A-Za-z0-9])(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})
