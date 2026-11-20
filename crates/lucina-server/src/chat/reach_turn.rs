@@ -66,7 +66,10 @@ to whom, and the thread id.";
 /// turn takes every reach tool; a trusted owner relay (an MCP turn that is neither guarded nor a
 /// consultation, which is what `LUCINA_MCP_TRUSTED` and `mcp::is_owner_client` leave) takes
 /// [`RELAY_TOOLS`], and only when his words ask for Lucina Agents work.
-fn tools_for(t: &Turn<'_>, target: Option<lucina_intent::reach::Target>) -> Option<&'static [&'static str]> {
+fn tools_for(
+    t: &Turn<'_>,
+    target: Option<lucina_intent::reach::Target>,
+) -> Option<&'static [&'static str]> {
     if t.guarded || t.consult || !t.surface.is_owner() {
         return None;
     }
