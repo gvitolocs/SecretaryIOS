@@ -1239,6 +1239,10 @@ const AGENTD_PID_VAR: &str = "LUCINA_AGENTD_PID";
 
 /// The arguments of the `systemd-run` that starts the executor: the unit, the working directory,
 /// the job's `PATH`, the daemon's pid, and the command under the merge lock.
+///
+/// The executor's gate steps run in scopes that `BindsTo=` this unit (`pipeline::exec`), so stopping or
+/// restarting the unit by hand (`systemctl --user restart lagent-job-<id>`) stops a running gate, and
+/// the `bq` slot it holds with it; that is the point (a dead executor frees its slot), not a side effect.
 fn systemd_run_args(
     unit: &str,
     dir: &Path,
