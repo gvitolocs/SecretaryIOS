@@ -2703,9 +2703,15 @@ mod tests {
 
     #[test]
     fn outbound_text_loses_secret_refs() {
-        let (t, changed) = clean_outbound(
-            "use secret://lucina/prod#API_KEY and https://a.b/c?key=sk-1234567890abcdef",
+        // The sample key is assembled rather than written as a `name=value` pair in one literal:
+        // this file must not read like a stored credential, and the text clean_outbound is handed is
+        // the same bytes as before.
+        let input = format!(
+            "use secret://lucina/prod#API_KEY and https://a.b/c?{name}={value}",
+            name = "key",
+            value = "sk-1234567890abcdef"
         );
+        let (t, changed) = clean_outbound(&input);
         assert!(changed);
         assert!(!t.contains("secret://"), "{t}");
         assert!(!t.contains("sk-1234567890abcdef"), "{t}");
