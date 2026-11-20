@@ -659,7 +659,8 @@ impl Exec {
 
     /// Ask the host: run `/bin/true` in a transient scope under a probe's own unit name, bounded, with
     /// its noise kept out of the job log (a refusal says nothing a job needs to read twice — the reason
-    /// is the exit). It goes through [`Exec::step_argv`], the very argv a step gets, and the environment
+    /// is the exit). It goes through [`Exec::step_argv_bound`], the very argv a step gets (the binding to the executor's
+    /// unit included), and the environment
     /// a step gets, because those are what the question is about: whether this user has a manager that
     /// will make *this* unit from *this* command line. A host or a wrapper that takes the scope but not
     /// one of its options answers the probe yes and every step no, and that is the failure this asks its
@@ -779,6 +780,9 @@ impl Exec {
     /// reason a script file looked necessary — and `--expand-environment=no` (systemd 254; this host runs 259)
     /// turns that off, so the command reaches `bash` as the repo wrote it and no file is left in the job
     /// directory at all.
+    ///
+    /// This is the unbound form, which only the tests of the argv's shape call; a step and the scope probe go
+    /// through [`Exec::step_argv_bound`], which adds the binding to the executor's unit when it is known.
     #[cfg(test)]
     fn step_argv(
         bash: &Path,
