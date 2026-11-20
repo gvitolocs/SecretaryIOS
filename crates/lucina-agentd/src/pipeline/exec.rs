@@ -869,12 +869,9 @@ impl Exec {
         timed_out: &str,
         slot: Option<&SlotRun>,
     ) -> Option<String> {
-        if let Some(s) = slot {
-            self.say(&format!(
-                "gate: {} queued for a bq slot (class long, priority gate, waits at most {} s)",
-                s.name, s.queue_cap_secs
-            ));
-        } else {
+        // A step with a slot says its command line when it is granted; "queued" is said once the
+        // `bq run` has started (R090 F11), not before bash, the scope and bq are known to exist.
+        if slot.is_none() {
             self.say(&format!("$ {cmd}"));
         }
         // The command gets the built environment (the allowlist from the executor's own
@@ -1007,6 +1004,12 @@ impl Exec {
                 return Some(format!("cannot run: {e}"));
             }
         };
+        if let Some(s) = slot {
+            self.say(&format!(
+                "gate: {} queued for a bq slot (class long, priority gate, waits at most {} s)",
+                s.name, s.queue_cap_secs
+            ));
+        }
         // The two routes to every process this step started, the deadline, and the sweep after it.
         let grace = self.kill_grace;
         // The manager ask is a child of this process too, so it runs under the same cleared
