@@ -138,7 +138,9 @@ pub struct Inner {
     pub registry: Arc<Registry>,
     /// The registry for Lucina MCP turns: no owner-only tools (secrets).
     pub mcp_registry: Arc<Registry>,
-    /// Trusted MCP turns (`LUCINA_MCP_TRUSTED`): everything but the owner-only tools.
+    /// What a trusted MCP turn is held to: everything but the owner-only tools. A trusted turn of a
+    /// caller that is not one of the owner's own apps is a consultation and gets [`Self::mcp_registry`]
+    /// instead, so in practice this is the set below without the Agents pair.
     pub trusted_mcp_registry: Arc<Registry>,
     /// A trusted turn of one of the owner's own apps (`LUCINA_MCP_OWNER_CLIENTS`) that is not a
     /// consultation: [`Self::trusted_mcp_registry`] plus his Lucina Agents tools, and nothing else
