@@ -2271,6 +2271,20 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
             }
             AgentsAction::Run | AgentsAction::Send => {
                 let message = a.message.clone().unwrap_or_default();
+                // What cannot run is refused before a thread opens: a request that never went out
+                // leaves no thread marked sent and waiting for an answer.
+                let send_to = match a.action {
+                    AgentsAction::Send => Some(agent_id()?),
+                    AgentsAction::Run => {
+                        allowed_model(
+                            &reach.cfg.agents_provider,
+                            reach.cfg.agents_model.as_deref(),
+                        )
+                        .map_err(ToolError::new)?;
+                        None
+                    }
+                    _ => None,
+                };
                 let t = reach
                     .open(
                         Target::Agents,
@@ -2284,45 +2298,65 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
                     )
                     .map_err(ToolError::new)?;
                 // A Claude session is no run: nothing ends that its answer could be read from.
-                let session = match a.action {
-                    AgentsAction::Send => {
-                        let id = agent_id()?;
-                        reach.agentd("GET", &format!("/agents/{id}"), None).await.is_ok_and(|v| is_claude_session(&v))
-                    }
-                    _ => false,
+                let session = match &send_to {
+                    Some(id) => reach
+                        .agentd("GET", &format!("/agents/{id}"), None)
+                        .await
+                        .is_ok_and(|v| is_claude_session(&v)),
+                    None => false,
                 };
                 let prompt = if session { reach.session_envelope(&t) } else { reach.envelope(&t) };
                 let mut after_seq = 0;
-                let result = if a.action == AgentsAction::Run {
-                    let cfg = &reach.cfg;
-                    allowed_model(&cfg.agents_provider, cfg.agents_model.as_deref())
-                        .map_err(ToolError::new)?;
-                    let _ = std::fs::create_dir_all(&cfg.agents_cwd);
-                    let mut body = json!({
-                        "provider": cfg.agents_provider,
-                        "cwd": cfg.agents_cwd.display().to_string(),
-                        "prompt": prompt,
-                        "title": clip(a.title.as_deref().unwrap_or(&t.subject), 80),
-                        "labels": {"from": "lucina", "reach": t.id},
-                    });
-                    if let Some(m) = &cfg.agents_model {
-                        body["model"] = json!(m);
+                let cfg = &reach.cfg;
+                let result = match (&send_to, a.action) {
+                    (None, AgentsAction::Run) => {
+                        let _ = std::fs::create_dir_all(&cfg.agents_cwd);
+                        let mut body = json!({
+                            "provider": cfg.agents_provider,
+                            "cwd": cfg.agents_cwd.display().to_string(),
+                            "prompt": prompt,
+                            "title": clip(a.title.as_deref().unwrap_or(&t.subject), 80),
+                            "labels": {"from": "lucina", "reach": t.id},
+                        });
+                        if let Some(m) = &cfg.agents_model {
+                            body["model"] = json!(m);
+                        }
+                        reach.agentd("POST", "/agents", Some(&body)).await
                     }
-                    reach.agentd("POST", "/agents", Some(&body)).await
-                } else {
-                    let id = agent_id()?;
-                    after_seq = reach.agent_last_seq(&id).await;
-                    reach
-                        .agentd("POST", &format!("/agents/{id}/send"), Some(&json!({"prompt": prompt})))
-                        .await
-                        .map(|mut v| {
-                            v["id"] = json!(id);
-                            v
-                        })
+                    (Some(id), _) => {
+                        after_seq = reach.agent_last_seq(id).await;
+                        reach
+                            .agentd(
+                                "POST",
+                                &format!("/agents/{id}/send"),
+                                Some(&json!({"prompt": prompt})),
+                            )
+                            .await
+                            .map(|mut v| {
+                                v["id"] = json!(id);
+                                v
+                            })
+                    }
+                    _ => Err("no agent to send to".to_owned()),
                 };
                 match result {
                     Ok(v) => {
-                        let agent = v["id"].as_str().or(v["agentId"].as_str()).unwrap_or("").to_owned();
+                        // Only an id agentd really gave means a run: a 2xx that names no agent started
+                        // nothing, and saying "sent" would have the owner wait for an answer that never comes.
+                        let agent = v["id"]
+                            .as_str()
+                            .or(v["agentId"].as_str())
+                            .map(str::trim)
+                            .unwrap_or("")
+                            .to_owned();
+                        if agent.is_empty() {
+                            let why = "agentd answered without an agent id, so nothing is running".to_owned();
+                            let t = reach.fail(t, &why);
+                            return Ok(json!({
+                                "status": "failed", "thread": t.id, "error": why,
+                                "instruction": "Tell the owner plainly that Lucina Agents did not take the task and nothing is running; do not give a thread as sent.",
+                            }));
+                        }
                         let t = reach.set_status(&t.id, "sent", Some(agent.clone())).unwrap_or(t);
                         reach.record(&t, &format!("Lucina → Lucina Agents: {}", t.subject), &t.text);
                         if session {
@@ -2331,9 +2365,7 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
                                 "instruction": "Tell the owner the message is with that Claude session: it reads it at its next step, or wakes up for it, and its answer will appear in this chat.",
                             }));
                         }
-                        if !agent.is_empty() {
-                            reach.watch_agent(t.id.clone(), agent.clone(), after_seq);
-                        }
+                        reach.watch_agent(t.id.clone(), agent.clone(), after_seq);
                         Ok(json!({
                             "status": "sent", "thread": t.id, "agent": agent,
                             "instruction": "Tell the owner it is posted in Lucina Agents (agent id) and that the agent's answer will appear in this chat when the run ends.",
@@ -2613,6 +2645,204 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("not reachable"), "{e}");
+    }
+
+    // ------------------------------------------------------------ a stand-in agentd
+
+    fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// One HTTP/1.1 request from a client that will not send another: the request head and its body.
+    fn read_http(stream: &mut std::os::unix::net::UnixStream) -> Option<(String, String)> {
+        use std::io::Read;
+        let mut raw: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => raw.extend_from_slice(&buf[..n]),
+            }
+            if let Some(i) = find_sub(&raw, b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&raw[..i]).to_string();
+                let len = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if raw.len() >= i + 4 + len {
+                    return Some((head, String::from_utf8_lossy(&raw[i + 4..]).to_string()));
+                }
+            }
+            if raw.len() > 1 << 20 {
+                break;
+            }
+        }
+        None
+    }
+
+    /// A stand-in lucina-agentd on a unix socket, the way `agentd_request` talks to it (plain
+    /// HTTP/1.1, one request per connection). Each rule is `("METHOD /path", answer)`: the first
+    /// one the request line starts with answers with HTTP 200. Every request line is recorded.
+    fn fake_agentd(dir: &Path, rules: &[(&str, Value)]) -> Arc<Mutex<Vec<String>>> {
+        let listener = std::os::unix::net::UnixListener::bind(dir.join("agentd.sock")).unwrap();
+        let rules: Vec<(String, String)> = rules
+            .iter()
+            .map(|(m, v)| (m.to_string(), v.to_string()))
+            .collect();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let lines = seen.clone();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(conn) = conn else { return };
+                let (rules, lines) = (rules.clone(), lines.clone());
+                std::thread::spawn(move || {
+                    let mut conn = conn;
+                    let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
+                    let Some((head, _)) = read_http(&mut conn) else { return };
+                    let line = head.lines().next().unwrap_or("").to_owned();
+                    let body = rules
+                        .iter()
+                        .find(|(m, _)| line.starts_with(m.as_str()))
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_else(|| r#"{"agents":[]}"#.to_owned());
+                    lines.lock().unwrap().push(line);
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = conn.write_all(reply.as_bytes());
+                    let _ = conn.flush();
+                });
+            }
+        });
+        seen
+    }
+
+    /// A `Reach` whose agentd is the stand-in, and the ctx of Lucina's own chat (never an MCP one).
+    fn agents_reach(
+        dir: &Path,
+        rules: &[(&str, Value)],
+    ) -> (Arc<Reach>, Arc<crate::ToolEnv>, Arc<Mutex<Vec<String>>>) {
+        let seen = fake_agentd(dir, rules);
+        let mut cfg = ReachConfig::new(dir);
+        cfg.agentd_socket = dir.join("agentd.sock");
+        cfg.agents_cwd = dir.join("agents");
+        cfg.per_hour = 10;
+        cfg.per_day = 40;
+        let reach = Arc::new(Reach::new(cfg));
+        let mut env = crate::ToolEnv::new(dir, chrono_tz::Europe::Rome);
+        env.reach = Some(reach.clone());
+        (reach, Arc::new(env), seen)
+    }
+
+    fn agents_ctx(env: &Arc<crate::ToolEnv>) -> Ctx {
+        Ctx::new(env.clone(), "web", "secretary_ios-1").with_origin(crate::Origin::Owner)
+    }
+
+    #[tokio::test]
+    async fn a_run_is_sent_only_with_the_agent_id_agentd_gave() {
+        let d = tempfile::tempdir().unwrap();
+        let (reach, env, _) = agents_reach(
+            d.path(),
+            &[("POST /agents", json!({"id": "ag-3f9a11c0"}))],
+        );
+        let out = LucinaAgentsTool
+            .call(json!({"action": "run", "message": "check the login fix"}), &agents_ctx(&env))
+            .await
+            .unwrap();
+        assert_eq!(out["status"], "sent", "{out}");
+        assert_eq!(out["agent"], "ag-3f9a11c0", "the id the owner gets is agentd's own");
+        let thread = reach.get(out["thread"].as_str().unwrap()).unwrap();
+        assert_eq!((thread.status.as_str(), thread.detail.as_deref()), ("sent", Some("ag-3f9a11c0")));
+    }
+
+    /// A 2xx that names no agent started nothing: it is a failure, and the thread does not stay
+    /// open waiting for an answer that will never come.
+    #[tokio::test]
+    async fn a_run_agentd_gives_no_id_for_is_not_claimed_sent() {
+        for answer in [json!({}), json!({"id": ""}), json!({"agentId": "  "}), json!(null)] {
+            let d = tempfile::tempdir().unwrap();
+            let (reach, env, _) = agents_reach(d.path(), &[("POST /agents", answer.clone())]);
+            let out = LucinaAgentsTool
+                .call(json!({"action": "run", "message": "check the login fix"}), &agents_ctx(&env))
+                .await
+                .unwrap();
+            assert_eq!(out["status"], "failed", "{answer} → {out}");
+            assert!(out["agent"].is_null(), "no id is handed out as one: {out}");
+            let thread = reach.get(out["thread"].as_str().unwrap()).unwrap();
+            assert_eq!(thread.status, "failed", "{answer}");
+            assert!(thread.detail.unwrap().contains("agent id"), "{answer}");
+            assert!(reach.list(Some(Target::Agents), Some("open"), 10).is_empty(), "not left open");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_send_without_an_agent_opens_no_thread_and_spends_no_slot() {
+        let d = tempfile::tempdir().unwrap();
+        let (reach, env, seen) = agents_reach(d.path(), &[("POST /agents/", json!({"id": "ag-1"}))]);
+        let e = LucinaAgentsTool
+            .call(json!({"action": "send", "message": "hi"}), &agents_ctx(&env))
+            .await
+            .unwrap_err();
+        assert!(e.0.contains("`agent`"), "{e:?}");
+        assert!(reach.read().threads.is_empty(), "a refused request leaves no thread");
+        assert!(reach.read().sent.is_empty(), "nor spends the rate limit");
+        assert!(seen.lock().unwrap().is_empty(), "agentd is not touched");
+    }
+
+    #[tokio::test]
+    async fn a_send_carries_the_message_to_the_named_agent() {
+        let d = tempfile::tempdir().unwrap();
+        let (reach, env, seen) = agents_reach(
+            d.path(),
+            &[
+                ("GET /agents/ag-1", json!({"id": "ag-1", "provider": "opencode"})),
+                ("GET /agents/ag-1/timeline", json!({"rows": []})),
+                ("POST /agents/ag-1/send", json!({})),
+            ],
+        );
+        let out = LucinaAgentsTool
+            .call(
+                json!({"action": "send", "agent": "ag-1", "message": "wake up"}),
+                &agents_ctx(&env),
+            )
+            .await
+            .unwrap();
+        assert_eq!((out["status"].as_str(), out["agent"].as_str()), (Some("sent"), Some("ag-1")), "{out}");
+        let got = seen.lock().unwrap();
+        assert!(got.iter().any(|l| l.starts_with("POST /agents/ag-1/send")), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn the_agent_roster_comes_from_agentd() {
+        let d = tempfile::tempdir().unwrap();
+        let (reach, env, _) = agents_reach(
+            d.path(),
+            &[(
+                "GET /agents",
+                json!({"agents": [
+                    {"id": "ag-1", "title": "login fix", "provider": "claude-session", "status": "idle",
+                     "labels": {"branch": "login-fix"}},
+                    {"id": "ag-2", "title": "report", "provider": "opencode", "status": "closed"}
+                ]}),
+            )],
+        );
+        let out = LucinaAgentsTool
+            .call(json!({"action": "list"}), &agents_ctx(&env))
+            .await
+            .unwrap();
+        let agents = out["agents"].as_array().unwrap();
+        assert_eq!(agents.len(), 2, "{out}");
+        // What is alive is listed first, and a Claude session is marked as one.
+        assert_eq!(agents[0]["id"], "ag-1", "{out}");
+        assert_eq!(agents[0]["kind"], "Claude session", "{out}");
+        assert_eq!(agents[0]["branch"], "login-fix", "{out}");
+        assert!(reach.read().threads.is_empty(), "listing opens no thread");
     }
 
     #[test]
