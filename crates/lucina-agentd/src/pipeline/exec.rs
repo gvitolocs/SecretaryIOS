@@ -5345,6 +5345,19 @@ mod tests {
             "{how}: second bq run got the slot {after:?} after the unit ended ({:?} in all)",
             t.elapsed()
         );
+        // The proof, as assertions: the slot came from bq's holder check within moments of the unit
+        // ending, while the gate (8 s) was still running. Had it come from the gate ending, `after`
+        // would be seconds and the gate's process gone.
+        assert!(
+            after < Duration::from_secs(3),
+            "the slot took {after:?} to be handed on ({how})"
+        );
+        let gate_pid = std::fs::read_to_string(&seen).unwrap();
+        let gate_pid = gate_pid.split_whitespace().next().unwrap();
+        assert!(
+            Path::new(&format!("/proc/{gate_pid}")).exists(),
+            "the gate had already ended when the slot was handed on, so it was not the holder check ({how})"
+        );
         wait_until(10, "the step's scope to be gone", || {
             scopes().trim().is_empty()
         });
