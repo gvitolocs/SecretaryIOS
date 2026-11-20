@@ -1313,7 +1313,7 @@ async fn start_runner(
     let agentd_pid = std::process::id();
     let agentd_exe = agentd_exe();
     if cfg.systemd {
-        let unit = format!("lagent-job-{}", id.trim_start_matches("job_"));
+        let unit = pipeline::runner_unit(id);
         let out = tokio::process::Command::new("systemd-run")
             .args(systemd_run_args_with_exe(
                 &unit,

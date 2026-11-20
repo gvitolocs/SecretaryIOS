@@ -297,7 +297,24 @@ struct Exec {
     bq: BqSource,
     bq_queue_cap_secs: u64,
     grants: u32,
+    /// The systemd unit this executor itself runs in (`lagent-job-<id>.service`), read once from its
+    /// own control group at start: what every step's scope is bound to, so that the scope stops when
+    /// this unit does. A field of the executor, not a name a step could set. `None`: not run as that
+    /// unit (a test, a child-process fallback), and every step says so.
+    executor_unit: Option<String>,
 }
+
+/// The unit this process runs in, when it is the runner unit of `job_id`: the last component of its
+/// own control group names it.
+fn own_unit(job_id: &str) -> Option<String> {
+    let want = format!("{}.service", super::runner_unit(job_id));
+    let t = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    t.lines()
+        .filter_map(|l| l.strip_prefix("0::"))
+        .any(|p| p.rsplit('/').next() == Some(want.as_str()))
+        .then_some(want)
+}
+
 
 struct Members {
     directories: Vec<String>,
@@ -320,7 +337,9 @@ impl Exec {
             "{home}/.cargo/bin:{home}/.local/bin:{home}/bin:{}:/usr/sbin:/sbin",
             std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())
         );
+        let executor_unit = own_unit(&spec.job_id);
         Ok(Exec {
+            executor_unit,
             gate_env: Vec::new(),
             dir: dir.to_path_buf(),
             waivers: None,
@@ -615,7 +634,13 @@ impl Exec {
             return Scope::NoUserManager("bash is not on the job's PATH".to_string());
         };
         let unit = kill::probe_name();
-        let (program, argv) = Self::step_argv(&bash, Some(program), Some(&unit), "/bin/true");
+        let (program, argv) = Self::step_argv_bound(
+            &bash,
+            Some(program),
+            Some(&unit),
+            "/bin/true",
+            self.executor_unit.as_deref(),
+        );
         let mut child = match Command::new(program)
             .args(argv)
             .current_dir(&self.dir)
@@ -714,6 +739,19 @@ impl Exec {
         unit: Option<&str>,
         cmd: &str,
     ) -> (PathBuf, Vec<std::ffi::OsString>) {
+        Self::step_argv_bound(bash, systemd_run, unit, cmd, None)
+    }
+
+    /// [`Exec::step_argv`], and with `bind` (`Some(<executor unit>)`) a scope that `BindsTo` and
+    /// starts `After` that unit: when the executor's unit stops, or its main process dies, systemd
+    /// stops the scope, which takes the step (a `bq run` holding a slot included) with it (LA-C038).
+    fn step_argv_bound(
+        bash: &Path,
+        systemd_run: Option<&Path>,
+        unit: Option<&str>,
+        cmd: &str,
+        bind: Option<&str>,
+    ) -> (PathBuf, Vec<std::ffi::OsString>) {
         // `-c <cmd>` and then the name bash reads into `$0` for it — the argument after the command string,
         // which bash calls its own `argv[0]`. That name is what item 2 is about: `timeout … bash -c` gave a
         // gate a `$0` of `bash`, a script file of the step's own gave it the file's path, and the program
@@ -735,9 +773,15 @@ impl Exec {
                     std::ffi::OsString::from(u),
                     std::ffi::OsString::from("--expand-environment=no"),
                     std::ffi::OsString::from(format!("--slice={SCOPE_SLICE}")),
-                    std::ffi::OsString::from("--"),
-                    bash.to_path_buf().into(),
                 ];
+                if let Some(b) = bind {
+                    for p in [format!("BindsTo={b}"), format!("After={b}")] {
+                        argv.push(std::ffi::OsString::from("-p"));
+                        argv.push(std::ffi::OsString::from(p));
+                    }
+                }
+                argv.push(std::ffi::OsString::from("--"));
+                argv.push(bash.to_path_buf().into());
                 argv.extend(step);
                 (program.to_path_buf(), argv)
             }
@@ -841,12 +885,29 @@ impl Exec {
             Some(s) => s.wrapper.clone(),
             None => cmd.to_string(),
         };
-        let (program, argv) =
-            Self::step_argv(&bash, systemd_run.as_deref(), unit.as_deref(), &started);
+        let bind = unit.as_ref().and(self.executor_unit.clone());
+        let (program, argv) = Self::step_argv_bound(
+            &bash,
+            systemd_run.as_deref(),
+            unit.as_deref(),
+            &started,
+            bind.as_deref(),
+        );
         if unit.is_none() {
             self.say(&format!(
                 "scope: none ({}): the step has its process group alone",
                 scope.reason()
+            ));
+        }
+        // One line when the step is not bound to the executor's unit, and the reason: no silent difference.
+        if bind.is_none() {
+            self.say(&format!(
+                "bound: no ({}): this step does not stop with the executor",
+                if unit.is_none() {
+                    "the step has no scope of its own"
+                } else {
+                    "the executor does not know its own systemd unit"
+                }
             ));
         }
         let mut command = Command::new(program);
@@ -4877,5 +4938,356 @@ mod tests {
         let (got, after, err) = second("40");
         assert!(got, "the slot never came back: {err}");
         assert!(after < Duration::from_secs(30), "{after:?}");
+    }
+
+    // ---- LA-C038 (WORK-26): a step is bound to the executor's unit --------------------------------
+
+    /// What a transient user unit and a real bq need, or why the test is skipped.
+    fn bound_env() -> Result<PathBuf, String> {
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            return Err("no systemd user manager (XDG_RUNTIME_DIR is not set)".into());
+        }
+        let ok = Command::new("systemd-run")
+            .args(["--user", "--scope", "--quiet", "--collect", "--", "/bin/true"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err("systemd-run --user --scope does not work here".into());
+        }
+        let home = passwd_home().ok_or("no passwd home")?;
+        let bq = home.join(".local/bin/bq");
+        if !bq_prints_usage(&bq) {
+            return Err(format!("{} is missing or is not bq", bq.display()));
+        }
+        Ok(bq)
+    }
+
+    /// bq's own knobs for a hermetic queue in `state`: one long slot, no admission holds, the reserved
+    /// gate slot far off. bq keeps its own scope for the job (as in production).
+    fn bound_knobs(state: &Path) -> Vec<(&'static str, String)> {
+        vec![
+            ("BQ_DIR", state.display().to_string()),
+            ("BQ_LONG_SLOTS", "1".into()),
+            ("BQ_NO_TOUCH", "1".into()),
+            ("BQ_GATE_AFTER_S", "3600".into()),
+            ("BQ_FREE_FLOOR_GIB", "0".into()),
+            ("BQ_FREE_DISK_RESERVE_GIB", "0".into()),
+            ("BQ_MEM_FLOOR_GIB", "0".into()),
+            ("BQ_MEM_RESERVE_GIB", "0".into()),
+            ("BQ_LOAD_CEILING", "0".into()),
+        ]
+    }
+
+    /// A real transient user unit, stopped on every path out of the test.
+    struct UnitGuard(String);
+
+    impl Drop for UnitGuard {
+        fn drop(&mut self) {
+            for verb in ["stop", "reset-failed"] {
+                let _ = Command::new("systemctl")
+                    .args(["--user", verb, &self.0])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
+
+    fn systemctl_user(args: &[&str]) -> String {
+        let o = Command::new("systemctl")
+            .arg("--user")
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).to_string()
+    }
+
+    /// This test binary as the executor of job `job_<tag>`, as the unit `lagent-job-<tag>`, the way
+    /// `start_runner` starts one: `mode` is what the child does (`hold`: a gate holding the bq slot;
+    /// `plain`: a gate that takes none).
+    fn start_executor_unit(
+        root: &Path,
+        tag: &str,
+        bq: &Path,
+        mode: &str,
+        knobs: &[(&'static str, String)],
+        props: &[&str],
+    ) -> UnitGuard {
+        let unit = format!("lagent-job-{tag}");
+        let mut c = Command::new("systemd-run");
+        c.args(["--user", "--quiet", "--collect", "--unit", &unit]);
+        c.arg(format!("--working-directory={}", root.display()));
+        for p in props {
+            c.arg(format!("--property={p}"));
+        }
+        let mut envs: Vec<(String, String)> = vec![
+            ("LA_C038_ROOT".into(), root.display().to_string()),
+            ("LA_C038_TAG".into(), tag.to_string()),
+            ("LA_C038_BQ".into(), bq.display().to_string()),
+            ("LA_C038_MODE".into(), mode.to_string()),
+        ];
+        envs.extend(knobs.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        for (k, v) in &envs {
+            c.arg(format!("--setenv={k}={v}"));
+        }
+        c.arg("--")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pipeline::exec::tests::slot_bound_executor_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .stdin(Stdio::null());
+        let o = c.output().unwrap();
+        assert!(
+            o.status.success(),
+            "systemd-run: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        UnitGuard(format!("{unit}.service"))
+    }
+
+    /// The test binary, re-run as a unit's executor (see [`start_executor_unit`]). With no
+    /// `LA_C038_TAG` it is nothing, and passes.
+    #[test]
+    fn slot_bound_executor_child() {
+        let Some(tag) = std::env::var("LA_C038_TAG").ok() else {
+            return;
+        };
+        let root = PathBuf::from(std::env::var_os("LA_C038_ROOT").unwrap());
+        let dir = root.join(format!("job-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = spec(&root, &root, "topic", "0");
+        s.job_id = format!("job_{tag}");
+        let mut x = Exec::open(&dir, s).unwrap();
+        std::fs::write(root.join("bound"), format!("{:?}", x.executor_unit)).unwrap();
+        let cmd = std::fs::read_to_string(root.join("gate-command")).unwrap();
+        let hold = std::env::var("LA_C038_MODE").ok().as_deref() == Some("hold");
+        if hold {
+            x.bq = BqSource::Fixed(Some(PathBuf::from(std::env::var_os("LA_C038_BQ").unwrap())));
+        }
+        let ok = x.gate_run(&root, "gate", &cmd, hold, Duration::from_secs(120), "2 min");
+        std::fs::write(root.join("result"), format!("{ok}")).unwrap();
+    }
+
+    fn wait_until(secs: u64, what: &str, mut f: impl FnMut() -> bool) {
+        let t = Instant::now();
+        while !f() {
+            assert!(t.elapsed() < Duration::from_secs(secs), "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn bq_run_second(bq: &Path, knobs: &[(&'static str, String)], wait: &str) -> (bool, Duration) {
+        let mut c = Command::new(bq);
+        c.args(["run", "--class", "long", "--priority", "gate", "--max-wait", wait])
+            .args(["--who", "la-c038-second", "--", "true"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(["XDG_RUNTIME_DIR", "HOME"].iter().filter_map(|k| std::env::var_os(k).map(|v| (*k, v))))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (k, v) in knobs {
+            c.env(k, v);
+        }
+        let t = Instant::now();
+        let ok = c.status().unwrap().success();
+        (ok, t.elapsed())
+    }
+
+    /// Condition 1: a gate step under the REAL bq in an executor that runs as a real user unit. When
+    /// the executor's unit is killed (`how = "kill"`: SIGKILL to its main process) or stopped
+    /// (`how = "stop"`, what `stop_runner` does), systemd stops the step's scope, bq dies with it, and
+    /// bq's own holder check hands the slot to a second `bq run` at once, not when the gate ends.
+    fn slot_is_freed_when_the_executor_unit_ends(how: &str) {
+        let bq = match bound_env() {
+            Ok(b) => b,
+            Err(why) => {
+                eprintln!("skipped: {why}");
+                return;
+            }
+        };
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let tag = format!("c038{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+        let state = root.join("bqstate");
+        let knobs = bound_knobs(&state);
+        let seen = root.join("seen");
+        // The gate holds the slot for 8 s; a second bq run that gets it sooner got it from bq's
+        // holder check, not from the gate ending.
+        std::fs::write(
+            root.join("gate-command"),
+            format!("echo \"$$ $BQ_SLOT $BQ_SLOT_PID\" > {}; sleep 8", seen.display()),
+        )
+        .unwrap();
+        let _unit = start_executor_unit(root, &tag, &bq, "hold", &knobs, &["TimeoutStopSec=30"]);
+        wait_until(60, "the gate to hold the slot", || {
+            std::fs::read_to_string(&seen).map(|t| !t.trim().is_empty()).unwrap_or(false)
+        });
+        let bound = std::fs::read_to_string(root.join("bound")).unwrap();
+        assert_eq!(bound, format!("Some(\"lagent-job-{tag}.service\")"), "the executor did not find its own unit");
+        let scopes = || systemctl_user(&["list-units", "--all", "--no-legend", &format!("lucina-gate-job-{tag}-*")]);
+        assert!(scopes().contains("lucina-gate-job"), "the step has no scope of its own");
+        let t = Instant::now();
+        if how == "kill" {
+            systemctl_user(&["kill", "--kill-whom=main", "--signal=SIGKILL", &format!("lagent-job-{tag}.service")]);
+        } else {
+            systemctl_user(&["stop", &format!("lagent-job-{tag}.service")]);
+        }
+        let (got, after) = bq_run_second(&bq, &knobs, "5");
+        assert!(got, "the slot was not handed on within 5 s of the executor's unit ending ({how})");
+        eprintln!("{how}: second bq run got the slot {after:?} after the unit ended ({:?} in all)", t.elapsed());
+        wait_until(10, "the step's scope to be gone", || scopes().trim().is_empty());
+    }
+
+    #[test]
+    fn slot_real_bq_a_killed_executor_unit_takes_the_step_and_frees_the_slot() {
+        slot_is_freed_when_the_executor_unit_ends("kill");
+    }
+
+    #[test]
+    fn slot_real_bq_a_stopped_executor_unit_takes_the_step_and_frees_the_slot() {
+        slot_is_freed_when_the_executor_unit_ends("stop");
+    }
+
+    fn bq_status(bq: &Path, knobs: &[(&'static str, String)]) -> String {
+        let mut c = Command::new(bq);
+        c.arg("status")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(["XDG_RUNTIME_DIR", "HOME"].iter().filter_map(|k| std::env::var_os(k).map(|v| (*k, v))))
+            .stdin(Stdio::null());
+        for (k, v) in knobs {
+            c.env(k, v);
+        }
+        let o = c.output().unwrap();
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        )
+    }
+
+    /// Condition 2: a job cancelled while its bq is still queued leaves no waiting entry behind.
+    #[test]
+    fn slot_real_bq_a_job_cancelled_while_queued_leaves_no_queue_entry() {
+        let bq = match bound_env() {
+            Ok(b) => b,
+            Err(why) => {
+                eprintln!("skipped: {why}");
+                return;
+            }
+        };
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let tag = format!("c038{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+        let state = root.join("bqstate");
+        let knobs = bound_knobs(&state);
+        // Somebody else holds the only long slot for 15 s.
+        let mut h = Command::new(&bq);
+        h.args(["run", "--class", "long", "--priority", "gate", "--max-wait", "60"])
+            .args(["--who", "la-c038-holder", "--", "sleep", "15"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(["XDG_RUNTIME_DIR", "HOME"].iter().filter_map(|k| std::env::var_os(k).map(|v| (*k, v))))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (k, v) in &knobs {
+            h.env(k, v);
+        }
+        let _holder = Reaped(h.spawn().unwrap());
+        wait_until(30, "the holder to have the slot", || state.join("long-0.meta").exists());
+        std::fs::write(root.join("gate-command"), "true").unwrap();
+        let _unit = start_executor_unit(root, &tag, &bq, "hold", &knobs, &["TimeoutStopSec=30"]);
+        let who = format!("lagent-merge-job_{tag}");
+        wait_until(30, "the gate to be queued", || bq_status(&bq, &knobs).contains(&who));
+        systemctl_user(&["stop", &format!("lagent-job-{tag}.service")]);
+        wait_until(10, "the queue entry to be gone", || !bq_status(&bq, &knobs).contains(&who));
+    }
+
+    /// Condition 3: where the executor does not know its own unit, or the step has no scope at all,
+    /// the step still runs and says in the job log, once, that it is not bound.
+    #[test]
+    fn slot_a_step_that_is_not_bound_runs_and_says_so_once() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        // The scope route, with no executor unit known.
+        if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
+            let (mut x, dir) = slot_exec(root, None);
+            x.source_env = vec![(OsString::from("XDG_RUNTIME_DIR"), xdg)];
+            assert!(x.executor_unit.is_none());
+            let out = root.join("ran1");
+            assert!(x.gate_run(root, "g", &format!("echo ran > {}", out.display()), false, Duration::from_secs(20), "20 s"));
+            let log = slot_log(&dir);
+            assert!(out.exists(), "{log}");
+            assert_eq!(log.matches("bound: no").count(), 1, "{log}");
+            assert!(log.contains("does not know its own systemd unit"), "{log}");
+        } else {
+            eprintln!("scope route skipped: no XDG_RUNTIME_DIR");
+        }
+        // The fallback route: no user manager, the process group alone.
+        let (mut x, dir) = slot_exec(root, None);
+        x.source_env = Vec::new();
+        let out = root.join("ran2");
+        assert!(x.gate_run(root, "g", &format!("echo ran > {}", out.display()), false, Duration::from_secs(20), "20 s"));
+        let log = slot_log(&dir);
+        assert!(out.exists(), "{log}");
+        assert_eq!(log.matches("bound: no").count(), 1, "{log}");
+        assert!(log.contains("the step has no scope of its own"), "{log}");
+    }
+
+    /// The scope's arguments: bound to the executor's unit when it is known, and as before when not.
+    #[test]
+    fn slot_the_scope_binds_to_the_executor_unit_and_only_when_it_is_known() {
+        let bash = Path::new("/bin/bash");
+        let run = Path::new("/usr/bin/systemd-run");
+        let strs = |v: Vec<OsString>| v.iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>();
+        let (_, bound) = Exec::step_argv_bound(bash, Some(run), Some("u"), "x", Some("lagent-job-a.service"));
+        let bound = strs(bound);
+        let at = bound.iter().position(|a| a == "BindsTo=lagent-job-a.service").unwrap();
+        assert_eq!(bound[at - 1], "-p");
+        assert_eq!(bound[at + 1], "-p");
+        assert_eq!(bound[at + 2], "After=lagent-job-a.service");
+        assert!(at + 2 < bound.iter().position(|a| a == "--").unwrap());
+        let (_, plain) = Exec::step_argv_bound(bash, Some(run), Some("u"), "x", None);
+        assert_eq!(strs(plain.clone()), strs(Exec::step_argv(bash, Some(run), Some("u"), "x").1));
+        assert!(!strs(plain).iter().any(|a| a.starts_with("BindsTo")));
+        assert_eq!(super::super::runner_unit("job_ab12"), "lagent-job-ab12");
+    }
+
+    /// Condition 4: the binding does not touch a step while its executor is healthy. The executor
+    /// runs as a real unit with shortened start and stop timeouts (1 s, against the default 90 s) and
+    /// its step runs 5 s, longer than both; it completes and passes, and was bound.
+    #[test]
+    fn slot_a_slow_step_of_a_healthy_executor_unit_completes() {
+        let bq = match bound_env() {
+            Ok(b) => b,
+            Err(why) => {
+                eprintln!("skipped: {why}");
+                return;
+            }
+        };
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let tag = format!("c038{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+        std::fs::write(root.join("gate-command"), format!("sleep 5; echo done > {}", root.join("done").display())).unwrap();
+        let _unit = start_executor_unit(root, &tag, &bq, "plain", &[], &["TimeoutStartSec=1", "TimeoutStopSec=1"]);
+        wait_until(60, "the gate to end", || root.join("result").exists());
+        assert_eq!(std::fs::read_to_string(root.join("result")).unwrap(), "true");
+        assert!(root.join("done").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("bound")).unwrap(),
+            format!("Some(\"lagent-job-{tag}.service\")")
+        );
+        let log = std::fs::read_to_string(root.join(format!("job-{tag}/log"))).unwrap_or_default();
+        assert!(!log.contains("bound: no"), "{log}");
     }
 }
