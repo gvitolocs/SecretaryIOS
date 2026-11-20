@@ -1,7 +1,8 @@
 //! Messages the owner asks Lucina to pass on to another assistant: "tell Claude that…",
 //! "can you say that to Claude in the right chat?", "chiedi a Grok…", "spørg Grok…", "post it
-//! in Lucina agents", "ok then use Lucina agents". A deterministic route (intent
-//! `agent_message`), so no other shortcut (a link in the message, a plugin word) can take it.
+//! in Lucina agents", "ok then use Lucina agents", "now start one new Lucina Agents run". A
+//! deterministic route (intent `agent_message`), so no other shortcut (a link in the message, a
+//! plugin word) can take it.
 //!
 //! Links are removed before matching: a URL that contains "claude" or "grok" is not a request.
 //! Talking *about* an assistant ("tell me about Claude", "is Grok better than…") is not one
@@ -110,16 +111,36 @@ fn directed(who: &str) -> Vec<String> {
     ]
 }
 
-/// "use Lucina agents", "usa Lucina Agents", "brug Lucina agents", "post it in Lucina agents".
+/// "use Lucina agents", "usa Lucina Agents", "brug Lucina agents", "post it in Lucina agents",
+/// "start one new Lucina Agents run".
 fn agents_imperative(t: &str) -> bool {
     static USE: OnceLock<Regex> = OnceLock::new();
     static POST: OnceLock<Regex> = OnceLock::new();
+    static RUN: OnceLock<Regex> = OnceLock::new();
     test(USE.get_or_init(|| compile(
         r"(?:^|[\s,.;:!?(])(?:use|usa|usare|utilizza|brug|try|prova|via|through|tramite|con)\s+(?:the\s+|i\s+|gli\s+)?lucina[\s-]*agents?\b",
     )), t)
         || test(POST.get_or_init(|| compile(
             r"(?:^|[\s,.;:!?(])(?:post|write|send|put|run|start|launch|ask|scrivi|posta|manda|metti|lancia|avvia|chiedi|skriv|send|kør|start)(?:\s|$)[^.?!\n]{0,120}(?:\s(?:in|on|to|into|su|in|nel|nei|negli|a|ai|agli|til|på|i)\s+)(?:the\s+|i\s+|gli\s+)?lucina[\s-]*agents?\b",
         )), t)
+        || test(RUN.get_or_init(|| compile(&run_target())), t)
+}
+
+/// The words of a run order: what opens it, what may stand in front of that word, what is opened.
+const RUN_VERB: &str = r"(?:start|begin|launch|create|trigger|dispatch|kick\s+off|spin\s+up|run|avvia|lancia|crea|inizia|kør|igangsæt)";
+const RUN_LEAD: &str = r"(?:now|ok|okay|then|please|pls|just|so|and|also|first|go\s+ahead\s+and|quindi|allora|ora|pure|nu|bare)\s+";
+const RUN_THING: &str =
+    r"(?:runs?|tasks?|jobs?|sessions?|batches?|workflows?|agents?|deploy(?:ment)?s?)";
+
+/// "start one new Lucina Agents run", "launch a Lucina Agents task", "crea una Lucina Agents run":
+/// an order whose run is named as a Lucina Agents one. The verb opens its clause (a negation or a
+/// question word in front of it stops it), at most three plain words stand between the verb and the
+/// name, and the name is followed by the thing being opened — so a plain mention, a quote, a link
+/// and the read of [`agents_query`] stay where they are.
+fn run_target() -> String {
+    format!(
+        r"(?:^|[.!?,;:])\s*(?:{RUN_LEAD}){{0,3}}{RUN_VERB}\s+(?:[A-Za-z0-9'_-]+\s+){{0,3}}lucina[\s-]*agents?\s+{RUN_THING}\b"
+    )
 }
 
 /// The assistant the owner asks Lucina to message, or `None`.
@@ -262,6 +283,79 @@ mod tests {
             "",
         ] {
             assert_eq!(target(text), None, "{text}");
+        }
+    }
+
+    /// An order naming a Lucina Agents run as its target. Only the explicit imperative: the same
+    /// words in a question, a quote, a link, a plan or aimed at another assistant stay as they were.
+    #[test]
+    fn run_target_imperatives() {
+        for text in [
+            "Now start one new Lucina Agents run using the configured lucinacode provider and the failing tests",
+            "start a new Lucina Agents run",
+            "Start one new Lucina Agents run",
+            "launch a Lucina Agents task",
+            "create a Lucina Agents run",
+            "create a Lucina Agents run for the relay build",
+            "Run a Lucina Agents job against the flaky checkout test",
+            "kick off a Lucina Agents session on the login build",
+            "Please go ahead and start a new Lucina Agents run",
+            "Fix the relay. Then start a new Lucina Agents run with the rust branch",
+            "ok, launch a Lucina Agents task",
+            "avvia una nuova Lucina Agents run",
+            "lancia un Lucina Agents task",
+            "kør en ny Lucina Agents run",
+            "start a Lucina agent run",
+        ] {
+            assert_eq!(target(text), Some(Target::Agents), "{text}");
+            assert!(!agents_query(text), "{text} is a dispatch, not a read");
+        }
+    }
+
+    /// What must not become a run: a plain mention, a question about the runs, a quote, a link, a
+    /// negation, and a request whose recipient is another assistant.
+    #[test]
+    fn run_target_is_narrow() {
+        for text in [
+            "Lucina agents run the nightly builds by themselves",
+            "the Lucina agents run finished on its own",
+            "I will enable Lucina agents soon don't worry",
+            "don't start a new Lucina Agents run yet",
+            "don't create a Lucina Agents run",
+            "should I start a new Lucina Agents run?",
+            "what does starting a Lucina Agents run cost?",
+            "he said \"start a new Lucina Agents run\" yesterday",
+            "see https://lucina.tech/docs/start-a-new-lucina-agents-run for the flags",
+            "read the notes about the last Lucina Agents run",
+        ] {
+            assert_eq!(target(text), None, "{text}");
+        }
+        // The read of his Agents stays a read.
+        for text in [
+            "list the Lucina agents runs that finished",
+            "how many Lucina agents runs are queued?",
+            "check Lucina agents",
+        ] {
+            assert!(!test(&compile(&run_target()), text), "{text}");
+            assert!(agents_query(text), "{text}");
+            assert_eq!(target(text), None, "{text}");
+        }
+        // Another assistant stays the recipient.
+        for (text, want) in [
+            (
+                "ask Claude to start a new Lucina Agents run",
+                Target::Claude,
+            ),
+            (
+                "tell Grok that a Lucina Agents run should start later",
+                Target::Grok,
+            ),
+            (
+                "write to Grok about the new Lucina Agents task",
+                Target::Grok,
+            ),
+        ] {
+            assert_eq!(target(text), Some(want), "{text}");
         }
     }
 
