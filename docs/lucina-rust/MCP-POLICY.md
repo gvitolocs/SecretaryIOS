@@ -6,7 +6,7 @@ caller:
 
 | Kind | Callers (2026-10-28) | `ask_lucina` turns |
 |---|---|---|
-| The owner's own assistant apps (`LUCINA_MCP_OWNER_CLIENTS`, default `chatgpt,claude,grok`) | ChatGPT, claude.ai, Grok | He types into them and they relay his request. With `LUCINA_MCP_TRUSTED=true` (live) they act as he would; with `false` they are held to `mcp::ALLOWED_ACTIONS`. |
+| The owner's own assistant apps (`LUCINA_MCP_OWNER_CLIENTS`, default `chatgpt,claude,grok`) | ChatGPT, claude.ai, Grok | He types into them and they relay his request. With `LUCINA_MCP_TRUSTED=true` (live) they act as he would, his Lucina Agents included (below); with `false` they are held to `mcp::ALLOWED_ACTIONS`. |
 | Agents: everyone else | Claude Code sessions, Cursor (`www`), ZCode, Hermes, secretary-code, unknown | **Consult**: answers only. Lucina never starts work because an agent asked in prose. |
 
 ## Consult turns (agents)
@@ -23,6 +23,29 @@ caller:
   (`[via Lucina MCP, from claude-code; allow=reminders]`). Jobs, computer work and posts have no flag:
   they have their own tools (`agent_run`, `computer_task`) with their own scopes and budgets.
 - Go-aheads: `lucina_decide` (`docs/design/decisions-api.md`), never `ask_lucina`.
+
+## Trusted owner relay: his Lucina Agents (2026-11-20)
+
+A trusted turn of one of his own apps is his voice, and it reaches one piece of owner-only territory:
+Lucina Agents (`lucina_agents`, `reach_threads` — `lucina_tools::TRUSTED_MCP_AGENT_TOOLS`).
+
+- JSON planner (`LUCINA_PLANNER=json`, live): "post it in Lucina agents" runs the reach loop
+  (`chat/reach_turn.rs`) with those two tools and no others — no `message_claude`/`grok`/`mistral` on a
+  relay token — and only when his words name Lucina Agents: a task to post there, or a question about
+  what they are doing (which is a `list`, not a run). The loop's context is the owner's (the reach
+  store keys a turn by whose it is); the timeline items still say `via = "mcp"` with the caller, never
+  his own words.
+- Tools planner: the turn is offered `owner_relay_mcp_registry` — the trusted MCP set plus that pair.
+  A consultation, trusted relay or not, is an MCP caller and gets `mcp_registry`: no delegation
+  (`ask_*`, `delegate`) either, which is what the trust used to hand it.
+- Nothing here softens the section above: an agent's consult turn, and any relay with
+  `LUCINA_MCP_TRUSTED=false`, keeps the registries without the pair and its prose starts nothing. A run
+  counts as sent only when agentd names the agent that took it; a 2xx with no id is `unconfirmed` —
+  he is told the launch is unconfirmed, never that nothing is running, and the task is not sent again
+  on the doubt. One dispatch per request; a question about the Agents ("what is running in Lucina
+  agents right now?") is a `list`, and `list`/`read` are free before a send to find the agent he means.
+- Everything else owner-only — secrets, the plugins (Instagram, Pixiv), Meshy credits, root and Juno,
+  parcels, `flaw`, his Claude/Grok/Mistral chats, delegation switches — stays out of every MCP turn.
 
 ## Every MCP turn (both kinds)
 
