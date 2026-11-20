@@ -889,3 +889,108 @@ fn an_uncounted_test_removed_waiver_fails_the_step() {
     );
     assert!(c.argv().is_none(), "diffgate ran:\n{out}");
 }
+
+/// The real `diffgate` on PATH. The end-to-end case below judges what diffgate itself does with the count, which no stand-in
+/// can say, so a box without it fails the test (never skips it).
+fn real_diffgate() -> PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join("diffgate"))
+                .find(|f| f.is_file())
+        })
+        .expect(
+            "diffgate is not on PATH: this test runs the real tool and does not skip without it",
+        )
+}
+
+const TWO_TESTS: &str = "pub fn a() {}\n\n#[cfg(test)]\nmod t {\n    #[test]\n    fn one() {\n        super::a();\n    }\n\n    #[test]\n    fn two() {\n        super::a();\n    }\n}\n";
+
+/// A repository whose `main` holds two tests (with no assertion, so `test-removed` is the only rule that fires) and whose
+/// `work` branch removes both, with the real diffgate in place of the stand-in.
+fn removed_two_tests_case(tag: &str) -> Case {
+    let c = Case::setup(tag, None);
+    let _ = fs::remove_file(c.bin.join("diffgate"));
+    git(&c.repo, &["checkout", "-q", "main"]);
+    git(&c.repo, &["merge", "-q", "--ff-only", "work"]);
+    fs::create_dir_all(c.repo.join("fixture/src")).unwrap();
+    fs::write(c.repo.join("fixture/src/lib.rs"), TWO_TESTS).unwrap();
+    git(&c.repo, &["add", "-A"]);
+    git(&c.repo, &["commit", "-q", "-m", "two tests"]);
+    git(&c.repo, &["checkout", "-q", "work"]);
+    git(&c.repo, &["reset", "-q", "--hard", "main"]);
+    fs::write(c.repo.join("fixture/src/lib.rs"), "pub fn a() {}\n").unwrap();
+    git(&c.repo, &["commit", "-q", "-am", "remove both tests"]);
+    c
+}
+
+/// What the merge does with `--allow test-removed=<a>`: its own diffgate pass, then the `diffgate` step of the fast check
+/// with the same allow in the job's waivers file. Returns whether the merge's diffgate passed and the step's output.
+fn merge_and_step(c: &Case, allow: Option<&str>) -> (bool, String) {
+    let mut dg = Command::new(real_diffgate());
+    dg.args(["--repo", ".", "--base", "main"])
+        .current_dir(&c.repo);
+    drop_lane_git_config(&mut dg);
+    if let Some(a) = allow {
+        dg.args(["--allow", &format!("test-removed={a}")]);
+        c.write_lines(&[wline("test-removed", a)]);
+    }
+    let merge_ok = dg.output().unwrap().status.success();
+    let out = c.run(allow.map(|_| c.waivers.as_path()));
+    (merge_ok, out)
+}
+
+/// The case the coordinator asked for, with the real diffgate: a merge with `--allow test-removed=2:<reason>` and two
+/// removed tests passes its own diffgate and the step, and the step logs the reason; `=1`, `=3` and no allow fail both;
+/// an uncounted `test-removed=<reason>` passes diffgate but fails the step (counted form only).
+#[test]
+fn test_removed_end_to_end_with_the_real_diffgate() {
+    let reason = "two obsolete tests deleted with the code they covered";
+    let c = removed_two_tests_case("e2e");
+
+    let allow = format!("2:{reason}");
+    let (merge_ok, out) = merge_and_step(&c, Some(&allow));
+    assert!(merge_ok, "the merge's own diffgate refused =2:\n{out}");
+    assert!(
+        step_line(&out, "diffgate").starts_with("ok"),
+        "the step refused what the merge allowed:\n{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "diffgate waivers: 1 forwarded (test-removed: {allow}), 0 not forwarded"
+        )),
+        "the gate log does not carry the reason:\n{out}"
+    );
+
+    for n in [1, 3] {
+        let (merge_ok, out) = merge_and_step(&c, Some(&format!("{n}:{reason}")));
+        assert!(!merge_ok, "diffgate accepted =${n} for two removals");
+        assert!(
+            step_line(&out, "diffgate").starts_with("FAIL"),
+            "the step passed =${n} for two removals:\n{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "waiver expects exactly {n} test-removed refusals, found 2"
+            )),
+            "the step does not say the count is wrong:\n{out}"
+        );
+    }
+
+    let (merge_ok, out) = merge_and_step(&c, None);
+    assert!(!merge_ok, "diffgate passed two removed tests with no allow");
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "the step passed two removed tests with no allow:\n{out}"
+    );
+
+    let (_merge_ok, out) = merge_and_step(&c, Some(reason));
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "the step took an uncounted test-removed waiver:\n{out}"
+    );
+    assert!(
+        out.contains("diffgate waivers: test-removed is forwarded in counted form only"),
+        "the step does not say counted form only:\n{out}"
+    );
+}
