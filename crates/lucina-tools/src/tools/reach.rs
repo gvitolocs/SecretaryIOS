@@ -2341,20 +2341,31 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
                 };
                 match result {
                     Ok(v) => {
-                        // Only an id agentd really gave means a run: a 2xx that names no agent started
-                        // nothing, and saying "sent" would have the owner wait for an answer that never comes.
-                        let agent = v["id"]
-                            .as_str()
-                            .or(v["agentId"].as_str())
+                        // The id agentd gave is what makes it a run; a blank `id` must not hide the
+                        // `agentId` it did name.
+                        let agent = [v["id"].as_str(), v["agentId"].as_str()]
+                            .into_iter()
+                            .flatten()
                             .map(str::trim)
+                            .find(|s| !s.is_empty())
                             .unwrap_or("")
                             .to_owned();
                         if agent.is_empty() {
-                            let why = "agentd answered without an agent id, so nothing is running".to_owned();
+                            // A 2xx that names no agent leaves the outcome unknown: it proves no
+                            // start, and no absence of one either. So the word is "unconfirmed",
+                            // never "sent" and never "nothing is running", and the doubt is no
+                            // reason to fire the same task a second time.
+                            let why = "agentd answered 2xx without an agent id: the launch is \
+                                       unconfirmed"
+                                .to_owned();
                             let t = reach.fail(t, &why);
                             return Ok(json!({
-                                "status": "failed", "thread": t.id, "error": why,
-                                "instruction": "Tell the owner plainly that Lucina Agents did not take the task and nothing is running; do not give a thread as sent.",
+                                "status": "unconfirmed", "thread": t.id, "error": why,
+                                "confirmed": false,
+                                "instruction": "Tell the owner the launch is UNCONFIRMED: agentd gave no agent id, \
+                                 so the run cannot be reported as started. Do not give the thread as sent, and do \
+                                 not send the same task again on the doubt (a second run may already exist); a \
+                                 `list` shows what agentd reports.",
                             }));
                         }
                         let t = reach.set_status(&t.id, "sent", Some(agent.clone())).unwrap_or(t);
@@ -2761,8 +2772,8 @@ mod tests {
         assert_eq!((thread.status.as_str(), thread.detail.as_deref()), ("sent", Some("ag-3f9a11c0")));
     }
 
-    /// A 2xx that names no agent started nothing: it is a failure, and the thread does not stay
-    /// open waiting for an answer that will never come.
+    /// A 2xx that names no agent leaves the launch unknown: the answer is "unconfirmed", the thread
+    /// is not sent and not left open, and nothing claims a process does or does not exist.
     #[tokio::test]
     async fn a_run_agentd_gives_no_id_for_is_not_claimed_sent() {
         for answer in [json!({}), json!({"id": ""}), json!({"agentId": "  "}), json!(null)] {
@@ -2772,12 +2783,40 @@ mod tests {
                 .call(json!({"action": "run", "message": "check the login fix"}), &agents_ctx(&env))
                 .await
                 .unwrap();
-            assert_eq!(out["status"], "failed", "{answer} → {out}");
+            assert_eq!(out["status"], "unconfirmed", "{answer} → {out}");
+            assert_eq!(out["confirmed"], false, "{answer} → {out}");
             assert!(out["agent"].is_null(), "no id is handed out as one: {out}");
+            let said = out.to_string().to_lowercase();
+            for claim in ["nothing is running", "did not take", "did not start"] {
+                assert!(!said.contains(claim), "{claim} is a claim about the process: {out}");
+            }
+            assert!(said.contains("unconfirmed"), "the word he needs is missing: {out}");
             let thread = reach.get(out["thread"].as_str().unwrap()).unwrap();
             assert_eq!(thread.status, "failed", "{answer}");
-            assert!(thread.detail.unwrap().contains("agent id"), "{answer}");
+            assert!(thread.detail.unwrap().contains("unconfirmed"), "{answer}");
             assert!(reach.list(Some(Target::Agents), Some("open"), 10).is_empty(), "not left open");
+        }
+    }
+
+    /// The id agentd does give is the one that counts: a blank `id` beside a real `agentId` names a
+    /// run, it does not hide it.
+    #[tokio::test]
+    async fn a_blank_id_does_not_mask_the_agent_id_agentd_gave() {
+        for answer in [
+            json!({"id": "", "agentId": "ag-7b2c"}),
+            json!({"id": "   ", "agentId": "ag-7b2c"}),
+            json!({"id": null, "agentId": "ag-7b2c"}),
+            json!({"agentId": "ag-7b2c"}),
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            let (reach, env, _) = agents_reach(d.path(), &[("POST /agents", answer.clone())]);
+            let out = LucinaAgentsTool
+                .call(json!({"action": "run", "message": "check the login fix"}), &agents_ctx(&env))
+                .await
+                .unwrap();
+            assert_eq!((out["status"].as_str(), out["agent"].as_str()), (Some("sent"), Some("ag-7b2c")), "{answer} → {out}");
+            let thread = reach.get(out["thread"].as_str().unwrap()).unwrap();
+            assert_eq!((thread.status.as_str(), thread.detail.as_deref()), ("sent", Some("ag-7b2c")), "{answer}");
         }
     }
 
