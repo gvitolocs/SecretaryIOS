@@ -5532,8 +5532,10 @@ mod tests {
     }
 
     /// Condition 4: the binding does not touch a step while its executor is healthy. The executor
-    /// runs as a real unit with shortened start and stop timeouts (1 s, against the default 90 s) and
-    /// its step runs 5 s, longer than both; it completes and passes, and was bound.
+    /// runs as a real unit with `TimeoutStartSec=1` and `TimeoutStopSec=1` (shortened knobs, against
+    /// the default 90 s; a 90 s step was not run) and its slot-holding step under the real bq runs
+    /// 5 s, longer than both; it completes and passes. While it runs, the host itself is asked: the
+    /// step's scope names the executor's unit in `BindsTo`.
     #[test]
     fn slot_a_slow_step_of_a_healthy_executor_unit_completes() {
         let bq = match bound_env() {
@@ -5551,13 +5553,36 @@ mod tests {
             format!("sleep 5; echo done > {}", root.join("done").display()),
         )
         .unwrap();
+        let knobs = bound_knobs(&root.join("bqstate"));
         let _unit = start_executor_unit(
             root,
             &tag,
             &bq,
-            "plain",
-            &[],
+            "hold",
+            &knobs,
             &["TimeoutStartSec=1", "TimeoutStopSec=1"],
+        );
+        // While the step runs, the host says what its scope is bound to.
+        let mut scope = String::new();
+        wait_until(30, "the step's scope", || {
+            scope = systemctl_user(&[
+                "list-units",
+                "--all",
+                "--no-legend",
+                &format!("lucina-gate-job-{tag}-*"),
+            ])
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .to_string();
+            !scope.is_empty()
+        });
+        let binds = systemctl_user(&["show", "-p", "BindsTo", "--value", &scope]);
+        assert_eq!(
+            binds.trim(),
+            format!("lagent-job-{tag}.service"),
+            "scope {scope}"
         );
         wait_until(60, "the gate to end", || root.join("result").exists());
         assert_eq!(
@@ -5569,7 +5594,9 @@ mod tests {
             std::fs::read_to_string(root.join("bound")).unwrap(),
             format!("Some(\"lagent-job-{tag}.service\")")
         );
-        let log = std::fs::read_to_string(root.join(format!("job-{tag}/log"))).unwrap_or_default();
+        // The log must be there to say nothing about the step being unbound.
+        let log = std::fs::read_to_string(root.join(format!("job-{tag}/log"))).unwrap();
+        assert!(log.contains("queued for a bq slot"), "{log}");
         assert!(!log.contains("bound: no"), "{log}");
     }
 }
