@@ -2816,6 +2816,11 @@ mod tests {
         assert_eq!((out["status"].as_str(), out["agent"].as_str()), (Some("sent"), Some("ag-1")), "{out}");
         let got = seen.lock().unwrap();
         assert!(got.iter().any(|l| l.starts_with("POST /agents/ag-1/send")), "{got:?}");
+        // The thread of his own words, on the agentd route, with the agent that took it.
+        let th = reach.read();
+        let t = th.threads.iter().find(|x| x.to == Target::Agents).expect("thread kept");
+        assert_eq!((t.status.as_str(), t.route.as_str(), t.detail.as_deref()), ("sent", "agentd", Some("ag-1")), "{t:?}");
+        assert_eq!(t.text, "wake up");
     }
 
     #[tokio::test]
