@@ -733,6 +733,7 @@ impl Exec {
     /// reason a script file looked necessary — and `--expand-environment=no` (systemd 254; this host runs 259)
     /// turns that off, so the command reaches `bash` as the repo wrote it and no file is left in the job
     /// directory at all.
+    #[cfg(test)]
     fn step_argv(
         bash: &Path,
         systemd_run: Option<&Path>,
