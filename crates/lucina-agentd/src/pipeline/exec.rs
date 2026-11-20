@@ -220,7 +220,11 @@ fn passwd_home() -> Option<PathBuf> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().find_map(from_line));
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .find_map(from_line)
+        });
     asked.or_else(|| {
         std::fs::read_to_string("/etc/passwd")
             .ok()?
@@ -314,7 +318,6 @@ fn own_unit(job_id: &str) -> Option<String> {
         .any(|p| p.rsplit('/').next() == Some(want.as_str()))
         .then_some(want)
 }
-
 
 struct Members {
     directories: Vec<String>,
@@ -501,7 +504,8 @@ impl Exec {
             BqSource::Home => {
                 let Some(home) = passwd_home() else {
                     return BqFind::Missing(
-                        "the home directory of this uid cannot be read from the passwd entry".into(),
+                        "the home directory of this uid cannot be read from the passwd entry"
+                            .into(),
                     );
                 };
                 let p = home.join(".local/bin/bq");
@@ -4723,7 +4727,10 @@ mod tests {
             "{log}"
         );
         assert!(!log.contains("timed out"), "{log}");
-        assert!(log.contains("--max-wait 1") || log.contains("waits at most 1 s"), "{log}");
+        assert!(
+            log.contains("--max-wait 1") || log.contains("waits at most 1 s"),
+            "{log}"
+        );
     }
 
     /// The wrapped command sees `BQ_SLOT` and `BQ_SLOT_PID` as bq sets them, and a slot the executor
@@ -4748,10 +4755,19 @@ mod tests {
             s = seen.display(),
             n = names.display()
         );
-        assert!(x.gate_run(root, "g", &cmd, true, Duration::from_secs(10), "10 s"), "{}", slot_log(&dir));
+        assert!(
+            x.gate_run(root, "g", &cmd, true, Duration::from_secs(10), "10 s"),
+            "{}",
+            slot_log(&dir)
+        );
         let seen_text = std::fs::read_to_string(&seen).unwrap();
         assert!(seen_text.starts_with("long-0 "), "{seen_text}");
-        let pid: u32 = seen_text.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let pid: u32 = seen_text
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(pid > 1);
         let names_text = std::fs::read_to_string(&names).unwrap();
         for n in ["BQ_SLOT", "BQ_SLOT_PID"] {
@@ -4768,7 +4784,11 @@ mod tests {
         let (mut x, dir) = slot_exec(root, Some(fake.join("bq")));
         let names2 = root.join("names2");
         let cmd = format!("env | cut -d= -f1 | sort > {}", names2.display());
-        assert!(x.gate_run(root, "g", &cmd, false, Duration::from_secs(10), "10 s"), "{}", slot_log(&dir));
+        assert!(
+            x.gate_run(root, "g", &cmd, false, Duration::from_secs(10), "10 s"),
+            "{}",
+            slot_log(&dir)
+        );
         let t = std::fs::read_to_string(&names2).unwrap();
         for n in ["BQ_SLOT", "BQ_SLOT_PID", SLOT_COMMAND_VAR, SLOT_GRANT_VAR] {
             assert!(!t.lines().any(|l| l == n), "{t}");
@@ -4805,7 +4825,11 @@ mod tests {
             "v='a b'; [ -n \"${{v+x}}\" ] && printf '%s|%s' \"$0\" \"${{v}}\" > {}",
             out.display()
         );
-        assert!(x.gate_run(root, "g", &cmd, true, Duration::from_secs(10), "10 s"), "{}", slot_log(&dir));
+        assert!(
+            x.gate_run(root, "g", &cmd, true, Duration::from_secs(10), "10 s"),
+            "{}",
+            slot_log(&dir)
+        );
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "bash|a b");
     }
 
@@ -4883,8 +4907,16 @@ mod tests {
         let mut executor = Reaped(cmd.spawn().unwrap());
         // The gate has the slot when it has written what it sees.
         let t = Instant::now();
-        while !seen.exists() || std::fs::read_to_string(&seen).unwrap_or_default().trim().is_empty() {
-            assert!(t.elapsed() < Duration::from_secs(60), "the gate never got the slot");
+        while !seen.exists()
+            || std::fs::read_to_string(&seen)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            assert!(
+                t.elapsed() < Duration::from_secs(60),
+                "the gate never got the slot"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         let seen_text = std::fs::read_to_string(&seen).unwrap();
@@ -4909,31 +4941,48 @@ mod tests {
             }
             p = ppid;
         }
-        assert!(found, "BQ_SLOT_PID {holder} is not an ancestor of the gate command");
+        assert!(
+            found,
+            "BQ_SLOT_PID {holder} is not an ancestor of the gate command"
+        );
 
         // The executor dies without a word.
         executor.0.kill().unwrap();
         executor.0.wait().unwrap();
         let second = |wait: &str| {
             let mut c = Command::new(&bq);
-            c.args(["run", "--class", "long", "--priority", "gate", "--max-wait", wait])
-                .args(["--who", "la-c038-second", "--", "true"])
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped());
+            c.args([
+                "run",
+                "--class",
+                "long",
+                "--priority",
+                "gate",
+                "--max-wait",
+                wait,
+            ])
+            .args(["--who", "la-c038-second", "--", "true"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
             for (k, v) in &knobs {
                 c.env(k, v);
             }
             let t = Instant::now();
             let o = c.output().unwrap();
-            (o.status.success(), t.elapsed(), String::from_utf8_lossy(&o.stderr).to_string())
+            (
+                o.status.success(),
+                t.elapsed(),
+                String::from_utf8_lossy(&o.stderr).to_string(),
+            )
         };
         // bq's rule is the live holder: the `bq run` the dead executor left is alive, so for as long
         // as it is, the slot is not free. This line is what was measured, printed for the report.
         let (got, after, err) = second("1");
-        eprintln!("second bq run right after the executor's death: got={got} after={after:?} {err}");
+        eprintln!(
+            "second bq run right after the executor's death: got={got} after={after:?} {err}"
+        );
         // It is free once the holder is gone: the gate ends by itself, after at most 6 s, and bq's
         // own accounting hands the slot on, with nothing from the executor.
         let (got, after, err) = second("40");
@@ -4949,7 +4998,14 @@ mod tests {
             return Err("no systemd user manager (XDG_RUNTIME_DIR is not set)".into());
         }
         let ok = Command::new("systemd-run")
-            .args(["--user", "--scope", "--quiet", "--collect", "--", "/bin/true"])
+            .args([
+                "--user",
+                "--scope",
+                "--quiet",
+                "--collect",
+                "--",
+                "/bin/true",
+            ])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -5080,21 +5136,36 @@ mod tests {
     fn wait_until(secs: u64, what: &str, mut f: impl FnMut() -> bool) {
         let t = Instant::now();
         while !f() {
-            assert!(t.elapsed() < Duration::from_secs(secs), "timed out waiting for {what}");
+            assert!(
+                t.elapsed() < Duration::from_secs(secs),
+                "timed out waiting for {what}"
+            );
             std::thread::sleep(Duration::from_millis(100));
         }
     }
 
     fn bq_run_second(bq: &Path, knobs: &[(&'static str, String)], wait: &str) -> (bool, Duration) {
         let mut c = Command::new(bq);
-        c.args(["run", "--class", "long", "--priority", "gate", "--max-wait", wait])
-            .args(["--who", "la-c038-second", "--", "true"])
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .envs(["XDG_RUNTIME_DIR", "HOME"].iter().filter_map(|k| std::env::var_os(k).map(|v| (*k, v))))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        c.args([
+            "run",
+            "--class",
+            "long",
+            "--priority",
+            "gate",
+            "--max-wait",
+            wait,
+        ])
+        .args(["--who", "la-c038-second", "--", "true"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .envs(
+            ["XDG_RUNTIME_DIR", "HOME"]
+                .iter()
+                .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
         for (k, v) in knobs {
             c.env(k, v);
         }
@@ -5125,27 +5196,59 @@ mod tests {
         // holder check, not from the gate ending.
         std::fs::write(
             root.join("gate-command"),
-            format!("echo \"$$ $BQ_SLOT $BQ_SLOT_PID\" > {}; sleep 8", seen.display()),
+            format!(
+                "echo \"$$ $BQ_SLOT $BQ_SLOT_PID\" > {}; sleep 8",
+                seen.display()
+            ),
         )
         .unwrap();
         let _unit = start_executor_unit(root, &tag, &bq, "hold", &knobs, &["TimeoutStopSec=30"]);
         wait_until(60, "the gate to hold the slot", || {
-            std::fs::read_to_string(&seen).map(|t| !t.trim().is_empty()).unwrap_or(false)
+            std::fs::read_to_string(&seen)
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false)
         });
         let bound = std::fs::read_to_string(root.join("bound")).unwrap();
-        assert_eq!(bound, format!("Some(\"lagent-job-{tag}.service\")"), "the executor did not find its own unit");
-        let scopes = || systemctl_user(&["list-units", "--all", "--no-legend", &format!("lucina-gate-job-{tag}-*")]);
-        assert!(scopes().contains("lucina-gate-job"), "the step has no scope of its own");
+        assert_eq!(
+            bound,
+            format!("Some(\"lagent-job-{tag}.service\")"),
+            "the executor did not find its own unit"
+        );
+        let scopes = || {
+            systemctl_user(&[
+                "list-units",
+                "--all",
+                "--no-legend",
+                &format!("lucina-gate-job-{tag}-*"),
+            ])
+        };
+        assert!(
+            scopes().contains("lucina-gate-job"),
+            "the step has no scope of its own"
+        );
         let t = Instant::now();
         if how == "kill" {
-            systemctl_user(&["kill", "--kill-whom=main", "--signal=SIGKILL", &format!("lagent-job-{tag}.service")]);
+            systemctl_user(&[
+                "kill",
+                "--kill-whom=main",
+                "--signal=SIGKILL",
+                &format!("lagent-job-{tag}.service"),
+            ]);
         } else {
             systemctl_user(&["stop", &format!("lagent-job-{tag}.service")]);
         }
         let (got, after) = bq_run_second(&bq, &knobs, "5");
-        assert!(got, "the slot was not handed on within 5 s of the executor's unit ending ({how})");
-        eprintln!("{how}: second bq run got the slot {after:?} after the unit ended ({:?} in all)", t.elapsed());
-        wait_until(10, "the step's scope to be gone", || scopes().trim().is_empty());
+        assert!(
+            got,
+            "the slot was not handed on within 5 s of the executor's unit ending ({how})"
+        );
+        eprintln!(
+            "{how}: second bq run got the slot {after:?} after the unit ended ({:?} in all)",
+            t.elapsed()
+        );
+        wait_until(10, "the step's scope to be gone", || {
+            scopes().trim().is_empty()
+        });
     }
 
     #[test]
@@ -5163,7 +5266,11 @@ mod tests {
         c.arg("status")
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
-            .envs(["XDG_RUNTIME_DIR", "HOME"].iter().filter_map(|k| std::env::var_os(k).map(|v| (*k, v))))
+            .envs(
+                ["XDG_RUNTIME_DIR", "HOME"]
+                    .iter()
+                    .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
+            )
             .stdin(Stdio::null());
         for (k, v) in knobs {
             c.env(k, v);
@@ -5193,25 +5300,43 @@ mod tests {
         let knobs = bound_knobs(&state);
         // Somebody else holds the only long slot for 15 s.
         let mut h = Command::new(&bq);
-        h.args(["run", "--class", "long", "--priority", "gate", "--max-wait", "60"])
-            .args(["--who", "la-c038-holder", "--", "sleep", "15"])
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .envs(["XDG_RUNTIME_DIR", "HOME"].iter().filter_map(|k| std::env::var_os(k).map(|v| (*k, v))))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        h.args([
+            "run",
+            "--class",
+            "long",
+            "--priority",
+            "gate",
+            "--max-wait",
+            "60",
+        ])
+        .args(["--who", "la-c038-holder", "--", "sleep", "15"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .envs(
+            ["XDG_RUNTIME_DIR", "HOME"]
+                .iter()
+                .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
         for (k, v) in &knobs {
             h.env(k, v);
         }
         let _holder = Reaped(h.spawn().unwrap());
-        wait_until(30, "the holder to have the slot", || state.join("long-0.meta").exists());
+        wait_until(30, "the holder to have the slot", || {
+            state.join("long-0.meta").exists()
+        });
         std::fs::write(root.join("gate-command"), "true").unwrap();
         let _unit = start_executor_unit(root, &tag, &bq, "hold", &knobs, &["TimeoutStopSec=30"]);
         let who = format!("lagent-merge-job_{tag}");
-        wait_until(30, "the gate to be queued", || bq_status(&bq, &knobs).contains(&who));
+        wait_until(30, "the gate to be queued", || {
+            bq_status(&bq, &knobs).contains(&who)
+        });
         systemctl_user(&["stop", &format!("lagent-job-{tag}.service")]);
-        wait_until(10, "the queue entry to be gone", || !bq_status(&bq, &knobs).contains(&who));
+        wait_until(10, "the queue entry to be gone", || {
+            !bq_status(&bq, &knobs).contains(&who)
+        });
     }
 
     /// Condition 3: where the executor does not know its own unit, or the step has no scope at all,
@@ -5226,7 +5351,14 @@ mod tests {
             x.source_env = vec![(OsString::from("XDG_RUNTIME_DIR"), xdg)];
             assert!(x.executor_unit.is_none());
             let out = root.join("ran1");
-            assert!(x.gate_run(root, "g", &format!("echo ran > {}", out.display()), false, Duration::from_secs(20), "20 s"));
+            assert!(x.gate_run(
+                root,
+                "g",
+                &format!("echo ran > {}", out.display()),
+                false,
+                Duration::from_secs(20),
+                "20 s"
+            ));
             let log = slot_log(&dir);
             assert!(out.exists(), "{log}");
             assert_eq!(log.matches("bound: no").count(), 1, "{log}");
@@ -5238,7 +5370,14 @@ mod tests {
         let (mut x, dir) = slot_exec(root, None);
         x.source_env = Vec::new();
         let out = root.join("ran2");
-        assert!(x.gate_run(root, "g", &format!("echo ran > {}", out.display()), false, Duration::from_secs(20), "20 s"));
+        assert!(x.gate_run(
+            root,
+            "g",
+            &format!("echo ran > {}", out.display()),
+            false,
+            Duration::from_secs(20),
+            "20 s"
+        ));
         let log = slot_log(&dir);
         assert!(out.exists(), "{log}");
         assert_eq!(log.matches("bound: no").count(), 1, "{log}");
@@ -5250,16 +5389,32 @@ mod tests {
     fn slot_the_scope_binds_to_the_executor_unit_and_only_when_it_is_known() {
         let bash = Path::new("/bin/bash");
         let run = Path::new("/usr/bin/systemd-run");
-        let strs = |v: Vec<OsString>| v.iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>();
-        let (_, bound) = Exec::step_argv_bound(bash, Some(run), Some("u"), "x", Some("lagent-job-a.service"));
+        let strs = |v: Vec<OsString>| {
+            v.iter()
+                .map(|s| s.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        };
+        let (_, bound) = Exec::step_argv_bound(
+            bash,
+            Some(run),
+            Some("u"),
+            "x",
+            Some("lagent-job-a.service"),
+        );
         let bound = strs(bound);
-        let at = bound.iter().position(|a| a == "BindsTo=lagent-job-a.service").unwrap();
+        let at = bound
+            .iter()
+            .position(|a| a == "BindsTo=lagent-job-a.service")
+            .unwrap();
         assert_eq!(bound[at - 1], "-p");
         assert_eq!(bound[at + 1], "-p");
         assert_eq!(bound[at + 2], "After=lagent-job-a.service");
         assert!(at + 2 < bound.iter().position(|a| a == "--").unwrap());
         let (_, plain) = Exec::step_argv_bound(bash, Some(run), Some("u"), "x", None);
-        assert_eq!(strs(plain.clone()), strs(Exec::step_argv(bash, Some(run), Some("u"), "x").1));
+        assert_eq!(
+            strs(plain.clone()),
+            strs(Exec::step_argv(bash, Some(run), Some("u"), "x").1)
+        );
         assert!(!strs(plain).iter().any(|a| a.starts_with("BindsTo")));
         assert_eq!(super::super::runner_unit("job_ab12"), "lagent-job-ab12");
     }
@@ -5279,10 +5434,24 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         let tag = format!("c038{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
-        std::fs::write(root.join("gate-command"), format!("sleep 5; echo done > {}", root.join("done").display())).unwrap();
-        let _unit = start_executor_unit(root, &tag, &bq, "plain", &[], &["TimeoutStartSec=1", "TimeoutStopSec=1"]);
+        std::fs::write(
+            root.join("gate-command"),
+            format!("sleep 5; echo done > {}", root.join("done").display()),
+        )
+        .unwrap();
+        let _unit = start_executor_unit(
+            root,
+            &tag,
+            &bq,
+            "plain",
+            &[],
+            &["TimeoutStartSec=1", "TimeoutStopSec=1"],
+        );
         wait_until(60, "the gate to end", || root.join("result").exists());
-        assert_eq!(std::fs::read_to_string(root.join("result")).unwrap(), "true");
+        assert_eq!(
+            std::fs::read_to_string(root.join("result")).unwrap(),
+            "true"
+        );
         assert!(root.join("done").exists());
         assert_eq!(
             std::fs::read_to_string(root.join("bound")).unwrap(),

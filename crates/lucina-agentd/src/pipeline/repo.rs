@@ -1396,10 +1396,7 @@ mod tests {
     fn an_explicit_queue_decides_whether_a_gate_takes_a_slot() {
         assert!(takes_slot("sleep 3", Some(GateQueue::Long)));
         assert!(!takes_slot("cargo check", Some(GateQueue::Off)));
-        assert!(!takes_slot(
-            "bash scripts/check-fast",
-            Some(GateQueue::Off)
-        ));
+        assert!(!takes_slot("bash scripts/check-fast", Some(GateQueue::Off)));
     }
 
     #[test]
