@@ -827,3 +827,65 @@ fn an_unknown_marker_on_a_list_line_fails_the_step() {
     );
     assert!(!out.contains("waived:"), "nothing is waived:\n{out}");
 }
+
+/// `test-removed` joins the forwarding list, count-exact like `tmp-write`: a merge given `--allow test-removed=2:<reason>`
+/// passes the merge's own diffgate, and the fast check's `diffgate` step has to see the same allow. The list marks it
+/// `counted`, the whole counted allow reaches diffgate unchanged (diffgate itself compares the count with the refusals), and
+/// the reason text is printed in the gate log.
+#[test]
+fn test_removed_is_on_the_list_as_counted_and_travels_with_its_reason() {
+    assert!(
+        counted_rules().iter().any(|r| r == "test-removed"),
+        "{FORWARD_LIST} does not hold test-removed as a counted rule: {:?}",
+        counted_rules()
+    );
+    let reason =
+        "2:two obsolete tests deleted with the code they covered; coordinator allow of the day";
+    let c = Case::setup("test-removed", None);
+    c.write_lines(&[wline("test-removed", reason)]);
+    let out = c.run(Some(&c.waivers));
+    assert_eq!(
+        c.argv().expect("diffgate ran"),
+        forwarded(&c.base, &[&format!("test-removed={reason}")]),
+        "the whole counted allow, unchanged, as one argument\n{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "diffgate waivers: 1 forwarded (test-removed: {reason}), 0 not forwarded"
+        )),
+        "the gate log carries the reason text:\n{out}"
+    );
+}
+
+/// The counted form only: an uncounted `test-removed` waiver, from the job's file or from the lead's typed entry, fails the
+/// step and diffgate never runs.
+#[test]
+fn an_uncounted_test_removed_waiver_fails_the_step() {
+    let msg = "diffgate waivers: test-removed is forwarded in counted form only: write --allow test-removed=N:<reason> with N the exact number of refusals";
+    let c = Case::setup("test-removed-uncounted-file", None);
+    c.write_lines(&[wline("test-removed", "two obsolete tests deleted")]);
+    let out = c.run(Some(&c.waivers));
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "an uncounted test-removed waiver was not refused: {}\n{out}",
+        step_line(&out, "diffgate")
+    );
+    assert!(
+        out.contains(msg),
+        "the message does not say what to write:\n{out}"
+    );
+    assert!(c.argv().is_none(), "diffgate ran:\n{out}");
+
+    let c = Case::setup("test-removed-uncounted-allow", None);
+    let out = c.run_with(None, "test-removed=two obsolete tests deleted");
+    assert!(
+        step_line(&out, "diffgate").starts_with("FAIL"),
+        "the typed uncounted entry was not refused: {}\n{out}",
+        step_line(&out, "diffgate")
+    );
+    assert!(
+        out.contains(msg),
+        "the message does not say what to write:\n{out}"
+    );
+    assert!(c.argv().is_none(), "diffgate ran:\n{out}");
+}
