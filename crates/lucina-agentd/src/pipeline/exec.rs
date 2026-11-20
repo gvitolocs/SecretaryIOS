@@ -1011,22 +1011,24 @@ impl Exec {
         if let Some(s) = slot {
             // The clock starts at the grant. The grant is announced in the log the moment it is seen,
             // with the command line after it.
-            if let Ok(mut log) = self.log.try_clone() {
-                let (name, shown) = (s.name.clone(), cmd.to_string());
-                step = step.with_grant(Grant {
-                    marker: s.marker.clone(),
-                    queue_bound: Duration::from_secs(s.queue_cap_secs) + self.queue_slack,
-                    seen: Box::new(move |slot_name, after| {
-                        let now = chrono::Utc::now().format("%H:%M:%S");
-                        let _ = writeln!(
-                            log,
-                            "[{now}] gate: {name} got {slot_name} after {}s",
-                            after.as_secs()
-                        );
-                        let _ = writeln!(log, "[{now}] $ {shown}");
-                    }),
-                });
-            }
+            // The grant is armed whether or not the log can be duplicated for its line: the clock and the
+            // queue bound depend on it, the line does not (R090 F9).
+            let mut log = self.log.try_clone().ok();
+            let (name, shown) = (s.name.clone(), cmd.to_string());
+            step = step.with_grant(Grant {
+                marker: s.marker.clone(),
+                queue_bound: Duration::from_secs(s.queue_cap_secs) + self.queue_slack,
+                seen: Box::new(move |slot_name, after| {
+                    let Some(log) = log.as_mut() else { return };
+                    let now = chrono::Utc::now().format("%H:%M:%S");
+                    let _ = writeln!(
+                        log,
+                        "[{now}] gate: {name} got {slot_name} after {}s",
+                        after.as_secs()
+                    );
+                    let _ = writeln!(log, "[{now}] $ {shown}");
+                }),
+            });
         }
         let ended = step.run_to_end(&mut child, cap, grace);
         if let Some(s) = slot {
