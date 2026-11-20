@@ -216,19 +216,40 @@ fn passwd_home() -> Option<PathBuf> {
         (f.len() >= 6 && f[2].parse::<u32>().ok() == Some(uid) && !f[5].is_empty())
             .then(|| PathBuf::from(f[5]))
     };
+    // `getent` may ask sssd or systemd-userdbd over a socket, and on a badly configured host that is
+    // a hang: it gets BQ_USAGE_CAP like the usage ask, and the passwd file is read when it does not
+    // answer (R090 F3: it runs before any clock exists).
     let asked = Command::new("/usr/bin/getent")
         .args(["passwd", &uid.to_string()])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .find_map(from_line)
+        .and_then(|mut child| {
+            let t = Instant::now();
+            let answered = loop {
+                match child.try_wait() {
+                    Ok(Some(s)) => break s.success(),
+                    Ok(None) if t.elapsed() < BQ_USAGE_CAP => {
+                        std::thread::sleep(Duration::from_millis(20))
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break false;
+                    }
+                }
+            };
+            if !answered {
+                return None;
+            }
+            use std::io::Read;
+            let mut text = String::new();
+            child.stdout.take()?.read_to_string(&mut text).ok()?;
+            text.lines().find_map(from_line)
         });
     asked.or_else(|| {
         std::fs::read_to_string("/etc/passwd")
