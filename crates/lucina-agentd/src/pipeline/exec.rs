@@ -626,10 +626,16 @@ impl Exec {
 
     /// The step's environment as the job builds it: the allowlist from the source environment plus
     /// the deploy recipe's declared names, and how many names were kept back — a count only, never
-    /// a name or a value.
+    /// a name or a value. A slot the executor was itself started under (`BQ_SLOT`, `BQ_SLOT_PID`) is
+    /// somebody else's and is never part of it, whoever asks: a step, the scope probe, the manager ask
+    /// and the agentd announcement all get the environment from here (R090 F7). bq sets its own pair
+    /// for the job it starts.
     fn built_env(&self) -> (Vec<(OsString, OsString)>, usize) {
         let extra: Vec<&str> = self.deploy_env.iter().map(String::as_str).collect();
-        crate::env::scrubbed_env_from(self.source_env.iter().cloned(), &extra)
+        let (mut env, kept_back) =
+            crate::env::scrubbed_env_from(self.source_env.iter().cloned(), &extra);
+        env.retain(|(k, _)| k != "BQ_SLOT" && k != "BQ_SLOT_PID");
+        (env, kept_back)
     }
 
     /// `name` as a step runs it: found in the job's own PATH, the one the step is given. std looks a
@@ -882,10 +888,6 @@ impl Exec {
         // environment, plus the deploy recipe's declared names), not what the executor
         // inherited. How many names were kept back is said by count only.
         let (mut built, not_passed) = self.built_env();
-        // A slot the executor was itself started under is somebody else's: no step, no scope probe and no
-        // manager ask is handed the pair, so none can take it for its own (R090 F7). bq sets its own pair
-        // for the job it starts.
-        built.retain(|(k, _)| k != "BQ_SLOT" && k != "BQ_SLOT_PID");
         if not_passed > 0 {
             self.say(&format!("env: {not_passed} variable(s) not passed"));
         }
@@ -4549,7 +4551,8 @@ mod tests {
     /// run bare; `bq run … -- cmd` appends its own arguments and the `BQ_SLOT` it was started with to
     /// `calls`, holds the grant back for the seconds in `delay` (when that file is there), then runs
     /// `cmd` as bq does: as its child, with `BQ_SLOT=long-0` and `BQ_SLOT_PID` its own pid. With a
-    /// `never` file it never grants: it waits out `--max-wait` and fails as bq does.
+    /// `never` file it never grants: it waits out `--max-wait` and fails as bq does; with a `hang` file
+    /// it neither grants nor exits for 20 s (a wedged bq).
     fn fake_bq(dir: &Path) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
         let bq = dir.join("bq");

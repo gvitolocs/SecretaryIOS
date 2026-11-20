@@ -1241,8 +1241,10 @@ const AGENTD_PID_VAR: &str = "LUCINA_AGENTD_PID";
 /// the job's `PATH`, the daemon's pid, and the command under the merge lock.
 ///
 /// The executor's gate steps run in scopes that `BindsTo=` this unit (`pipeline::exec`), so stopping or
-/// restarting the unit by hand (`systemctl --user restart lagent-job-<id>`) stops a running gate, and
-/// the `bq` slot it holds with it; that is the point (a dead executor frees its slot), not a side effect.
+/// restarting the unit by hand (`systemctl --user restart lagent-job-<id>`) ends the step's scope and the `bq`
+/// in it, which frees the slot; that is the point (a dead executor frees its slot), not a side effect. What
+/// does not die is the build the gate started: `bq` runs it in its own sibling scope, which the binding does
+/// not cover, and it runs on until it ends.
 fn systemd_run_args(
     unit: &str,
     dir: &Path,
