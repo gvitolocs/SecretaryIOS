@@ -128,18 +128,33 @@ pub(super) async fn try_turn(
     // The reach store turns `Origin::Mcp` away; this turn is authorized by its own flags above, and the
     // timeline items still carry `via = "mcp"` with the caller (`t.agent_mark`), not his own words.
     let ctx = Ctx::new(st.tool_env.clone(), &t.channel, &t.session).with_origin(Origin::Owner);
-    let report_to = st.tool_env.reach.as_ref().map_or("Claude", |r| r.cfg.report_to.label());
+    let report_to = st
+        .tool_env
+        .reach
+        .as_ref()
+        .map_or("Claude", |r| r.cfg.report_to.label());
     let hint = match target {
-        Some(lucina_intent::reach::Target::Report) => format!(" This report is for the report agent, {report_to}."),
-        Some(x) => format!(" This message is for {}.", r::Target::parse(x.as_str()).map_or("them", |t| t.label())),
-        None if query => " He is asking about his agents: `list` them (or `read` one he names) and \
-                          answer from what the tool says — this is a question, not a task to post.".to_owned(),
+        Some(lucina_intent::reach::Target::Report) => {
+            format!(" This report is for the report agent, {report_to}.")
+        }
+        Some(x) => format!(
+            " This message is for {}.",
+            r::Target::parse(x.as_str()).map_or("them", |t| t.label())
+        ),
+        None if query => {
+            " He is asking about his agents: `list` them (or `read` one he names) and \
+                          answer from what the tool says — this is a question, not a task to post."
+                .to_owned()
+        }
         None => String::new(),
     };
     let extra = if t.mcp.is_some() {
         format!("{} {RELAY_GUIDE}{hint}", t.extra_system)
     } else {
-        format!("{} {GUIDE} The report agent is {report_to}.{hint}", t.extra_system)
+        format!(
+            "{} {GUIDE} The report agent is {report_to}.{hint}",
+            t.extra_system
+        )
     };
     let system = st.planner.prompts.agent_system(
         t.platform_label(),
@@ -178,7 +193,11 @@ pub(super) async fn try_turn(
         timeline.record(NewItem {
             channel: channel.clone(),
             role: "lucina".into(),
-            text: format!("🔧 {} → {}", rec.summary, if rec.ok { "ok" } else { "error" }),
+            text: format!(
+                "🔧 {} → {}",
+                rec.summary,
+                if rec.ok { "ok" } else { "error" }
+            ),
             meta: Some(super::tool_meta(&mark, rec)),
             ..Default::default()
         });
@@ -198,7 +217,14 @@ pub(super) async fn try_turn(
             let calls: Vec<String> = out.records.iter().map(|x| x.name.clone()).collect();
             tracing::info!(tools = ?calls, target = ?target.map(|x| x.as_str()), "reach turn");
             Some(Finish::reply(out.text.clone(), ACTION).with(
-                format!("[reach: {}]", if calls.is_empty() { "no tool".into() } else { calls.join(", ") }),
+                format!(
+                    "[reach: {}]",
+                    if calls.is_empty() {
+                        "no tool".into()
+                    } else {
+                        calls.join(", ")
+                    }
+                ),
                 Some(Meta::kind("reach")),
             ))
         }

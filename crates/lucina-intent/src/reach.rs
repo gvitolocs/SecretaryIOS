@@ -71,7 +71,8 @@ fn mentions(t: &str, target: &str) -> bool {
     };
     let checks = cell.get_or_init(|| directed(who).iter().map(|p| compile(p)).collect());
     let named = compile_once(target);
-    test(named, t) && (checks.iter().any(|r| test(r, t)) || (target == "agents" && agents_imperative(t)))
+    test(named, t)
+        && (checks.iter().any(|r| test(r, t)) || (target == "agents" && agents_imperative(t)))
 }
 
 fn compile_once(target: &str) -> &'static Regex {
@@ -93,11 +94,15 @@ fn directed(who: &str) -> Vec<String> {
         // "tell Claude …", "ask Grok …", "message claude code …"
         format!(r"\b(?:{EN_VERB})\s+(?:it\s+|this\s+|that\s+)?(?:to\s+)?{who}\b"),
         // "say that … to Claude", "post this in the Claude chat", "report it to grok"
-        format!(r"\b(?:{EN_VERB})\b[^.?!\n]{{0,160}}\b(?:to|with|in|on|for)\s+(?:the\s+)?(?:appropriate\s+|right\s+|proper\s+)?(?:chat\s+|project\s+|session\s+)*(?:with\s+)?{who}\b"),
+        format!(
+            r"\b(?:{EN_VERB})\b[^.?!\n]{{0,160}}\b(?:to|with|in|on|for)\s+(?:the\s+)?(?:appropriate\s+|right\s+|proper\s+)?(?:chat\s+|project\s+|session\s+)*(?:with\s+)?{who}\b"
+        ),
         // "chiedi a Claude", "scrivi a grok", "dì a Claude che …"
         format!(r"(?:^|[\s,.;:!?(])(?:{IT_VERB})\s+(?:a|ad|al|con)\s+{who}\b"),
         // "dillo … a Claude", "segnala … nella chat di Claude"
-        format!(r"(?:^|[\s,.;:!?(])(?:{IT_VERB})(?:\s|$)[^.?!\n]{{0,160}}(?:\s(?:a|ad|al|su|in|nel|nella|con|di)\s+){who}\b"),
+        format!(
+            r"(?:^|[\s,.;:!?(])(?:{IT_VERB})(?:\s|$)[^.?!\n]{{0,160}}(?:\s(?:a|ad|al|su|in|nel|nella|con|di)\s+){who}\b"
+        ),
         // "spørg Grok", "sig til Claude", "fortæl Claude"
         format!(r"(?:^|[\s,.;:!?(])(?:sp[øo]rg|sig\s+til|fort[æa]l)\s+{who}\b"),
         // "skriv … til Claude", "giv besked til Grok"
@@ -207,7 +212,12 @@ mod tests {
         ] {
             assert_eq!(target(text), Some(want), "{text}");
         }
-        for text in ["is Mistral better than Claude?", "tell me about Mistral", "the report is about an agent", "read me the report"] {
+        for text in [
+            "is Mistral better than Claude?",
+            "tell me about Mistral",
+            "the report is about an agent",
+            "read me the report",
+        ] {
             assert_eq!(target(text), None, "{text}");
         }
     }

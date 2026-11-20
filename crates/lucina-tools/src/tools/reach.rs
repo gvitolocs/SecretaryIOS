@@ -234,7 +234,8 @@ pub fn valid_repo(r: &str) -> bool {
     let ok = |p: &str| {
         !p.is_empty()
             && !p.starts_with('.')
-            && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
     matches!(r.split_once('/'), Some((o, n)) if ok(o) && ok(n))
 }
@@ -323,9 +324,7 @@ fn env_str(key: &str) -> Option<String> {
 }
 
 fn env_num(key: &str, default: u64) -> u64 {
-    env_str(key)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    env_str(key).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 impl ReachConfig {
@@ -360,7 +359,10 @@ impl ReachConfig {
     /// From the environment; `None` when `LUCINA_REACH=off`.
     pub fn from_env(data_dir: &Path) -> Option<Self> {
         if env_str("LUCINA_REACH").is_some_and(|v| {
-            matches!(v.to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no")
+            matches!(
+                v.to_ascii_lowercase().as_str(),
+                "off" | "false" | "0" | "no"
+            )
         }) {
             return None;
         }
@@ -385,11 +387,15 @@ impl ReachConfig {
             c.agents_model = (v != "default").then_some(v);
         }
         if !env_str("LUCINA_REACH_CLAUDE_AGENT").is_some_and(|v| {
-            matches!(v.to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no")
+            matches!(
+                v.to_ascii_lowercase().as_str(),
+                "off" | "false" | "0" | "no"
+            )
         }) {
             c.claude_agent = Some(ClaudeAgentConfig {
                 provider: "claude".into(),
-                model: env_str("LUCINA_REACH_CLAUDE_MODEL").unwrap_or_else(|| "claude-opus-5-5".into()),
+                model: env_str("LUCINA_REACH_CLAUDE_MODEL")
+                    .unwrap_or_else(|| "claude-opus-5-5".into()),
                 effort: env_str("LUCINA_REACH_CLAUDE_EFFORT").unwrap_or_else(|| "medium".into()),
                 mode: "bypassPermissions".into(),
                 repo: env_str("LUCINA_REACH_CLAUDE_REPO")
@@ -403,7 +409,9 @@ impl ReachConfig {
         let fire_url = match env_str("LUCINA_REACH_ROUTINE_URL") {
             Some(u) if valid_fire_url(&u) => Some(u),
             Some(_) => {
-                tracing::warn!("reach: LUCINA_REACH_ROUTINE_URL is not a routine Fire URL; ignored");
+                tracing::warn!(
+                    "reach: LUCINA_REACH_ROUTINE_URL is not a routine Fire URL; ignored"
+                );
                 None
             }
             None => None,
@@ -415,7 +423,10 @@ impl ReachConfig {
                     .unwrap_or_else(|| home().join(".local/bin/gh")),
                 repo,
                 event_type: env_str("LUCINA_REACH_ROUTINE_EVENT")
-                    .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+                    .filter(|e| {
+                        e.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                    })
                     .unwrap_or_else(|| "lucina-reach".into()),
             }),
             Some(_) => {
@@ -438,8 +449,13 @@ impl ReachConfig {
                         .unwrap_or_else(|| PathBuf::from("/usr/local/bin/infisical-broker")),
                     broker_token_file: env_str("LUCINA_REACH_BROKER_TOKEN_FILE")
                         .map(PathBuf::from)
-                        .unwrap_or_else(|| home().join(".config/infisical-mcp/svc-lucina-rs.token")),
-                    debounce: Duration::from_secs(env_num("LUCINA_REACH_ROUTINE_DEBOUNCE_SECS", 120)),
+                        .unwrap_or_else(|| {
+                            home().join(".config/infisical-mcp/svc-lucina-rs.token")
+                        }),
+                    debounce: Duration::from_secs(env_num(
+                        "LUCINA_REACH_ROUTINE_DEBOUNCE_SECS",
+                        120,
+                    )),
                     timeout: Duration::from_secs(20),
                     dispatch,
                 });
@@ -453,13 +469,16 @@ impl ReachConfig {
         c.grok_timeout = Duration::from_secs(env_num("LUCINA_REACH_GROK_TIMEOUT_SECS", 600));
         if env_str("LUCINA_REACH_MISTRAL").as_deref() != Some("off") {
             c.mistral_agent = Some(MistralAgentConfig {
-                provider: env_str("LUCINA_REACH_MISTRAL_PROVIDER").unwrap_or_else(|| "mistral".into()),
+                provider: env_str("LUCINA_REACH_MISTRAL_PROVIDER")
+                    .unwrap_or_else(|| "mistral".into()),
                 model: env_str("LUCINA_REACH_MISTRAL_MODEL"),
                 cwd: home().join("scratch").join("lucina-mistral"),
                 timeout: Duration::from_secs(env_num("LUCINA_REACH_MISTRAL_TIMEOUT_SECS", 900)),
             });
         }
-        if env_str("LUCINA_REACH_REPORT_AGENT").as_deref() == Some("mistral") && c.mistral_agent.is_some() {
+        if env_str("LUCINA_REACH_REPORT_AGENT").as_deref() == Some("mistral")
+            && c.mistral_agent.is_some()
+        {
             c.report_to = Target::Mistral;
         }
         Some(c)
@@ -470,8 +489,7 @@ impl ReachConfig {
 fn valid_channel(n: &str) -> bool {
     !n.is_empty()
         && n.len() <= 32
-        && n
-            .chars()
+        && n.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
@@ -621,7 +639,9 @@ pub fn redact_urls(text: &str) -> String {
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
         let end = tail
-            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | ')' | ']'))
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | ')' | ']')
+            })
             .unwrap_or(tail.len());
         // Trailing punctuation is the sentence's, not the link's.
         let mut url = &tail[..end];
@@ -842,7 +862,11 @@ impl Reach {
         lucina_secrets::redactor().redact_string(&mut clean);
         let from = clip(from.trim(), 80);
         let reply = Reply {
-            from: if from.is_empty() { "unknown".into() } else { from },
+            from: if from.is_empty() {
+                "unknown".into()
+            } else {
+                from
+            },
             text: clean,
             at: Utc::now(),
         };
@@ -923,7 +947,11 @@ impl Reach {
             Target::Grok => "Just answer here; Lucina reads your reply from this thread.".into(),
             Target::Agents | Target::Mistral => "Your final answer is read back from this run's timeline.".into(),
         });
-        let kind = if t.kind == "issue" { "issue report" } else { "message" };
+        let kind = if t.kind == "issue" {
+            "issue report"
+        } else {
+            "message"
+        };
         format!(
             "[Lucina → {to}] thread {id} · {kind}\n\
              From: Lucina (Giuseppe's personal assistant), on Giuseppe's behalf, from his {channel} chat.\n\
@@ -1038,7 +1066,10 @@ impl Reach {
                     agent,
                     0,
                     "claude-agent".into(),
-                    self.cfg.claude_agent.as_ref().map_or(Duration::from_secs(2700), |c| c.timeout),
+                    self.cfg
+                        .claude_agent
+                        .as_ref()
+                        .map_or(Duration::from_secs(2700), |c| c.timeout),
                     true,
                 );
                 return Sent {
@@ -1149,7 +1180,11 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
     /// Give `t` to a new Mistral agent, or to the one already on the thread `follow_up` names. A reply comes
     /// through the sink; nothing here alerts the owner.
     pub async fn send_mistral(self: &Arc<Self>, t: Thread) -> Result<Thread, String> {
-        let c = self.cfg.mistral_agent.clone().ok_or("the Mistral agent is off")?;
+        let c = self
+            .cfg
+            .mistral_agent
+            .clone()
+            .ok_or("the Mistral agent is off")?;
         allowed_model(&c.provider, c.model.as_deref())?;
         let cwd = c.cwd.join(&t.id);
         std::fs::create_dir_all(&cwd).map_err(|e| format!("no working directory: {e}"))?;
@@ -1164,33 +1199,75 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
             body["model"] = json!(m);
         }
         let v = self.agentd("POST", "/agents", Some(&body)).await?;
-        let agent = v["id"].as_str().or(v["agentId"].as_str()).unwrap_or("").to_owned();
+        let agent = v["id"]
+            .as_str()
+            .or(v["agentId"].as_str())
+            .unwrap_or("")
+            .to_owned();
         if agent.is_empty() {
             return Err("agentd returned no agent id".into());
         }
-        let t = self.set_status(&t.id, "sent", Some(agent.clone())).unwrap_or(t);
+        let t = self
+            .set_status(&t.id, "sent", Some(agent.clone()))
+            .unwrap_or(t);
         self.record(&t, &format!("Lucina → Mistral: {}", t.subject), &t.text);
         self.after_send(&t, &t.text).await;
-        self.watch_agent_with(t.id.clone(), agent, 0, "mistral-agent".into(), c.timeout, false);
+        self.watch_agent_with(
+            t.id.clone(),
+            agent,
+            0,
+            "mistral-agent".into(),
+            c.timeout,
+            false,
+        );
         Ok(t)
     }
 
     /// Lucina writes again on a Mistral thread: same agent, same thread.
-    pub async fn follow_up_mistral(self: &Arc<Self>, thread: &str, message: &str) -> Result<Thread, String> {
-        let c = self.cfg.mistral_agent.clone().ok_or("the Mistral agent is off")?;
-        let t = self.get(thread).filter(|t| t.to == Target::Mistral).ok_or("no such Mistral thread")?;
-        let agent = t.detail.clone().filter(|d| !d.is_empty()).ok_or("that thread has no agent")?;
+    pub async fn follow_up_mistral(
+        self: &Arc<Self>,
+        thread: &str,
+        message: &str,
+    ) -> Result<Thread, String> {
+        let c = self
+            .cfg
+            .mistral_agent
+            .clone()
+            .ok_or("the Mistral agent is off")?;
+        let t = self
+            .get(thread)
+            .filter(|t| t.to == Target::Mistral)
+            .ok_or("no such Mistral thread")?;
+        let agent = t
+            .detail
+            .clone()
+            .filter(|d| !d.is_empty())
+            .ok_or("that thread has no agent")?;
         self.take_slot(Target::Mistral, Utc::now())?;
         let (text, _) = clean_outbound(&clip(message.trim(), MAX_TEXT));
         if text.is_empty() {
             return Err("the message is empty".into());
         }
         let after = self.agent_last_seq(&agent).await;
-        self.agentd("POST", &format!("/agents/{agent}/send"), Some(&json!({"prompt": text}))).await?;
-        let t = self.set_status(&t.id, "sent", Some(agent.clone())).unwrap_or(t);
+        self.agentd(
+            "POST",
+            &format!("/agents/{agent}/send"),
+            Some(&json!({"prompt": text})),
+        )
+        .await?;
+        let t = self
+            .set_status(&t.id, "sent", Some(agent.clone()))
+            .unwrap_or(t);
         self.record(&t, &format!("Lucina → Mistral: {}", t.subject), &text);
         self.after_send(&t, &text).await;
-        self.watch_agent_with(t.id.clone(), agent, after, "mistral-agent".into(), c.timeout, false);
+        self.watch_agent_with(
+            t.id.clone(),
+            agent,
+            after,
+            "mistral-agent".into(),
+            c.timeout,
+            false,
+        );
         Ok(t)
     }
 
@@ -1234,7 +1311,12 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
         if let Some(t) = &r.token {
             return Ok(t.clone());
         }
-        if let Some((t, at)) = self.routine_token.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        if let Some((t, at)) = self
+            .routine_token
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
             if at.elapsed() < TOKEN_TTL {
                 return Ok(t.clone());
             }
@@ -1321,7 +1403,10 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
         }
         // 3. The mailbox alone.
         self.give_back_fire_slot(now);
-        if !self.token_warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if !self
+            .token_warned
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             tracing::warn!(reason = %no_token, "reach: no Claude routine token; the mailbox waits for a session");
         }
         Fire::Failed(no_token)
@@ -1345,13 +1430,21 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
             let resp = match sent {
                 Ok(Ok(resp)) => resp,
                 // A timeout or a broken connection: the run may exist. Never resent.
-                Ok(Err(e)) => return Fire::Failed(format!("routine fire: unknown result ({})", e.without_url())),
+                Ok(Err(e)) => {
+                    return Fire::Failed(format!(
+                        "routine fire: unknown result ({})",
+                        e.without_url()
+                    ))
+                }
                 Err(_) => return Fire::Failed("routine fire: unknown result (timed out)".into()),
             };
             let status = resp.status().as_u16();
             let v: Value = resp.json().await.unwrap_or(Value::Null);
             if status == 200 {
-                let url = v["claude_code_session_url"].as_str().unwrap_or("").to_owned();
+                let url = v["claude_code_session_url"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
                 tracing::info!(thread = id, session = %url, "reach: Claude routine fired");
                 return Fire::Fired(url);
             }
@@ -1374,7 +1467,13 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
 
     /// `gh api -X POST repos/<repo>/dispatches` with the thread id only (no message text goes to
     /// GitHub). Never resent after a timeout; once after a clean 5xx (GitHub did not take it).
-    async fn fire_dispatch(&self, r: &RoutineConfig, d: &Dispatch, id: &str, slot: DateTime<Utc>) -> Fire {
+    async fn fire_dispatch(
+        &self,
+        r: &RoutineConfig,
+        d: &Dispatch,
+        id: &str,
+        slot: DateTime<Utc>,
+    ) -> Fire {
         let path = format!("repos/{}/dispatches", d.repo);
         let event = format!("event_type={}", d.event_type);
         let thread = format!("client_payload[thread]={id}");
@@ -1411,7 +1510,10 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
                 // The dispatch may have gone out: never resent.
                 Err(_) => "gh dispatch: unknown result (timed out)".into(),
             };
-            if !self.token_warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if !self
+                .token_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
                 tracing::warn!(thread = id, reason = %why, "reach: Claude routine not started; the mailbox waits for a session");
             }
             return Fire::Failed(why);
@@ -1437,9 +1539,9 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
             cmd.env("SAND_CLIENT_VERSION", v);
         }
         let out = tokio::time::timeout(timeout, cmd.output())
-        .await
-        .map_err(|_| "gbot timed out".to_owned())?
-        .map_err(|e| format!("gbot: {e}"))?;
+            .await
+            .map_err(|_| "gbot timed out".to_owned())?
+            .map_err(|e| format!("gbot: {e}"))?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let v: Value = serde_json::from_str(stdout.trim()).map_err(|_| {
             format!(
@@ -1524,7 +1626,10 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(self.cfg.poll).await;
             let page = match self
-                .gbot(&["thread", &bot, "--limit", "50", "--full", "--gateway"], short)
+                .gbot(
+                    &["thread", &bot, "--limit", "50", "--full", "--gateway"],
+                    short,
+                )
                 .await
             {
                 Ok(v) => v,
@@ -1585,7 +1690,11 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
         self.agentd("GET", &format!("/agents/{agent}/timeline?limit=500"), None)
             .await
             .ok()
-            .and_then(|v| v["rows"].as_array().and_then(|r| r.iter().filter_map(|x| x["seq"].as_u64()).max()))
+            .and_then(|v| {
+                v["rows"]
+                    .as_array()
+                    .and_then(|r| r.iter().filter_map(|x| x["seq"].as_u64()).max())
+            })
             .unwrap_or(0)
     }
 
@@ -1594,7 +1703,14 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
     pub fn watch_agent(self: &Arc<Self>, thread: String, agent: String, after_seq: u64) {
         let short: String = agent.chars().take(8).collect();
         let limit = self.cfg.grok_timeout.max(Duration::from_secs(900));
-        self.watch_agent_with(thread, agent, after_seq, format!("agent {short}"), limit, false);
+        self.watch_agent_with(
+            thread,
+            agent,
+            after_seq,
+            format!("agent {short}"),
+            limit,
+            false,
+        );
     }
 
     /// [`Reach::watch_agent`] with a reply name and a time limit (the agent is stopped when it
@@ -1618,8 +1734,13 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
             // Let the run start before the first look.
             tokio::time::sleep(me.cfg.poll).await;
             loop {
-                let snapshot = me.agentd("GET", &format!("/agents/{agent}"), None).await.ok();
-                let status = snapshot.as_ref().and_then(|v| v["status"].as_str().map(str::to_owned));
+                let snapshot = me
+                    .agentd("GET", &format!("/agents/{agent}"), None)
+                    .await
+                    .ok();
+                let status = snapshot
+                    .as_ref()
+                    .and_then(|v| v["status"].as_str().map(str::to_owned));
                 // agentd hands a run that hit a usage limit on to another agent: follow it.
                 match snapshot.as_ref().map(after_stop) {
                     Some(AfterStop::Wait) if tokio::time::Instant::now() < deadline => {
@@ -1649,13 +1770,18 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
                     }
                     Some("running") | Some("initializing") | Some("starting") | None => {
                         // Out of time: stop it, and say so.
-                        let _ = me.agentd("POST", &format!("/agents/{agent}/stop"), None).await;
+                        let _ = me
+                            .agentd("POST", &format!("/agents/{agent}/stop"), None)
+                            .await;
                         tracing::warn!(%thread, %agent, "reach: agent stopped at its time limit");
                         if me.get(&thread).is_some_and(|t| t.replies.is_empty()) {
                             me.set_status(
                                 &thread,
                                 "failed",
-                                Some(format!("agent {agent} stopped after {} minutes", limit.as_secs() / 60)),
+                                Some(format!(
+                                    "agent {agent} stopped after {} minutes",
+                                    limit.as_secs() / 60
+                                )),
                             );
                         }
                         return;
@@ -1679,22 +1805,38 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
             match text {
                 Some(t) if agent_failure(&t) => {
                     // He hears why, and the thread doesn't count as answered.
-                    let first = t.lines().next().unwrap_or("").trim_start_matches("[System Error]").trim().to_owned();
-                    me.add_reply(&thread, &from, &format!("It could not answer: {first}")).await;
+                    let first = t
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches("[System Error]")
+                        .trim()
+                        .to_owned();
+                    me.add_reply(&thread, &from, &format!("It could not answer: {first}"))
+                        .await;
                     me.set_status(&thread, "failed", Some(first));
                 }
                 Some(t) => {
                     me.add_reply(&thread, &from, &t).await;
                 }
                 None => {
-                    me.set_status(&thread, "failed", Some(format!("agent {agent} gave no answer")));
+                    me.set_status(
+                        &thread,
+                        "failed",
+                        Some(format!("agent {agent} gave no answer")),
+                    );
                 }
             }
         });
     }
 
     /// One request to lucina-agentd on its socket, as `service:lucina`.
-    pub async fn agentd(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    pub async fn agentd(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, String> {
         agentd_request(&self.cfg.agentd_socket, method, path, body).await
     }
 }
@@ -1722,7 +1864,10 @@ fn after_stop(v: &Value) -> AfterStop {
     if labels["lucina.handoff"] == "pending" {
         return AfterStop::Wait;
     }
-    match labels["lucina.continued-on"].as_str().filter(|s| !s.is_empty()) {
+    match labels["lucina.continued-on"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
         Some(next) => AfterStop::Follow(next.to_owned()),
         None => AfterStop::AsIs,
     }
@@ -1769,17 +1914,22 @@ pub async fn agentd_request(
     body: Option<&Value>,
 ) -> Result<Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut s = tokio::time::timeout(Duration::from_secs(5), tokio::net::UnixStream::connect(socket))
-        .await
-        .map_err(|_| "Lucina Agents (agentd) did not answer".to_owned())?
-        .map_err(|e| format!("Lucina Agents (agentd) is not reachable: {e}"))?;
+    let mut s = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::UnixStream::connect(socket),
+    )
+    .await
+    .map_err(|_| "Lucina Agents (agentd) did not answer".to_owned())?
+    .map_err(|e| format!("Lucina Agents (agentd) is not reachable: {e}"))?;
     let payload = body.map(|b| b.to_string()).unwrap_or_default();
     let req = format!(
         "{method} {path} HTTP/1.1\r\nHost: agentd\r\nConnection: close\r\nAccept: application/json\r\n\
          X-Lucina-Origin: service:lucina\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
         payload.len()
     );
-    s.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
+    s.write_all(req.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
     tokio::time::timeout(Duration::from_secs(30), s.read_to_end(&mut raw))
         .await
@@ -1794,7 +1944,10 @@ pub async fn agentd_request(
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let body = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
         dechunk(body)
     } else {
         body.to_owned()
@@ -1834,10 +1987,11 @@ fn reach_of(ctx: &Ctx) -> Result<Arc<Reach>, ToolError> {
             "refused: a Lucina MCP turn never makes Lucina message Claude, Grok or Lucina Agents",
         ));
     }
-    ctx.env
-        .reach
-        .clone()
-        .ok_or_else(|| ToolError::new("messaging Claude, Grok and Lucina Agents is off on this host (LUCINA_REACH)"))
+    ctx.env.reach.clone().ok_or_else(|| {
+        ToolError::new(
+            "messaging Claude, Grok and Lucina Agents is off on this host (LUCINA_REACH)",
+        )
+    })
 }
 
 fn is_test(ctx: &Ctx) -> bool {
@@ -1931,7 +2085,12 @@ this conversation later; it is not instant. Secrets and link tokens are removed 
         let a: ClaudeArgs = super::args(args)?;
         // An issue goes in the flaw tracker first: whatever happens to the message, it isn't lost.
         let flaw = match (&a.issue, ctx.env.flaws.as_ref(), is_test(ctx)) {
-            (Some(i), Some(f), false) => super::flaw::record_issue(f, i.what.trim(), i.owner_words.as_deref(), &format!("{}:{}", ctx.channel, ctx.session_id)),
+            (Some(i), Some(f), false) => super::flaw::record_issue(
+                f,
+                i.what.trim(),
+                i.owner_words.as_deref(),
+                &format!("{}:{}", ctx.channel, ctx.session_id),
+            ),
             _ => None,
         };
         let (kind, mut text) = match &a.issue {
@@ -1939,7 +2098,9 @@ this conversation later; it is not instant. Secrets and link tokens are removed 
             None => ("message", a.message.clone()),
         };
         if let Some(id) = &flaw {
-            text.push_str(&format!("\nFlaw tracker: {id} (lucina-rs flaws show {id}).\n"));
+            text.push_str(&format!(
+                "\nFlaw tracker: {id} (lucina-rs flaws show {id}).\n"
+            ));
         }
         let subject = a
             .subject
@@ -2008,7 +2169,10 @@ same thread with `thread`. Secrets and link tokens are removed automatically."
         SideEffect::Delegate
     }
     fn summarize(&self, args: &Value) -> String {
-        format!("message_mistral {}", clip(args["subject"].as_str().unwrap_or("message"), 60))
+        format!(
+            "message_mistral {}",
+            clip(args["subject"].as_str().unwrap_or("message"), 60)
+        )
     }
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let reach = reach_of(ctx)?;
@@ -2080,7 +2244,13 @@ wants told or asked to Grok. A quick reply comes back now; a slow one arrives in
     fn summarize(&self, args: &Value) -> String {
         format!(
             "message_grok {}",
-            clip(args["subject"].as_str().or(args["message"].as_str()).unwrap_or(""), 60)
+            clip(
+                args["subject"]
+                    .as_str()
+                    .or(args["message"].as_str())
+                    .unwrap_or(""),
+                60
+            )
         )
     }
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
@@ -2155,10 +2325,17 @@ fn last_answer(v: &Value, after_seq: u64) -> Option<String> {
     // An ACP agent streams: one answer is many rows in a row, so the answer is the last unbroken run of them.
     let mut answer = String::new();
     let mut in_run = false;
-    for row in v["rows"].as_array()?.iter().filter(|r| r["seq"].as_u64().is_some_and(|s| s > after_seq)) {
+    for row in v["rows"]
+        .as_array()?
+        .iter()
+        .filter(|r| r["seq"].as_u64().is_some_and(|s| s > after_seq))
+    {
         let item = row.get("item").unwrap_or(row);
         if item["type"] == "assistant_message" {
-            let text = item["text"].as_str().or(item["content"].as_str()).unwrap_or("");
+            let text = item["text"]
+                .as_str()
+                .or(item["content"].as_str())
+                .unwrap_or("");
             if !text.trim().is_empty() || in_run {
                 if !in_run {
                     answer.clear();
@@ -2186,13 +2363,17 @@ fn timeline_digest(v: &Value, max: usize) -> Vec<Value> {
         .iter()
         .filter_map(|r| {
             let item = r.get("item").unwrap_or(r);
-            let kind = item["type"].as_str().or(item["kind"].as_str()).unwrap_or("");
+            let kind = item["type"]
+                .as_str()
+                .or(item["kind"].as_str())
+                .unwrap_or("");
             let text = item["text"]
                 .as_str()
                 .or(item["content"].as_str())
                 .or(item["message"].as_str())
                 .unwrap_or("");
-            (!text.trim().is_empty()).then(|| json!({"kind": kind, "text": clip(text.trim(), 1200)}))
+            (!text.trim().is_empty())
+                .then(|| json!({"kind": kind, "text": clip(text.trim(), 1200)}))
         })
         .collect();
     let drop = out.len().saturating_sub(max);
@@ -2221,7 +2402,13 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
         format!(
             "lucina_agents {} {}",
             args["action"].as_str().unwrap_or(""),
-            clip(args["agent"].as_str().or(args["title"].as_str()).unwrap_or(""), 40)
+            clip(
+                args["agent"]
+                    .as_str()
+                    .or(args["title"].as_str())
+                    .unwrap_or(""),
+                40
+            )
         )
         .trim()
         .to_owned()
@@ -2239,7 +2426,10 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
         };
         match a.action {
             AgentsAction::List => {
-                let v = reach.agentd("GET", "/agents", None).await.map_err(ToolError::new)?;
+                let v = reach
+                    .agentd("GET", "/agents", None)
+                    .await
+                    .map_err(ToolError::new)?;
                 let mut all = v["agents"].as_array().cloned().unwrap_or_default();
                 // What is alive first: closed runs pile up.
                 all.sort_by_key(|g| g["status"] == "closed");
@@ -2267,7 +2457,9 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
                     .agentd("GET", &format!("/agents/{id}/timeline?limit=200"), None)
                     .await
                     .map_err(ToolError::new)?;
-                Ok(json!({"agent": id, "recent": timeline_digest(&v, 12), "instruction": REPLY_RULE}))
+                Ok(
+                    json!({"agent": id, "recent": timeline_digest(&v, 12), "instruction": REPLY_RULE}),
+                )
             }
             AgentsAction::Run | AgentsAction::Send => {
                 let message = a.message.clone().unwrap_or_default();
@@ -2305,7 +2497,11 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
                         .is_ok_and(|v| is_claude_session(&v)),
                     None => false,
                 };
-                let prompt = if session { reach.session_envelope(&t) } else { reach.envelope(&t) };
+                let prompt = if session {
+                    reach.session_envelope(&t)
+                } else {
+                    reach.envelope(&t)
+                };
                 let mut after_seq = 0;
                 let cfg = &reach.cfg;
                 let result = match (&send_to, a.action) {
@@ -2368,8 +2564,14 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
                                  `list` shows what agentd reports.",
                             }));
                         }
-                        let t = reach.set_status(&t.id, "sent", Some(agent.clone())).unwrap_or(t);
-                        reach.record(&t, &format!("Lucina → Lucina Agents: {}", t.subject), &t.text);
+                        let t = reach
+                            .set_status(&t.id, "sent", Some(agent.clone()))
+                            .unwrap_or(t);
+                        reach.record(
+                            &t,
+                            &format!("Lucina → Lucina Agents: {}", t.subject),
+                            &t.text,
+                        );
                         if session {
                             return Ok(json!({
                                 "status": "sent", "thread": t.id, "agent": agent,
@@ -2453,13 +2655,28 @@ mod tests {
     #[test]
     fn the_watcher_follows_a_handed_on_run() {
         let v = |status: &str, labels: Value| json!({"status": status, "labels": labels});
-        assert_eq!(after_stop(&v("error", json!({"lucina.handoff": "pending"}))), AfterStop::Wait);
-        assert_eq!(after_stop(&v("error", json!({"lucina.continued-on": "abc"}))), AfterStop::Follow("abc".into()));
-        assert_eq!(after_stop(&v("error", json!({"lucina.handoff": "exhausted"}))), AfterStop::AsIs);
+        assert_eq!(
+            after_stop(&v("error", json!({"lucina.handoff": "pending"}))),
+            AfterStop::Wait
+        );
+        assert_eq!(
+            after_stop(&v("error", json!({"lucina.continued-on": "abc"}))),
+            AfterStop::Follow("abc".into())
+        );
+        assert_eq!(
+            after_stop(&v("error", json!({"lucina.handoff": "exhausted"}))),
+            AfterStop::AsIs
+        );
         assert_eq!(after_stop(&v("error", json!({}))), AfterStop::AsIs);
         // Only a stopped run: a running or finished one is read as before.
-        assert_eq!(after_stop(&v("running", json!({"lucina.handoff": "pending"}))), AfterStop::AsIs);
-        assert_eq!(after_stop(&v("idle", json!({"lucina.continued-on": "abc"}))), AfterStop::AsIs);
+        assert_eq!(
+            after_stop(&v("running", json!({"lucina.handoff": "pending"}))),
+            AfterStop::AsIs
+        );
+        assert_eq!(
+            after_stop(&v("idle", json!({"lucina.continued-on": "abc"}))),
+            AfterStop::AsIs
+        );
     }
 
     #[test]
@@ -2486,8 +2703,9 @@ mod tests {
 
     #[test]
     fn outbound_text_loses_secret_refs() {
-        let (t, changed) =
-            clean_outbound("use secret://lucina/prod#API_KEY and https://a.b/c?key=sk-1234567890abcdef");
+        let (t, changed) = clean_outbound(
+            "use secret://lucina/prod#API_KEY and https://a.b/c?key=sk-1234567890abcdef",
+        );
         assert!(changed);
         assert!(!t.contains("secret://"), "{t}");
         assert!(!t.contains("sk-1234567890abcdef"), "{t}");
@@ -2528,13 +2746,19 @@ mod tests {
         let now = Utc::now();
         assert!(r.take_slot(Target::Claude, now).is_ok());
         assert!(r.take_slot(Target::Claude, now).is_ok());
-        assert!(r.take_slot(Target::Claude, now).unwrap_err().contains("hour"));
+        assert!(r
+            .take_slot(Target::Claude, now)
+            .unwrap_err()
+            .contains("hour"));
         // Another target has its own budget.
         assert!(r.take_slot(Target::Grok, now).is_ok());
         // Two hours later the hourly limit is free again, the daily one is not.
         let later = now + chrono::Duration::hours(2);
         assert!(r.take_slot(Target::Claude, later).is_ok());
-        assert!(r.take_slot(Target::Claude, later).unwrap_err().contains("today"));
+        assert!(r
+            .take_slot(Target::Claude, later)
+            .unwrap_err()
+            .contains("today"));
     }
 
     struct Capture(Mutex<Vec<(String, String)>>);
@@ -2580,7 +2804,10 @@ mod tests {
         assert!(r.list(Some(Target::Claude), Some("open"), 10).is_empty());
         assert_eq!(
             sink.0.lock().unwrap().as_slice(),
-            &[(sent.thread.id.clone(), "Thanks, fixed in 3f2a9c1.".to_owned())]
+            &[(
+                sent.thread.id.clone(),
+                "Thanks, fixed in 3f2a9c1.".to_owned()
+            )]
         );
         assert!(r.add_reply("rt-000000000000", "x", "y").await.is_none());
     }
@@ -2590,7 +2817,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = Arc::new(reach_in(d.path()));
         let t = r
-            .open(Target::Grok, "message", "", "ping", "web", "s", true, "gbot")
+            .open(
+                Target::Grok,
+                "message",
+                "",
+                "ping",
+                "web",
+                "s",
+                true,
+                "gbot",
+            )
             .unwrap();
         let sent = r.send_grok(t, Duration::from_secs(5)).await;
         assert_eq!(sent.thread.status, "failed");
@@ -2610,17 +2846,43 @@ mod tests {
         });
         let reach = Arc::new(Reach::new(cfg));
         let t = reach
-            .open(Target::Mistral, "message", "s", "a report", "ios", "sess", true, "mistral-agent")
+            .open(
+                Target::Mistral,
+                "message",
+                "s",
+                "a report",
+                "ios",
+                "sess",
+                true,
+                "mistral-agent",
+            )
             .unwrap();
         let prompt = reach.mistral_prompt(&t);
-        assert!(prompt.contains("no changes, no merging, no deploying, no spending"), "{prompt}");
+        assert!(
+            prompt.contains("no changes, no merging, no deploying, no spending"),
+            "{prompt}"
+        );
         assert!(prompt.contains(&t.id));
         assert!(reach.send_mistral(t).await.is_err());
         // Off means off: nothing can be sent.
         let dir2 = tempfile::tempdir().unwrap();
         let off = Arc::new(Reach::new(ReachConfig::new(dir2.path())));
-        let t = off.open(Target::Mistral, "message", "s", "x", "ios", "sess", true, "mistral-agent").unwrap();
-        assert_eq!(off.send_mistral(t).await.unwrap_err(), "the Mistral agent is off");
+        let t = off
+            .open(
+                Target::Mistral,
+                "message",
+                "s",
+                "x",
+                "ios",
+                "sess",
+                true,
+                "mistral-agent",
+            )
+            .unwrap();
+        assert_eq!(
+            off.send_mistral(t).await.unwrap_err(),
+            "the Mistral agent is off"
+        );
         assert_eq!(off.cfg.report_to, Target::Claude);
     }
 
@@ -2636,15 +2898,47 @@ mod tests {
             timeout: Duration::from_secs(5),
         });
         let reach = Arc::new(Reach::new(cfg));
-        let claude = reach.open(Target::Claude, "message", "s", "x", "ios", "sess", true, "m").unwrap();
-        assert_eq!(reach.follow_up_mistral(&claude.id, "more").await.unwrap_err(), "no such Mistral thread");
-        let t = reach.open(Target::Mistral, "message", "s", "x", "ios", "sess", true, "m").unwrap();
-        assert_eq!(reach.follow_up_mistral(&t.id, "more").await.unwrap_err(), "that thread has no agent");
+        let claude = reach
+            .open(
+                Target::Claude,
+                "message",
+                "s",
+                "x",
+                "ios",
+                "sess",
+                true,
+                "m",
+            )
+            .unwrap();
+        assert_eq!(
+            reach
+                .follow_up_mistral(&claude.id, "more")
+                .await
+                .unwrap_err(),
+            "no such Mistral thread"
+        );
+        let t = reach
+            .open(
+                Target::Mistral,
+                "message",
+                "s",
+                "x",
+                "ios",
+                "sess",
+                true,
+                "m",
+            )
+            .unwrap();
+        assert_eq!(
+            reach.follow_up_mistral(&t.id, "more").await.unwrap_err(),
+            "that thread has no agent"
+        );
     }
 
     #[test]
     fn outbound_text_to_mistral_loses_tokens() {
-        let (text, changed) = clean_outbound("see https://x.example/a?token=abcdefghijklmnopqrstuvwxyz123456 now");
+        let (text, changed) =
+            clean_outbound("see https://x.example/a?token=abcdefghijklmnopqrstuvwxyz123456 now");
         assert!(changed);
         assert!(!text.contains("abcdefghijklmnopqrstuvwxyz123456"), "{text}");
     }
@@ -2713,7 +3007,9 @@ mod tests {
                 std::thread::spawn(move || {
                     let mut conn = conn;
                     let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
-                    let Some((head, _)) = read_http(&mut conn) else { return };
+                    let Some((head, _)) = read_http(&mut conn) else {
+                        return;
+                    };
                     let line = head.lines().next().unwrap_or("").to_owned();
                     let body = rules
                         .iter()
@@ -2758,29 +3054,44 @@ mod tests {
     #[tokio::test]
     async fn a_run_is_sent_only_with_the_agent_id_agentd_gave() {
         let d = tempfile::tempdir().unwrap();
-        let (reach, env, _) = agents_reach(
-            d.path(),
-            &[("POST /agents", json!({"id": "ag-3f9a11c0"}))],
-        );
+        let (reach, env, _) =
+            agents_reach(d.path(), &[("POST /agents", json!({"id": "ag-3f9a11c0"}))]);
         let out = LucinaAgentsTool
-            .call(json!({"action": "run", "message": "check the login fix"}), &agents_ctx(&env))
+            .call(
+                json!({"action": "run", "message": "check the login fix"}),
+                &agents_ctx(&env),
+            )
             .await
             .unwrap();
         assert_eq!(out["status"], "sent", "{out}");
-        assert_eq!(out["agent"], "ag-3f9a11c0", "the id the owner gets is agentd's own");
+        assert_eq!(
+            out["agent"], "ag-3f9a11c0",
+            "the id the owner gets is agentd's own"
+        );
         let thread = reach.get(out["thread"].as_str().unwrap()).unwrap();
-        assert_eq!((thread.status.as_str(), thread.detail.as_deref()), ("sent", Some("ag-3f9a11c0")));
+        assert_eq!(
+            (thread.status.as_str(), thread.detail.as_deref()),
+            ("sent", Some("ag-3f9a11c0"))
+        );
     }
 
     /// A 2xx that names no agent leaves the launch unknown: the answer is "unconfirmed", the thread
     /// is not sent and not left open, and nothing claims a process does or does not exist.
     #[tokio::test]
     async fn a_run_agentd_gives_no_id_for_is_not_claimed_sent() {
-        for answer in [json!({}), json!({"id": ""}), json!({"agentId": "  "}), json!(null)] {
+        for answer in [
+            json!({}),
+            json!({"id": ""}),
+            json!({"agentId": "  "}),
+            json!(null),
+        ] {
             let d = tempfile::tempdir().unwrap();
             let (reach, env, _) = agents_reach(d.path(), &[("POST /agents", answer.clone())]);
             let out = LucinaAgentsTool
-                .call(json!({"action": "run", "message": "check the login fix"}), &agents_ctx(&env))
+                .call(
+                    json!({"action": "run", "message": "check the login fix"}),
+                    &agents_ctx(&env),
+                )
                 .await
                 .unwrap();
             assert_eq!(out["status"], "unconfirmed", "{answer} → {out}");
@@ -2788,13 +3099,24 @@ mod tests {
             assert!(out["agent"].is_null(), "no id is handed out as one: {out}");
             let said = out.to_string().to_lowercase();
             for claim in ["nothing is running", "did not take", "did not start"] {
-                assert!(!said.contains(claim), "{claim} is a claim about the process: {out}");
+                assert!(
+                    !said.contains(claim),
+                    "{claim} is a claim about the process: {out}"
+                );
             }
-            assert!(said.contains("unconfirmed"), "the word he needs is missing: {out}");
+            assert!(
+                said.contains("unconfirmed"),
+                "the word he needs is missing: {out}"
+            );
             let thread = reach.get(out["thread"].as_str().unwrap()).unwrap();
             assert_eq!(thread.status, "failed", "{answer}");
             assert!(thread.detail.unwrap().contains("unconfirmed"), "{answer}");
-            assert!(reach.list(Some(Target::Agents), Some("open"), 10).is_empty(), "not left open");
+            assert!(
+                reach
+                    .list(Some(Target::Agents), Some("open"), 10)
+                    .is_empty(),
+                "not left open"
+            );
         }
     }
 
@@ -2811,25 +3133,43 @@ mod tests {
             let d = tempfile::tempdir().unwrap();
             let (reach, env, _) = agents_reach(d.path(), &[("POST /agents", answer.clone())]);
             let out = LucinaAgentsTool
-                .call(json!({"action": "run", "message": "check the login fix"}), &agents_ctx(&env))
+                .call(
+                    json!({"action": "run", "message": "check the login fix"}),
+                    &agents_ctx(&env),
+                )
                 .await
                 .unwrap();
-            assert_eq!((out["status"].as_str(), out["agent"].as_str()), (Some("sent"), Some("ag-7b2c")), "{answer} → {out}");
+            assert_eq!(
+                (out["status"].as_str(), out["agent"].as_str()),
+                (Some("sent"), Some("ag-7b2c")),
+                "{answer} → {out}"
+            );
             let thread = reach.get(out["thread"].as_str().unwrap()).unwrap();
-            assert_eq!((thread.status.as_str(), thread.detail.as_deref()), ("sent", Some("ag-7b2c")), "{answer}");
+            assert_eq!(
+                (thread.status.as_str(), thread.detail.as_deref()),
+                ("sent", Some("ag-7b2c")),
+                "{answer}"
+            );
         }
     }
 
     #[tokio::test]
     async fn a_send_without_an_agent_opens_no_thread_and_spends_no_slot() {
         let d = tempfile::tempdir().unwrap();
-        let (reach, env, seen) = agents_reach(d.path(), &[("POST /agents/", json!({"id": "ag-1"}))]);
+        let (reach, env, seen) =
+            agents_reach(d.path(), &[("POST /agents/", json!({"id": "ag-1"}))]);
         let e = LucinaAgentsTool
-            .call(json!({"action": "send", "message": "hi"}), &agents_ctx(&env))
+            .call(
+                json!({"action": "send", "message": "hi"}),
+                &agents_ctx(&env),
+            )
             .await
             .unwrap_err();
         assert!(e.0.contains("`agent`"), "{e:?}");
-        assert!(reach.read().threads.is_empty(), "a refused request leaves no thread");
+        assert!(
+            reach.read().threads.is_empty(),
+            "a refused request leaves no thread"
+        );
         assert!(reach.read().sent.is_empty(), "nor spends the rate limit");
         assert!(seen.lock().unwrap().is_empty(), "agentd is not touched");
     }
@@ -2840,7 +3180,10 @@ mod tests {
         let (reach, env, seen) = agents_reach(
             d.path(),
             &[
-                ("GET /agents/ag-1", json!({"id": "ag-1", "provider": "opencode"})),
+                (
+                    "GET /agents/ag-1",
+                    json!({"id": "ag-1", "provider": "opencode"}),
+                ),
                 ("GET /agents/ag-1/timeline", json!({"rows": []})),
                 ("POST /agents/ag-1/send", json!({})),
             ],
@@ -2852,13 +3195,28 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!((out["status"].as_str(), out["agent"].as_str()), (Some("sent"), Some("ag-1")), "{out}");
+        assert_eq!(
+            (out["status"].as_str(), out["agent"].as_str()),
+            (Some("sent"), Some("ag-1")),
+            "{out}"
+        );
         let got = seen.lock().unwrap();
-        assert!(got.iter().any(|l| l.starts_with("POST /agents/ag-1/send")), "{got:?}");
+        assert!(
+            got.iter().any(|l| l.starts_with("POST /agents/ag-1/send")),
+            "{got:?}"
+        );
         // The thread of his own words, on the agentd route, with the agent that took it.
         let th = reach.read();
-        let t = th.threads.iter().find(|x| x.to == Target::Agents).expect("thread kept");
-        assert_eq!((t.status.as_str(), t.route.as_str(), t.detail.as_deref()), ("sent", "agentd", Some("ag-1")), "{t:?}");
+        let t = th
+            .threads
+            .iter()
+            .find(|x| x.to == Target::Agents)
+            .expect("thread kept");
+        assert_eq!(
+            (t.status.as_str(), t.route.as_str(), t.detail.as_deref()),
+            ("sent", "agentd", Some("ag-1")),
+            "{t:?}"
+        );
         assert_eq!(t.text, "wake up");
     }
 
@@ -2897,7 +3255,11 @@ mod tests {
         assert_eq!(access_token(&auth).as_deref(), Some("tok-123"));
         assert_eq!(access_token(&d.path().join("missing.json")), None);
         let st = d.path().join("desktop-status.json");
-        std::fs::write(&st, r#"{"version":1,"appVersion":"0.78.1","signedIn":true}"#).unwrap();
+        std::fs::write(
+            &st,
+            r#"{"version":1,"appVersion":"0.78.1","signedIn":true}"#,
+        )
+        .unwrap();
         assert_eq!(app_version(&st).as_deref(), Some("0.78.1"));
         std::fs::write(&st, r#"{"appVersion":"0.78.1; rm -rf"}"#).unwrap();
         assert_eq!(app_version(&st), None);
@@ -2905,10 +3267,18 @@ mod tests {
 
     #[test]
     fn fire_urls() {
-        assert!(valid_fire_url("https://api.anthropic.com/v1/claude_code/routines/trig_01Wm68jfqca7NVdmyVG4Fm8j/fire"));
-        assert!(!valid_fire_url("http://api.anthropic.com/v1/claude_code/routines/trig_01W/fire"));
-        assert!(!valid_fire_url("https://evil.example/v1/claude_code/routines/trig_01W/fire"));
-        assert!(!valid_fire_url("https://api.anthropic.com/v1/claude_code/routines/trig_01W/../x/fire"));
+        assert!(valid_fire_url(
+            "https://api.anthropic.com/v1/claude_code/routines/trig_01Wm68jfqca7NVdmyVG4Fm8j/fire"
+        ));
+        assert!(!valid_fire_url(
+            "http://api.anthropic.com/v1/claude_code/routines/trig_01W/fire"
+        ));
+        assert!(!valid_fire_url(
+            "https://evil.example/v1/claude_code/routines/trig_01W/fire"
+        ));
+        assert!(!valid_fire_url(
+            "https://api.anthropic.com/v1/claude_code/routines/trig_01W/../x/fire"
+        ));
     }
 
     fn routine_reach(dir: &Path, url: &str, token: Option<&str>) -> Reach {
@@ -2944,7 +3314,11 @@ mod tests {
 
     /// No readable token (the broker is missing), so the dispatch route is used.
     fn dispatch_reach(dir: &Path, gh: PathBuf) -> Reach {
-        let mut r = routine_reach(dir, "https://api.anthropic.com/v1/claude_code/routines/trig_01X/fire", None);
+        let mut r = routine_reach(
+            dir,
+            "https://api.anthropic.com/v1/claude_code/routines/trig_01X/fire",
+            None,
+        );
         r.cfg.routine.as_mut().unwrap().dispatch = Some(Dispatch {
             gh_bin: gh,
             repo: "gvitolocs/SecretaryIOS".into(),
@@ -2968,11 +3342,28 @@ mod tests {
             timeout: Duration::from_secs(2700),
         });
         let r = Arc::new(r);
-        let t = r.open(Target::Claude, "issue", "s", "broken", "web", "s", true, "lucina-mailbox").unwrap();
+        let t = r
+            .open(
+                Target::Claude,
+                "issue",
+                "s",
+                "broken",
+                "web",
+                "s",
+                true,
+                "lucina-mailbox",
+            )
+            .unwrap();
         let sent = r.send_claude(t).await;
-        assert_eq!((sent.thread.route.as_str(), sent.thread.status.as_str()), ("lucina-mailbox", "queued"));
+        assert_eq!(
+            (sent.thread.route.as_str(), sent.thread.status.as_str()),
+            ("lucina-mailbox", "queued")
+        );
         let detail = sent.thread.detail.unwrap();
-        assert!(detail.starts_with("Claude agent:") && detail.contains("not reachable"), "{detail}");
+        assert!(
+            detail.starts_with("Claude agent:") && detail.contains("not reachable"),
+            "{detail}"
+        );
         // No worktree tool: the issue falls back to its scratch directory.
         assert!(d.path().join("scratch").join(&sent.thread.id).is_dir());
     }
@@ -2981,11 +3372,29 @@ mod tests {
     fn the_claude_agent_prompt_carries_the_thread_and_the_rules() {
         let d = tempfile::tempdir().unwrap();
         let r = reach_in(d.path());
-        let t = r.open(Target::Claude, "issue", "Share link opens without sign-in", "What's broken: x", "ios", "s", false, "m").unwrap();
+        let t = r
+            .open(
+                Target::Claude,
+                "issue",
+                "Share link opens without sign-in",
+                "What's broken: x",
+                "ios",
+                "s",
+                false,
+                "m",
+            )
+            .unwrap();
         let p = r.claude_agent_prompt(&t, Path::new("/tmp/w"));
-        assert!(p.contains(&format!("lucina-rs reach reply {} --from claude-agent", t.id)));
+        assert!(p.contains(&format!(
+            "lucina-rs reach reply {} --from claude-agent",
+            t.id
+        )));
         assert!(p.contains("What's broken: x") && p.contains("Working directory: /tmp/w"));
-        assert!(p.contains("Never merge to main") && p.contains("never deploy") && p.contains("no sudo"));
+        assert!(
+            p.contains("Never merge to main")
+                && p.contains("never deploy")
+                && p.contains("no sudo")
+        );
         assert!(p.contains("local_ab6bcfc6-9a00-4524-ab32-79bddfdca8ed"));
     }
 
@@ -3004,7 +3413,16 @@ mod tests {
         let gh = fake_gh(d.path(), &[(0, "")]);
         let r = Arc::new(dispatch_reach(d.path(), gh.clone()));
         let t = r
-            .open(Target::Claude, "message", "private subject", "private text", "web", "s1", true, "lucina-mailbox")
+            .open(
+                Target::Claude,
+                "message",
+                "private subject",
+                "private text",
+                "web",
+                "s1",
+                true,
+                "lucina-mailbox",
+            )
             .unwrap();
         let sent = r.send_claude(t).await;
         assert_eq!(sent.thread.route, "lucina-mailbox+routine");
@@ -3018,7 +3436,18 @@ mod tests {
             )
         );
         assert!(!log.contains("private"));
-        let t2 = r.open(Target::Claude, "message", "", "again", "web", "s1", true, "lucina-mailbox").unwrap();
+        let t2 = r
+            .open(
+                Target::Claude,
+                "message",
+                "",
+                "again",
+                "web",
+                "s1",
+                true,
+                "lucina-mailbox",
+            )
+            .unwrap();
         match r.fire_routine(&t2.id).await {
             Fire::Skipped(why) => assert!(why.contains("drains"), "{why}"),
             other => panic!("{other:?}"),
@@ -3028,10 +3457,25 @@ mod tests {
     #[tokio::test]
     async fn a_dispatch_5xx_is_retried_once_other_failures_never() {
         let d = tempfile::tempdir().unwrap();
-        let gh = fake_gh(d.path(), &[(1, "HTTP 502: Bad Gateway"), (1, "HTTP 503: Service Unavailable")]);
+        let gh = fake_gh(
+            d.path(),
+            &[
+                (1, "HTTP 502: Bad Gateway"),
+                (1, "HTTP 503: Service Unavailable"),
+            ],
+        );
         let r = dispatch_reach(d.path(), gh.clone());
-        assert!(matches!(r.fire_routine("rt-0123456789ab").await, Fire::Failed(_)));
-        assert_eq!(std::fs::read_to_string(gh.with_extension("log")).unwrap().lines().count(), 2);
+        assert!(matches!(
+            r.fire_routine("rt-0123456789ab").await,
+            Fire::Failed(_)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(gh.with_extension("log"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
 
         let d2 = tempfile::tempdir().unwrap();
         let gh2 = fake_gh(d2.path(), &[(1, "HTTP 404: Not Found")]);
@@ -3040,16 +3484,36 @@ mod tests {
             Fire::Failed(why) => assert!(why.contains("404"), "{why}"),
             other => panic!("{other:?}"),
         }
-        assert_eq!(std::fs::read_to_string(gh2.with_extension("log")).unwrap().lines().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(gh2.with_extension("log"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn no_token_and_no_gh_keeps_the_mailbox_and_spends_no_slot() {
         let d = tempfile::tempdir().unwrap();
         let r = Arc::new(dispatch_reach(d.path(), d.path().join("no-gh")));
-        let t = r.open(Target::Claude, "message", "s", "hi", "web", "s", true, "lucina-mailbox").unwrap();
+        let t = r
+            .open(
+                Target::Claude,
+                "message",
+                "s",
+                "hi",
+                "web",
+                "s",
+                true,
+                "lucina-mailbox",
+            )
+            .unwrap();
         let sent = r.send_claude(t).await;
-        assert_eq!((sent.thread.route.as_str(), sent.thread.status.as_str()), ("lucina-mailbox", "queued"));
+        assert_eq!(
+            (sent.thread.route.as_str(), sent.thread.status.as_str()),
+            ("lucina-mailbox", "queued")
+        );
         assert!(sent.thread.detail.unwrap().contains("gh did not run"));
         assert!(r.read().fires.is_empty());
     }
@@ -3062,9 +3526,14 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/fire"))
             .and(header("authorization", "Bearer sk-ant-oat01-test"))
-            .and(header("anthropic-beta", "experimental-cc-routine-2026-04-01"))
+            .and(header(
+                "anthropic-beta",
+                "experimental-cc-routine-2026-04-01",
+            ))
             .and(header("anthropic-version", "2023-06-01"))
-            .and(body_json(json!({"text": "{\"thread\":\"rt-0123456789ab\"}"})))
+            .and(body_json(
+                json!({"text": "{\"thread\":\"rt-0123456789ab\"}"}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "type": "routine_fire",
                 "claude_code_session_id": "session_01X",
@@ -3074,17 +3543,36 @@ mod tests {
             .mount(&srv)
             .await;
         let d = tempfile::tempdir().unwrap();
-        let r = Arc::new(routine_reach(d.path(), &format!("{}/fire", srv.uri()), Some("sk-ant-oat01-test")));
+        let r = Arc::new(routine_reach(
+            d.path(),
+            &format!("{}/fire", srv.uri()),
+            Some("sk-ant-oat01-test"),
+        ));
         let t = r
-            .open(Target::Claude, "message", "s", "hello", "web", "s1", true, "lucina-mailbox")
+            .open(
+                Target::Claude,
+                "message",
+                "s",
+                "hello",
+                "web",
+                "s1",
+                true,
+                "lucina-mailbox",
+            )
             .unwrap();
         let mut t2 = t.clone();
         t2.id = "rt-0123456789ab".into();
         r.save(&t2);
         let sent = r.send_claude(t2).await;
         assert_eq!(sent.thread.route, "lucina-mailbox+routine");
-        assert_eq!(sent.thread.session_url.as_deref(), Some("https://claude.ai/code/session_01X"));
-        assert_eq!(r.get("rt-0123456789ab").unwrap().session_url.as_deref(), Some("https://claude.ai/code/session_01X"));
+        assert_eq!(
+            sent.thread.session_url.as_deref(),
+            Some("https://claude.ai/code/session_01X")
+        );
+        assert_eq!(
+            r.get("rt-0123456789ab").unwrap().session_url.as_deref(),
+            Some("https://claude.ai/code/session_01X")
+        );
         // A second message within the debounce window does not fire again.
         match r.fire_routine("rt-0123456789ab").await {
             Fire::Skipped(why) => assert!(why.contains("drains"), "{why}"),
@@ -3098,24 +3586,34 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(503).set_body_json(json!({"type":"error","error":{"type":"overloaded_error","message":"x"}})))
+            .respond_with(ResponseTemplate::new(503).set_body_json(
+                json!({"type":"error","error":{"type":"overloaded_error","message":"x"}}),
+            ))
             .expect(2)
             .mount(&srv)
             .await;
         let d = tempfile::tempdir().unwrap();
         let r = routine_reach(d.path(), &format!("{}/fire", srv.uri()), Some("tok"));
-        assert!(matches!(r.fire_routine("rt-0123456789ab").await, Fire::Failed(_)));
+        assert!(matches!(
+            r.fire_routine("rt-0123456789ab").await,
+            Fire::Failed(_)
+        ));
 
         let srv2 = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(429).set_body_json(json!({"type":"error","error":{"type":"rate_limit_error","message":"x"}})))
+            .respond_with(ResponseTemplate::new(429).set_body_json(
+                json!({"type":"error","error":{"type":"rate_limit_error","message":"x"}}),
+            ))
             .expect(1)
             .mount(&srv2)
             .await;
         let d2 = tempfile::tempdir().unwrap();
         let r2 = routine_reach(d2.path(), &format!("{}/fire", srv2.uri()), Some("tok"));
         match r2.fire_routine("rt-0123456789ab").await {
-            Fire::Failed(why) => assert!(why.contains("429") && why.contains("rate_limit_error"), "{why}"),
+            Fire::Failed(why) => assert!(
+                why.contains("429") && why.contains("rate_limit_error"),
+                "{why}"
+            ),
             other => panic!("{other:?}"),
         }
     }
@@ -3123,15 +3621,33 @@ mod tests {
     #[tokio::test]
     async fn no_token_keeps_the_mailbox_and_no_slot_is_spent() {
         let d = tempfile::tempdir().unwrap();
-        let r = Arc::new(routine_reach(d.path(), "https://api.anthropic.com/v1/claude_code/routines/trig_01X/fire", None));
+        let r = Arc::new(routine_reach(
+            d.path(),
+            "https://api.anthropic.com/v1/claude_code/routines/trig_01X/fire",
+            None,
+        ));
         match r.fire_routine("rt-0123456789ab").await {
             Fire::Failed(why) => assert!(why.contains("no routine token"), "{why}"),
             other => panic!("{other:?}"),
         }
         assert!(r.read().fires.is_empty());
-        let t = r.open(Target::Claude, "message", "s", "hi", "web", "s", true, "lucina-mailbox").unwrap();
+        let t = r
+            .open(
+                Target::Claude,
+                "message",
+                "s",
+                "hi",
+                "web",
+                "s",
+                true,
+                "lucina-mailbox",
+            )
+            .unwrap();
         let sent = r.send_claude(t).await;
-        assert_eq!((sent.thread.route.as_str(), sent.thread.status.as_str()), ("lucina-mailbox", "queued"));
+        assert_eq!(
+            (sent.thread.route.as_str(), sent.thread.status.as_str()),
+            ("lucina-mailbox", "queued")
+        );
         assert!(sent.thread.detail.unwrap().contains("no routine token"));
     }
 
@@ -3165,7 +3681,10 @@ mod tests {
             {"seq": 6, "item": {"type": "assistant_message", "text": "to proceed further."}},
             {"seq": 7, "item": {"type": "assistant_message", "text": " "}},
         ]});
-        assert_eq!(last_answer(&v, 1).as_deref(), Some("The file is missing,\nto proceed further."));
+        assert_eq!(
+            last_answer(&v, 1).as_deref(),
+            Some("The file is missing,\nto proceed further.")
+        );
     }
 
     #[test]
@@ -3188,6 +3707,9 @@ mod tests {
             {"seq": 3, "item": {"type": "assistant_message", "text": "done"}}
         ]});
         let d = timeline_digest(&v, 1);
-        assert_eq!(d, vec![json!({"kind": "assistant_message", "text": "done"})]);
+        assert_eq!(
+            d,
+            vec![json!({"kind": "assistant_message", "text": "done"})]
+        );
     }
 }

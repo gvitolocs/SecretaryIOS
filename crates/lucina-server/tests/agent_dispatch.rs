@@ -219,14 +219,22 @@ fn tools_trusted(c: &mut Config) {
 async fn a_trusted_relay_posts_a_task_to_his_agents_on_the_json_planner() {
     let d = agentd();
     let h = harness(
-        rules("lucina_agents", json!({"action": "run", "message": "check the login build"})),
+        rules(
+            "lucina_agents",
+            json!({"action": "run", "message": "check the login build"}),
+        ),
         |c| {
             c.planner = PlannerMode::Json;
             c.mcp_trusted = true;
         },
     )
     .await;
-    let out = relay(&h, "chatgpt", "post it in Lucina agents: check the login build").await;
+    let out = relay(
+        &h,
+        "chatgpt",
+        "post it in Lucina agents: check the login build",
+    )
+    .await;
     assert_eq!(out["reply"], "Done: the tool answered.", "{out}");
     let calls = d.calls("check the login build");
     assert!(
@@ -235,7 +243,11 @@ async fn a_trusted_relay_posts_a_task_to_his_agents_on_the_json_planner() {
     );
     // The answer she got names the agent agentd returned, and it is marked sent.
     let got = agents_answer(&h);
-    assert_eq!((got["status"].as_str(), got["agent"].as_str()), (Some("sent"), Some("ag-run-1")), "{got}");
+    assert_eq!(
+        (got["status"].as_str(), got["agent"].as_str()),
+        (Some("sent"), Some("ag-run-1")),
+        "{got}"
+    );
     // Attribution: the relay's words, not his own.
     let via = h.timeline_lines();
     assert!(
@@ -282,12 +294,20 @@ async fn g_a_question_about_the_agents_lists_without_the_route() {
         },
     )
     .await;
-    let out = relay(&h, "chatgpt", "what is still running in Lucina agents right now?").await;
+    let out = relay(
+        &h,
+        "chatgpt",
+        "what is still running in Lucina agents right now?",
+    )
+    .await;
     assert_eq!(out["reply"], "Listed from the daemon.", "{out}");
     let got = agents_answer(&h);
     assert_eq!(got["agents"][0]["id"], "ag-listed-1", "{got}");
     // A question answered with the roster, not with a dispatch outcome.
-    assert!(got.get("status").is_none(), "the list answered as a run: {got}");
+    assert!(
+        got.get("status").is_none(),
+        "the list answered as a run: {got}"
+    );
     // And agentd never took a task from his words.
     let calls = d.calls("still running in Lucina agents right now");
     assert!(
@@ -318,17 +338,29 @@ async fn c_a_run_agentd_does_not_name_is_not_claimed_sent() {
         "post it in Lucina agents: no-id work item for the relay",
     )
     .await;
-    assert!(d.calls("no-id").iter().any(|l| l.starts_with("POST /agents ")));
+    assert!(d
+        .calls("no-id")
+        .iter()
+        .any(|l| l.starts_with("POST /agents ")));
     let got = agents_answer(&h);
     // Not sent, and no agent id she does not have.
     assert_eq!(got["status"], "unconfirmed", "{got}");
     assert_eq!(got["confirmed"], false, "{got}");
-    assert!(got.get("agent").is_none(), "an id she should not have: {got}");
+    assert!(
+        got.get("agent").is_none(),
+        "an id she should not have: {got}"
+    );
     // What she is told to say: the launch is unconfirmed, no claim that nothing is running, and no
     // second dispatch on the doubt.
-    let said = got["instruction"].as_str().unwrap_or_default().to_lowercase();
+    let said = got["instruction"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
     for claim in ["nothing is running", "did not take", "did not start"] {
-        assert!(!said.contains(claim), "the answer claims an absence: {claim} in {said}");
+        assert!(
+            !said.contains(claim),
+            "the answer claims an absence: {claim} in {said}"
+        );
     }
     assert!(said.contains("unconfirmed"), "{said}");
 }
@@ -338,7 +370,10 @@ async fn d_an_agent_caller_never_reaches_the_agents_even_when_trusted() {
     let d = agentd();
     for caller in ["claude-code", "whoever"] {
         let h = harness(
-            rules("lucina_agents", json!({"action": "run", "message": "dispatch probe"})),
+            rules(
+                "lucina_agents",
+                json!({"action": "run", "message": "dispatch probe"}),
+            ),
             |c| {
                 c.planner = PlannerMode::Json;
                 c.mcp_trusted = true;
@@ -360,7 +395,10 @@ async fn d_an_agent_caller_never_reaches_the_agents_even_when_trusted() {
 async fn e_the_owner_app_without_trust_never_reaches_the_agents() {
     let d = agentd();
     let h = harness(
-        rules("lucina_agents", json!({"action": "run", "message": "untrusted probe"})),
+        rules(
+            "lucina_agents",
+            json!({"action": "run", "message": "untrusted probe"}),
+        ),
         |c| {
             c.planner = PlannerMode::Json;
             c.mcp_trusted = false;
@@ -402,7 +440,9 @@ async fn f_tools_mode_offers_the_agents_only_to_the_owner_relay() {
     relay(&h, "chatgpt", "read what the agent ag-probe-f did").await;
     let calls = d.calls("ag-probe-f");
     assert!(
-        calls.iter().any(|l| l.starts_with("GET /agents/ag-probe-f")),
+        calls
+            .iter()
+            .any(|l| l.starts_with("GET /agents/ag-probe-f")),
         "the tools loop never reached agentd: {calls:?}"
     );
     // The read is agentd's answer, keyed by the agent he named.
@@ -458,17 +498,29 @@ async fn h_a_consultation_is_never_offered_the_delegation_tools() {
             "delegate this to Claude code: fix the login build",
             "post it in Lucina agents: check the login build",
         ] {
-            let h = harness(rules("ask_grok", json!({"question": "h probe"})), tools_trusted).await;
+            let h = harness(
+                rules("ask_grok", json!({"question": "h probe"})),
+                tools_trusted,
+            )
+            .await;
             relay(&h, caller, text).await;
             let names = offered_tools(&h);
-            assert!(!names.is_empty(), "{caller} on {text:?}: no tool list at all");
+            assert!(
+                !names.is_empty(),
+                "{caller} on {text:?}: no tool list at all"
+            );
             for n in DRIVERS {
                 assert!(
                     !names.iter().any(|o| o == n),
                     "{caller} on {text:?} was offered {n}: the consultation ran as the owner's turn"
                 );
             }
-            for n in ["lucina_agents", "reach_threads", "message_grok", "secrets_status"] {
+            for n in [
+                "lucina_agents",
+                "reach_threads",
+                "message_grok",
+                "secrets_status",
+            ] {
                 assert!(
                     !names.iter().any(|o| o == n),
                     "{caller} on {text:?} was offered {n}"
@@ -483,7 +535,11 @@ async fn h_a_consultation_is_never_offered_the_delegation_tools() {
     }
     // The owner's own app: the drivers are there, his Agents are there, and the list reaches the
     // daemon he is given rather than the live one.
-    let h = harness(rules("lucina_agents", json!({"action": "list"})), tools_trusted).await;
+    let h = harness(
+        rules("lucina_agents", json!({"action": "list"})),
+        tools_trusted,
+    )
+    .await;
     let out = relay(&h, "chatgpt", "what is running in Lucina agents right now?").await;
     assert_eq!(out["reply"], "Done: the tool answered.", "{out}");
     let names = offered_tools(&h);
