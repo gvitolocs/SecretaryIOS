@@ -155,6 +155,39 @@ pub fn is_request(text: &str) -> bool {
     target(text).is_some()
 }
 
+/// He asks what his Lucina Agents are doing, or tells Lucina to look: "what is running in Lucina
+/// agents right now?", "check Lucina agents", "any agent still busy in Lucina agents?", "chi è
+/// occupato su Lucina agents?", "hvad kører i Lucina agents?".
+///
+/// This is a *read*, not a passing-on: [`target`] stays what it is, and a dispatch wins (this returns
+/// `false` when the words already ask for one). Narrow on purpose: his name for it must be there, the
+/// asking word in the same clause, so a message that only happens to contain the words is not one.
+pub fn agents_query(text: &str) -> bool {
+    let t = without_links(text);
+    if t.is_empty() || !test(compile_once("agents"), &t) || mentions(&t, "agents") {
+        return false;
+    }
+    // Words that ask another recipient's work are not a question to the Agents, even when they
+    // mention them on the way. (A passing-on aimed at the Agents returned false just above.)
+    if target(&t).is_some() {
+        return false;
+    }
+    static BEFORE: &str = r"(?:what|whats|which|who|how\s+many|any|list|show|check|see|read|look|tell\s+me|chi|cosa|quali|quante|quanti|elenco|mostra\w*|controlla|vedi|guarda|dimmi|hvad|hvem|hvilke|vis|tjek)";
+    static AFTER: &str = r"(?:running|busy|active|alive|stuck|waiting|queued|done|finished|progress|status|going|still|in\s+esecuzione|occupat|k[øo]rer)";
+    static Q: OnceLock<[Regex; 2]> = OnceLock::new();
+    let [before, after] = Q.get_or_init(|| {
+        [
+            compile(&format!(
+                r"\b{BEFORE}\b[^.?!\n]{{0,60}}\blucina[\s-]*agents?\b"
+            )),
+            compile(&format!(
+                r"\blucina[\s-]*agents?\b[^.?!\n]{{0,60}}\b(?:{AFTER}|{BEFORE})\b"
+            )),
+        ]
+    });
+    test(before, &t) || test(after, &t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +252,47 @@ mod tests {
             "",
         ] {
             assert_eq!(target(text), None, "{text}");
+        }
+    }
+
+    /// A question about his Agents, as he actually types it. Only a read: the passing-on cases stay
+    /// with `target`, and nothing else becomes one.
+    #[test]
+    fn questions_about_his_agents() {
+        for text in [
+            "what is running in Lucina agents right now?",
+            "What's busy on Lucina agents?",
+            "check Lucina agents",
+            "list the agents on Lucina agents",
+            "any Lucina agents still waiting?",
+            "how many Lucina agents are active?",
+            "Lucina agents status?",
+            "chi è occupato su Lucina agents?",
+            "cosa c'è in esecuzione su lucina agents",
+            "mostrami gli agenti su Lucina agents",
+            "hvad kører i Lucina agents lige nu?",
+            "hvem er beskæftiget på Lucina agents?",
+        ] {
+            assert!(agents_query(text), "{text}");
+            assert_eq!(target(text), None, "{text} is a dispatch");
+        }
+        for text in [
+            // A passing-on is `target`'s, never a query.
+            "post it in Lucina agents: fix the login build",
+            "ask Lucina agents what they would change here",
+            "ask Claude in Lucina agents to check the logs",
+            // A request naming another recipient, even with his Agents words in it.
+            "tell Claude that the Lucina agents status is fine",
+            "ask Grok what is running, he has the Lucina agents docs",
+            // Nothing to do with his Agents.
+            "what is running on nezopt right now?",
+            "what is the weather",
+            "read me the notes",
+            "I will enable Lucina agents soon don't worry",
+            "Claude is great",
+            "",
+        ] {
+            assert!(!agents_query(text), "{text}");
         }
     }
 }
