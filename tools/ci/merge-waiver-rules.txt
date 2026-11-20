@@ -13,3 +13,4 @@
 # forwarding one would fail the call ("--allow: unknown rule"), so they stay out and their waivers are reported as not forwarded.
 skipped-test
 tmp-write counted
+test-removed counted
