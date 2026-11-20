@@ -45,7 +45,7 @@ run_in() {
     local r=$1
     shift
     rc=0
-    env -u CARGO_TARGET_DIR -u CARGO_INCREMENTAL -u LUCINA_CHECK_ALLOW_TARGET ${@+"$@"} \
+    env -u CARGO_TARGET_DIR -u CARGO_INCREMENTAL -u LUCINA_CHECK_ALLOW_TARGET -u LUCINA_AGENT_SHARED_TARGET ${@+"$@"} \
         PATH="$tmp/bin:/usr/bin:/bin" LUCINA_CHECK_CACHE="$cache" \
         SECRETARY_CI_TOOL_TARGET="$home/tool" SECRETARY_CI_TOOL_BUILD="$home/tool-build" \
         "$tmp/$r/scripts/check-fast" > "$tmp/out" 2> "$tmp/err" || rc=$?
@@ -129,5 +129,25 @@ run_in wt-a CARGO_TARGET_DIR="$tmp/elsewhere" LUCINA_AGENT_SHARED_TARGET=
 [ "$out" = "$tmp/elsewhere" ] || fail "an empty variable changed the target: $out"
 if grep -q "$shared_line" "$tmp/err"; then fail "a line was printed for an empty variable"; fi
 grep -q "warning: CARGO_TARGET_DIR=$tmp/elsewhere (inherited)" "$tmp/err" || fail "empty variable: the warning is gone"
+
+# (7) a missing parent folder (a fresh cache): the same string on both sides is still the same place
+run_in wt-a CARGO_TARGET_DIR="$tmp/fresh/cargo-target/repo" LUCINA_AGENT_SHARED_TARGET="$tmp/fresh/cargo-target/repo"
+[ "$out" = "$a1" ] || fail "equal paths with a missing parent were kept: $out"
+[ "$(grep -c "$shared_line" "$tmp/err")" = 1 ] || fail "missing parent: want one line: $(cat "$tmp/err")"
+[ ! -e "$tmp/fresh" ] || fail "the missing-parent path was created"
+no_target_warning "missing parent"
+# (8) both unresolvable and different: kept and warned
+run_in wt-a CARGO_TARGET_DIR="$tmp/gone1/t" LUCINA_AGENT_SHARED_TARGET="$tmp/gone2/t"
+[ "$out" = "$tmp/gone1/t" ] || fail "different unresolvable targets: the inherited one was not kept: $out"
+grep -q "warning: CARGO_TARGET_DIR=$tmp/gone1/t (inherited)" "$tmp/err" || fail "different unresolvable targets: no warning"
+if grep -q "$shared_line" "$tmp/err"; then fail "different unresolvable targets: the line was printed"; fi
+# (9) the variable empty but set, the inherited target is the launcher's own current folder: kept and warned (readlink -f "" is that folder)
+mkdir -p "$tmp/cwd"
+pushd "$tmp/cwd" > /dev/null
+run_in wt-a CARGO_TARGET_DIR=. LUCINA_AGENT_SHARED_TARGET=
+popd > /dev/null
+[ "$out" = . ] || fail "an empty variable with the current folder as the target changed the target: $out"
+grep -q "warning: CARGO_TARGET_DIR=. (inherited)" "$tmp/err" || fail "current-folder target: no warning"
+if grep -q "$shared_line" "$tmp/err"; then fail "current-folder target: the line was printed"; fi
 
 echo "check-fast-target-test: pass"

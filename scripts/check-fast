@@ -177,11 +177,30 @@ wt_id=wt-$(printf '%s' "$root" | sha1sum | cut -c1-10)
 # LUCINA_AGENT_SHARED_TARGET. A check run by such an agent inherits it as CARGO_TARGET_DIR; it is dropped here, so the check builds in
 # its own per-worktree target below and does not warn about the inherited one. The variable can be set by anyone running as this user
 # and can hold any path: all it can do is make this script use its OWN target instead of the inherited one, never someone else's.
-# Only a path that resolves to the same place as the inherited target counts; a different inherited target is judged as before.
+# Only a path that resolves to the same place as the inherited target counts; a different inherited target is judged as before, and
+# the merge gate's landing target must never be named by the runner. Dropping the target costs one cold build in a worktree
+# target (in a repo with no sweeper that folder stays until the sweeper exists, GATE-28).
+# A path is resolved as bq does: readlink -f, and when that fails (a missing parent folder, as on a fresh cache) the parent is
+# resolved and the last name appended; two missing-parent paths that are the same string are equal. An empty path is never resolved
+# (readlink -f "" answers the current folder).
+agent_resolve() {
+    local p=$1 r d
+    [ -n "$p" ] || return 1
+    case "$p" in /*) ;; *) p=$PWD/$p ;; esac
+    if r=$(readlink -f "$p" 2> /dev/null) && [ -n "$r" ]; then
+        printf '%s\n' "$r"
+        return 0
+    fi
+    d=$(dirname "$p")
+    if r=$(readlink -f "$d" 2> /dev/null) && [ -n "$r" ]; then
+        d=$r
+    fi
+    printf '%s/%s\n' "${d%/}" "$(basename "$p")"
+}
 agent_shared=0
 if [ -n "${LUCINA_AGENT_SHARED_TARGET:-}" ] && [ -n "${CARGO_TARGET_DIR:-}" ]; then
-    shared_real=$(readlink -f "$LUCINA_AGENT_SHARED_TARGET" 2>/dev/null || true)
-    inherited_real=$(readlink -f "$CARGO_TARGET_DIR" 2>/dev/null || true)
+    shared_real=$(agent_resolve "$LUCINA_AGENT_SHARED_TARGET" || true)
+    inherited_real=$(agent_resolve "$CARGO_TARGET_DIR" || true)
     if [ -n "$shared_real" ] && [ "$shared_real" = "$inherited_real" ]; then
         unset CARGO_TARGET_DIR
         agent_shared=1
@@ -192,10 +211,10 @@ if [ -n "${CARGO_TARGET_DIR:-}" ] && [ "${CARGO_TARGET_DIR#"$cache_root"/}" = "$
 fi
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$cache_root/$wt_id}
 mkdir -p "$CARGO_TARGET_DIR"
+touch "$CARGO_TARGET_DIR/.last-used"
 if [ "$agent_shared" = 1 ]; then
     echo "check-fast: the agent's shared target is not used; building in $CARGO_TARGET_DIR" >&2
 fi
-touch "$CARGO_TARGET_DIR/.last-used"
 # No incremental compilation: the caches rarely get reused and were nearly half the old shared target's size (40 of 89 GiB on 2026-11-11,
 # when nezopt's disk ran short). A caller that sets CARGO_INCREMENTAL keeps its value.
 export CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-0}
