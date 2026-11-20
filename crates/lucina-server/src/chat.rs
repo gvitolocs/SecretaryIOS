@@ -1109,6 +1109,10 @@ async fn run_turn_scoped(
     };
     // An id that names nothing readable is ignored, on the timeline too.
     let reply_to = reply_to.filter(|_| !reply_block.is_empty());
+    // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
+    let consult = mcp_turn
+        .as_ref()
+        .is_some_and(|m| !mcp::is_owner_client(&m.caller, &st.cfg.mcp_owner_clients));
     // MCP turns are labelled with their caller; app turns with their device.
     let turn_meta = mcp_turn
         .as_ref()
@@ -1137,6 +1141,7 @@ async fn run_turn_scoped(
                     channel,
                     surface,
                     from_mcp,
+                    consult,
                     existing,
                     reply_to,
                     turn_meta.clone(),
@@ -1168,10 +1173,6 @@ async fn run_turn_scoped(
         "" => base_system,
         fact => format!("{base_system} {fact}"),
     };
-    // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
-    let consult = mcp_turn
-        .as_ref()
-        .is_some_and(|m| !mcp::is_owner_client(&m.caller, &st.cfg.mcp_owner_clients));
     let note = |m: &McpTurn| {
         if consult {
             mcp::note_consult(m)
@@ -3564,6 +3565,9 @@ async fn tools_turn(
     channel: String,
     surface: TurnSurface,
     from_mcp: bool,
+    // An agent's MCP turn (every caller but the owner's own assistant apps) is a consultation: it
+    // stays out of the owner-only tools even when the relay itself is trusted.
+    consult: bool,
     existing: Option<ShareTurn>,
     reply_to: Option<String>,
     device_meta: Meta,
@@ -3612,11 +3616,16 @@ async fn tools_turn(
     };
     let user_item = turn.record_user(&message, Vec::new());
     // MCP callers never get the owner-only tools (secrets); a guarded MCP
-    // turn gets no delegation either.
+    // turn gets no delegation either. A trusted turn of one of the owner's own
+    // apps is his voice and adds his Lucina Agents pair; an agent's stays as it is.
     let registry = if mcp {
         st.mcp_registry.clone()
     } else if from_mcp {
-        st.trusted_mcp_registry.clone()
+        if consult {
+            st.trusted_mcp_registry.clone()
+        } else {
+            st.owner_relay_mcp_registry.clone()
+        }
     } else {
         st.registry.clone()
     };

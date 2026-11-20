@@ -554,6 +554,22 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &[
     "reach_threads",
 ];
 
+/// The two owner-only tools a trusted owner relay does get: running and reading his Lucina Agents
+/// ("post it in Lucina Agents" from ChatGPT is what he would type at his keyboard). Everything else
+/// of [`OWNER_ONLY_TOOLS`] stays away from every MCP caller, and an agent's turn keeps the whole
+/// owner-only set: trusting the relay does not lift it for an agent.
+pub const TRUSTED_MCP_AGENT_TOOLS: &[&str] = &["lucina_agents", "reach_threads"];
+
+/// What a trusted owner relay (`LUCINA_MCP_TRUSTED=true`, a caller of `LUCINA_MCP_OWNER_CLIENTS`)
+/// never gets: [`OWNER_ONLY_TOOLS`] without [`TRUSTED_MCP_AGENT_TOOLS`].
+pub fn trusted_mcp_owner_only() -> Vec<&'static str> {
+    OWNER_ONLY_TOOLS
+        .iter()
+        .copied()
+        .filter(|n| !TRUSTED_MCP_AGENT_TOOLS.contains(n))
+        .collect()
+}
+
 /// Every tool a Lucina MCP turn never gets: the owner-only tools and the
 /// delegation tools (outside agents calling Lucina must not drive her).
 pub const NO_MCP_TOOLS: &[&str] = &[
@@ -765,6 +781,21 @@ mod tests {
             );
             assert!(all.get(n).is_some() && mcp.get(n).is_none(), "{n}");
         }
+        // A trusted owner relay gets his Lucina Agents pair and nothing else of the owner-only set:
+        // the exclusion list is OWNER_ONLY_TOOLS minus those two names, applied like any other.
+        let relay = all.without(&trusted_mcp_owner_only());
+        for n in OWNER_ONLY_TOOLS {
+            assert_eq!(
+                relay.get(n).is_some(),
+                TRUSTED_MCP_AGENT_TOOLS.contains(n),
+                "{n}"
+            );
+        }
+        assert!(
+            relay.get("secrets_status").is_none() && relay.get("message_claude").is_none(),
+            "only the Agents pair comes back"
+        );
+        assert!(relay.get("time").is_some() && relay.get("reminders").is_some());
         assert!(mcp.get("au_people_search").is_some());
         for n in tools::plugins::NAMES {
             assert!(OWNER_ONLY_TOOLS.contains(n) && all.get(n).is_some(), "{n}");

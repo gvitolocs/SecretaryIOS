@@ -140,6 +140,10 @@ pub struct Inner {
     pub mcp_registry: Arc<Registry>,
     /// Trusted MCP turns (`LUCINA_MCP_TRUSTED`): everything but the owner-only tools.
     pub trusted_mcp_registry: Arc<Registry>,
+    /// A trusted turn of one of the owner's own apps (`LUCINA_MCP_OWNER_CLIENTS`) that is not a
+    /// consultation: [`Self::trusted_mcp_registry`] plus his Lucina Agents tools, and nothing else
+    /// of the owner-only set.
+    pub owner_relay_mcp_registry: Arc<Registry>,
     /// Infisical secrets (`LUCINA_SECRETS_CONFIG`), for tools only.
     pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
     /// Meshy 3D (`LUCINA_MESHY=true`) and its one-tool registry.
@@ -560,6 +564,10 @@ impl AppState {
         // MCP turns: no owner-only tools and no delegation, ever.
         let mcp_registry = Arc::new(registry.without(lucina_tools::NO_MCP_TOOLS));
         let trusted_mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
+        // A trusted turn of one of the owner's own apps is his own voice, so it also gets his Lucina
+        // Agents pair: the same exclusions minus those two names. Agents keep both registries above.
+        let owner_relay_mcp_registry =
+            Arc::new(registry.without(&lucina_tools::trusted_mcp_owner_only()));
         // "Enter the secret for this": Lucina's own way to ask, by name. Owner turns only, so added
         // after the MCP registries (agents have secretary-mcp's `secret_request`).
         let secret_requests = Arc::new(secret_requests::SecretRequests::new(
@@ -689,6 +697,7 @@ impl AppState {
             registry,
             mcp_registry,
             trusted_mcp_registry,
+            owner_relay_mcp_registry,
             secrets: secret_store,
             delegator,
             pending: Arc::new(PendingStore::file(
