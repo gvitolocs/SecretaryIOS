@@ -134,6 +134,11 @@ impl Drop for Scratch {
 /// to sit in.
 const BQ_QUEUE_CAP_SECS: u64 = 1800;
 
+/// How long past [`BQ_QUEUE_CAP_SECS`] a step may wait for its grant: bq ends its own wait at the cap
+/// (`--max-wait`), so a step still ungranted this much later has a `bq` that neither grants nor exits,
+/// and the executor ends it like a step past its deadline (the job holds the repo's merge lock).
+const QUEUE_SLACK: Duration = Duration::from_secs(30);
+
 /// How long `bq` gets to print its usage when the executor asks whether the file at the home
 /// directory is ours (as `scripts/check-fast` asks it).
 const BQ_USAGE_CAP: Duration = Duration::from_secs(5);
@@ -300,6 +305,8 @@ struct Exec {
     /// grant markers this job has made (each gate run has its own).
     bq: BqSource,
     bq_queue_cap_secs: u64,
+    /// How long past the queue cap a step may wait for its grant before it is ended ([`QUEUE_SLACK`]).
+    queue_slack: Duration,
     grants: u32,
     /// The systemd unit this executor itself runs in (`lagent-job-<id>.service`), read once from its
     /// own control group at start: what every step's scope is bound to, so that the scope stops when
@@ -360,6 +367,7 @@ impl Exec {
                 BqSource::Home
             },
             bq_queue_cap_secs: BQ_QUEUE_CAP_SECS,
+            queue_slack: QUEUE_SLACK,
             grants: 0,
             spec,
             log,
@@ -986,6 +994,7 @@ impl Exec {
                 let (name, shown) = (s.name.clone(), cmd.to_string());
                 step = step.with_grant(Grant {
                     marker: s.marker.clone(),
+                    queue_bound: Duration::from_secs(s.queue_cap_secs) + self.queue_slack,
                     seen: Box::new(move |slot_name, after| {
                         let now = chrono::Utc::now().format("%H:%M:%S");
                         let _ = writeln!(
@@ -1019,15 +1028,30 @@ impl Exec {
                 ended.left
             ));
         }
+        // No grant within the queue cap plus its slack: bq neither granted nor ended, and the step was ended.
+        if ended.queue_expired {
+            let waited = format!(
+                "waited for a bq slot for {} s: bq neither granted the slot nor ended within the queue cap plus {} s, so the step was ended",
+                started_at.elapsed().as_secs(),
+                self.queue_slack.as_secs()
+            );
+            self.say(&format!("failed: {waited}"));
+            return Some(waited);
+        }
         // Never granted and not ended by its limit: the wait itself is what failed (bq's own
         // `--max-wait`, or bq refusing the job), and the limit of the gate was never in play.
         if slot.is_some() && ended.granted_after.is_none() && !ended.timed_out {
             if let Some(code) = ended.status.filter(|s| !s.success()) {
-                let waited = format!(
-                    "waited for a bq slot for {} s without a grant (bq exit {})",
-                    started_at.elapsed().as_secs(),
-                    code.code().map_or("signal".to_string(), |c| c.to_string())
-                );
+                // 97 is the wrapper's own: the job started and could not write the grant marker.
+                let waited = if code.code() == Some(97) {
+                    "the bq job started but could not write its grant marker (wrapper exit 97), so the gate did not run".to_string()
+                } else {
+                    format!(
+                        "waited for a bq slot for {} s without a grant (bq exit {})",
+                        started_at.elapsed().as_secs(),
+                        code.code().map_or("signal".to_string(), |c| c.to_string())
+                    )
+                };
                 self.say(&format!("failed: {waited}"));
                 return Some(waited);
             }
@@ -4495,6 +4519,7 @@ mod tests {
                  shift\nmaxwait=0\n\
                  while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do\n\
                  case \"$1\" in --max-wait) maxwait=$2; shift;; esac; shift\ndone\nshift\n\
+                 if [ -f \"$d/hang\" ]; then sleep 20; exit 1; fi\n\
                  if [ -f \"$d/never\" ]; then sleep \"$maxwait\"; echo \"no build slot in $maxwait s: the long queue is full\" >&2; exit 1; fi\n\
                  if [ -f \"$d/delay\" ]; then sleep \"$(cat \"$d/delay\")\"; fi\n\
                  echo \"bq: got long-0 after the wait\" >&2\n\
@@ -4729,6 +4754,41 @@ mod tests {
         assert!(!log.contains("timed out"), "{log}");
         assert!(
             log.contains("--max-wait 1") || log.contains("waits at most 1 s"),
+            "{log}"
+        );
+    }
+
+    /// A bq that neither grants nor exits (it would sit 20 s): the step is ended at the queue cap plus
+    /// its slack, not left to hold the job, and the failure says why. R090 F1.
+    #[test]
+    fn slot_a_bq_that_neither_grants_nor_exits_is_ended_at_the_queue_cap_plus_slack() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bq = fake_bq(&root.join("fake"));
+        std::fs::write(root.join("fake/hang"), "").unwrap();
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        x.bq_queue_cap_secs = 1;
+        x.queue_slack = Duration::from_secs(1);
+        let out = root.join("ran");
+        let t = Instant::now();
+        let ok = x.gate_run(
+            root,
+            "build",
+            &format!("echo ran > {}", out.display()),
+            true,
+            Duration::from_secs(60),
+            "1 min",
+        );
+        let took = t.elapsed();
+        let log = slot_log(&dir);
+        assert!(!ok && !out.exists(), "{log}");
+        assert!(
+            took < Duration::from_secs(10),
+            "ended after {took:?}, not at 1 s cap + 1 s slack + grace\n{log}"
+        );
+        assert!(
+            log.contains("failed: waited for a bq slot for ")
+                && log.contains("neither granted the slot nor ended"),
             "{log}"
         );
     }
