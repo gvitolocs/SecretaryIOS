@@ -3572,9 +3572,10 @@ async fn tools_turn(
     reply_to: Option<String>,
     device_meta: Meta,
 ) -> Result<Value, ApiError> {
-    // The tool set follows `origin` (trusted MCP turns get the owner's);
-    // memory reads and writes follow `surface`.
-    let origin = if from_mcp && !st.cfg.mcp_trusted {
+    // The tool set and the origin follow the same authorization as the JSON planner: an agent's
+    // consultation is guarded even when the relay itself is trusted, so trust opens the owner's own
+    // apps only. Memory reads and writes follow `surface`.
+    let origin = if from_mcp && (!st.cfg.mcp_trusted || consult) {
         Origin::Mcp
     } else {
         Origin::Owner
@@ -3615,17 +3616,13 @@ async fn tools_turn(
         turn
     };
     let user_item = turn.record_user(&message, Vec::new());
-    // MCP callers never get the owner-only tools (secrets); a guarded MCP
-    // turn gets no delegation either. A trusted turn of one of the owner's own
-    // apps is his voice and adds his Lucina Agents pair; an agent's stays as it is.
+    // MCP callers never get the owner-only tools (secrets) or delegation, and an agent's consultation
+    // is an MCP caller: `mcp` above already folds `consult` in. A trusted turn of one of the owner's
+    // own apps is his voice, so it adds his Lucina Agents pair.
     let registry = if mcp {
         st.mcp_registry.clone()
     } else if from_mcp {
-        if consult {
-            st.trusted_mcp_registry.clone()
-        } else {
-            st.owner_relay_mcp_registry.clone()
-        }
+        st.owner_relay_mcp_registry.clone()
     } else {
         st.registry.clone()
     };
