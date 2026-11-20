@@ -881,6 +881,10 @@ impl Exec {
         // environment, plus the deploy recipe's declared names), not what the executor
         // inherited. How many names were kept back is said by count only.
         let (mut built, not_passed) = self.built_env();
+        // A slot the executor was itself started under is somebody else's: no step, no scope probe and no
+        // manager ask is handed the pair, so none can take it for its own (R090 F7). bq sets its own pair
+        // for the job it starts.
+        built.retain(|(k, _)| k != "BQ_SLOT" && k != "BQ_SLOT_PID");
         if not_passed > 0 {
             self.say(&format!("env: {not_passed} variable(s) not passed"));
         }
@@ -990,11 +994,7 @@ impl Exec {
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err));
         if let Some(s) = slot {
-            // bq sets the pair for the job it starts; one the executor was itself started under is
-            // somebody else's slot, and `bq run` would take it for its own and queue for nothing.
             command
-                .env_remove("BQ_SLOT")
-                .env_remove("BQ_SLOT_PID")
                 .env(SLOT_COMMAND_VAR, cmd)
                 .env(SLOT_GRANT_VAR, &s.marker);
             let _ = std::fs::remove_file(&s.marker);
