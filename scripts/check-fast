@@ -183,6 +183,8 @@ wt_id=wt-$(printf '%s' "$root" | sha1sum | cut -c1-10)
 # A path is resolved as bq does: readlink -f, and when that fails (a missing parent folder, as on a fresh cache) the parent is
 # resolved and the last name appended; two missing-parent paths that are the same string are equal. An empty path is never resolved
 # (readlink -f "" answers the current folder).
+# A path spelled with .. through a missing ancestor is left as written, so it does not match another spelling of the same place: the harmless
+# direction (the inherited target is kept and warned about), so it is not normalised by hand.
 agent_resolve() {
     local p=$1 r d
     [ -n "$p" ] || return 1
