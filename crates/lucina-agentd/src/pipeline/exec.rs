@@ -260,18 +260,18 @@ fn passwd_home() -> Option<PathBuf> {
 }
 
 /// Does the program at `bq` print bq's usage when run without arguments, within [`BQ_USAGE_CAP`]?
-fn bq_prints_usage(bq: &Path) -> bool {
+/// `Err` is the real reason it does not: it cannot be run, it did not answer in time, or it ran and
+/// printed something else (R090 F5).
+fn bq_usage_check(bq: &Path) -> Result<(), String> {
     use std::io::Read;
-    let Ok(mut child) = Command::new(bq)
+    let mut child = Command::new(bq)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-    else {
-        return false;
-    };
+        .map_err(|e| format!("cannot be run: {e}"))?;
     let t = Instant::now();
     loop {
         match child.try_wait() {
@@ -280,7 +280,10 @@ fn bq_prints_usage(bq: &Path) -> bool {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return false;
+                return Err(format!(
+                    "did not print anything within {} s",
+                    BQ_USAGE_CAP.as_secs()
+                ));
             }
         }
     }
@@ -291,7 +294,17 @@ fn bq_prints_usage(bq: &Path) -> bool {
     if let Some(mut e) = child.stderr.take() {
         let _ = e.read_to_string(&mut text);
     }
-    bq_usage_is_ours(&text)
+    if bq_usage_is_ours(&text) {
+        Ok(())
+    } else {
+        Err("ran, and does not print bq's usage (--class short|long|proof, --max-wait, --priority), so it is not the queue this gate can call".into())
+    }
+}
+
+/// [`bq_usage_check`] as a yes or no.
+#[cfg(test)]
+fn bq_prints_usage(bq: &Path) -> bool {
+    bq_usage_check(bq).is_ok()
 }
 
 struct Exec {
@@ -544,13 +557,9 @@ impl Exec {
                 p
             }
         };
-        if bq_prints_usage(&path) {
-            BqFind::Found(path)
-        } else {
-            BqFind::Refused(format!(
-                "{} does not print bq's usage (--class short|long|proof, --max-wait, --priority), so it is not the queue this gate can call",
-                path.display()
-            ))
+        match bq_usage_check(&path) {
+            Ok(()) => BqFind::Found(path),
+            Err(why) => BqFind::Refused(format!("{} {why}", path.display())),
         }
     }
 
@@ -589,7 +598,11 @@ impl Exec {
                     "gate: {name} takes no bq slot ({why}); it runs without one"
                 )),
                 BqFind::Refused(why) => {
-                    self.say(&format!("gate: {name} refused: {why}"));
+                    // A queue that is there and does not work fails the gate: a decision, so that a broken
+                    // bq is seen and not quietly run around (R090 F5).
+                    self.say(&format!(
+                        "gate: {name} refused: {why}; a bq that is there and does not work fails the gate, it does not run unqueued"
+                    ));
                     return false;
                 }
             }
