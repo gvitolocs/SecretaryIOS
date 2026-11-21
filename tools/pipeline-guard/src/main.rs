@@ -1180,18 +1180,7 @@ fn target_verdict(command: &str, cwd: &str, on_host: bool, bypass: bool) -> Opti
 /// (tab, CR, newline) become spaces and each field is cut at 2000 characters, so it stays one
 /// bounded line.
 fn bypass_log_line(session: &str, cwd: &str, honoured: bool, command: &str) -> String {
-    let clean = |s: &str| -> String {
-        s.chars()
-            .take(2000)
-            .map(|c| {
-                if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                    ' '
-                } else {
-                    c
-                }
-            })
-            .collect()
-    };
+    let clean = |s: &str| plain(s, 2000);
     format!(
         "{}\t{}\t{}\t{}\n",
         clean(session),
@@ -1202,13 +1191,29 @@ fn bypass_log_line(session: &str, cwd: &str, honoured: bool, command: &str) -> S
 }
 
 /// Rotates `bypass.log` once it is over 1 MiB: it becomes `bypass.log.1` (the old `.1` is replaced)
-/// and the next line starts a new file. Any failure is ignored: it never changes a verdict.
+/// and the next line starts a new file. Only a regular `bypass.log` (not a symlink or FIFO, in a state
+/// directory that is not a symlink) is renamed, and never onto a non-regular `.1`. Any failure is
+/// ignored: it never changes a verdict.
 fn rotate_log(path: &std::path::Path) {
-    if std::fs::metadata(path).is_ok_and(|m| m.len() > 1 << 20) {
-        let mut old = path.as_os_str().to_owned();
-        old.push(".1");
-        let _ = std::fs::rename(path, old);
+    if path
+        .parent()
+        .is_some_and(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
+    {
+        return;
     }
+    let Slot::Regular(m) = slot(path) else {
+        return;
+    };
+    if m.len() <= 1 << 20 {
+        return;
+    }
+    let mut old = path.as_os_str().to_owned();
+    old.push(".1");
+    let old = std::path::PathBuf::from(old);
+    if matches!(slot(&old), Slot::Other(_)) {
+        return;
+    }
+    let _ = std::fs::rename(path, old);
 }
 
 /// Phase switch for the coordinator-only bypass. `false` (phase 1): an honoured override by a session that
@@ -1328,8 +1333,16 @@ fn read_coordinators(dir: &std::path::Path) -> Vec<String> {
         return Vec::new();
     };
     let mut bytes = Vec::new();
-    if f.take(64 * 1024).read_to_end(&mut bytes).is_err() {
+    if f.take(64 * 1024 + 1).read_to_end(&mut bytes).is_err() {
         return Vec::new();
+    }
+    if bytes.len() > 64 * 1024 {
+        // Longer than the bound: the last line is cut, so it is dropped (a cut id must not match a shorter one).
+        bytes.truncate(64 * 1024);
+        match bytes.iter().rposition(|&b| b == b'\n') {
+            Some(i) => bytes.truncate(i),
+            None => bytes.clear(),
+        }
     }
     let text = String::from_utf8_lossy(&bytes);
     let text: &str = text.strip_prefix('\u{feff}').unwrap_or(&text);
@@ -1372,32 +1385,40 @@ fn slot(path: &std::path::Path) -> Slot {
 }
 
 /// Appends one whole line to `dir/name` (created 0600, `O_APPEND`, one `write_all`, then `sync_all`).
-/// A symlinked state directory, or a symlink, FIFO or directory at the file, is refused (`Err` names
-/// why); a regular file with group/other bits is set to 0600, best effort. A swap between the check and
-/// the open is an accepted limit.
+/// A symlinked state directory (its last component only), or a symlink, FIFO or directory at the file, is
+/// refused (`Err` names why). After the open the file must still be a regular file with one link and the
+/// same (dev, ino) as the checked path, else it is refused: a hard link to a foreign file never gets text,
+/// and a swap between the check and the open is narrowed to an exact same-inode swap, not removed. A file
+/// with group/other bits is set to 0600 (after those checks, so a foreign inode is never chmod-ed).
 fn append_line(dir: &std::path::Path, name: &str, line: &str) -> Result<(), String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let kind = |e: std::io::Error| e.kind().to_string();
     if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("state directory is a symlink".to_string());
     }
     std::fs::create_dir_all(dir).map_err(kind)?;
     let path = dir.join(name);
-    match slot(&path) {
+    let before = match slot(&path) {
         Slot::Other(why) => return Err(why.to_string()),
-        Slot::Regular(m) => {
-            if m.permissions().mode() & 0o077 != 0 {
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-            }
-        }
-        Slot::Absent => {}
-    }
+        Slot::Regular(m) => Some((m.dev(), m.ino())),
+        Slot::Absent => None,
+    };
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
         .open(&path)
         .map_err(kind)?;
+    let m = f.metadata().map_err(kind)?;
+    if !m.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    if m.nlink() > 1 || before.is_some_and(|b| b != (m.dev(), m.ino())) {
+        return Err("ledger has several links or was swapped".to_string());
+    }
+    if m.permissions().mode() & 0o077 != 0 {
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     f.write_all(line.as_bytes()).map_err(kind)?;
     f.sync_all().map_err(kind)
 }
@@ -1531,6 +1552,18 @@ fn try_capture(dir: &std::path::Path, now: u64, v: &Value) -> Option<()> {
     Some(())
 }
 
+/// Records one attempt in `bypass.log`, best effort: through the checked append (a symlink, FIFO,
+/// directory or hard link at the file, or a symlinked state directory, skips the write silently), after a
+/// rotation check. It never changes a verdict and never blocks.
+fn log_attempt(dir: &std::path::Path, session: &str, cwd: &str, honoured: bool, command: &str) {
+    rotate_log(&dir.join("bypass.log"));
+    let _ = append_line(
+        dir,
+        "bypass.log",
+        &bypass_log_line(session, cwd, honoured, command),
+    );
+}
+
 fn main() {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -1551,24 +1584,15 @@ fn main() {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     capture_keys(std::path::Path::new(&dir), now, &v);
-    if command.contains("LAGENT_BYPASS=") && std::fs::create_dir_all(&dir).is_ok() {
-        rotate_log(&std::path::Path::new(&dir).join("bypass.log"));
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(format!("{dir}/bypass.log"))
-        {
-            // Every occurrence is logged, honoured or denied, so a blank attempt leaves a record too.
-            let _ = f.write_all(
-                bypass_log_line(
-                    v["session_id"].as_str().unwrap_or("?"),
-                    cwd,
-                    bypass,
-                    command,
-                )
-                .as_bytes(),
-            );
-        }
+    if command.contains("LAGENT_BYPASS=") {
+        // Every occurrence is logged, honoured or denied, so a blank attempt leaves a record too.
+        log_attempt(
+            std::path::Path::new(&dir),
+            v["session_id"].as_str().unwrap_or("?"),
+            cwd,
+            bypass,
+            command,
+        );
     }
     let app_id = std::env::var("CLAUDE_CODE_HOST_SESSION_ID").ok();
     let ctx = Ctx {
@@ -2729,24 +2753,32 @@ mod tests {
     }
 
     // ---- LA-C044 round 2: non-regular state files, parsing, sanitising, the sentinel ----
-
-    /// `mkfifo path`; `false` when the tool is missing (the test body is then skipped).
+    /// `mkfifo path`; `false` (with a SKIP line on stderr) when the tool is missing: the test body is skipped.
     fn mkfifo(path: &std::path::Path) -> bool {
-        std::process::Command::new("mkfifo")
+        let ok = std::process::Command::new("mkfifo")
             .arg(path)
             .status()
-            .is_ok_and(|s| s.success())
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("SKIP: no mkfifo");
+        }
+        ok
     }
 
-    /// Runs `f` on a thread; `None` when it does not return within 5 seconds (a blocked open).
+    /// Runs `f` on a thread; `None` when it does not return within 5 seconds (a blocked open). A panic
+    /// inside `f` is re-raised here with its own message.
     fn within_5s<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(f());
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            let _ = tx.send(r);
         });
-        rx.recv_timeout(std::time::Duration::from_secs(5)).ok()
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(t)) => Some(t),
+            Ok(Err(p)) => std::panic::resume_unwind(p),
+            Err(_) => None,
+        }
     }
-
     fn judge_in(dir: &std::path::Path, v: serde_json::Value, c: String) -> Option<Option<String>> {
         let dir = dir.to_path_buf();
         within_5s(move || super::judge(&v, &c, CWD, &ctx(&dir, None, false)))
@@ -2912,10 +2944,6 @@ mod tests {
         super::capture_keys(&t.0, 1, &absent);
         super::capture_keys(&t.0, 1, &present);
         assert!(!t.0.join("payload-keys.tsv").exists());
-        if mkfifo(&t.0.join("payload-keys.tsv")) {
-            let dir = t.0.clone();
-            assert!(within_5s(move || super::capture_keys(&dir, 1, &absent)).is_some());
-        }
     }
 
     #[test]
@@ -2936,5 +2964,187 @@ mod tests {
         let v = serde_json::json!({"session_id": "s"});
         assert_eq!(super::judge(&v, &c, CWD, &ctx(&t.0, None, false)), None);
         assert_eq!(ledger(&t.0).lines().count(), 1);
+    }
+
+    // ---- LA-C044 round 3: bypass.log is checked too, hard links, the cut last line ----
+
+    fn log_in(dir: &std::path::Path, command: &str) -> Option<()> {
+        let dir = dir.to_path_buf();
+        let command = command.to_string();
+        within_5s(move || super::log_attempt(&dir, "s", "/home/nez/scratch", true, &command))
+    }
+
+    #[test]
+    fn a_fifo_at_bypass_log_does_not_block() {
+        let t = tmp("log-fifo");
+        std::fs::create_dir_all(&t.0).unwrap();
+        if !mkfifo(&t.0.join("bypass.log")) {
+            return;
+        }
+        assert!(
+            log_in(&t.0, "LAGENT_BYPASS=why ls").is_some(),
+            "the attempts log blocked on a FIFO"
+        );
+        // The verdict path is unchanged by it.
+        let v = serde_json::json!({"session_id": "s"});
+        let got = judge_in(&t.0, v, format!("LAGENT_BYPASS=why {DENIED}"));
+        assert_eq!(got, Some(None));
+    }
+
+    #[test]
+    fn a_symlinked_bypass_log_is_not_written_through() {
+        let t = tmp("log-symlink");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let foreign = t.0.join("foreign.txt");
+        std::fs::write(&foreign, "keep\n").unwrap();
+        std::os::unix::fs::symlink(&foreign, t.0.join("bypass.log")).unwrap();
+        assert!(log_in(&t.0, "LAGENT_BYPASS=why ls").is_some());
+        assert_eq!(std::fs::read_to_string(&foreign).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn rotation_leaves_non_regular_files_alone() {
+        let t = tmp("rotate-odd");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let log = t.0.join("bypass.log");
+        // A symlink to a big file is not renamed.
+        let big = t.0.join("big.txt");
+        std::fs::write(&big, vec![b'x'; 1_100_000]).unwrap();
+        std::os::unix::fs::symlink(&big, &log).unwrap();
+        super::rotate_log(&log);
+        assert!(std::fs::symlink_metadata(&log)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!t.0.join("bypass.log.1").exists());
+        std::fs::remove_file(&log).unwrap();
+        // A FIFO is not renamed.
+        if mkfifo(&log) {
+            let l = log.clone();
+            assert!(within_5s(move || super::rotate_log(&l)).is_some());
+            assert!(!t.0.join("bypass.log.1").exists());
+            std::fs::remove_file(&log).unwrap();
+        }
+        // A big regular log is not renamed onto a symlinked `.1`.
+        std::fs::write(&log, vec![b'y'; 1_100_000]).unwrap();
+        let foreign = t.0.join("foreign.txt");
+        std::fs::write(&foreign, "keep").unwrap();
+        std::os::unix::fs::symlink(&foreign, t.0.join("bypass.log.1")).unwrap();
+        super::rotate_log(&log);
+        assert!(log.exists());
+        assert_eq!(std::fs::read_to_string(&foreign).unwrap(), "keep");
+    }
+
+    #[test]
+    fn a_loose_bypass_log_becomes_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tmp("log-loose");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let p = t.0.join("bypass.log");
+        std::fs::write(&p, "old\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(log_in(&t.0, "LAGENT_BYPASS=why ls").is_some());
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), 2);
+        // A new one is 0600 too.
+        let t2 = tmp("log-new");
+        assert!(log_in(&t2.0, "LAGENT_BYPASS=why ls").is_some());
+        let mode = std::fs::metadata(t2.0.join("bypass.log"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    fn loose_foreign(t: &Tmp) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(&t.0).unwrap();
+        let foreign = t.0.join("foreign.txt");
+        std::fs::write(&foreign, "export X=1\n").unwrap();
+        std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o644)).unwrap();
+        foreign
+    }
+
+    fn untouched(foreign: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::read_to_string(foreign).unwrap(), "export X=1\n");
+        let mode = std::fs::metadata(foreign).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644, "the foreign file's mode changed");
+    }
+
+    #[test]
+    fn a_hard_linked_ledger_is_refused() {
+        let t = tmp("hardlink-ledger");
+        let foreign = loose_foreign(&t);
+        let state = t.0.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::hard_link(&foreign, state.join("bypass-ledger.tsv")).unwrap();
+        let v = serde_json::json!({"session_id": "s"});
+        let d = judge_in(&state, v, format!("LAGENT_BYPASS=why {DENIED}"))
+            .expect("returned")
+            .expect("refused");
+        assert!(
+            d.contains("bypass not recorded (ledger has several links or was swapped)"),
+            "{d}"
+        );
+        untouched(&foreign);
+    }
+
+    #[test]
+    fn hard_linked_capture_and_attempts_files_are_skipped() {
+        let t = tmp("hardlink-others");
+        let foreign = loose_foreign(&t);
+        let state = t.0.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::hard_link(&foreign, state.join("payload-keys.tsv")).unwrap();
+        super::capture_keys(&state, 1, &serde_json::json!({"a": 1}));
+        untouched(&foreign);
+        std::fs::remove_file(state.join("payload-keys.tsv")).unwrap();
+        std::fs::hard_link(&foreign, state.join("bypass.log")).unwrap();
+        assert!(log_in(&state, "LAGENT_BYPASS=why ls").is_some());
+        untouched(&foreign);
+    }
+
+    #[test]
+    fn a_cut_last_coordinator_line_is_dropped() {
+        let t = tmp("coord-cut");
+        std::fs::create_dir_all(&t.0).unwrap();
+        // 64 KiB bound: the last line is cut after "abc" of "abc-long-id", which must not list as "abc".
+        let mut s = String::from("sess-1\n");
+        s.push('#');
+        s.push_str(&"x".repeat(65_533 - s.len() - 1));
+        s.push('\n');
+        assert_eq!(s.len(), 65_533);
+        s.push_str("abc-long-id\nlast\n");
+        std::fs::write(t.0.join("coordinators"), &s).unwrap();
+        let list = super::read_coordinators(&t.0);
+        assert_eq!(list, ["sess-1"], "{list:?}");
+        // A file under the bound keeps its last line without a newline.
+        std::fs::write(t.0.join("coordinators"), "a\nb").unwrap();
+        assert_eq!(super::read_coordinators(&t.0), ["a", "b"]);
+    }
+
+    #[test]
+    fn the_attempts_log_uses_the_one_sanitiser() {
+        let line = super::bypass_log_line(
+            "s\u{202E}x",
+            "c\u{200B}d",
+            true,
+            &format!("a\u{FEFF}b{}", "z".repeat(3000)),
+        );
+        assert!(
+            !line.contains(['\u{202E}', '\u{200B}', '\u{FEFF}']),
+            "{line:?}"
+        );
+        let cols: Vec<&str> = line.trim_end_matches('\n').split('\t').collect();
+        assert_eq!(cols.len(), 4);
+        assert_eq!(cols[0], "s x");
+        assert_eq!(cols[1], "c d");
+        assert_eq!(cols[2], "honoured");
+        assert_eq!(cols[3].chars().count(), 2000);
+        assert!(cols[3].starts_with("a b"));
     }
 }

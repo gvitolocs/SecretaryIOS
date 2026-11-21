@@ -281,20 +281,26 @@ lagent device release iphone
   characters of the command. A marker in a command nothing would deny (an echo) leaves no line; a marker inside a
   heredoc body counts as data only for the merge rule (the target and kill rules read the whole text, so there it
   still leaves a line). **If the ledger cannot be written, the override is refused** ("bypass not recorded (<kind>):
-  <dir> is not writable or not a regular ledger"), also when the state directory or the ledger is a symlink, or the
-  ledger is a FIFO or a directory; tell the coordinator. The coordinator list is
-  `~/.local/state/pipeline-guard/coordinators` (one session id or `local_<uuid>` per line, `#` comments); the
-  coordinator keeps it, the hook never writes it. Status: `coordinator` (no `agent_id`, session or app id listed),
-  `would-refuse:subagent` (`agent_id` set) or `would-refuse:not-listed`. Phase 1 only logs: nothing is refused by
-  identity yet (`ENFORCE_IDENTITY` in `tools/pipeline-guard/src/main.rs`, flipped on the coordinator's word).
-  `bypass.log` still lists every attempt, blank ones too. `payload-keys.tsv` holds the top-level key names (no values)
-  of the first 50 PreToolUse payloads with and 50 without `agent_id` (then `payload-keys.done` stops the capture), to
-  prove that subagent detection works.
+  <dir> is not writable or not a regular ledger"): when the state directory or the ledger is a symlink, the ledger
+  is a FIFO or a directory, or it has several hard links or was swapped between the check and the open; tell the
+  coordinator. The coordinator list is `~/.local/state/pipeline-guard/coordinators` (one session id or
+  `local_<uuid>` per line; `#` starts a comment, so an id cannot contain `#`; a file over 64 KiB loses its cut last
+  line); the coordinator keeps it, the hook never writes it. Status: `coordinator` (no `agent_id`, session or app id
+  listed), `would-refuse:subagent` (`agent_id` set) or `would-refuse:not-listed`. Phase 1 only logs: nothing is
+  refused by identity yet (`ENFORCE_IDENTITY` in `tools/pipeline-guard/src/main.rs`, flipped on the coordinator's
+  word). `bypass.log` still lists every attempt, blank ones too; it is now written best effort through the same
+  checked append (mode 0600 after this change, an existing loose file is set to 0600), and a problem with it never
+  changes a verdict or blocks. `payload-keys.tsv` holds the top-level key names (no values) of the first 50
+  PreToolUse payloads with and 50 without `agent_id`; `payload-keys.done` is written only when BOTH classes are
+  full, and stops the capture; it proves that subagent detection works.
   Honest limits: this is accountability, not a boundary. A process of the same user can append itself to
   `coordinators`, delete it, or make the ledger unwritable (which then refuses overrides), and the ledger cannot tell
-  "file missing" from "not listed". The guard refuses to follow symlinks or to write non-regular files at its state
-  paths, but a swap between the check and the open is possible (accepted limit). Subagent detection relies on
-  `agent_id` being on PreToolUse payloads, which `payload-keys.tsv` shows.
+  "file missing" from "not listed". For the ledger, the capture file and `bypass.log` the guard refuses to write
+  through a symlink, to write a FIFO, a directory or a file with several hard links, and to write a symlinked state
+  directory; the state directory check covers only its last path component (a symlinked parent such as `.local` is
+  not checked), and the places that READ the coordinator list or the capture file follow a symlinked state
+  directory (accepted). The check-then-open race is narrowed by comparing device and inode after the open, not
+  removed. Subagent detection relies on `agent_id` being on PreToolUse payloads, which `payload-keys.tsv` shows.
 
 ## Standalone crates
 
