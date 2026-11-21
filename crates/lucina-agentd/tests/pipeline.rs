@@ -998,6 +998,9 @@ async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
         let m = m.clone();
         let workspace = name.to_string();
         async move {
+            m.adopt_task(AdoptTask { path: workspace.clone(), ..AdoptTask::default() })
+                .await
+                .unwrap();
             m.queue_merge(MergeRequest { workspace, ..MergeRequest::default() })
                 .await
                 .unwrap()
