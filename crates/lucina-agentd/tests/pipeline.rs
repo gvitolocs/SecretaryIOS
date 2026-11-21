@@ -1017,7 +1017,12 @@ async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
     let wt = topic(&root, &repo, "Ids", "tagged");
     commit(&wt, "t1.txt", "1\n", "one\n\nLead: LA\nChange: LA-C001");
     commit(&wt, "t2.txt", "2\n", "two\n\nLead: PF\nChange: PF-C002");
-    commit(&wt, "t3.txt", "3\n", "three\n\nLead: LA\nChange: PF-C002");
+    commit(
+        &wt,
+        "t3.txt",
+        "3\n",
+        "three\n\nLead: LA\nChange: PF-C002\n\nCo-Authored-By: t <t@t>",
+    );
     commit(&wt, "t4.txt", "4\n", "four, no trailers");
     let job = queue(&wt.display().to_string()).await;
     assert_eq!(job.spec.leads, ["LA", "PF"]);

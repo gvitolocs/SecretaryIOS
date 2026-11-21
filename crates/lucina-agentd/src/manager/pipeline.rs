@@ -226,38 +226,40 @@ async fn landing_ids(dir: &Path, base_ref: &str, head: &str) -> (Vec<String>, Ve
         return Default::default();
     };
     let range = format!("{base}..{head}");
-    let format = "--format=%(trailers:key=Lead,valueonly,unfold)%x1e%(trailers:key=Change,valueonly,unfold)%x1f";
-    match git::read(dir, &["log", "--reverse", format, &range]).await {
+    // The whole message of each commit: our commits keep their trailers in more than one paragraph
+    // (`Lead:`/`Change:`/`Refs:`, a blank line, `Co-Authored-By:`), and git reads only the last.
+    match git::read(dir, &["log", "--reverse", "--format=%B%x1f", &range]).await {
         Some(out) => parse_landing_ids(&out),
         None => Default::default(),
     }
 }
 
-/// `<leads>\x1e<changes>\x1f` per commit, to the distinct values of each in first-seen order, cut at 8.
+/// The longest id kept, and how many of each a job stores.
+const ID_LEN: usize = 40;
+pub(crate) const MAX_IDS: usize = 8;
+
+/// One message per `\x1f`: the lines that START with `Lead:` or `Change:` (case-sensitive, so a word
+/// in the middle of a sentence is not one), to the distinct values of each in first-seen order, at
+/// most [`MAX_IDS`]. A value loses its control characters and is cut at [`ID_LEN`] characters.
 fn parse_landing_ids(log: &str) -> (Vec<String>, Vec<String>) {
-    fn add(into: &mut Vec<String>, text: &str) {
-        for v in text.lines().map(str::trim).filter(|v| !v.is_empty()) {
-            if !into.iter().any(|x| x == v) {
-                into.push(v.to_string());
+    fn add(into: &mut Vec<String>, v: &str) {
+        let v: String = v.chars().filter(|c| !c.is_ascii_control()).collect();
+        let v: String = v.trim().chars().take(ID_LEN).collect();
+        if !v.is_empty() && into.len() < MAX_IDS && !into.contains(&v) {
+            into.push(v);
+        }
+    }
+    let (mut leads, mut changes) = (Vec::new(), Vec::new());
+    for message in log.split('\x1f') {
+        for line in message.lines() {
+            if let Some(v) = line.strip_prefix("Lead:") {
+                add(&mut leads, v);
+            } else if let Some(v) = line.strip_prefix("Change:") {
+                add(&mut changes, v);
             }
         }
     }
-    fn cut(mut v: Vec<String>) -> Vec<String> {
-        const MAX: usize = 8;
-        if v.len() > MAX {
-            let more = v.len() - MAX;
-            v.truncate(MAX);
-            v.push(format!("+{more} more"));
-        }
-        v
-    }
-    let (mut leads, mut changes) = (Vec::new(), Vec::new());
-    for commit in log.split('\x1f') {
-        let (l, c) = commit.split_once('\x1e').unwrap_or((commit, ""));
-        add(&mut leads, l);
-        add(&mut changes, c);
-    }
-    (cut(leads), cut(changes))
+    (leads, changes)
 }
 
 fn slug(title: &str) -> String {
@@ -1578,10 +1580,14 @@ mod tests {
             "base not-a-rev is not a commit in LucinaNet-servo"
         );
     }
-    /// LA-C039: trailer values per commit, distinct, in first-seen order, empties dropped, cut at 8.
+    /// LA-C039: trailers come from the whole message; distinct, first-seen order, cleaned, capped.
     #[test]
-    fn landing_ids_are_distinct_in_first_seen_order_and_cut_at_eight() {
-        let log = "LA\x1eLA-C001\n\x1f\x1e\x1fPF\nLA\x1ePF-C002\n\x1f \x1eLA-C001\n\x1f";
+    fn landing_ids_are_read_from_the_whole_message_and_cleaned() {
+        // Two paragraphs, as our own commits have them; a repeat; an empty value.
+        let log =
+            "one\n\nLead: LA\nChange: LA-C001\nRefs: PIPE-09\n\nCo-Authored-By: x <x@y>\n\x1f\
+                   two\n\nLead: PF\nChange: PF-C002\n\x1f\
+                   three\n\nLead: LA\nChange:\n\x1f";
         assert_eq!(
             parse_landing_ids(log),
             (
@@ -1589,11 +1595,21 @@ mod tests {
                 vec!["LA-C001".to_string(), "PF-C002".into()]
             )
         );
+        // Only a line that STARTS with the key counts, and the key is case-sensitive.
+        let log = "The Lead: of this is LA and the Change: is LA-C001\n\nlead: x\n  Lead: y\n\x1f";
+        assert_eq!(parse_landing_ids(log), (vec![], vec![]));
         assert_eq!(parse_landing_ids(""), (vec![], vec![]));
-        let many: String = (1..=10).map(|i| format!("L{i}\x1eC{i}\x1f")).collect();
+        // Control characters go, a long value is cut at 40 characters, nothing stores more than 8.
+        let long = "x".repeat(500);
+        let log = format!("Lead: A\x07B\x1bC\u{0}\nChange: {long}\n\x1f");
+        let (l, c) = parse_landing_ids(&log);
+        assert_eq!(l, ["ABC"]);
+        assert_eq!(c, ["x".repeat(40)]);
+        let many: String = (1..=10)
+            .map(|i| format!("Lead: L{i}\nChange: C{i}\n\x1f"))
+            .collect();
         let (l, c) = parse_landing_ids(&many);
-        assert_eq!(l.len(), 9);
-        assert_eq!((l[7].as_str(), l[8].as_str()), ("L8", "+2 more"));
-        assert_eq!(c[8], "+2 more");
+        assert_eq!((l.len(), c.len()), (8, 8));
+        assert_eq!(l[7], "L8");
     }
 }

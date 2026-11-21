@@ -163,8 +163,8 @@ pub struct Spec {
     /// Merge: who requested it (`by` in the waivers file); absent in jobs queued by older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_by: Option<String>,
-    /// Merge: the `Lead:` trailer values of the commits it lands (distinct, first seen first, at most 8
-    /// then "+N more"), read when it was queued; empty when none, when git failed, and in jobs
+    /// Merge: the `Lead:` trailer values of the commits it lands (distinct, first seen first, at most 8,
+    /// each cleaned and at most 40 characters), read when it was queued; empty when none, when git failed, and in jobs
     /// queued by older daemons.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub leads: Vec<String>,
