@@ -317,10 +317,16 @@ fn ids_cell(j: &Value) -> String {
         j["spec"][k]
             .as_array()
             .map(|a| {
-                a.iter()
+                let mut v = a
+                    .iter()
                     .filter_map(Value::as_str)
                     .collect::<Vec<_>>()
-                    .join(",")
+                    .join(",");
+                // A job keeps 8 at most, so a full list may have been cut.
+                if a.len() >= 8 {
+                    v.push_str(",...");
+                }
+                v
             })
             .filter(|s| !s.is_empty())
     };
@@ -860,5 +866,7 @@ mod tests {
         assert_eq!(job_line(&j)[6], "LA,PF / LA-C001,PF-C002");
         j["spec"]["leads"] = json!([]);
         assert_eq!(job_line(&j)[6], "- / LA-C001,PF-C002");
+        j["spec"]["leads"] = json!(["1", "2", "3", "4", "5", "6", "7", "8"]);
+        assert_eq!(job_line(&j)[6], "1,2,3,4,5,6,7,8,... / LA-C001,PF-C002");
     }
 }
