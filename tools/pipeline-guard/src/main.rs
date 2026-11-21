@@ -750,8 +750,26 @@ fn remote_text(args: &[Word]) -> Option<Vec<String>> {
     while let Some(w) = args.get(j).filter(|w| w.val.starts_with('-')) {
         j += if matches!(
             w.val.as_str(),
-            "-B" | "-b" | "-c" | "-D" | "-E" | "-e" | "-F" | "-I" | "-i" | "-J" | "-L" | "-l" | "-m" | "-O"
-                | "-o" | "-p" | "-Q" | "-R" | "-S" | "-W" | "-w"
+            "-B" | "-b"
+                | "-c"
+                | "-D"
+                | "-E"
+                | "-e"
+                | "-F"
+                | "-I"
+                | "-i"
+                | "-J"
+                | "-L"
+                | "-l"
+                | "-m"
+                | "-O"
+                | "-o"
+                | "-p"
+                | "-Q"
+                | "-R"
+                | "-S"
+                | "-W"
+                | "-w"
         ) {
             2
         } else {
