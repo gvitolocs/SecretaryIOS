@@ -28,7 +28,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lucina_agents::branch_slug::{slugify, valid_git_branch};
-use lucina_agents::workspace::{AutoName, ProjectRecord, SetupSnapshot, UntrustedSource, WorkspaceKind, WorkspaceRecord};
+use lucina_agents::workspace::{
+    AutoName, ProjectRecord, SetupSnapshot, UntrustedSource, WorkspaceKind, WorkspaceRecord,
+};
 use lucina_agents::worktree_guard::{self as guard, RemoveFacts, StartFacts, Trigger};
 use serde::Deserialize;
 
@@ -71,20 +73,46 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Self {
         let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-        let projects_root = std::env::var_os("WT_PROJECTS").map(PathBuf::from).unwrap_or_else(|| home.join("Projects"));
-        let wt_root = std::env::var_os("WT_ROOT").map(PathBuf::from).unwrap_or_else(|| projects_root.join(".worktrees"));
+        let projects_root = std::env::var_os("WT_PROJECTS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("Projects"));
+        let wt_root = std::env::var_os("WT_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| projects_root.join(".worktrees"));
         let wt = match std::env::var("LUCINA_AGENTD_WT") {
             Ok(p) if !p.is_empty() => crate::process::resolve_program(&p),
-            _ => crate::process::resolve_program("~/.local/bin/wt").or_else(|| crate::process::resolve_program("wt")),
+            _ => crate::process::resolve_program("~/.local/bin/wt")
+                .or_else(|| crate::process::resolve_program("wt")),
         };
         let codex_repos = std::env::var("LUCINA_AGENTD_CODEX_REPOS")
-            .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
             .unwrap_or_else(|_| vec!["SecretaryIOS".to_string()]);
         let codex_deny_repos = std::env::var("LUCINA_AGENTD_CODEX_DENY_REPOS")
-            .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
-        let sweep_idle_secs = std::env::var("LUCINA_AGENTD_SWEEP_IDLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1800);
-        Config { wt, wt_root, projects_root, codex_repos, codex_base: "lucina-rs".into(), codex_deny_repos, sweep_idle_secs }
+        let sweep_idle_secs = std::env::var("LUCINA_AGENTD_SWEEP_IDLE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1800);
+        Config {
+            wt,
+            wt_root,
+            projects_root,
+            codex_repos,
+            codex_base: "lucina-rs".into(),
+            codex_deny_repos,
+            sweep_idle_secs,
+        }
     }
 }
 
@@ -98,7 +126,10 @@ fn child_of(path: &Path, base: &Path) -> Option<PathBuf> {
 /// The repository a git common dir names: the parent of a `.git` directory, or the dir itself (a bare repo).
 fn repo_of_common_dir(common: &Path) -> PathBuf {
     if common.file_name().is_some_and(|n| n == ".git") {
-        common.parent().map(Path::to_path_buf).unwrap_or_else(|| common.to_path_buf())
+        common
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| common.to_path_buf())
     } else {
         common.to_path_buf()
     }
@@ -110,7 +141,13 @@ fn git_common_dir(dir: &Path) -> Option<PathBuf> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["-c", "core.quotePath=false", "rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
@@ -250,15 +287,24 @@ struct Inner {
 }
 
 fn new_id(prefix: &str) -> String {
-    format!("{prefix}_{}", &uuid::Uuid::new_v4().simple().to_string()[..16])
+    format!(
+        "{prefix}_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..16]
+    )
 }
 
 fn basename(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string())
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.display().to_string())
 }
 
 fn free_port() -> Option<u16> {
-    std::net::TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok().map(|a| a.port())
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .ok()?
+        .local_addr()
+        .ok()
+        .map(|a| a.port())
 }
 
 impl Registry {
@@ -270,7 +316,15 @@ impl Registry {
         for w in store.load_workspaces()? {
             state.workspaces.insert(w.workspace_id.clone(), w);
         }
-        Ok(Registry { inner: Arc::new(Inner { store, config, state: Mutex::new(state), publish, tokens: files::Tokens::default() }) })
+        Ok(Registry {
+            inner: Arc::new(Inner {
+                store,
+                config,
+                state: Mutex::new(state),
+                publish,
+                tokens: files::Tokens::default(),
+            }),
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -309,7 +363,12 @@ impl Registry {
     /// The project rooted at `root`, made on first use.
     fn project_for(&self, root: &Path, is_git: bool) -> Result<ProjectRecord, WsError> {
         let root_s = root.display().to_string();
-        if let Some(p) = self.lock().projects.values().find(|p| p.root_path == root_s && p.archived_at.is_none()) {
+        if let Some(p) = self
+            .lock()
+            .projects
+            .values()
+            .find(|p| p.root_path == root_s && p.archived_at.is_none())
+        {
             return Ok(p.clone());
         }
         let now = now_iso();
@@ -338,7 +397,12 @@ impl Registry {
     }
 
     pub fn projects(&self) -> Vec<ProjectRecord> {
-        self.lock().projects.values().filter(|p| p.archived_at.is_none()).cloned().collect()
+        self.lock()
+            .projects
+            .values()
+            .filter(|p| p.archived_at.is_none())
+            .cloned()
+            .collect()
     }
 
     pub fn project(&self, id: &str) -> Option<ProjectRecord> {
@@ -348,7 +412,11 @@ impl Registry {
     pub fn rename_project(&self, id: &str, name: Option<String>) -> Result<ProjectRecord, WsError> {
         let p = {
             let mut st = self.lock();
-            let p = st.projects.get_mut(id).filter(|p| p.archived_at.is_none()).ok_or_else(|| WsError::NotFound("Project not found".into()))?;
+            let p = st
+                .projects
+                .get_mut(id)
+                .filter(|p| p.archived_at.is_none())
+                .ok_or_else(|| WsError::NotFound("Project not found".into()))?;
             p.custom_name = name;
             p.updated_at = now_iso();
             p.clone()
@@ -364,29 +432,68 @@ impl Registry {
     /// (returned as skipped). Agents already running keep their cwd: leave a symlink at the old
     /// path while any runs. Returns the project, `(workspace, new cwd)` and `(workspace, old cwd)`.
     #[allow(clippy::type_complexity)]
-    pub fn move_project(&self, id: &str, path: &Path, name: Option<String>) -> Result<(ProjectRecord, Vec<(String, String)>, Vec<(String, String)>), WsError> {
+    pub fn move_project(
+        &self,
+        id: &str,
+        path: &Path,
+        name: Option<String>,
+    ) -> Result<(ProjectRecord, Vec<(String, String)>, Vec<(String, String)>), WsError> {
         if !path.is_dir() {
-            return Err(WsError::Invalid(format!("Not a directory: {}", path.display())));
+            return Err(WsError::Invalid(format!(
+                "Not a directory: {}",
+                path.display()
+            )));
         }
         let new_root = git::canon(path);
         let new_root_s = new_root.display().to_string();
-        let old = self.project(id).filter(|p| p.archived_at.is_none()).ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?;
+        let old = self
+            .project(id)
+            .filter(|p| p.archived_at.is_none())
+            .ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?;
         let old_root = PathBuf::from(&old.root_path);
-        if self.lock().projects.values().any(|p| p.project_id != id && p.root_path == new_root_s && p.archived_at.is_none()) {
-            return Err(WsError::Invalid(format!("Another project is at {new_root_s}")));
+        if self
+            .lock()
+            .projects
+            .values()
+            .any(|p| p.project_id != id && p.root_path == new_root_s && p.archived_at.is_none())
+        {
+            return Err(WsError::Invalid(format!(
+                "Another project is at {new_root_s}"
+            )));
         }
         let wt_root = &self.inner.config.wt_root;
-        let (old_wt, new_wt) = (wt_root.join(basename(&old_root)), wt_root.join(basename(&new_root)));
+        let (old_wt, new_wt) = (
+            wt_root.join(basename(&old_root)),
+            wt_root.join(basename(&new_root)),
+        );
         let moved_path = |p: &str| -> Option<String> {
             let p = Path::new(p);
-            let (from, to) = if p.starts_with(&old_root) { (&old_root, &new_root) } else if p.starts_with(&old_wt) { (&old_wt, &new_wt) } else { return None };
+            let (from, to) = if p.starts_with(&old_root) {
+                (&old_root, &new_root)
+            } else if p.starts_with(&old_wt) {
+                (&old_wt, &new_wt)
+            } else {
+                return None;
+            };
             let rest = p.strip_prefix(from).ok()?;
-            Some(if rest.as_os_str().is_empty() { to.display().to_string() } else { to.join(rest).display().to_string() })
+            Some(if rest.as_os_str().is_empty() {
+                to.display().to_string()
+            } else {
+                to.join(rest).display().to_string()
+            })
         };
-        let list: Vec<WorkspaceRecord> = self.lock().workspaces.values().filter(|w| w.project_id == id && w.archived_at.is_none()).cloned().collect();
+        let list: Vec<WorkspaceRecord> = self
+            .lock()
+            .workspaces
+            .values()
+            .filter(|w| w.project_id == id && w.archived_at.is_none())
+            .cloned()
+            .collect();
         let (mut moved, mut skipped) = (Vec::new(), Vec::new());
         for w in list {
-            let Some(cwd) = moved_path(&w.cwd) else { continue };
+            let Some(cwd) = moved_path(&w.cwd) else {
+                continue;
+            };
             if cwd == w.cwd {
                 continue;
             }
@@ -396,13 +503,19 @@ impl Registry {
             }
             self.update(&w.workspace_id, |r| {
                 r.cwd = cwd.clone();
-                r.main_repo_root = r.main_repo_root.as_deref().map(|m| moved_path(m).unwrap_or_else(|| m.to_string()));
+                r.main_repo_root = r
+                    .main_repo_root
+                    .as_deref()
+                    .map(|m| moved_path(m).unwrap_or_else(|| m.to_string()));
             });
             moved.push((w.workspace_id, cwd));
         }
         let p = {
             let mut st = self.lock();
-            let p = st.projects.get_mut(id).ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?;
+            let p = st
+                .projects
+                .get_mut(id)
+                .ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?;
             p.root_path = new_root_s;
             p.display_name = basename(&new_root);
             if name.is_some() {
@@ -424,7 +537,11 @@ impl Registry {
                 return Err(WsError::NotFound(format!("Project not found: {id}")));
             }
             st.projects.remove(id);
-            st.workspaces.values().filter(|w| w.project_id == id && w.archived_at.is_none()).map(|w| w.workspace_id.clone()).collect()
+            st.workspaces
+                .values()
+                .filter(|w| w.project_id == id && w.archived_at.is_none())
+                .map(|w| w.workspace_id.clone())
+                .collect()
         };
         self.inner.store.delete_project(id)?;
         Ok(ids)
@@ -437,31 +554,54 @@ impl Registry {
     }
 
     pub fn project_name(&self, w: &WorkspaceRecord) -> String {
-        self.lock().projects.get(&w.project_id).map(|p| p.name().to_string()).unwrap_or_default()
+        self.lock()
+            .projects
+            .get(&w.project_id)
+            .map(|p| p.name().to_string())
+            .unwrap_or_default()
     }
 
     /// Active workspaces, by id (Paseo `fetch_workspaces_request` without a sort).
     pub fn list(&self, include_background: bool) -> Vec<WorkspaceRecord> {
-        self.lock().workspaces.values().filter(|w| w.archived_at.is_none() && (include_background || !w.background)).cloned().collect()
+        self.lock()
+            .workspaces
+            .values()
+            .filter(|w| w.archived_at.is_none() && (include_background || !w.background))
+            .cloned()
+            .collect()
     }
 
     pub fn rename(&self, id: &str, title: Option<String>) -> Result<WorkspaceRecord, WsError> {
         if self.get(id).is_none_or(|w| w.archived_at.is_some()) {
             return Err(WsError::NotFound("Workspace not found".into()));
         }
-        if title.as_deref().is_some_and(crate::manager::pipeline::poisoned_title) {
+        if title
+            .as_deref()
+            .is_some_and(crate::manager::pipeline::poisoned_title)
+        {
             return Err(WsError::Invalid("A title that starts with \"Error:\" is refused (typically a failed command substituted into it)".into()));
         }
-        self.update(id, |w| w.title = title.filter(|t| !t.trim().is_empty())).ok_or_else(|| WsError::NotFound("Workspace not found".into()))
+        self.update(id, |w| w.title = title.filter(|t| !t.trim().is_empty()))
+            .ok_or_else(|| WsError::NotFound("Workspace not found".into()))
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<WorkspaceRecord, WsError> {
-        self.update(id, |w| w.pinned_at = pinned.then(now_iso)).ok_or_else(|| WsError::NotFound("Workspace not found".into()))
+        self.update(id, |w| w.pinned_at = pinned.then(now_iso))
+            .ok_or_else(|| WsError::NotFound("Workspace not found".into()))
     }
 
     /// Paseo label keys: whitespace collapsed, lowercased.
-    pub fn set_label(&self, id: &str, label: &str, assigned: bool) -> Result<WorkspaceRecord, WsError> {
-        let key = label.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    pub fn set_label(
+        &self,
+        id: &str,
+        label: &str,
+        assigned: bool,
+    ) -> Result<WorkspaceRecord, WsError> {
+        let key = label
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         if key.is_empty() || key.chars().count() > 40 {
             return Err(WsError::Invalid("label: 1 to 40 characters".into()));
         }
@@ -476,7 +616,12 @@ impl Registry {
     }
 
     /// The branch name of a new worktree, from what the caller gave.
-    async fn branch_off_name(&self, repo: &Path, req: &CreateWorkspace, codex: bool) -> Result<String, WsError> {
+    async fn branch_off_name(
+        &self,
+        repo: &Path,
+        req: &CreateWorkspace,
+        codex: bool,
+    ) -> Result<String, WsError> {
         let prefix = if codex { "codex/" } else { "agent/" };
         let name = match (&req.new_branch, &req.worktree_slug, &req.prompt) {
             (Some(b), _, _) => b.trim().to_string(),
@@ -484,7 +629,11 @@ impl Registry {
             (None, None, Some(p)) if !slugify(p).is_empty() => format!("{prefix}{}", slugify(p)),
             _ => names::random(),
         };
-        let name = if codex && !name.starts_with("codex/") { format!("codex/{}", name.trim_start_matches("agent/")) } else { name };
+        let name = if codex && !name.starts_with("codex/") {
+            format!("codex/{}", name.trim_start_matches("agent/"))
+        } else {
+            name
+        };
         if !valid_git_branch(&name) {
             return Err(WsError::Invalid(format!("Invalid branch name: {name}")));
         }
@@ -495,8 +644,14 @@ impl Registry {
     async fn unique_branch(&self, repo: &Path, name: &str) -> Result<String, WsError> {
         let dir = self.inner.config.wt_root.join(basename(repo));
         for n in 0..100 {
-            let candidate = if n == 0 { name.to_string() } else { format!("{name}-{n}") };
-            if !git::branch_exists(repo, &candidate).await && !dir.join(candidate.replace('/', "-")).exists() {
+            let candidate = if n == 0 {
+                name.to_string()
+            } else {
+                format!("{name}-{n}")
+            };
+            if !git::branch_exists(repo, &candidate).await
+                && !dir.join(candidate.replace('/', "-")).exists()
+            {
                 return Ok(candidate);
             }
         }
@@ -504,9 +659,17 @@ impl Registry {
     }
 
     /// `wt add <branch> [base]` in the main checkout; returns the new worktree.
-    async fn wt_add(&self, repo: &Path, branch: &str, base: Option<&str>) -> Result<PathBuf, WsError> {
+    async fn wt_add(
+        &self,
+        repo: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<PathBuf, WsError> {
         let cfg = &self.inner.config;
-        let wt = cfg.wt.clone().ok_or_else(|| WsError::Git("wt is not installed (~/.local/bin/wt)".into()))?;
+        let wt = cfg
+            .wt
+            .clone()
+            .ok_or_else(|| WsError::Git("wt is not installed (~/.local/bin/wt)".into()))?;
         let mut cmd = tokio::process::Command::new(wt);
         cmd.arg("add").arg(branch);
         if let Some(b) = base {
@@ -521,34 +684,70 @@ impl Registry {
             .await
             .map_err(|e| WsError::Git(format!("cannot run wt: {e}")))?;
         if !out.status.success() {
-            return Err(WsError::Git(String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("wt: ").to_string()));
+            return Err(WsError::Git(
+                String::from_utf8_lossy(&out.stderr)
+                    .trim()
+                    .trim_start_matches("wt: ")
+                    .to_string(),
+            ));
         }
-        let path = String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or_default().trim().to_string();
+        let path = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let path = PathBuf::from(path);
         let expected = git::canon(&cfg.wt_root.join(basename(repo)));
         if !git::canon(&path).starts_with(&expected) {
-            return Err(WsError::Git(format!("wt made {} outside {}", path.display(), expected.display())));
+            return Err(WsError::Git(format!(
+                "wt made {} outside {}",
+                path.display(),
+                expected.display()
+            )));
         }
         Ok(path)
     }
 
     /// Create a workspace; returns it and why setup didn't run, if it didn't.
-    pub async fn create(&self, req: CreateWorkspace) -> Result<(WorkspaceRecord, Option<String>), WsError> {
-        let path = req.path.clone().or_else(|| req.project_id.as_ref().and_then(|p| self.project(p)).map(|p| p.root_path));
+    pub async fn create(
+        &self,
+        req: CreateWorkspace,
+    ) -> Result<(WorkspaceRecord, Option<String>), WsError> {
+        let path = req.path.clone().or_else(|| {
+            req.project_id
+                .as_ref()
+                .and_then(|p| self.project(p))
+                .map(|p| p.root_path)
+        });
         let path = PathBuf::from(path.ok_or_else(|| WsError::Invalid("path is required".into()))?);
         if !path.is_dir() {
-            return Err(WsError::Invalid(format!("Not a directory: {}", path.display())));
+            return Err(WsError::Invalid(format!(
+                "Not a directory: {}",
+                path.display()
+            )));
         }
         let path = git::canon(&path);
         let info = git::info(&path).await;
         let now = now_iso();
         match req.isolation.as_str() {
             "local" => {
-                if req.mode.is_some() || req.worktree_slug.is_some() || req.new_branch.is_some() || req.base.is_some() || req.branch.is_some() || req.pr_number.is_some() || req.forge.is_some() {
-                    return Err(WsError::Invalid("Worktree options require --isolation worktree".into()));
+                if req.mode.is_some()
+                    || req.worktree_slug.is_some()
+                    || req.new_branch.is_some()
+                    || req.base.is_some()
+                    || req.branch.is_some()
+                    || req.pr_number.is_some()
+                    || req.forge.is_some()
+                {
+                    return Err(WsError::Invalid(
+                        "Worktree options require --isolation worktree".into(),
+                    ));
                 }
                 let project = match &req.project_id {
-                    Some(id) => self.project(id).ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?,
+                    Some(id) => self
+                        .project(id)
+                        .ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?,
                     None => self.project_for(&path, info.is_git)?,
                 };
                 let w = WorkspaceRecord {
@@ -575,32 +774,58 @@ impl Registry {
                     auto_name: None,
                     removed_reason: None,
                 };
-                self.lock().workspaces.insert(w.workspace_id.clone(), w.clone());
+                self.lock()
+                    .workspaces
+                    .insert(w.workspace_id.clone(), w.clone());
                 self.save(&w);
                 Ok((w, None))
             }
             "worktree" => self.create_worktree(req, &path, info).await,
-            other => Err(WsError::Invalid(format!("Unsupported workspace isolation: {other}"))),
+            other => Err(WsError::Invalid(format!(
+                "Unsupported workspace isolation: {other}"
+            ))),
         }
     }
 
-    async fn create_worktree(&self, req: CreateWorkspace, path: &Path, info: git::Info) -> Result<(WorkspaceRecord, Option<String>), WsError> {
+    async fn create_worktree(
+        &self,
+        req: CreateWorkspace,
+        path: &Path,
+        info: git::Info,
+    ) -> Result<(WorkspaceRecord, Option<String>), WsError> {
         if !info.is_git {
-            return Err(WsError::Invalid("Create worktree requires a git repository".into()));
+            return Err(WsError::Invalid(
+                "Create worktree requires a git repository".into(),
+            ));
         }
-        let repo = info.repo_root().map(Path::to_path_buf).ok_or_else(|| WsError::Invalid("Create worktree requires a git repository".into()))?;
+        let repo = info
+            .repo_root()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| WsError::Invalid("Create worktree requires a git repository".into()))?;
         let project = match &req.project_id {
-            Some(id) => self.project(id).ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?,
+            Some(id) => self
+                .project(id)
+                .ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?,
             None => self.project_for(path, true)?,
         };
         let cfg = &self.inner.config;
-        let codex = req.provider.as_deref().is_some_and(|p| p == "codex" || p.starts_with("codex/")) && cfg.codex_repos.contains(&basename(&repo));
+        let codex = req
+            .provider
+            .as_deref()
+            .is_some_and(|p| p == "codex" || p.starts_with("codex/"))
+            && cfg.codex_repos.contains(&basename(&repo));
         let default_base = git::default_branch(&repo).await;
         let mut untrusted = None;
-        let (branch, base_spec): (String, Option<String>) = match req.mode.as_deref().unwrap_or("branch-off") {
+        let (branch, base_spec): (String, Option<String>) = match req
+            .mode
+            .as_deref()
+            .unwrap_or("branch-off")
+        {
             "branch-off" => {
                 if req.branch.is_some() || req.pr_number.is_some() || req.forge.is_some() {
-                    return Err(WsError::Invalid("--branch, --pr-number, and --forge require a checkout mode".into()));
+                    return Err(WsError::Invalid(
+                        "--branch, --pr-number, and --forge require a checkout mode".into(),
+                    ));
                 }
                 let base = match (&req.base, codex) {
                     (Some(b), _) => Some(b.clone()),
@@ -615,16 +840,35 @@ impl Registry {
                 (self.branch_off_name(&repo, &req, codex).await?, base)
             }
             "checkout-branch" => {
-                let b = req.branch.clone().ok_or_else(|| WsError::Invalid("--branch is required for --mode checkout-branch".into()))?;
-                if req.new_branch.is_some() || req.base.is_some() || req.pr_number.is_some() || req.forge.is_some() {
+                let b = req.branch.clone().ok_or_else(|| {
+                    WsError::Invalid("--branch is required for --mode checkout-branch".into())
+                })?;
+                if req.new_branch.is_some()
+                    || req.base.is_some()
+                    || req.pr_number.is_some()
+                    || req.forge.is_some()
+                {
                     return Err(WsError::Invalid("--new-branch, --base, --pr-number, and --forge are not valid for --mode checkout-branch".into()));
                 }
                 let local = git::branch_exists(&repo, &b).await;
-                let remote = git::read(&repo, &["show-ref", "--verify", "--quiet", &format!("refs/remotes/origin/{b}")]).await.is_some();
+                let remote = git::read(
+                    &repo,
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/remotes/origin/{b}"),
+                    ],
+                )
+                .await
+                .is_some();
                 if !local && !remote {
                     return Err(WsError::Invalid(format!("Unknown branch: {b}")));
                 }
-                let busy = git::worktrees(&repo).await.into_iter().any(|(_, br)| br.as_deref() == Some(b.as_str()));
+                let busy = git::worktrees(&repo)
+                    .await
+                    .into_iter()
+                    .any(|(_, br)| br.as_deref() == Some(b.as_str()));
                 if busy {
                     // Checked out elsewhere: a copy of it (Paseo does the same).
                     (self.unique_branch(&repo, &b).await?, Some(b.clone()))
@@ -635,25 +879,46 @@ impl Registry {
                 }
             }
             "checkout-pr" => {
-                let n = req.pr_number.filter(|n| *n > 0).ok_or_else(|| WsError::Invalid("--pr-number is required for --mode checkout-pr".into()))?;
+                let n = req.pr_number.filter(|n| *n > 0).ok_or_else(|| {
+                    WsError::Invalid("--pr-number is required for --mode checkout-pr".into())
+                })?;
                 if req.new_branch.is_some() || req.base.is_some() || req.branch.is_some() {
-                    return Err(WsError::Invalid("--new-branch, --base, and --branch are not valid for --mode checkout-pr".into()));
+                    return Err(WsError::Invalid(
+                        "--new-branch, --base, and --branch are not valid for --mode checkout-pr"
+                            .into(),
+                    ));
                 }
                 if req.forge.as_deref().is_some_and(|f| f != "github") {
-                    return Err(WsError::Invalid("Only GitHub pull requests are supported (--forge github)".into()));
+                    return Err(WsError::Invalid(
+                        "Only GitHub pull requests are supported (--forge github)".into(),
+                    ));
                 }
                 let pr = checkout::pr_head(&repo, n).await.map_err(WsError::Git)?;
                 let head = pr["headRefName"].as_str().unwrap_or("pr").to_string();
                 let local = self.unique_branch(&repo, &head).await?;
-                git::must(&repo, &["fetch", "origin", &format!("pull/{n}/head:{local}")]).await.map_err(WsError::Git)?;
+                git::must(
+                    &repo,
+                    &["fetch", "origin", &format!("pull/{n}/head:{local}")],
+                )
+                .await
+                .map_err(WsError::Git)?;
                 if pr["isCrossRepository"] == true {
                     let owner = pr["headRepositoryOwner"]["login"].as_str().unwrap_or("?");
                     let name = pr["headRepository"]["name"].as_str().unwrap_or("?");
-                    untrusted = Some(UntrustedSource { kind: "change_request".into(), forge: "github".into(), number: n, head_repository: format!("{owner}/{name}") });
+                    untrusted = Some(UntrustedSource {
+                        kind: "change_request".into(),
+                        forge: "github".into(),
+                        number: n,
+                        head_repository: format!("{owner}/{name}"),
+                    });
                 }
                 (local, None)
             }
-            other => return Err(WsError::Invalid(format!("Unsupported worktree mode: {other}"))),
+            other => {
+                return Err(WsError::Invalid(format!(
+                    "Unsupported worktree mode: {other}"
+                )))
+            }
         };
         let wt_path = self.wt_add(&repo, &branch, base_spec.as_deref()).await?;
         // An untracked paseo.json in the source checkout comes along (Paseo copies it too).
@@ -670,7 +935,10 @@ impl Registry {
             },
         };
         let now = now_iso();
-        let auto = req.prompt.is_some() && req.new_branch.is_none() && req.worktree_slug.is_none() && req.mode.as_deref().unwrap_or("branch-off") == "branch-off";
+        let auto = req.prompt.is_some()
+            && req.new_branch.is_none()
+            && req.worktree_slug.is_none()
+            && req.mode.as_deref().unwrap_or("branch-off") == "branch-off";
         let w = WorkspaceRecord {
             workspace_id: new_id("wks"),
             project_id: project.project_id,
@@ -692,16 +960,30 @@ impl Registry {
             background: req.background,
             setup: None,
             port: free_port(),
-            auto_name: auto.then(|| AutoName { status: "pending".into(), placeholder_branch_name: branch.clone() }),
+            auto_name: auto.then(|| AutoName {
+                status: "pending".into(),
+                placeholder_branch_name: branch.clone(),
+            }),
             removed_reason: None,
         };
-        self.lock().workspaces.insert(w.workspace_id.clone(), w.clone());
+        self.lock()
+            .workspaces
+            .insert(w.workspace_id.clone(), w.clone());
         self.save(&w);
         tracing::info!(workspace = %w.workspace_id, project = %basename(&repo), branch = %branch, cwd = %w.cwd, "worktree workspace created");
         let skipped = match &untrusted {
             Some(u) => {
-                let msg = format!("Scripts are blocked for PR #{} from {}. Run setup to allow them.", u.number, u.head_repository);
-                self.update(&w.workspace_id, |r| r.setup = Some(SetupSnapshot { status: "blocked".into(), commands: Vec::new(), error: Some(msg.clone()) }));
+                let msg = format!(
+                    "Scripts are blocked for PR #{} from {}. Run setup to allow them.",
+                    u.number, u.head_repository
+                );
+                self.update(&w.workspace_id, |r| {
+                    r.setup = Some(SetupSnapshot {
+                        status: "blocked".into(),
+                        commands: Vec::new(),
+                        error: Some(msg.clone()),
+                    })
+                });
                 Some(msg)
             }
             None => {
@@ -721,11 +1003,22 @@ impl Registry {
         let dir = PathBuf::from(&w.cwd);
         let cmds = setup::commands(&setup::read_config(&dir)["worktree"]["setup"]);
         if cmds.is_empty() {
-            self.update(id, |r| r.setup = Some(SetupSnapshot { status: "none".into(), commands: Vec::new(), error: None }));
+            self.update(id, |r| {
+                r.setup = Some(SetupSnapshot {
+                    status: "none".into(),
+                    commands: Vec::new(),
+                    error: None,
+                })
+            });
             return;
         }
         let source = PathBuf::from(w.main_repo_root.clone().unwrap_or_default());
-        let env = setup::env(&source, &dir, w.branch.as_deref().unwrap_or_default(), w.port);
+        let env = setup::env(
+            &source,
+            &dir,
+            w.branch.as_deref().unwrap_or_default(),
+            w.port,
+        );
         let me = self.clone();
         let id = id.to_string();
         tokio::spawn(async move {
@@ -742,7 +1035,10 @@ impl Registry {
 
     /// `workspace setup`: allow a blocked (untrusted) workspace's scripts and run setup.
     pub fn run_setup(&self, id: &str) -> Result<&'static str, WsError> {
-        let w = self.get(id).filter(|w| w.archived_at.is_none()).ok_or_else(|| WsError::NotFound(format!("Workspace not found: {id}")))?;
+        let w = self
+            .get(id)
+            .filter(|w| w.archived_at.is_none())
+            .ok_or_else(|| WsError::NotFound(format!("Workspace not found: {id}")))?;
         let blocked = w.setup.as_ref().is_some_and(|s| s.status == "blocked");
         if !blocked {
             return Ok("already_allowed");
@@ -753,7 +1049,13 @@ impl Registry {
     }
 
     /// The facts the guard decides an agent start on.
-    pub async fn start_facts(&self, cwd: &str, provider: &str, mode: Option<&str>, owner_override: bool) -> StartFacts {
+    pub async fn start_facts(
+        &self,
+        cwd: &str,
+        provider: &str,
+        mode: Option<&str>,
+        owner_override: bool,
+    ) -> StartFacts {
         let cfg = &self.inner.config;
         let dir = PathBuf::from(cwd);
         let info = git::info(&dir).await;
@@ -763,15 +1065,29 @@ impl Registry {
         let projects_root = git::canon(&cfg.projects_root);
         let wt_root = git::canon(&cfg.wt_root);
         let repo_name = repo.as_deref().map(basename).unwrap_or_default();
-        let under_root = top.as_deref().is_some_and(|t| t.starts_with(wt_root.join(&repo_name)) && t != wt_root.join(&repo_name));
+        let under_root = top.as_deref().is_some_and(|t| {
+            t.starts_with(wt_root.join(&repo_name)) && t != wt_root.join(&repo_name)
+        });
         let codex = provider == "codex" || provider.starts_with("codex/");
         let branch = info.branch.clone().unwrap_or_default();
-        let ws = self.lock().workspaces.values().find(|w| w.cwd == cwd && w.kind == WorkspaceKind::Worktree && w.archived_at.is_none()).cloned();
-        let base = ws.as_ref().and_then(|w| w.base_ref.clone()).unwrap_or_default();
-        let lucina_rs_base = base == format!("refs/heads/{}", cfg.codex_base) || base == format!("refs/remotes/origin/{}", cfg.codex_base);
+        let ws = self
+            .lock()
+            .workspaces
+            .values()
+            .find(|w| w.cwd == cwd && w.kind == WorkspaceKind::Worktree && w.archived_at.is_none())
+            .cloned();
+        let base = ws
+            .as_ref()
+            .and_then(|w| w.base_ref.clone())
+            .unwrap_or_default();
+        let lucina_rs_base = base == format!("refs/heads/{}", cfg.codex_base)
+            || base == format!("refs/remotes/origin/{}", cfg.codex_base);
         StartFacts {
             kind: Some(kind),
-            protected: kind == WorkspaceKind::LocalCheckout && top.as_deref().is_some_and(|t| t.starts_with(&projects_root) && !t.starts_with(&wt_root)),
+            protected: kind == WorkspaceKind::LocalCheckout
+                && top
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with(&projects_root) && !t.starts_with(&wt_root)),
             under_root,
             read_only: matches!(mode, Some("plan") | Some("read-only")),
             owner_override,
@@ -784,15 +1100,28 @@ impl Registry {
 
     /// Archive a workspace: teardown, then the worktree and its branch go as the guard
     /// allows. The caller has closed its agents (`busy` = one still runs).
-    pub async fn archive(&self, id: &str, busy: bool, trigger: Trigger, reason: Option<String>) -> Result<WorkspaceRecord, WsError> {
-        let w = self.get(id).filter(|w| w.archived_at.is_none()).ok_or_else(|| WsError::NotFound(format!("Workspace not found: {id}")))?;
+    pub async fn archive(
+        &self,
+        id: &str,
+        busy: bool,
+        trigger: Trigger,
+        reason: Option<String>,
+    ) -> Result<WorkspaceRecord, WsError> {
+        let w = self
+            .get(id)
+            .filter(|w| w.archived_at.is_none())
+            .ok_or_else(|| WsError::NotFound(format!("Workspace not found: {id}")))?;
         let mut note = reason;
         if w.kind == WorkspaceKind::Worktree && w.owned_worktree {
             let dir = PathBuf::from(&w.cwd);
             let repo = PathBuf::from(w.main_repo_root.clone().unwrap_or_default());
             if dir.is_dir() {
                 let blocked = w.untrusted_source.is_some();
-                let teardown = if blocked { Vec::new() } else { setup::commands(&setup::read_config(&dir)["worktree"]["teardown"]) };
+                let teardown = if blocked {
+                    Vec::new()
+                } else {
+                    setup::commands(&setup::read_config(&dir)["worktree"]["teardown"])
+                };
                 let env = setup::env(&repo, &dir, w.branch.as_deref().unwrap_or_default(), w.port);
                 for cmd in &teardown {
                     let (code, log) = setup::run_command(cmd, &dir, &env).await;
@@ -800,12 +1129,24 @@ impl Registry {
                         tracing::warn!(workspace = id, command = %cmd, log = %log, "teardown command failed");
                     }
                 }
-                let branch = git::info(&dir).await.branch.or(w.branch.clone()).unwrap_or_default();
+                let branch = git::info(&dir)
+                    .await
+                    .branch
+                    .or(w.branch.clone())
+                    .unwrap_or_default();
                 let merged = match &w.base_ref {
-                    Some(base) if !branch.is_empty() => git::merged_into(&repo, &branch, base).await || checkout::merged_on_github(&dir).await,
+                    Some(base) if !branch.is_empty() => {
+                        git::merged_into(&repo, &branch, base).await
+                            || checkout::merged_on_github(&dir).await
+                    }
                     _ => false,
                 };
-                let facts = RemoveFacts { owned: true, clean: !git::is_dirty(&dir).await, busy, merged };
+                let facts = RemoveFacts {
+                    owned: true,
+                    clean: !git::is_dirty(&dir).await,
+                    busy,
+                    merged,
+                };
                 let plan = guard::removal(&facts, trigger);
                 if plan.remove_dir {
                     match git::run(&repo, &["worktree", "remove", &w.cwd]).await {
@@ -838,7 +1179,13 @@ impl Registry {
     /// agentd agent runs there). Most work happens in sessions agentd doesn't know, so what
     /// the checkout and its processes show is all there is to go on.
     pub async fn merged_candidates(&self, busy: &HashSet<String>) -> Vec<(String, String)> {
-        let list: Vec<WorkspaceRecord> = self.lock().workspaces.values().filter(|w| w.archived_at.is_none() && w.owned_worktree).cloned().collect();
+        let list: Vec<WorkspaceRecord> = self
+            .lock()
+            .workspaces
+            .values()
+            .filter(|w| w.archived_at.is_none() && w.owned_worktree)
+            .cloned()
+            .collect();
         let dirs: Vec<PathBuf> = list.iter().map(|w| PathBuf::from(&w.cwd)).collect();
         let usage = procs::usage(&dirs);
         let mut out = Vec::new();
@@ -850,7 +1197,9 @@ impl Registry {
             if !dir.is_dir() {
                 continue;
             }
-            let (Some(base), Some(start)) = (&w.base_ref, &w.base_sha) else { continue };
+            let (Some(base), Some(start)) = (&w.base_ref, &w.base_sha) else {
+                continue;
+            };
             let info = git::info(&dir).await;
             let facts = SweepFacts {
                 in_progress: git::in_progress(&dir).await,
@@ -868,7 +1217,9 @@ impl Registry {
             if head.as_deref() == Some(start.as_str()) {
                 continue;
             }
-            let short = base.trim_start_matches("refs/heads/").trim_start_matches("refs/remotes/");
+            let short = base
+                .trim_start_matches("refs/heads/")
+                .trim_start_matches("refs/remotes/");
             if git::merged_into(&dir, &format!("refs/heads/{branch}"), base).await {
                 out.push((w.workspace_id.clone(), format!("merged into {short}")));
             } else if checkout::merged_on_github(&dir).await {
@@ -881,19 +1232,38 @@ impl Registry {
     /// The generated title and branch for a worktree still on its placeholder.
     pub async fn apply_auto_name(&self, id: &str, title: Option<String>, branch: Option<String>) {
         let Some(w) = self.get(id) else { return };
-        let Some(auto) = w.auto_name.clone().filter(|a| a.status == "pending") else { return };
+        let Some(auto) = w.auto_name.clone().filter(|a| a.status == "pending") else {
+            return;
+        };
         let dir = PathBuf::from(&w.cwd);
         let mut new_branch = None;
-        if let Some(b) = branch.map(|b| b.trim().to_lowercase()).filter(|b| lucina_agents::branch_slug::validate(b).is_ok()) {
+        if let Some(b) = branch
+            .map(|b| b.trim().to_lowercase())
+            .filter(|b| lucina_agents::branch_slug::validate(b).is_ok())
+        {
             let current = git::info(&dir).await.branch;
             if current.as_deref() == Some(auto.placeholder_branch_name.as_str()) {
-                let prefix = auto.placeholder_branch_name.split_once('/').map(|(p, _)| format!("{p}/")).unwrap_or_default();
-                let wanted = if b.contains('/') || prefix.is_empty() { b } else { format!("{prefix}{b}") };
+                let prefix = auto
+                    .placeholder_branch_name
+                    .split_once('/')
+                    .map(|(p, _)| format!("{p}/"))
+                    .unwrap_or_default();
+                let wanted = if b.contains('/') || prefix.is_empty() {
+                    b
+                } else {
+                    format!("{prefix}{b}")
+                };
                 let repo = PathBuf::from(w.main_repo_root.clone().unwrap_or_default());
                 if wanted == auto.placeholder_branch_name {
                     // The placeholder is already the name the model would give.
                 } else if let Ok(unique) = self.unique_branch(&repo, &wanted).await {
-                    if git::run(&dir, &["branch", "-m", &auto.placeholder_branch_name, &unique]).await.is_ok_and(|o| o.ok) {
+                    if git::run(
+                        &dir,
+                        &["branch", "-m", &auto.placeholder_branch_name, &unique],
+                    )
+                    .await
+                    .is_ok_and(|o| o.ok)
+                    {
                         new_branch = Some(unique);
                     }
                 }
@@ -907,25 +1277,47 @@ impl Registry {
             if r.title.is_none() {
                 r.title = title.filter(|t| !t.trim().is_empty());
             }
-            r.auto_name = Some(AutoName { status: "attempted".into(), ..auto });
+            r.auto_name = Some(AutoName {
+                status: "attempted".into(),
+                ..auto
+            });
         });
     }
 
     /// The workspace an agent's cwd belongs to, for its `workspaceId`.
     pub fn find_by_cwd(&self, cwd: &str) -> Option<WorkspaceRecord> {
-        self.lock().workspaces.values().filter(|w| w.cwd == cwd && w.archived_at.is_none()).max_by(|a, b| a.created_at.cmp(&b.created_at)).cloned()
+        self.lock()
+            .workspaces
+            .values()
+            .filter(|w| w.cwd == cwd && w.archived_at.is_none())
+            .max_by(|a, b| a.created_at.cmp(&b.created_at))
+            .cloned()
     }
 
     /// Register a worktree someone made by hand (`git worktree add`, `wt add`) as an owned
     /// worktree workspace, so the pipeline merges it and archive may remove it. Its start
     /// is where it left `base` (the merge base).
-    pub async fn adopt(&self, dir: &Path, title: Option<String>, base: &str) -> Result<WorkspaceRecord, WsError> {
+    pub async fn adopt(
+        &self,
+        dir: &Path,
+        title: Option<String>,
+        base: &str,
+    ) -> Result<WorkspaceRecord, WsError> {
         let info = git::info(dir).await;
         if info.kind() != WorkspaceKind::Worktree {
-            return Err(WsError::Invalid(format!("Not a linked worktree: {}", dir.display())));
+            return Err(WsError::Invalid(format!(
+                "Not a linked worktree: {}",
+                dir.display()
+            )));
         }
-        let repo = info.main_root.clone().ok_or_else(|| WsError::Invalid(format!("No main checkout for {}", dir.display())))?;
-        let branch = info.branch.clone().ok_or_else(|| WsError::Invalid(format!("{} is on a detached HEAD", dir.display())))?;
+        let repo = info
+            .main_root
+            .clone()
+            .ok_or_else(|| WsError::Invalid(format!("No main checkout for {}", dir.display())))?;
+        let branch = info
+            .branch
+            .clone()
+            .ok_or_else(|| WsError::Invalid(format!("{} is on a detached HEAD", dir.display())))?;
         let project = self.project_for(&repo, true)?;
         let base_ref = git::resolve_ref(&repo, base).await;
         let base_sha = git::read(dir, &["merge-base", "HEAD", base]).await;
@@ -954,7 +1346,9 @@ impl Registry {
             auto_name: None,
             removed_reason: None,
         };
-        self.lock().workspaces.insert(w.workspace_id.clone(), w.clone());
+        self.lock()
+            .workspaces
+            .insert(w.workspace_id.clone(), w.clone());
         self.save(&w);
         tracing::info!(workspace = %w.workspace_id, project = %basename(&repo), branch = ?w.branch, cwd = %w.cwd, "worktree adopted");
         Ok(w)
@@ -976,7 +1370,10 @@ impl Registry {
         if info.branch != w.branch && info.is_git {
             return self.update(id, |r| {
                 r.branch = info.branch.clone();
-                r.display_name = info.branch.clone().unwrap_or_else(|| basename(Path::new(&r.cwd)));
+                r.display_name = info
+                    .branch
+                    .clone()
+                    .unwrap_or_else(|| basename(Path::new(&r.cwd)));
             });
         }
         Some(w)
@@ -1028,7 +1425,10 @@ mod tests {
         // A worktree under <wt_root>/<Repo>/ of a Lucina repo; one of another repo is not.
         let wt_sios = wt.join("SecretaryIOS").join("feature-x");
         repo(&wt_sios);
-        assert_eq!(lucina_repo_name(&cfg, &wt_sios), Some("SecretaryIOS".into()));
+        assert_eq!(
+            lucina_repo_name(&cfg, &wt_sios),
+            Some("SecretaryIOS".into())
+        );
         let wt_other = wt.join("Other").join("feature-x");
         repo(&wt_other);
         assert_eq!(lucina_repo_name(&cfg, &wt_other), None);
@@ -1065,28 +1465,96 @@ mod tests {
         let standalone = t.path().join("somewhere/MyRepo");
         repo(&standalone);
         assert_eq!(lucina_repo_name(&cfg, &standalone), Some("MyRepo".into()));
-        assert_eq!(lucina_repo_name(&lucina_config(t.path(), vec![]), &standalone), None);
+        assert_eq!(
+            lucina_repo_name(&lucina_config(t.path(), vec![]), &standalone),
+            None
+        );
     }
 
     fn repo(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
-        let run = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success());
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .status()
+                .unwrap()
+                .success())
+        };
         run(&["init", "-q", "-b", "main"]);
         std::fs::write(dir.join("README"), "x").unwrap();
         run(&["add", "."]);
-        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ]);
     }
 
     #[test]
     fn the_sweep_leaves_used_worktrees_alone() {
-        let idle = SweepFacts { idle_secs: Some(4000), ..SweepFacts::default() };
+        let idle = SweepFacts {
+            idle_secs: Some(4000),
+            ..SweepFacts::default()
+        };
         assert_eq!(sweep_blocker(&idle, 1800), None);
-        assert!(sweep_blocker(&SweepFacts { in_progress: Some("rebase"), ..idle.clone() }, 1800).is_some());
-        assert!(sweep_blocker(&SweepFacts { detached: true, ..idle.clone() }, 1800).is_some());
-        assert!(sweep_blocker(&SweepFacts { dirty: true, ..idle.clone() }, 1800).is_some());
-        assert!(sweep_blocker(&SweepFacts { procs: 1, ..idle.clone() }, 1800).is_some());
-        assert!(sweep_blocker(&SweepFacts { idle_secs: Some(60), ..idle.clone() }, 1800).is_some());
-        assert!(sweep_blocker(&SweepFacts { idle_secs: None, ..idle }, 1800).is_some(), "unknown means used");
+        assert!(sweep_blocker(
+            &SweepFacts {
+                in_progress: Some("rebase"),
+                ..idle.clone()
+            },
+            1800
+        )
+        .is_some());
+        assert!(sweep_blocker(
+            &SweepFacts {
+                detached: true,
+                ..idle.clone()
+            },
+            1800
+        )
+        .is_some());
+        assert!(sweep_blocker(
+            &SweepFacts {
+                dirty: true,
+                ..idle.clone()
+            },
+            1800
+        )
+        .is_some());
+        assert!(sweep_blocker(
+            &SweepFacts {
+                procs: 1,
+                ..idle.clone()
+            },
+            1800
+        )
+        .is_some());
+        assert!(sweep_blocker(
+            &SweepFacts {
+                idle_secs: Some(60),
+                ..idle.clone()
+            },
+            1800
+        )
+        .is_some());
+        assert!(
+            sweep_blocker(
+                &SweepFacts {
+                    idle_secs: None,
+                    ..idle
+                },
+                1800
+            )
+            .is_some(),
+            "unknown means used"
+        );
     }
 
     #[tokio::test]
@@ -1094,7 +1562,15 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("r");
         repo(&dir);
-        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap()
+        };
         let edit = |text: &str, msg: &str| {
             std::fs::write(dir.join("f.txt"), text).unwrap();
             assert!(git(&["add", "-A"]).status.success());
@@ -1107,7 +1583,10 @@ mod tests {
         edit("main\n", "main");
         assert_eq!(git::in_progress(&dir).await, None);
         assert!(git(&["checkout", "-q", "topic"]).status.success());
-        assert!(!git(&["rebase", "-q", "main"]).status.success(), "the rebase conflicts");
+        assert!(
+            !git(&["rebase", "-q", "main"]).status.success(),
+            "the rebase conflicts"
+        );
         assert_eq!(git::in_progress(&dir).await, Some("rebase"));
         assert_eq!(git::info(&dir).await.branch, None, "a rebase detaches HEAD");
         assert!(git::idle_secs(&dir).await.is_some());
@@ -1122,15 +1601,28 @@ mod tests {
         let cwd = sios.display().to_string();
         let codex = r.start_facts(&cwd, "codex", None, true).await;
         assert!(codex.codex && codex.codex_repo && codex.protected);
-        assert_eq!(check_start(&codex), Err(Refusal::CodexRule), "no override for Codex in the main checkout");
+        assert_eq!(
+            check_start(&codex),
+            Err(Refusal::CodexRule),
+            "no override for Codex in the main checkout"
+        );
         let claude = r.start_facts(&cwd, "claude", Some("default"), false).await;
         assert_eq!(check_start(&claude), Err(Refusal::MainCheckout));
-        assert_eq!(check_start(&r.start_facts(&cwd, "claude", Some("plan"), false).await), Ok(()));
+        assert_eq!(
+            check_start(&r.start_facts(&cwd, "claude", Some("plan"), false).await),
+            Ok(())
+        );
         let other = t.path().join("proj/Other");
         repo(&other);
-        let f = r.start_facts(&other.display().to_string(), "codex", None, true).await;
+        let f = r
+            .start_facts(&other.display().to_string(), "codex", None, true)
+            .await;
         assert!(!f.codex_repo);
-        assert_eq!(check_start(&f), Ok(()), "the Codex rule is for SecretaryIOS");
+        assert_eq!(
+            check_start(&f),
+            Ok(()),
+            "the Codex rule is for SecretaryIOS"
+        );
     }
 
     #[tokio::test]
@@ -1139,15 +1631,37 @@ mod tests {
         let r = registry(t.path());
         let dir = t.path().join("plain");
         std::fs::create_dir_all(&dir).unwrap();
-        let (w, _) = r.create(CreateWorkspace { isolation: "local".into(), path: Some(dir.display().to_string()), ..Default::default() }).await.unwrap();
+        let (w, _) = r
+            .create(CreateWorkspace {
+                isolation: "local".into(),
+                path: Some(dir.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(w.kind, WorkspaceKind::Directory);
         r.update(&w.workspace_id, |x| {
-            x.untrusted_source = Some(UntrustedSource { kind: "change_request".into(), forge: "github".into(), number: 7, head_repository: "someone/fork".into() });
-            x.setup = Some(SetupSnapshot { status: "blocked".into(), commands: Vec::new(), error: None });
+            x.untrusted_source = Some(UntrustedSource {
+                kind: "change_request".into(),
+                forge: "github".into(),
+                number: 7,
+                head_repository: "someone/fork".into(),
+            });
+            x.setup = Some(SetupSnapshot {
+                status: "blocked".into(),
+                commands: Vec::new(),
+                error: None,
+            });
         });
         assert_eq!(r.run_setup(&w.workspace_id).unwrap(), "started");
         assert!(r.get(&w.workspace_id).unwrap().untrusted_source.is_none());
-        r.update(&w.workspace_id, |x| x.setup = Some(SetupSnapshot { status: "completed".into(), commands: Vec::new(), error: None }));
+        r.update(&w.workspace_id, |x| {
+            x.setup = Some(SetupSnapshot {
+                status: "completed".into(),
+                commands: Vec::new(),
+                error: None,
+            })
+        });
         assert_eq!(r.run_setup(&w.workspace_id).unwrap(), "already_allowed");
     }
 }

@@ -998,12 +998,18 @@ async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
         let m = m.clone();
         let workspace = name.to_string();
         async move {
-            m.adopt_task(AdoptTask { path: workspace.clone(), ..AdoptTask::default() })
-                .await
-                .unwrap();
-            m.queue_merge(MergeRequest { workspace, ..MergeRequest::default() })
-                .await
-                .unwrap()
+            m.adopt_task(AdoptTask {
+                path: workspace.clone(),
+                ..AdoptTask::default()
+            })
+            .await
+            .unwrap();
+            m.queue_merge(MergeRequest {
+                workspace,
+                ..MergeRequest::default()
+            })
+            .await
+            .unwrap()
         }
     };
 
@@ -1019,22 +1025,37 @@ async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
     let done = run_until_done(&m, &job.job_id).await;
     assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
     let text = std::fs::read_to_string(
-        root.join("state/pipeline/jobs").join(&job.job_id).join("job.json"),
+        root.join("state/pipeline/jobs")
+            .join(&job.job_id)
+            .join("job.json"),
     )
     .unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["leads"], serde_json::json!(["LA", "PF"]), "{text}");
-    assert_eq!(v["changes"], serde_json::json!(["LA-C001", "PF-C002"]), "{text}");
+    assert_eq!(
+        v["changes"],
+        serde_json::json!(["LA-C001", "PF-C002"]),
+        "{text}"
+    );
 
     // A branch with no trailers: nothing recorded, and `job.json` says nothing about it.
     let plain = topic(&root, &repo, "Ids", "plain");
     let job = queue(&plain.display().to_string()).await;
-    assert!(job.spec.leads.is_empty() && job.spec.changes.is_empty(), "{:?}", job.spec);
+    assert!(
+        job.spec.leads.is_empty() && job.spec.changes.is_empty(),
+        "{:?}",
+        job.spec
+    );
     let done = run_until_done(&m, &job.job_id).await;
     assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
     let text = std::fs::read_to_string(
-        root.join("state/pipeline/jobs").join(&job.job_id).join("job.json"),
+        root.join("state/pipeline/jobs")
+            .join(&job.job_id)
+            .join("job.json"),
     )
     .unwrap();
-    assert!(!text.contains("leads") && !text.contains("changes"), "{text}");
+    assert!(
+        !text.contains("leads") && !text.contains("changes"),
+        "{text}"
+    );
 }

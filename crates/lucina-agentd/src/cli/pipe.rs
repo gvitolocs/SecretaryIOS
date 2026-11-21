@@ -316,12 +316,21 @@ fn ids_cell(j: &Value) -> String {
     let list = |k: &str| {
         j["spec"][k]
             .as_array()
-            .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","))
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
             .filter(|s| !s.is_empty())
     };
     match (list("leads"), list("changes")) {
         (None, None) => "-".into(),
-        (l, c) => format!("{} / {}", l.as_deref().unwrap_or("-"), c.as_deref().unwrap_or("-")),
+        (l, c) => format!(
+            "{} / {}",
+            l.as_deref().unwrap_or("-"),
+            c.as_deref().unwrap_or("-")
+        ),
     }
 }
 
@@ -458,7 +467,10 @@ pub async fn job(client: &Client, cmd: &JobCommand) -> Result<Output, CmdError> 
             let jobs = v["jobs"].as_array().cloned().unwrap_or_default();
             let rows: Vec<Vec<String>> = jobs.iter().map(job_line).collect();
             Ok(Output {
-                text: table(&["JOB", "WHAT", "STATE", "RESULT", "QUEUED", "BY", "IDS"], &rows),
+                text: table(
+                    &["JOB", "WHAT", "STATE", "RESULT", "QUEUED", "BY", "IDS"],
+                    &rows,
+                ),
                 json: Some(Value::Array(jobs)),
             })
         }

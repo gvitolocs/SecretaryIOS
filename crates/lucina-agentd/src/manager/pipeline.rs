@@ -214,7 +214,9 @@ async fn requested_base(repo: &Trunk, rev: &str) -> Result<String, ManagerError>
 
 /// A title that starts with "Error:" is a failed command's output substituted into it (AGENT-10).
 pub(crate) fn poisoned_title(t: &str) -> bool {
-    t.trim().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("error:"))
+    t.trim()
+        .get(..6)
+        .is_some_and(|p| p.eq_ignore_ascii_case("error:"))
 }
 
 /// The `Lead:` and `Change:` trailer values of the commits a branch adds to its trunk (LA-C039), for the
@@ -1582,7 +1584,10 @@ mod tests {
         let log = "LA\x1eLA-C001\n\x1f\x1e\x1fPF\nLA\x1ePF-C002\n\x1f \x1eLA-C001\n\x1f";
         assert_eq!(
             parse_landing_ids(log),
-            (vec!["LA".to_string(), "PF".into()], vec!["LA-C001".to_string(), "PF-C002".into()])
+            (
+                vec!["LA".to_string(), "PF".into()],
+                vec!["LA-C001".to_string(), "PF-C002".into()]
+            )
         );
         assert_eq!(parse_landing_ids(""), (vec![], vec![]));
         let many: String = (1..=10).map(|i| format!("L{i}\x1eC{i}\x1f")).collect();
