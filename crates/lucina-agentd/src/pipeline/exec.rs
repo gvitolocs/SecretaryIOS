@@ -342,6 +342,9 @@ struct Exec {
     /// How long past the queue cap a step may wait for its grant before it is ended ([`QUEUE_SLACK`]).
     queue_slack: Duration,
     grants: u32,
+    /// The last gate run ended in the bq queue, before its command ran (no slot in time, bq refusing
+    /// the job, a bq that never granted, a job that did not start): not a test result, so not rerun.
+    queue_failed: bool,
     /// The systemd unit this executor itself runs in (`lagent-job-<id>.service`), read once from its
     /// own control group at start: what every step's scope is bound to, so that the scope stops when
     /// this unit does. A field of the executor, not a name a step could set. `None`: not run as that
@@ -403,6 +406,7 @@ impl Exec {
             bq_queue_cap_secs: BQ_QUEUE_CAP_SECS,
             queue_slack: QUEUE_SLACK,
             grants: 0,
+            queue_failed: false,
             spec,
             log,
             path,
@@ -578,6 +582,7 @@ impl Exec {
         cap: Duration,
         limit: &str,
     ) -> bool {
+        self.queue_failed = false;
         let mut timed_out = format!("timed out after {limit}");
         let mut slot_run = None;
         if slot {
@@ -598,6 +603,7 @@ impl Exec {
                     "gate: {name} takes no bq slot ({why}); it runs without one"
                 )),
                 BqFind::Refused(why) => {
+                    self.queue_failed = true;
                     // A queue that is there and does not work fails the gate: a decision, so that a broken
                     // bq is seen and not quietly run around (R090 F5).
                     self.say(&format!(
@@ -1081,6 +1087,7 @@ impl Exec {
                 self.queue_slack.as_secs()
             );
             self.say(&format!("failed: {waited}"));
+            self.queue_failed = true;
             return Some(waited);
         }
         // Never granted and not ended by its limit: the wait itself is what failed (bq's own
@@ -1098,6 +1105,7 @@ impl Exec {
                     )
                 };
                 self.say(&format!("failed: {waited}"));
+                self.queue_failed = true;
                 return Some(waited);
             }
         }
@@ -1299,7 +1307,14 @@ impl Exec {
             let mut flaky = false;
             // Some tests time things or bind ports and fail when nezopt is loaded: a failed cargo
             // test runs once more, and a pass then is reported as flaky, not hidden.
-            if !ok && g.run.starts_with("cargo test") {
+            // A gate that failed in the bq queue never ran its tests: it ends at once, with its own reason,
+            // and is not queued again for up to half an hour more while the merge lock is held.
+            if !ok && self.queue_failed {
+                self.say(&format!(
+                    "gate failed in the bq queue: {}; not rerun (a queue failure is not a flaky test)",
+                    g.name
+                ));
+            } else if !ok && g.run.starts_with("cargo test") {
                 self.say(&format!(
                     "gate failed: {}; running it once more (flaky tests under load)",
                     g.name
@@ -4565,6 +4580,7 @@ mod tests {
                  shift\nmaxwait=0\n\
                  while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do\n\
                  case \"$1\" in --max-wait) maxwait=$2; shift;; esac; shift\ndone\nshift\n\
+                 if [ -f \"$d/e125\" ]; then echo \"bq: no build slot in 1800 s: the long queue is full\" >&2; exit 125; fi\n\
                  if [ -f \"$d/hang\" ]; then sleep 20; exit 1; fi\n\
                  if [ -f \"$d/never\" ]; then sleep \"$maxwait\"; echo \"no build slot in $maxwait s: the long queue is full\" >&2; exit 1; fi\n\
                  if [ -f \"$d/delay\" ]; then sleep \"$(cat \"$d/delay\")\"; fi\n\
@@ -4802,6 +4818,38 @@ mod tests {
             log.contains("--max-wait 1") || log.contains("waits at most 1 s"),
             "{log}"
         );
+    }
+
+    /// A gate that failed in the bq queue (the fake exits 125, no slot in time) is tried once, not twice:
+    /// the flaky rerun is for tests, and a rerun would queue for up to half an hour more under the lock.
+    #[test]
+    fn slot_a_gate_that_failed_in_the_queue_is_not_rerun_as_flaky() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let fake = root.join("fake");
+        let bq = fake_bq(&fake);
+        std::fs::write(fake.join("e125"), "").unwrap();
+        let (_origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        std::fs::write(
+            repo.join(".lucina/pipeline.toml"),
+            "[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"build\"\nrun = \"cargo test --quiet\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let (mut x, dir) = slot_exec(root, Some(bq));
+        x.spec = spec(root, &repo, "topic", &head);
+        let out = x.merge();
+        let log = slot_log(&dir);
+        assert_eq!(out.code, "GATE_FAILED", "{out:?}\n{log}");
+        let calls = std::fs::read_to_string(fake.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 1, "the gate was tried again\n{calls}\n{log}");
+        assert!(!log.contains("running it once more"), "{log}");
+        assert!(log.contains("gate failed in the bq queue: build"), "{log}");
     }
 
     /// A bq that neither grants nor exits (it would sit 20 s): the step is ended at the queue cap plus
