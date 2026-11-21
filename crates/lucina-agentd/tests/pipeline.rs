@@ -1010,7 +1010,7 @@ async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
     commit(&wt, "t2.txt", "2\n", "two\n\nLead: PF\nChange: PF-C002");
     commit(&wt, "t3.txt", "3\n", "three\n\nLead: LA\nChange: PF-C002");
     commit(&wt, "t4.txt", "4\n", "four, no trailers");
-    let job = queue("tagged").await;
+    let job = queue(&wt.display().to_string()).await;
     assert_eq!(job.spec.leads, ["LA", "PF"]);
     assert_eq!(job.spec.changes, ["LA-C001", "PF-C002"]);
     let done = run_until_done(&m, &job.job_id).await;
@@ -1024,9 +1024,8 @@ async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
 
     // A branch with no trailers: nothing recorded, and `job.json` says nothing about it.
     let plain = topic(&root, &repo, "Ids", "plain");
-    let job = queue("plain").await;
+    let job = queue(&plain.display().to_string()).await;
     assert!(job.spec.leads.is_empty() && job.spec.changes.is_empty(), "{:?}", job.spec);
-    let _ = plain;
     let done = run_until_done(&m, &job.job_id).await;
     assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
     let text = std::fs::read_to_string(
