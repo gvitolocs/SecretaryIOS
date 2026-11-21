@@ -331,6 +331,11 @@ pub struct LaneEvent {
     /// from it, never the text itself.
     pub reason: Option<String>,
     pub until: Option<String>,
+    /// Failed trials in a row since it last closed: `> 0` on an opening means a half-open trial
+    /// failed (a close resets it).
+    pub fails: i64,
+    /// The last event the owner was told of this lane, if any.
+    pub told: Option<String>,
 }
 
 /// The minutes a target waits after its `n`th task failure (1-based) in the window: 5, doubling,
@@ -1478,6 +1483,17 @@ impl Flaws {
         })
     }
 
+    /// Is an agent at work on the lane (a claim with no session)? A half-open lane lets exactly one
+    /// claim through (`claim_capped`), so while this is `true` a second claim is refused as `Busy`.
+    pub fn lane_agent_at_work(&self, lane: &str) -> Result<bool> {
+        let n: i64 = self.lock().query_row(
+            "SELECT count(*) FROM flaw_targets WHERE status='fixing' AND session IS NULL AND lane=?1",
+            [lane],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
     /// The trial agent's first turn succeeded, or a lead cleared it. `true`: it was not closed.
     pub fn lane_close(&self, lane: &str) -> Result<bool> {
         self.tx(|c| {
@@ -1508,7 +1524,7 @@ impl Flaws {
     pub fn lane_events_untold(&self) -> Result<Vec<LaneEvent>> {
         let c = self.lock();
         let mut s = c.prepare(
-            "SELECT lane, state, reason, until, opens, told FROM lane_breakers ORDER BY lane",
+            "SELECT lane, state, reason, until, opens, told, fails FROM lane_breakers ORDER BY lane",
         )?;
         let rows = s
             .query_map([], |r| {
@@ -1519,12 +1535,13 @@ impl Flaws {
                     r.get::<_, Option<String>>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, Option<String>>(5)?,
+                    r.get::<_, i64>(6)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows
             .into_iter()
-            .filter_map(|(lane, state, reason, until, opens, told)| {
+            .filter_map(|(lane, state, reason, until, opens, told, fails)| {
                 let state = LaneState::parse(&state);
                 let event = match state {
                     LaneState::Open => format!("open:{opens}"),
@@ -1537,6 +1554,8 @@ impl Flaws {
                     event,
                     reason,
                     until,
+                    fails,
+                    told,
                 })
             })
             .collect())

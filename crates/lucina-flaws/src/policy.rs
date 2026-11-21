@@ -491,7 +491,10 @@ pub fn outcome_line(flaw: &Flaw, target: &Target, policy: &Policy) -> String {
         }
         TargetStatus::Verified => "fixed and shown working".to_owned(),
         TargetStatus::NotAffected => "doesn't happen there".to_owned(),
-        // Blocked by its agents' lane failing, never by a failed fix: say that, not "0 tries".
+        // A target blocked with no attempt charged: its agents' lane failing, never a failed fix, so
+        // say that, not "0 tries". Since LA-C048 a lane failure no longer blocks, but rows blocked
+        // that way before stay until `restore-lane-failures` resets them (or a lead blocks one by
+        // hand), and they are still told with this line.
         TargetStatus::Blocked if target.attempts == 0 => format!(
             "its agents kept ending on the lane failing, not on the fix ({}); it needs a lead to look at it",
             target

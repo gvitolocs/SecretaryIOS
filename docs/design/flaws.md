@@ -142,12 +142,16 @@ blocked targets whose every failure since was a lane failure by the stored agent
 
 **Lane failures that repeat (LA-C035 review, changed by LA-C048).** A lane failure is not the flaw's failure: it costs a target
 no attempt, is kept in the failure history (kind `lane`), and never blocks the target nor delays it (before LA-C048 the second
-on a target inside 24 hours backed it off and the third blocked it). What bounds the retries is the lane's breaker, which keeps
-its own back-off: a trial agent that fails shuts the lane again for 5 minutes, doubling per failed
+on a target inside 24 hours backed it off and the third blocked it). What bounds the retries is the lane's breaker: at most one trial agent per back-off cycle (5 minutes, doubling per
+failed trial, to two hours), and while the lane is open the walk down the chain takes the flaw to another lane. A flaw whose agents
+keep ending on lane failures is therefore not blocked: it waits for the lane, and its lane failures stay in `flaw_failures` as
+history. A lane counts as usable to the dispatcher only when it really half-opened (its back-off has passed and the probe is ok),
+or is half-open with no agent at work on it, so a lane the claim would refuse is never picked. The breaker keeps its own back-off: a trial agent that fails shuts the lane again for 5 minutes, doubling per failed
 trial (`lane_breakers.until`, `fails`), and a lane is never healed in the tick that opened it. Only the trial agent (the claim a
 half-open lane let through, `lane_breakers.trial`) closes it, on a first turn that ran or a work-doing idle end. The ops
 record's key is the lane and how many times it has opened, never a time. The owner is told one OPEN and one CLOSED: a re-open
-after a failed trial (the last told event is an `open:`) is marked told and says nothing. Triage is covered the same way: a triage agent that
+after a failed trial (the last told event is an `open:` and the row has `fails > 0`) is marked told and says nothing; an opening
+after a close he was not told of yet is told after that close. Triage is covered the same way: a triage agent that
 ends on a sign-in failure, a limit or an unavailable provider opens its lane's breaker and leaves the flaw triage-due (given back,
 three times at most, as for a limit); any other end is an answer, as before.
 
