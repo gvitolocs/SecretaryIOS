@@ -669,7 +669,7 @@ fn target_reason(what: &str, path: &str) -> String {
         "this deletes single files under a cargo target directory (`{what}`, `{path}`). Cargo does not notice a deleted \
          dependency output while its `.fingerprint` says fresh, so the next build breaks (HOST-12). Instead delete a whole \
          profile or target (`rm -rf <target>/<profile>` or `rm -rf <target>`), run `cargo clean` (or `cargo clean -p <crate>`), \
-         or use LB's by-unit sweep (`lane sweep-targets`)."
+         or, once LB's rewrite lands, a by-unit sweep (not by file age)."
     )
 }
 
@@ -1245,6 +1245,10 @@ mod tests {
         ] {
             for is_mac in [true, false] {
                 let r = decide_on(&c, "/home/nez/Projects/Lucina/Other", is_mac);
+                assert!(
+                    r.as_ref().is_some_and(|r| !r.contains("sweep-targets") && r.contains("by-unit sweep")),
+                    "{c} (mac {is_mac})"
+                );
                 assert!(r.is_some_and(|r| r.contains("rm -rf") && r.contains("cargo clean")), "{c} (mac {is_mac})");
             }
         }
@@ -1264,7 +1268,6 @@ mod tests {
             "cargo clean".to_string(),
             "cargo clean -p lucina-agentd".to_string(),
             "ssh nezopt 'cd ~/Projects/x && cargo clean -p lucina-agentd'".to_string(),
-            "lane sweep-targets".to_string(),
             "find ./build-output -name '*.o' -delete".to_string(),
             "ssh nezopt 'find ~/scratch/out -type f -delete'".to_string(),
             "rm -f target/x.log".to_string(),
