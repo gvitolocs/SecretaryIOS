@@ -39,7 +39,7 @@ mod handoff;
 mod ids;
 mod orch;
 mod permissions;
-mod pipeline;
+pub(crate) mod pipeline;
 mod provider_subagents;
 mod rewind;
 mod schedules;

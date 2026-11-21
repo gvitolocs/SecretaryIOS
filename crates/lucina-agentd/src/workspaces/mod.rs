@@ -449,6 +449,9 @@ impl Registry {
         if self.get(id).is_none_or(|w| w.archived_at.is_some()) {
             return Err(WsError::NotFound("Workspace not found".into()));
         }
+        if title.as_deref().is_some_and(crate::manager::pipeline::poisoned_title) {
+            return Err(WsError::Invalid("A title that starts with \"Error:\" is refused (typically a failed command substituted into it)".into()));
+        }
         self.update(id, |w| w.title = title.filter(|t| !t.trim().is_empty())).ok_or_else(|| WsError::NotFound("Workspace not found".into()))
     }
 

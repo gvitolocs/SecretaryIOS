@@ -212,6 +212,11 @@ async fn requested_base(repo: &Trunk, rev: &str) -> Result<String, ManagerError>
     .map_err(invalid)
 }
 
+/// A title that starts with "Error:" is a failed command's output substituted into it (AGENT-10).
+pub(crate) fn poisoned_title(t: &str) -> bool {
+    t.trim().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("error:"))
+}
+
 fn slug(title: &str) -> String {
     let s = lucina_agents::branch_slug::slugify(title);
     let s: String = s.chars().take(48).collect();
@@ -271,6 +276,12 @@ impl Manager {
     ) -> Result<(Task, WorkspaceRecord), ManagerError> {
         if req.title.trim().is_empty() {
             return Err(invalid("A task needs a title"));
+        }
+        if poisoned_title(&req.title) {
+            return Err(invalid(format!(
+                "A title that starts with \"Error:\" is refused (typically a failed command substituted into it): {}",
+                req.title.trim().chars().take(40).collect::<String>()
+            )));
         }
         let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo)))?;
         if let Some(r) = &repo.remote {
@@ -439,6 +450,12 @@ impl Manager {
             return Err(invalid(format!(
                 "{} is not a worktree: only task worktrees merge through the queue",
                 w.cwd
+            )));
+        }
+        if poisoned_title(w.name()) {
+            return Err(invalid(format!(
+                "The workspace title starts with \"Error:\" and would become the merge commit subject (typically a failed command substituted into it): {}; rename it, then merge",
+                w.name().chars().take(40).collect::<String>()
             )));
         }
         let dir = PathBuf::from(&w.cwd);

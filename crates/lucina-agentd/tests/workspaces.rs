@@ -289,6 +289,12 @@ fn checkout_branch_errors_projects_and_clone() {
     assert!(r.stderr.contains("Create worktree requires a git repository"), "{}", r.stderr);
     let renamed = e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "My title"]);
     assert_eq!(renamed["title"], "My title");
+    // A leading "Error:" (a failed command substituted into the title) is refused; the word elsewhere is fine (AGENT-10).
+    let r = e.d.lagent(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "Error: refs: no id", "--json"]);
+    assert!(r.stderr.contains("starts with \"Error:\""), "{}", r.stderr);
+    assert_eq!(e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "My title"])["title"], "My title", "the refused rename changed nothing");
+    assert_eq!(e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "Fix Error: handling"])["title"], "Fix Error: handling");
+    e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "My title"]);
     assert_eq!(e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "--reset"])["title"], Value::Null);
     // Pins and labels (Paseo: workspace.pin.set, workspace.label.assignment.set; keys collapsed, lowercased).
     let wid = w["workspaceId"].as_str().unwrap();

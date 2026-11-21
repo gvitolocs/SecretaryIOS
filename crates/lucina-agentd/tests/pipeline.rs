@@ -922,3 +922,68 @@ async fn a_task_can_be_based_on_a_trunk_commit_and_on_nothing_else() {
     assert_eq!(msg, "base not-a-rev is not a commit in Baseable");
     assert!(git(&repo, &["branch", "--list", "words-base"]).is_empty());
 }
+
+#[tokio::test]
+async fn a_title_that_starts_with_error_is_refused_but_a_word_inside_one_is_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Titled", "true");
+    let m = manager(&root);
+    let start = |title: &str, branch: &str| {
+        let m = m.clone();
+        let (title, branch) = (title.to_string(), branch.to_string());
+        let repo = repo.display().to_string();
+        async move {
+            m.start_task(StartTask {
+                title,
+                repo: Some(repo),
+                branch: Some(branch),
+                ..StartTask::default()
+            })
+            .await
+        }
+    };
+    // A failed `lagent id new` substituted into a title (AGENT-10), in any case and after blanks.
+    for bad in ["Error: refs: no id", "  error: x", "ERROR:y"] {
+        let ManagerError::Invalid(msg) = start(bad, "poisoned").await.expect_err(bad) else {
+            panic!("{bad}: a refused request");
+        };
+        assert!(msg.contains("\"Error:\""), "{msg}");
+        assert!(msg.contains(bad.trim()), "the title is named: {msg}");
+    }
+    assert!(git(&repo, &["branch", "--list", "poisoned"]).is_empty());
+    assert!(m.pipeline().tasks().is_empty(), "no task was made");
+    // Only a LEADING `Error:` counts.
+    start("Fix Error: handling", "fine").await.unwrap();
+    start("Error handling", "fine-too").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_merge_of_a_workspace_titled_error_is_refused_and_nothing_is_queued() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Poisoned", "true");
+    let wt = topic(&root, &repo, "Poisoned", "oops");
+    let m = manager(&root);
+    // Adopting keeps the stored title as given; the merge is where it would become a subject.
+    let (_, w) = m
+        .adopt_task(AdoptTask {
+            path: wt.display().to_string(),
+            title: Some("Error: refs: no id".into()),
+            ..AdoptTask::default()
+        })
+        .await
+        .unwrap();
+    let ManagerError::Invalid(msg) = m
+        .queue_merge(MergeRequest {
+            workspace: w.workspace_id.clone(),
+            ..MergeRequest::default()
+        })
+        .await
+        .expect_err("a poisoned title is refused")
+    else {
+        panic!("a refused request");
+    };
+    assert!(msg.contains("starts with \"Error:\""), "{msg}");
+    assert!(m.pipeline().active_jobs().is_empty(), "nothing was queued");
+}
