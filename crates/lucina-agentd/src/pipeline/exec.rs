@@ -640,7 +640,11 @@ impl Exec {
         let extra: Vec<&str> = self.deploy_env.iter().map(String::as_str).collect();
         let (mut env, kept_back) =
             crate::env::scrubbed_env_from(self.source_env.iter().cloned(), &extra);
-        env.retain(|(k, _)| k != "BQ_SLOT" && k != "BQ_SLOT_PID");
+        env.retain(|(k, _)| k != "BQ_SLOT" && k != "BQ_SLOT_PID" && k != "CARGO_INCREMENTAL");
+        // bq starts a gate with CARGO_INCREMENTAL=0 unless it is already set; the warm-up outside the clock
+        // builds from this same environment. Both get the same explicit value, so what the warm-up built is
+        // what the timed gate reuses and no workspace crate is rebuilt inside the clock.
+        env.push((OsString::from("CARGO_INCREMENTAL"), OsString::from("0")));
         (env, kept_back)
     }
 
@@ -4818,6 +4822,40 @@ mod tests {
             log.contains("--max-wait 1") || log.contains("waits at most 1 s"),
             "{log}"
         );
+    }
+
+    /// The warm-up (a plain step, outside the clock) and the slotted gate build with the same
+    /// `CARGO_INCREMENTAL`, whatever the executor itself was started with.
+    #[test]
+    fn slot_the_warm_up_and_the_slotted_gate_build_with_the_same_cargo_incremental() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let bq = fake_bq(&root.join("fake"));
+        for source in [
+            vec![],
+            vec![(OsString::from("CARGO_INCREMENTAL"), OsString::from("1"))],
+        ] {
+            let (mut x, dir) = slot_exec(root, Some(bq.clone()));
+            x.source_env = source;
+            let (env, _) = x.built_env();
+            let values: Vec<&OsString> = env
+                .iter()
+                .filter(|(k, _)| k == "CARGO_INCREMENTAL")
+                .map(|(_, v)| v)
+                .collect();
+            assert_eq!(values, vec![&OsString::from("0")]);
+            let (plain, slotted) = (root.join("plain"), root.join("slotted"));
+            for (file, slot) in [(&plain, false), (&slotted, true)] {
+                let cmd = format!("printf %s \"$CARGO_INCREMENTAL\" > {}", file.display());
+                assert!(
+                    x.gate_run(root, "g", &cmd, slot, Duration::from_secs(10), "10 s"),
+                    "{}",
+                    slot_log(&dir)
+                );
+            }
+            assert_eq!(std::fs::read_to_string(&plain).unwrap(), "0");
+            assert_eq!(std::fs::read_to_string(&slotted).unwrap(), "0");
+        }
     }
 
     /// A gate that failed in the bq queue (the fake exits 125, no slot in time) is tried once, not twice:
