@@ -263,6 +263,16 @@ lagent device release iphone
   only mention the names (`echo pkill`, `git commit -m "no pkill"`). Reason: on 2026-11-11 a worker ran `pkill -f` in
   the Mac shell instead of on nezopt and stopped about 200 of the owner's processes. `LAGENT_BYPASS=<reason>` still works.
 
+- On both hosts, in every session, the hook also denies deleting SINGLE FILES under a cargo target directory (a `target`
+  or `target-*` directory, `~/.cache/cargo-target/…`, `~/.cache/lucina-check-target`, and on nezopt any directory with
+  `CACHEDIR.TAG` and `.rustc_info.json`): `find … -delete`, `find … -exec rm`, `… | xargs rm`, and `rm` with a glob,
+  also inside `ssh host '…'` and `bash -c`. Reason (HOST-12, twice): cargo keeps the `.fingerprint` of a deleted
+  dependency output, thinks it is fresh, and the next build breaks. Instead use `rm -rf <target>/<profile>` or
+  `rm -rf <target>`, `cargo clean [-p <crate>]`, or LB's by-unit sweep. `$CARGO_TARGET_DIR` and `$(…)` paths are not
+  expanded, so they pass. `LAGENT_BYPASS=<reason>` still works.
+  Known over-refusals: a non-cargo directory named `target` or `target-*`, and a whole-profile delete routed through
+  `xargs rm -rf` (do `rm -rf <target>/<profile>` directly). The marker rule also fires for any ANCESTOR of the operand.
+
 ## Standalone crates
 
 The workspace is the root `Cargo.toml`. These crates stay outside it on purpose, each with its own

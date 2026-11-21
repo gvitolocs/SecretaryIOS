@@ -34,7 +34,10 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
   without a remote (LucinaOS) merge into the local trunk branch.
 - **Hook**: `tools/pipeline-guard` is a Claude Code PreToolUse(Bash) hook (Mac and nezopt `~/.claude/settings.json`).
   In Lucina repos it denies `git worktree add` / `wt add` (→ `lagent task start`) and `git push … main`
-  (→ `lagent merge`). `LAGENT_BYPASS=<reason>` in the command passes and is logged.
+  (→ `lagent merge`). `LAGENT_BYPASS=<reason>` in the command passes and is logged. In every session on both hosts it also
+  denies deleting single files under a cargo target directory (`find … -delete`, `find … -exec rm`, `… | xargs rm`,
+  `rm` with a glob, also inside `ssh host '…'`; HOST-12) and names the allowed forms: `rm -rf <target>/<profile>`,
+  `cargo clean`, LB's by-unit sweep.
 
 ## 2. The merge queue
 
