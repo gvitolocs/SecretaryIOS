@@ -33,14 +33,26 @@ async fn report_read_matrix_and_the_evidence_rule_over_http() {
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["data"]["rows"][0]["cells"]["juno"]["status"], "affected");
 
-    let (s, b) = h.get("/flaws?q=quadratini&platform=juno&status=affected").await;
+    let (s, b) = h
+        .get("/flaws?q=quadratini&platform=juno&status=affected")
+        .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["data"]["items"].as_array().unwrap().len(), 1);
 
     // Closing without evidence, or on reading code, is refused and changes nothing.
     let url = format!("/flaws/{id}/targets/web");
-    let (s, b, _) = h.call(reqwest::Method::PUT, &url, Some(json!({"status": "not_affected"}))).await;
-    assert_eq!((s, b["error"].as_str()), (422, Some("evidence_required")), "{b}");
+    let (s, b, _) = h
+        .call(
+            reqwest::Method::PUT,
+            &url,
+            Some(json!({"status": "not_affected"})),
+        )
+        .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (422, Some("evidence_required")),
+        "{b}"
+    );
     let read = json!({"status": "not_affected", "evidence": {"kind": "code_reading", "reference": "rich.rs:1"}});
     let (s, _, _) = h.call(reqwest::Method::PUT, &url, Some(read)).await;
     assert_eq!(s, 422);
@@ -53,14 +65,33 @@ async fn report_read_matrix_and_the_evidence_rule_over_http() {
     assert_eq!(b["data"]["status"], "not_affected");
 
     // A bad platform, id or transition.
-    let (s, _, _) = h.call(reqwest::Method::PUT, &format!("/flaws/{id}/targets/nokia"), Some(json!({}))).await;
+    let (s, _, _) = h
+        .call(
+            reqwest::Method::PUT,
+            &format!("/flaws/{id}/targets/nokia"),
+            Some(json!({})),
+        )
+        .await;
     assert_eq!(s, 400);
     assert_eq!(h.get("/flaws/NOPE").await.0, 404);
     let (s, b, _) = h.call(reqwest::Method::PUT, &format!("/flaws/{id}/targets/ios"), Some(json!({"status": "verified", "evidence": {"kind": "screenshot", "reference": "a.png"}}))).await;
-    assert_eq!((s, b["error"].as_str()), (409, Some("bad_transition")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("bad_transition")),
+        "{b}"
+    );
     // Dispatch needs a layer.
-    let (s, b) = h.post(&format!("/flaws/{id}/dispatch"), json!({"platform": "juno"})).await;
-    assert_eq!((s, b["error"].as_str()), (409, Some("not_claimable")), "{b}");
+    let (s, b) = h
+        .post(
+            &format!("/flaws/{id}/dispatch"),
+            json!({"platform": "juno"}),
+        )
+        .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("not_claimable")),
+        "{b}"
+    );
 }
 
 #[tokio::test]
@@ -78,11 +109,14 @@ async fn the_reporter_comes_from_the_caller_header_not_the_body() {
     assert_eq!(r.status().as_u16(), 201);
     let b: Value = r.json().await.unwrap();
     assert_eq!(b["data"]["flaw"]["reporter"], "mcp:claude");
-    let (s, _) = h.post("/flaws", json!({"words": "x", "reporter": "someone"})).await;
+    let (s, _) = h
+        .post("/flaws", json!({"words": "x", "reporter": "someone"}))
+        .await;
     assert_eq!(s, 400, "unknown fields are refused");
 }
 
-const INTENT_CHAT: &str = "{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}";
+const INTENT_CHAT: &str =
+    "{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}";
 
 fn chatty() -> lucina_server::fake::Script {
     script(json!({"rules": [
@@ -122,7 +156,10 @@ async fn telling_claude_stays_a_message() {
     let h = harness(chatty(), no_loop).await;
     h.chat("tell Claude that emoji are boxes").await;
     let (_, b) = h.get("/flaws").await;
-    assert!(b["data"]["items"].as_array().unwrap().is_empty(), "the chat turn did not take it: {b}");
+    assert!(
+        b["data"]["items"].as_array().unwrap().is_empty(),
+        "the chat turn did not take it: {b}"
+    );
 }
 
 #[tokio::test]
@@ -131,4 +168,22 @@ async fn off_means_off() {
     assert_eq!(h.get("/flaws").await.0, 404);
     let d = h.chat("flaw: x").await;
     assert_ne!(d["action"], "flaw_report");
+}
+
+#[tokio::test]
+async fn the_lane_breakers_are_listed_and_cleared_over_http() {
+    // LA-C035: a lead closes a lane by hand. Nothing has failed here, so the list is empty and a
+    // clear says so; GET and POST are the only methods.
+    let h = plain().await;
+    let (s, b) = h.get("/flaws/lanes").await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["data"]["lanes"].as_array().unwrap().len(), 0, "{b}");
+    let (s, b) = h.post("/flaws/lanes/claude-sonnet/clear", json!({})).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["data"]["cleared"], false, "{b}");
+    assert_eq!(b["data"]["lane"], "claude-sonnet");
+    let (s, _, _) = h
+        .call(reqwest::Method::PUT, "/flaws/lanes", Some(json!({})))
+        .await;
+    assert_eq!(s, 405);
 }

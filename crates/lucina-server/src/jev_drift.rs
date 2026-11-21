@@ -2,10 +2,12 @@
 //!
 //! - **Live traffic:** the `event="jev_first"` lines in `lucina-rs.service`'s journal
 //!   ([`parse_log_line`], [`LiveStats`]): used vs fallback, reasons, intents, confidence buckets and
-//!   how often Jev agrees with the tier-0 rule.
+//!   how often Jev agrees with the tier-0 rule. Only a line of a real turn counts (`source`; the
+//!   replay endpoint writes its own), and the report says how many counted lines predate the field.
 //! - **Labelled replay:** the owner's labelled turns (`<labels dir>/cal-in.jsonl`, `labels.txt`,
 //!   `extras.jsonl`, 0600) through the running server's `/api/secretary/jev/route`, scored by
-//!   confidence bucket, per intent and for the JEV-first policy at several thresholds ([`score`]).
+//!   confidence bucket, per intent and for the JEV-first policy at several thresholds ([`score`]),
+//!   beside what this binary's own rules make of the same answers ([`this_tool_router`]).
 //! - **Drift:** against the previous run's summary (`<data>/jev-drift/<date>.json`: numbers and
 //!   intent names, never a turn's text) ([`drift`]).
 //! - One ops record (`kind=status`, project `lucina`); `--recalibrate` adds per-intent JEV-first
@@ -19,7 +21,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::jev_route::{deterministic_intent, jev_beats_rule_from, JEV_FIRST_MIN};
+use crate::jev_route::{
+    deterministic_intent, jev_beats_rule_from, jev_first_rule_from, JEV_FIRST_MIN,
+};
 
 /// Confidence buckets, `[lo, hi)`; the last one includes 1.0.
 pub const BUCKETS: [(f64, f64); 5] = [(0.0, 0.5), (0.5, 0.6), (0.6, 0.75), (0.75, 0.9), (0.9, 1.0)];
@@ -62,6 +66,9 @@ pub fn bucket(confidence: f64) -> usize {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogTurn {
     pub used: bool,
+    /// What wrote the line: `"turn"` of the owner's, `"replay"` from the replay endpoint, `None` for
+    /// a line from a server that did not yet write the field.
+    pub source: Option<String>,
     pub reason: Option<String>,
     pub intent: Option<String>,
     pub confidence: Option<f64>,
@@ -142,6 +149,7 @@ pub fn parse_log_line(line: &str) -> Option<LogTurn> {
     };
     Some(LogTurn {
         used,
+        source: text("source"),
         reason: text("reason"),
         intent: text("intent"),
         confidence: get("confidence").and_then(|c| c.parse().ok()),
@@ -160,6 +168,10 @@ pub struct LiveStats {
     pub guards: BTreeMap<String, usize>,
     pub buckets: [usize; 5],
     pub no_confidence: usize,
+    /// Counted turns whose line has no `source`: from a server that did not yet write the field, so a
+    /// replay echo may be among them. The report names the number when it is not 0.
+    #[serde(default)]
+    pub no_source: usize,
     /// Turns with both a tier-0 rule and a Jev intent, and how many agree.
     pub tier0_compared: usize,
     pub tier0_agreed: usize,
@@ -274,7 +286,15 @@ impl YesNoStats {
 }
 
 impl LiveStats {
+    /// Count one line as live traffic: a turn's own, or a line from before the `source` field. A
+    /// replay of the labelled turns never counts, whatever else it says.
     pub fn add(&mut self, t: &LogTurn) {
+        if t.source.as_deref().is_some_and(|s| s != "turn") {
+            return;
+        }
+        if t.source.is_none() {
+            self.no_source += 1;
+        }
         self.turns += 1;
         if t.used {
             self.used += 1;
@@ -494,6 +514,10 @@ pub struct Replay {
     /// Precision of each intent Jev picked at JEV-first's default threshold or above.
     pub per_intent: BTreeMap<String, Tally>,
     pub live: Tally,
+    /// What this binary's rules chose on the same answers ([`this_tool_router`]); empty in a summary
+    /// from before the row.
+    #[serde(default)]
+    pub tool: Tally,
     pub policy: Vec<(f64, Tally)>,
 }
 
@@ -506,12 +530,33 @@ impl Replay {
     }
 }
 
+/// What this binary's routing rules make of a replayed turn, at the switches' default values: the
+/// decision [`crate::jev_route::jev_first_rule_from`] takes on the facts the response carries (Jev's
+/// intent and confidence, the tier-0 rule's name), then, as the turn path does, only a deterministic
+/// rule keeps the turn and anything else is plain chat. Called with the four values `None` — never
+/// this process's environment — so the row is what the build at hand ships, and a routing change
+/// shows before it is deployed. Like [`score_from`]'s policy rows it cannot see the text, so a guard
+/// that reads the text (travel, an MCP turn) is not modelled.
+pub fn this_tool_router(x: &Routed) -> &str {
+    let jev = x.jev.as_deref().zip(x.confidence);
+    match jev_first_rule_from(jev, x.tier0.as_deref(), None, None, None, None) {
+        // `Ok` is only ever a non-empty intent of Jev's own, sure enough to route the turn.
+        Ok(()) => jev.map_or(x.routed.as_str(), |(j, _)| j),
+        Err(_) => x
+            .tier0
+            .as_deref()
+            .filter(|t| deterministic_intent(t))
+            .unwrap_or("chat"),
+    }
+}
+
 /// A turn labelled with several intents is right on any of them.
 pub fn right(labels: &[String], intent: &str) -> bool {
     labels.iter().any(|l| l == intent)
 }
 
-/// Jev's accuracy by bucket and intent, the live router's, and the JEV-first policy's at each
+/// Jev's accuracy by bucket and intent, the live router's, this binary's own ([`this_tool_router`])
+/// and the JEV-first policy's at each
 /// threshold (Jev's answer when sure and not `unknown`, unless a deterministic rule matched and
 /// Jev's answer did not beat it — the same precedence [`crate::jev_route::jev_first`] uses).
 pub fn score(rows: &[Routed]) -> Replay {
@@ -543,6 +588,9 @@ pub fn score_from(
     };
     for x in rows {
         r.live.add(right(&x.labels, &x.routed));
+        // The tool's own row takes the defaults, not the arguments above: it is this build's policy,
+        // so a switch set for the live server never moves it.
+        r.tool.add(right(&x.labels, this_tool_router(x)));
         let jev = x.jev.as_deref().zip(x.confidence);
         match jev {
             Some((j, c)) => {
@@ -739,8 +787,17 @@ pub fn render(
     );
 
     let l = &cur.live;
+    // Lines from before the field may still be replay echoes: the report says how many it counted.
+    let before_source = if l.no_source == 0 {
+        String::new()
+    } else {
+        format!(
+            ", {} of them from before the source field (these include replay echoes)",
+            l.no_source
+        )
+    };
     let mut b = format!(
-        "**Live traffic** (journal, last {} days): {} turns, JEV-first used {} ({}), tier-0 agreement {} (of {}).\n\n",
+        "**Live traffic** (journal, last {} days): {} turns{before_source}, JEV-first used {} ({}), tier-0 agreement {} (of {}).\n\n",
         cur.days,
         l.turns,
         l.used_rate().map_or("-".into(), |x| format!("{:.0}%", x * 100.0)),
@@ -798,14 +855,16 @@ pub fn render(
     match (&cur.replay, replay_note) {
         (Some(r), _) => {
             b += &format!(
-                "\n**Labelled replay** ({} turns, Jev unanswered {}): Jev {}, live router {}.\n\n",
+                "\n**Labelled replay** ({} turns, Jev unanswered {}): Jev {}, live router {}, this tool's router {} (live router = the server that is running, this tool's router = this binary's routing rules on the same Jev answers).\n\n",
                 r.turns,
                 r.jev_missing,
                 rate(&r.jev),
-                rate(&r.live)
+                rate(&r.live),
+                rate(&r.tool)
             );
             b += "| policy | right |\n|---|---|\n";
             b += &format!("| live router | {} |\n", rate(&r.live));
+            b += &format!("| this tool's router | {} |\n", rate(&r.tool));
             for (th, t) in &r.policy {
                 b += &format!("| JEV-first ≥ {th:.2} | {} |\n", rate(t));
             }
@@ -1089,6 +1148,7 @@ mod tests {
             t,
             LogTurn {
                 used: true,
+                source: None,
                 reason: None,
                 intent: Some("temporal_query".into()),
                 confidence: Some(0.77),
@@ -1153,6 +1213,51 @@ mod tests {
         assert_eq!(s.no_confidence, 1);
         // The unanswered turn still counts: tier-0 fired and Jev did not agree.
         assert_eq!((s.tier0_compared, s.tier0_agreed), (3, 1));
+    }
+
+    /// TURN-11: the replay endpoint writes the same line as a turn, and its echo is not live traffic.
+    #[test]
+    fn a_replay_line_is_not_live_traffic_an_older_line_is_and_is_named() {
+        let line = |source: &str, used: &str| {
+            format!(
+                r#"INFO lucina_jev::route: jev_first event="jev_first" source="{source}" used={used} intent=chat confidence=0.9 tier0=None guard="""#
+            )
+        };
+        let t = parse_log_line(&line("turn", "true")).unwrap();
+        assert_eq!(t.source.as_deref(), Some("turn"));
+        assert_eq!(
+            parse_log_line(&line("replay", "true"))
+                .unwrap()
+                .source
+                .as_deref(),
+            Some("replay")
+        );
+        let mut s = LiveStats::default();
+        s.add(&t);
+        s.add(&parse_log_line(&line("replay", "true")).unwrap());
+        s.add(&parse_log_line(&line("turn", "false")).unwrap());
+        assert_eq!((s.turns, s.used, s.no_source), (2, 1, 0), "the echo is out");
+        let dated = |live: LiveStats| Summary {
+            date: "2026-11-19".into(),
+            days: 7,
+            live,
+            replay: None,
+        };
+        let (_, body) = render(&dated(s.clone()), None, &[], None, None);
+        assert!(
+            body.contains("**Live traffic** (journal, last 7 days): 2 turns, JEV-first used 50%"),
+            "{body}"
+        );
+
+        // A line of a server that wrote no source (here `USED`, the pre-field journal sample): counted
+        // as live, and said so, because a replay of that day is indistinguishable from a turn.
+        s.add(&parse_log_line(USED).unwrap());
+        assert_eq!((s.turns, s.used, s.no_source), (3, 2, 1));
+        let (_, body) = render(&dated(s), None, &[], None, None);
+        assert!(
+            body.contains("3 turns, 1 of them from before the source field (these include replay echoes), JEV-first used 67%"),
+            "{body}"
+        );
     }
 
     #[test]
@@ -1284,6 +1389,150 @@ mod tests {
         for (th, t) in r.policy {
             assert_eq!((th, t), (th, Tally { n: 1, right: 0 }), "{th}");
         }
+    }
+
+    /// TURN-11: "this tool's router" is the turn path's decision on the same facts, taken in this
+    /// process at the switches' defaults. The oracle is the server's own function, on a real
+    /// classification built from the same rule name.
+    #[test]
+    fn this_tools_router_is_the_turn_paths_decision() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rows = [
+            // A sure Jev (0.95, past the 0.90 floor) takes the turn from the keyword rule…
+            routed(
+                "grocery.shopping_list.query",
+                Some(("grocery.shopping_list.query", 0.95)),
+                "grocery.expense.query",
+                Some("grocery.expense.query"),
+            ),
+            // …an unsure one leaves it there.
+            routed(
+                "grocery.shopping_list.query",
+                Some(("grocery.shopping_list.query", 0.8)),
+                "grocery.expense.query",
+                Some("grocery.expense.query"),
+            ),
+            // A rule that parses no arguments of its own does not survive an unsure Jev: plain chat.
+            routed(
+                "chat",
+                Some(("chat", 0.4)),
+                "schedule_reminder",
+                Some("schedule_reminder"),
+            ),
+            // Jev unanswered: the deterministic rule keeps its turn, anything else is chat.
+            routed(
+                "grocery.expense.query",
+                None,
+                "grocery.expense.query",
+                Some("grocery.expense.query"),
+            ),
+            routed("chat", None, "chat", Some("chat")),
+            // No rule at all: a sure answer of Jev's own routes the turn.
+            routed("web_crawl", Some(("web_crawl", 0.9)), "chat", None),
+        ];
+        let mut same_build = Vec::new();
+        for x in &rows {
+            let rule = x.tier0.as_deref().map(|t| {
+                lucina_intent::tier0::from_model_json(
+                    &json!({"intent": t, "confidence": 1.0}),
+                    "x",
+                    "",
+                    &s,
+                )
+            });
+            let jev = x.jev.as_deref().zip(x.confidence);
+            let decided =
+                crate::jev_route::jev_first_from(jev, rule.as_ref(), None, None, None, None);
+            let expected = match decided {
+                Ok(()) => jev.map_or(x.routed.clone(), |(j, _)| j.to_owned()),
+                Err(_) => crate::jev_route::rule_when_jev_unsure(rule)
+                    .map(|c| c.intent)
+                    .unwrap_or_else(|| "chat".to_owned()),
+            };
+            assert_eq!(this_tool_router(x), expected, "{x:?}");
+            same_build.push(Routed {
+                labels: x.labels.clone(),
+                jev: x.jev.clone(),
+                confidence: x.confidence,
+                routed: expected,
+                tier0: x.tier0.clone(),
+            });
+        }
+        assert_eq!(
+            this_tool_router(&rows[0]),
+            "grocery.shopping_list.query",
+            "the sure answer beat the rule"
+        );
+        assert_eq!(
+            this_tool_router(&rows[1]),
+            "grocery.expense.query",
+            "the unsure one did not"
+        );
+        // A server of this build answers each turn as the row does: the two rows are the same tally.
+        let r = scored(&same_build);
+        assert_eq!(r.tool, r.live);
+        assert_eq!(r.tool, Tally { n: 6, right: 5 });
+    }
+
+    /// TURN-11: the table names which server each of its two router rows measured.
+    #[test]
+    fn the_labelled_replay_names_both_routers_it_scores() {
+        let cur = Summary {
+            date: "2026-11-19".into(),
+            days: 7,
+            live: LiveStats::default(),
+            replay: Some(Replay {
+                turns: 2,
+                jev: Tally { n: 2, right: 2 },
+                live: Tally { n: 2, right: 1 },
+                tool: Tally { n: 2, right: 2 },
+                ..Default::default()
+            }),
+        };
+        let (_, body) = render(&cur, None, &[], None, None);
+        assert!(
+            body.contains("live router = the server that is running, this tool's router = this binary's routing rules on the same Jev answers"),
+            "{body}"
+        );
+        let rows: Vec<&str> = body.lines().filter(|l| l.contains("router |")).collect();
+        assert_eq!(
+            rows,
+            [
+                "| live router | 0.50 (1/2) |",
+                "| this tool's router | 1.00 (2/2) |"
+            ],
+            "{body}"
+        );
+    }
+
+    /// TURN-11: nothing about the summary the drift comparison reads broke: the two new fields
+    /// default, so a file the old tool wrote still loads and still compares.
+    #[test]
+    fn an_old_summary_still_loads_with_the_new_fields_defaulting() {
+        let old: Summary = serde_json::from_value(json!({
+            "date": "2026-11-12",
+            "days": 7,
+            "live": {"turns": 265, "used": 100, "reasons": {"below_threshold": 3},
+                     "intents": {"chat": 9}, "guards": {}, "buckets": [0, 1, 2, 3, 4],
+                     "no_confidence": 5, "tier0_compared": 6, "tier0_agreed": 7},
+            "replay": {"turns": 256, "jev_missing": 4, "jev": {"n": 252, "right": 200},
+                       "buckets": [{"n": 12, "right": 9}, {"n": 0, "right": 0}, {"n": 0, "right": 0},
+                                   {"n": 0, "right": 0}, {"n": 0, "right": 0}],
+                       "per_intent": {"chat": {"n": 2, "right": 2}},
+                       "live": {"n": 256, "right": 128},
+                       "policy": [[0.6, {"n": 256, "right": 130}]]},
+        }))
+        .unwrap();
+        assert_eq!(old.live.no_source, 0);
+        let r = old.replay.clone().unwrap();
+        assert_eq!(r.tool, Tally::default());
+        assert_eq!(r.live, Tally { n: 256, right: 128 });
+        // The comparison runs on it, and a round trip keeps both new fields.
+        let mut cur = old.clone();
+        cur.date = "2026-11-19".into();
+        assert!(drift(&old, &cur).is_empty(), "{:?}", drift(&old, &cur));
+        let back: Summary = serde_json::from_str(&serde_json::to_string(&cur).unwrap()).unwrap();
+        assert_eq!(back, cur);
     }
 
     #[test]

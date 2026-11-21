@@ -347,6 +347,13 @@ impl Config {
 /// The lock deploy-guard checks: SecretaryIOS merges and every deploy hold it.
 pub const MERGE_LOCK: &str = "/tmp/lucina-merge.lock";
 
+/// The name of the transient systemd unit that runs a job's executor: `lagent-job-<id>` (without the
+/// `job_` prefix), made by `manager::pipeline::start_runner`. The executor reads its own control group
+/// against this name before it binds its steps to it (LA-C038).
+pub fn runner_unit(job_id: &str) -> String {
+    format!("lagent-job-{}", job_id.trim_start_matches("job_"))
+}
+
 pub fn new_id(prefix: &str) -> String {
     format!(
         "{prefix}_{}",

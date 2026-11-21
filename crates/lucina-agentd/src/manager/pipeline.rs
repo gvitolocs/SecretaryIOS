@@ -1239,6 +1239,12 @@ const AGENTD_PID_VAR: &str = "LUCINA_AGENTD_PID";
 
 /// The arguments of the `systemd-run` that starts the executor: the unit, the working directory,
 /// the job's `PATH`, the daemon's pid, and the command under the merge lock.
+///
+/// The executor's gate steps run in scopes that `BindsTo=` this unit (`pipeline::exec`), so stopping or
+/// restarting the unit by hand (`systemctl --user restart lagent-job-<id>`) ends the step's scope and the `bq`
+/// in it, which frees the slot; that is the point (a dead executor frees its slot), not a side effect. What
+/// does not die is the build the gate started: `bq` runs it in its own sibling scope, which the binding does
+/// not cover, and it runs on until it ends.
 fn systemd_run_args(
     unit: &str,
     dir: &Path,
@@ -1266,6 +1272,38 @@ fn systemd_run_args(
     ]
 }
 
+/// The name of the variable that carries agentd's own executable path to the executor, the fallback
+/// of agentd's identity (finding PIPE-05). Read by `pipeline::kill`, by this name only.
+const AGENTD_EXE_VAR: &str = "LUCINA_AGENTD_EXE";
+
+/// This process's executable path with a trailing ` (deleted)` removed (the link reads so after a
+/// deploy replaced the file), or `None` when it cannot be read.
+fn agentd_exe() -> Option<String> {
+    let exe = std::env::current_exe().ok()?.display().to_string();
+    Some(exe.strip_suffix(" (deleted)").unwrap_or(&exe).to_string())
+}
+
+/// [`systemd_run_args`] with agentd's executable carried as well: its `--setenv` goes in front of
+/// the command, next to the pid's.
+fn systemd_run_args_with_exe(
+    unit: &str,
+    dir: &Path,
+    path: &str,
+    agentd_pid: u32,
+    exe: Option<&str>,
+    lock: &Path,
+    lagent: &str,
+) -> Vec<String> {
+    let mut args = systemd_run_args(unit, dir, path, agentd_pid, lock, lagent);
+    let at = args
+        .iter()
+        .position(|a| a == "--property=TimeoutStopSec=30");
+    if let (Some(exe), Some(at)) = (exe, at) {
+        args.insert(at, format!("--setenv={AGENTD_EXE_VAR}={exe}"));
+    }
+    args
+}
+
 /// Start the executor under the merge lock: a transient systemd unit (it outlives agentd
 /// restarts and agentd's own deploys), else a child process. Returns the runner. This runs in
 /// the daemon's own process, so `std::process::id()` is agentd's main pid, which the executor is
@@ -1279,11 +1317,18 @@ async fn start_runner(
     let lagent = cfg.lagent.display().to_string();
     let path = std::env::var("PATH").unwrap_or_default();
     let agentd_pid = std::process::id();
+    let agentd_exe = agentd_exe();
     if cfg.systemd {
-        let unit = format!("lagent-job-{}", id.trim_start_matches("job_"));
+        let unit = pipeline::runner_unit(id);
         let out = tokio::process::Command::new("systemd-run")
-            .args(systemd_run_args(
-                &unit, dir, &path, agentd_pid, lock, &lagent,
+            .args(systemd_run_args_with_exe(
+                &unit,
+                dir,
+                &path,
+                agentd_pid,
+                agentd_exe.as_deref(),
+                lock,
+                &lagent,
             ))
             .stdin(std::process::Stdio::null())
             .output()
@@ -1297,13 +1342,18 @@ async fn start_runner(
         }
         return Ok(unit);
     }
-    let mut child = tokio::process::Command::new("flock")
+    let mut command = tokio::process::Command::new("flock");
+    command
         .arg(lock)
         .arg(&lagent)
         .arg("pipeline-exec")
         .arg(dir)
         .current_dir(dir)
-        .env(AGENTD_PID_VAR, agentd_pid.to_string())
+        .env(AGENTD_PID_VAR, agentd_pid.to_string());
+    if let Some(exe) = &agentd_exe {
+        command.env(AGENTD_EXE_VAR, exe);
+    }
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1371,6 +1421,28 @@ mod tests {
             setenv < sep,
             "the variable must precede the command: {args:?}"
         );
+    }
+
+    /// PIPE-05: the executor is also told agentd's executable, before the command, and the path is the
+    /// one with ` (deleted)` removed.
+    #[test]
+    fn the_systemd_run_argv_carries_agentds_exe() {
+        let args = systemd_run_args_with_exe(
+            "lagent-job-x",
+            Path::new("/d"),
+            "/bin",
+            4242,
+            Some("/home/nez/.local/bin/lucina-agentd"),
+            Path::new("/l"),
+            "/lagent",
+        );
+        let sep = args.iter().position(|a| a == "--").unwrap();
+        let at = args
+            .iter()
+            .position(|a| a == "--setenv=LUCINA_AGENTD_EXE=/home/nez/.local/bin/lucina-agentd")
+            .unwrap_or_else(|| panic!("{args:?}"));
+        assert!(at < sep, "{args:?}");
+        assert!(agentd_exe().is_some_and(|e| !e.ends_with("(deleted)")));
     }
 
     /// A full commit id, as `rev-parse --verify --quiet <rev>^{commit}` answers it.

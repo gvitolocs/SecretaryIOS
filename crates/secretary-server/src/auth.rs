@@ -226,7 +226,8 @@ async fn authorize(
         resp.headers_mut().insert(DEVICE_HEADER, v);
     }
     let test = if st.devices.is_test(&id) { "1" } else { "0" };
-    resp.headers_mut().insert(TEST_HEADER, header::HeaderValue::from_static(test));
+    resp.headers_mut()
+        .insert(TEST_HEADER, header::HeaderValue::from_static(test));
     // For the access log (the id is not a secret).
     resp.extensions_mut().insert(DeviceId(id));
     Ok(resp)
@@ -582,6 +583,7 @@ pub fn owner_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/auth/owner", get(owner_check))
         .route("/v1/auth/media", get(media_check))
+        .route("/v1/auth/updates", get(updates_check))
 }
 
 /// `GET|HEAD /v1/auth/media`: the forward_auth target of `/v1/media` behind
@@ -596,6 +598,24 @@ async fn media_check(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
+    gate_check(&st, &headers, &st.media_limiter)
+}
+
+/// `GET|HEAD /v1/auth/updates`: the forward_auth target of `/v1/updates` (lucina-updates, the read-only
+/// update channel server). The same check as [`media_check`], in a bucket of its own so a media
+/// scroll cannot starve an update download. No CSRF check: Caddy gates the real method.
+async fn updates_check(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    gate_check(&st, &headers, &st.updates_limiter)
+}
+
+fn gate_check(
+    st: &AppState,
+    headers: &HeaderMap,
+    limiter: &crate::ratelimit::RateLimiter,
+) -> Result<StatusCode, ApiError> {
     let svc = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -609,14 +629,12 @@ async fn media_check(
             _ => return Err(ApiError::unauthorized("unknown service token")),
         },
         None => {
-            identify(&st, &headers)?
+            identify(st, headers)?
                 .map_err(ApiError::unauthorized)?
                 .device_id
         }
     };
-    st.media_limiter
-        .check(&key)
-        .map_err(ApiError::rate_limited)?;
+    limiter.check(&key).map_err(ApiError::rate_limited)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

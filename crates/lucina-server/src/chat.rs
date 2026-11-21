@@ -898,6 +898,29 @@ impl Turn<'_> {
         crate::device::jev_device_of_turn(&self.channel, self.mcp.is_some())
     }
 
+    /// A fast route answered this spoken turn and dropped its context building with the sample it never
+    /// got to keep. This is where that line is written instead: the same one [`crate::context::classify`]
+    /// writes for the turns it finishes, from the same tier-0 rule and the same recent turns, and the
+    /// turn's mark makes it nothing when the building did get there first (CO-C009). The caller runs it
+    /// inside that mark ([`crate::voice::in_intent`]): outside it the turn would look unkept and write twice.
+    fn record_turn_sample(
+        &self,
+        keys: crate::context::Keys<'_>,
+        verdict: &crate::voice::SharedIntent,
+    ) {
+        let text = keys.intent_text.unwrap_or(&self.message);
+        let recent = crate::context::classifier_recent(self.st, &self.surface, keys, Utc::now());
+        let rule = lucina_intent::tier0::classify_tier0(text, &recent, &self.st.cfg.intent);
+        crate::context::record_jev_sample(
+            self.st,
+            crate::context::sample_turn(&self.surface, &self.session),
+            rule.as_ref(),
+            text,
+            self.planner_platform(),
+            verdict,
+        );
+    }
+
     fn input<'b>(&'b self, memory: &'b str, platform: &'b str) -> TurnInput<'b> {
         TurnInput {
             user_text: &self.message,
@@ -1086,6 +1109,10 @@ async fn run_turn_scoped(
     };
     // An id that names nothing readable is ignored, on the timeline too.
     let reply_to = reply_to.filter(|_| !reply_block.is_empty());
+    // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
+    let consult = mcp_turn
+        .as_ref()
+        .is_some_and(|m| !mcp::is_owner_client(&m.caller, &st.cfg.mcp_owner_clients));
     // MCP turns are labelled with their caller; app turns with their device.
     let turn_meta = mcp_turn
         .as_ref()
@@ -1114,6 +1141,7 @@ async fn run_turn_scoped(
                     channel,
                     surface,
                     from_mcp,
+                    consult,
                     existing,
                     reply_to,
                     turn_meta.clone(),
@@ -1145,10 +1173,6 @@ async fn run_turn_scoped(
         "" => base_system,
         fact => format!("{base_system} {fact}"),
     };
-    // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
-    let consult = mcp_turn
-        .as_ref()
-        .is_some_and(|m| !mcp::is_owner_client(&m.caller, &st.cfg.mcp_owner_clients));
     let note = |m: &McpTurn| {
         if consult {
             mcp::note_consult(m)
@@ -1243,19 +1267,20 @@ async fn run_turn_scoped(
                 wait.finish(Outcome::Ok, Sizes::NONE);
             }
             let intent_phase = timing.as_ref().map(|t| t.begin("intent", false));
+            let keys = crate::context::Keys {
+                recent: t.recent(),
+                recent_key: t.recent_key(),
+                peer: t.peer(),
+                voice: t.channel == VOICE_CHANNEL,
+                // A share's intent is his note, never the shared content's words.
+                intent_text: t.share.then_some(t.share_note.as_str()),
+                device: t.device(),
+            };
             let prepare = crate::context::prepare_keyed(
                 &st,
                 &t.surface,
                 &t.session,
-                crate::context::Keys {
-                    recent: t.recent(),
-                    recent_key: t.recent_key(),
-                    peer: t.peer(),
-                    voice: t.channel == VOICE_CHANNEL,
-                    // A share's intent is his note, never the shared content's words.
-                    intent_text: t.share.then_some(t.share_note.as_str()),
-                    device: t.device(),
-                },
+                keys,
                 &t.message,
                 &t.user_label,
                 t.planner_platform(),
@@ -1266,8 +1291,11 @@ async fn run_turn_scoped(
             // model calls until the route is known, and takes the route's intent verdict instead of
             // asking Jev again); a fast intent answers the turn here and drops it.
             let (open, gate) = crate::voice::gate();
+            // The turn's verdict channel: the building reads Jev's answer through it, and a route that
+            // answers before the building does keeps the sample through the same one (CO-C009).
+            let slot = voice_route.as_ref().map(voice_fast::Started::slot);
             let prepare = crate::voice::with_intent(
-                voice_route.as_ref().map(voice_fast::Started::intent_rx),
+                slot.clone(),
                 Box::pin(crate::voice::gated(gate, prepare)),
             );
             let mut prepare = std::pin::pin!(prepare);
@@ -1288,6 +1316,12 @@ async fn run_turn_scoped(
             let _ = open.send(true);
             if let Some(finish) = fast {
                 voice_fast_turn = true;
+                // The dropped building left its sample unwritten; and this is before the turn's own words
+                // join the recent turns, where the rule the classifier reads would not be the same one.
+                if let Some(slot) = slot {
+                    let verdict = slot.verdict();
+                    crate::voice::in_intent(slot, || t.record_turn_sample(keys, &verdict));
+                }
                 // Jev answered the intent on its own: the step is over here, without the context building.
                 if let Some(intent) = intent_phase {
                     intent.finish(Outcome::Ok, Sizes::NONE);
@@ -3531,13 +3565,17 @@ async fn tools_turn(
     channel: String,
     surface: TurnSurface,
     from_mcp: bool,
+    // An agent's MCP turn (every caller but the owner's own assistant apps) is a consultation: it
+    // stays out of the owner-only tools even when the relay itself is trusted.
+    consult: bool,
     existing: Option<ShareTurn>,
     reply_to: Option<String>,
     device_meta: Meta,
 ) -> Result<Value, ApiError> {
-    // The tool set follows `origin` (trusted MCP turns get the owner's);
-    // memory reads and writes follow `surface`.
-    let origin = if from_mcp && !st.cfg.mcp_trusted {
+    // The tool set and the origin follow the same authorization as the JSON planner: an agent's
+    // consultation is guarded even when the relay itself is trusted, so trust opens the owner's own
+    // apps only. Memory reads and writes follow `surface`.
+    let origin = if from_mcp && (!st.cfg.mcp_trusted || consult) {
         Origin::Mcp
     } else {
         Origin::Owner
@@ -3578,12 +3616,13 @@ async fn tools_turn(
         turn
     };
     let user_item = turn.record_user(&message, Vec::new());
-    // MCP callers never get the owner-only tools (secrets); a guarded MCP
-    // turn gets no delegation either.
+    // MCP callers never get the owner-only tools (secrets) or delegation, and an agent's consultation
+    // is an MCP caller: `mcp` above already folds `consult` in. A trusted turn of one of the owner's
+    // own apps is his voice, so it adds his Lucina Agents pair.
     let registry = if mcp {
         st.mcp_registry.clone()
     } else if from_mcp {
-        st.trusted_mcp_registry.clone()
+        st.owner_relay_mcp_registry.clone()
     } else {
         st.registry.clone()
     };

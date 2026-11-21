@@ -295,6 +295,8 @@ pub async fn task(client: &Client, cmd: &TaskCommand) -> Result<Output, CmdError
 
 fn job_line(j: &Value) -> Vec<String> {
     let what = match j["kind"].as_str() {
+        // PIPE-09: a merge that ran with `--full` says so, so it can be found from the list.
+        Some("merge") if j["spec"]["full"] == true => format!("merge {} [full]", s(&j["branch"])),
         Some("merge") => format!("merge {}", s(&j["branch"])),
         _ => format!("deploy {}", s(&j["runtime"])),
     };
@@ -795,4 +797,30 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
         text,
         json: Some(v),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn merge_job(full: Option<bool>) -> Value {
+        let mut spec = json!({"jobId": "job_x", "kind": "merge"});
+        if let Some(f) = full {
+            spec["full"] = json!(f);
+        }
+        json!({"jobId": "job_x", "kind": "merge", "branch": "topic", "state": "done", "spec": spec})
+    }
+
+    #[test]
+    fn a_merge_row_shows_full_only_when_the_job_ran_with_it() {
+        assert_eq!(job_line(&merge_job(Some(true)))[1], "merge topic [full]");
+        assert_eq!(job_line(&merge_job(Some(false)))[1], "merge topic");
+        // A job from an older daemon has no `full` at all.
+        assert_eq!(job_line(&merge_job(None))[1], "merge topic");
+        // A deploy never shows it.
+        let mut deploy = merge_job(Some(true));
+        deploy["kind"] = json!("deploy");
+        deploy["runtime"] = json!("srv");
+        assert_eq!(job_line(&deploy)[1], "deploy srv");
+    }
 }

@@ -1,0 +1,61 @@
+# The sidecar authenticates nobody by itself. Its upstream must stay on the loopback address and be
+# reachable only through the proxy that runs the device-check subrequest. Never forward, bridge or
+# expose it on another interface or on the tailnet.
+#
+# PROPOSAL, not installed. lucina-updates: the read-only update channel server
+# (crates/lucina-updates). It serves manifest and artefact bytes from ~/data/lucina-updates, holds no
+# key, signs and verifies nothing, and writes nothing. User unit on the host that runs the sidecar:
+#   install -m 0755 target/release/lucina-updates ~/.local/bin/
+#   cp deploy/lucina-updates.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now lucina-updates
+#
+# Loopback only (127.0.0.1:8811); the proxy host Caddy block in deploy/lucina-updates/Caddyfile.snippet is the
+# only client and does the device check (forward_auth /v1/auth/updates).
+[Unit]
+Description=Lucina update channel server (read-only) on 127.0.0.1:8811
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lucina-updates --addr 127.0.0.1:8811 --store %h/data/lucina-updates
+Restart=on-failure
+RestartSec=5
+UMask=0077
+Nice=5
+
+# Sandbox. Tested on a user manager (systemd 259) with a transient service carrying the same properties:
+# - VERIFIED: with TemporaryFileSystem=%h:ro and the two binds, the service sees only .local and data in
+#   the home, the SSH directory is hidden, the store is readable and a write to it is refused, and the
+#   bound binary is executable. The earlier ProtectHome=read-only left the whole home readable, the SSH
+#   directory included. The binary is bound as a single file: it must exist when the unit starts.
+# - VERIFIED: NoNewPrivs: 1 and Seccomp: 2 in the service's /proc status, so NoNewPrivileges,
+#   SystemCallFilter, MemoryDenyWriteExecute and RestrictAddressFamilies take effect. No individual
+#   syscall was tested.
+# - NOT ENFORCED in a user manager: IPAddressDeny and IPAddressAllow (a connection from the service to
+#   the host's own LAN address succeeded). They only take effect in a system unit and are not relied on.
+#   Network isolation rests on the program: it makes no outbound connection and refuses a non-loopback
+#   listen address.
+# - ProtectSystem=strict was not tested separately.
+ProtectSystem=strict
+TemporaryFileSystem=%h:ro
+BindReadOnlyPaths=%h/data/lucina-updates %h/.local/bin/lucina-updates
+ReadOnlyPaths=%h/data/lucina-updates
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+# PrivateNetwork is not possible (it listens). The two lines below are INERT under a user manager (see the sandbox note above); they are kept commented as what a system unit would enable.
+# IPAddressDeny=any
+# IPAddressAllow=localhost
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target

@@ -31,7 +31,8 @@ const LIST_TTL_MS: u64 = 60_000;
 
 const INSTRUCTIONS: &str = "Lucina is the owner's personal AI assistant (memory, reminders, shopping, gym and body tracking). \
 Use lucina_decide for go-aheads instead of asking the owner; follow pending decisions with lucina_decision_status, or take them back with lucina_decision_withdraw when no answer is needed. \
-When you need a secret the owner has (an API key, a passphrase), ask for it by name with secret_request: he pastes it in the app, straight into Infisical; never ask him to paste a secret into a chat. ask_lucina is answers-only for agents, for consultation and memory; Lucina is told which client is asking. \
+When you need a secret the owner has (an API key, a passphrase), ask for it by name with secret_request: he pastes it in the app, straight into Infisical; never ask him to paste a secret into a chat. ask_lucina is answers-only for agents, for consultation and memory; Lucina is told which client is asking, \
+and only the owner's own trusted apps can hand her a task for his Lucina Agents from it. \
 Use the direct tools for quick reads (lucina_timeline, shopping_list, reminders_list, gym_summary, body_summary, lucina_status) \
 and small edits (shopping_add, shopping_mark_bought, reminder_create, reminder_cancel). \
 To hand Lucina a briefing, document or anything long or worth keeping, save it as a note (note_save, then note_append for further parts) \

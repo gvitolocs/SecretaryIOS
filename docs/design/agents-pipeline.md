@@ -44,7 +44,10 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
   the same job. One FIFO queue per repo, one job at a time in each.
 - agentd writes `job.json` under `~/.local/share/lucina-agentd/pipeline/jobs/<id>/` and starts
   `flock <repo lock> lagent pipeline-exec <dir>` as a transient systemd user unit (`lagent-job-<id>`), so a job
-  survives agentd restarts, including agentd's own deploy. The lock is `/tmp/lucina-merge.lock` for every repo:
+  survives agentd restarts, including agentd's own deploy (restarting or stopping the job's own unit is another matter: each gate
+  step's scope is bound to it with `BindsTo=`, so a `systemctl --user restart lagent-job-<id>`, or a stop, ends the step's scope, and with it the
+  `bq` that holds the slot, which frees the slot; the build the gate started runs in bq's own sibling scope, which the
+  binding does not cover, and runs on until it ends). The lock is `/tmp/lucina-merge.lock` for every repo:
   the one deploy-guard checks and sessions took by hand for all Lucina repos, so jobs and hand deploys never overlap.
 - The executor, in the repo's **landing worktree** (`~/Projects/.worktrees/<Repo>/.landing`, detached; the session's
   worktree is never touched):

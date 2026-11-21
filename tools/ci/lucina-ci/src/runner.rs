@@ -878,6 +878,38 @@ fn scope_prefix() -> Result<Vec<String>, String> {
     Ok(v)
 }
 
+/// The whole `systemd-run` argv of one step's scope. A step's scope is put in `build.slice`, always (HOST-11): `systemd-run
+/// --user --scope` otherwise lands it in `app.slice`, outside the slice the build queue's jobs are held to, and 80 of them
+/// from several concurrent checks stacked up there until nezopt ran out of memory. Every other property is as it was.
+fn scope_args(
+    prefix: Vec<String>,
+    spec: &Spec,
+    exe: &Path,
+    cpu_quota: Option<&str>,
+) -> Vec<String> {
+    let mut c = prefix;
+    c.push("--slice=build.slice".into());
+    c.push(format!(
+        "--unit=lucina-ci-{}-{}",
+        std::process::id(),
+        spec.file_stem().replace(['_', '.'], "-")
+    ));
+    c.push("--property=MemoryAccounting=yes".into());
+    c.push(format!("--property=MemoryMax={}", spec.cap_bytes));
+    c.push("--property=MemorySwapMax=0".into());
+    // Otherwise the kernel kills the whole scope, this launcher included, and the report loses its numbers.
+    c.push("--property=OOMPolicy=continue".into());
+    if let Some(q) = cpu_quota {
+        c.push(format!("--property=CPUQuota={q}"));
+        c.push("--property=TasksMax=256".into());
+    }
+    c.push("--".into());
+    c.push(exe.display().to_string());
+    c.push("__inner".into());
+    c.extend(spec.to_args());
+    c
+}
+
 /// Runs one unit under its own capped scope; the report always exists afterwards. Returns the outcome's exit code.
 ///
 /// Every step gets its own capped scope. Where it cannot get one (no systemd user manager) the check FAILS with one
@@ -891,32 +923,15 @@ pub fn run_unit(spec: &Spec) -> Result<i32, String> {
             spec.unit
         )
     })?;
-    let (mut cmd, launcher) = {
-        {
-            let mut c = prefix;
-            c.push(format!(
-                "--unit=lucina-ci-{}-{}",
-                std::process::id(),
-                spec.file_stem().replace(['_', '.'], "-")
-            ));
-            c.push("--property=MemoryAccounting=yes".into());
-            c.push(format!("--property=MemoryMax={}", spec.cap_bytes));
-            c.push("--property=MemorySwapMax=0".into());
-            // Otherwise the kernel kills the whole scope, this launcher included, and the report loses its numbers.
-            c.push("--property=OOMPolicy=continue".into());
-            if let Ok(q) = std::env::var("LUCINA_CI_CPU_QUOTA") {
-                c.push(format!("--property=CPUQuota={q}"));
-                c.push("--property=TasksMax=256".into());
-            }
-            c.push("--".into());
-            c.push(exe.display().to_string());
-            c.push("__inner".into());
-            c.extend(spec.to_args());
-            let mut cmd = Command::new(&c[0]);
-            cmd.args(&c[1..]);
-            (cmd, c[0].clone())
-        }
-    };
+    let c = scope_args(
+        prefix,
+        spec,
+        &exe,
+        std::env::var("LUCINA_CI_CPU_QUOTA").ok().as_deref(),
+    );
+    let mut cmd = Command::new(&c[0]);
+    cmd.args(&c[1..]);
+    let launcher = c[0].clone();
     let status = cmd
         .status()
         .map_err(|e| format!("cannot start {launcher}: {e}"))?;
@@ -963,6 +978,72 @@ pub fn report_field(json: &str, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    fn test_spec() -> Spec {
+        Spec {
+            unit: "u".into(),
+            group: "fast".into(),
+            kind: "k".into(),
+            target: "t".into(),
+            command: "true".into(),
+            out: "/nonexistent".into(),
+            cap_bytes: 1024,
+            class: "c".into(),
+            mem_total: 4096,
+            timeout_s: 5,
+            verus: String::new(),
+            version: String::new(),
+            verus_sha: String::new(),
+            verifier_sha: String::new(),
+            rust: String::new(),
+            z3: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_step_scope_is_started_in_build_slice_and_nothing_else_changes() {
+        // HOST-11: exactly one slice argument, spelled exactly so, ahead of the unit and the properties.
+        let prefix: Vec<String> = ["systemd-run", "--user", "--scope", "--quiet", "--collect"]
+            .map(str::to_string)
+            .to_vec();
+        let argv = scope_args(
+            prefix,
+            &test_spec(),
+            Path::new("/x/lucina-ci"),
+            Some("400%"),
+        );
+        assert_eq!(
+            argv.iter().filter(|a| a.starts_with("--slice")).count(),
+            1,
+            "{argv:?}"
+        );
+        assert!(argv.iter().any(|a| a == "--slice=build.slice"), "{argv:?}");
+        for want in [
+            "--property=MemoryAccounting=yes",
+            "--property=MemoryMax=1024",
+            "--property=MemorySwapMax=0",
+            "--property=OOMPolicy=continue",
+            "--property=CPUQuota=400%",
+            "--property=TasksMax=256",
+            "--",
+            "/x/lucina-ci",
+            "__inner",
+        ] {
+            assert!(argv.iter().any(|a| a == want), "{want} missing: {argv:?}");
+        }
+        let no_quota = scope_args(
+            vec!["systemd-run".into()],
+            &test_spec(),
+            Path::new("/x/l"),
+            None,
+        );
+        assert!(no_quota.iter().any(|a| a == "--slice=build.slice"));
+        assert!(
+            !no_quota
+                .iter()
+                .any(|a| a.starts_with("--property=CPUQuota"))
+        );
+    }
 
     #[test]
     fn the_deadline_bounds_the_time_a_step_may_record() {
