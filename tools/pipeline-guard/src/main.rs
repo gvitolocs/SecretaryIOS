@@ -63,6 +63,32 @@ pub fn without_heredocs(command: &str) -> String {
     out
 }
 
+const BYPASS_WORD_CAP: usize = 4096;
+
+/// Skips a `${ … }` whose `{` is next, by brace depth (`${X:-${Y}}` is one expansion). `false` when
+/// it never closes or the word cap is passed: the value is then unknown.
+fn skip_braces(it: &mut std::iter::Peekable<std::str::CharIndices<'_>>, seen: &mut usize) -> bool {
+    it.next();
+    let mut depth = 1usize;
+    for (_, n) in it.by_ref() {
+        *seen += 1;
+        if *seen > BYPASS_WORD_CAP {
+            return false;
+        }
+        match n {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// The literal text of the `LAGENT_BYPASS=` value that starts `after`, and what follows the shell
 /// word. The word is read like the shell does: quoted (`'…'`, `"…"`) and bare pieces join, up to an
 /// unquoted whitespace or one of `; & | < > ( )`. `$VAR` and `${VAR}` are dropped (the guard cannot
@@ -70,7 +96,7 @@ pub fn without_heredocs(command: &str) -> String {
 /// `$((`, a backtick, `$'` and a backslash make the value unknown: `None`, which is no bypass.
 fn bypass_value(after: &str) -> (Option<String>, &str) {
     // The value is read lazily and at most 4096 characters long: a longer word is unknown.
-    const CAP: usize = 4096;
+    const CAP: usize = BYPASS_WORD_CAP;
     let mut it = after.char_indices().peekable();
     let mut lit = String::new();
     let mut known = true;
@@ -113,11 +139,9 @@ fn bypass_value(after: &str) -> (Option<String>, &str) {
                         '$' => match it.peek().map(|&(_, n)| n) {
                             Some('(' | '\'') => known = false,
                             Some('{') => {
-                                for (_, n) in it.by_ref() {
-                                    seen += 1;
-                                    if n == '}' || seen > CAP {
-                                        break;
-                                    }
+                                if !skip_braces(&mut it, &mut seen) {
+                                    known = false;
+                                    break 'word;
                                 }
                             }
                             Some(n) if n.is_ascii_alphabetic() || n == '_' => {
@@ -139,11 +163,9 @@ fn bypass_value(after: &str) -> (Option<String>, &str) {
             '$' => match it.peek().map(|&(_, n)| n) {
                 Some('(' | '\'' | '"') => known = false,
                 Some('{') => {
-                    for (_, n) in it.by_ref() {
-                        seen += 1;
-                        if n == '}' || seen > CAP {
-                            break;
-                        }
+                    if !skip_braces(&mut it, &mut seen) {
+                        known = false;
+                        break 'word;
                     }
                 }
                 Some(n) if n.is_ascii_alphabetic() || n == '_' => {
@@ -194,7 +216,9 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
     verdict_with(command, cwd, bypass_given(command))
 }
 
-/// `verdict`, with the bypass answer for the whole command already known.
+/// `verdict`, with the bypass answer for the raw text already known. When it is true the merge rule reads
+/// the heredoc-stripped text once more (a marker inside a here-document body is data there).
+/// Behaviour is the same as before the answer was passed down.
 fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
     let command = &without_heredocs(command);
     let scope = Regex::new(SCOPE).ok()?;
@@ -342,7 +366,8 @@ fn decide_on(command: &str, cwd: &str, is_mac: bool) -> Option<String> {
     decide_with(command, cwd, is_mac, bypass_given(command))
 }
 
-/// `decide_on`, with the bypass answer computed once by the caller and used by every rule.
+/// `decide_on`, with the bypass answer for the raw text computed once by the caller and shared by every
+/// rule. (The merge rule reads the heredoc-stripped text once more, and only when that answer is true.)
 fn decide_with(command: &str, cwd: &str, is_mac: bool, bypass: bool) -> Option<String> {
     if let Some(r) = mac_kill_verdict(command, is_mac, bypass) {
         return Some(r);
@@ -849,13 +874,7 @@ fn resolve_path(word: &str, dir: &str, home: &str) -> String {
 /// `CACHEDIR.TAG` and `.rustc_info.json`. Every direct child of a target is a profile.
 fn under_target(path: &str, on_host: bool) -> bool {
     let comps: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
-    if comps
-        .iter()
-        .any(|c| *c == "target" || c.starts_with("target-") || *c == "lucina-check-target")
-        || comps
-            .windows(2)
-            .any(|w| w[0] == ".cache" && w[1] == "cargo-target")
-    {
+    if comps.iter().any(|c| target_component(c)) {
         return true;
     }
     if !on_host {
@@ -961,9 +980,14 @@ fn runs_rm(text: &str, depth: usize) -> bool {
 
 /// A path word with a component that names a cargo target, judged by its text alone (no stat).
 fn textual_target(word: &str) -> bool {
-    word.split('/').any(|c| {
-        matches!(c, "target" | "cargo-target" | "lucina-check-target") || c.starts_with("target-")
-    })
+    word.split('/').any(target_component)
+}
+
+/// A path component that names a cargo target: `target`, `target-*`, `cargo-target` (the
+/// `.cache/cargo-target` of the pipeline) or the gate's `lucina-check-target`. One list for `under_target`
+/// and `textual_target`.
+fn target_component(c: &str) -> bool {
+    matches!(c, "target" | "cargo-target" | "lucina-check-target") || c.starts_with("target-")
 }
 
 /// The script of `sh -c '…'` (after the shell's own short options), if the arguments have one.
@@ -1094,24 +1118,35 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
                             far.extend(stage);
                         }
                     }
-                    let stage_hit = near
+                    let near_hit = near
                         .into_iter()
                         .chain(rest[q + 1..].iter())
                         .filter(|w| !w.val.starts_with('-'))
-                        .find_map(|w| hit(&w.val, &dir))
-                        .or_else(|| {
-                            far.into_iter()
-                                .filter(|w| !w.val.starts_with('-'))
-                                .find(|w| textual_target(&w.val))
-                                .map(|w| w.val.clone())
-                        })
-                        .or_else(|| hit(".", &dir));
+                        .find_map(|w| hit(&w.val, &dir));
+                    let far_hit = far
+                        .into_iter()
+                        .filter(|w| !w.val.starts_with('-'))
+                        .find(|w| textual_target(&w.val))
+                        .map(|w| w.val.clone());
+                    // `xargs rm` (or a script that runs rm) fed from a target: refused.
                     if is_rm {
-                        return stage_hit.map(|path| target_reason("… | xargs rm", &path));
+                        let fed = near_hit
+                            .clone()
+                            .or_else(|| far_hit.clone())
+                            .or_else(|| hit(".", &dir));
+                        if let Some(path) = fed {
+                            return Some(target_reason("… | xargs rm", &path));
+                        }
                     }
-                    // A script that deletes on its own: read it from the stage's target path, if there is one.
+                    // A shell script is also read on its own, from the real directory (a target path
+                    // or a `cd` inside it), and then from the target path the stages name (for `{}`
+                    // operands). `is_rm` never skips this.
                     script.and_then(|s| {
-                        target_deletion(s, stage_hit.as_deref().unwrap_or(&dir), on_host, depth + 1)
+                        target_deletion(s, &dir, on_host, depth + 1).or_else(|| {
+                            near_hit
+                                .or(far_hit)
+                                .and_then(|p| target_deletion(s, &p, on_host, depth + 1))
+                        })
                     })
                 })
             }
@@ -1883,17 +1918,76 @@ mod tests {
             !line.contains(['\u{2028}', '\u{2029}', '\u{85}']),
             "{line:?}"
         );
-        let dir = std::env::temp_dir().join(format!("pipeline-guard-log-{}", std::process::id()));
+        // Under the scratch tree, never /tmp; removed on every path, a panic included.
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = std::path::PathBuf::from(format!(
+            "/home/nez/scratch/pipeline-guard-log-{}",
+            std::process::id()
+        ));
+        let _cleanup = Cleanup(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("bypass.log");
         std::fs::write(&log, vec![b'x'; 1_100_000]).unwrap();
         std::fs::write(dir.join("bypass.log.1"), "old").unwrap();
         super::rotate_log(&log);
-        let moved = std::fs::metadata(dir.join("bypass.log.1")).map(|m| m.len());
-        let left = log.exists();
-        super::rotate_log(&dir.join("missing.log"));
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(moved.unwrap(), 1_100_000);
-        assert!(!left);
+        assert_eq!(
+            std::fs::metadata(dir.join("bypass.log.1")).unwrap().len(),
+            1_100_000
+        );
+        assert!(!log.exists());
+        // A small log stays; a missing one is no error and no file.
+        std::fs::write(&log, "small").unwrap();
+        super::rotate_log(&log);
+        assert!(log.exists());
+        let missing = dir.join("missing.log");
+        super::rotate_log(&missing);
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn nested_parameter_expansions_are_no_bypass() {
+        for (cmd, cwd, is_mac) in four_rules() {
+            for b in [
+                "LAGENT_BYPASS=${X:-${Y}} ",
+                "LAGENT_BYPASS=\"${X:-${Y}}\" ",
+                "LAGENT_BYPASS=${X:-${Y:-${Z}}} ",
+                "LAGENT_BYPASS=${X ",
+            ] {
+                let c = format!("{b}{cmd}");
+                assert!(decide_on(&c, cwd, is_mac).is_some(), "{c}");
+            }
+            let c = format!("LAGENT_BYPASS=a${{X}}b {cmd}");
+            assert!(decide_on(&c, cwd, is_mac).is_none(), "{c}");
+        }
+    }
+
+    #[test]
+    fn xargs_shell_scripts_are_read_on_their_own() {
+        let cats = " | cat".repeat(70);
+        for c in [
+            "ls x | xargs sh -c 'rm -f target/debug/deps/*.rlib'".to_string(),
+            "ls x | xargs -I{} sh -c 'cd target/debug && rm -f deps/*'".to_string(),
+            "ls x | xargs sh -c \"sh -c 'rm -f target/debug/deps/*.rlib'\"".to_string(),
+            "xargs sh -c 'rm -f target/debug/deps/*.rlib'".to_string(),
+            // A far textual hit, whatever the session directory is.
+            format!("ls /home/nez/cargo-target/y{cats} | xargs sh -c 'find . -delete'"),
+            "rm /home/nez/cargo-target/x/*.rlib".to_string(),
+        ] {
+            for cwd in ["/home/nez/scratch", &format!("{TGT}/debug")] {
+                assert!(decide_on(&c, cwd, false).is_some(), "{c} in {cwd}");
+            }
+        }
+        for c in [
+            "ls x | xargs sh -c 'rm -f ./out/*.o'",
+            "ls x | xargs sh -c 'echo hi'",
+            "xargs sh -c 'echo hi'",
+        ] {
+            assert!(decide_on(c, "/home/nez/scratch", false).is_none(), "{c}");
+        }
     }
 }
