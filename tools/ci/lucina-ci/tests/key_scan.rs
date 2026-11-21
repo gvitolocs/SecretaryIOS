@@ -7,8 +7,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
@@ -318,6 +319,40 @@ fn a_clean_tree_passes_and_says_how_much_it_read() {
     assert_eq!(code, 0, "{out}");
     assert!(
         out.contains("1 file(s) scanned, 0 skipped, 0 match(es)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_long_adversarial_line_is_refused_fast_and_never_counted_clean() {
+    // `-eyJ` repeated: every start is a deep start of the jwt pattern, so without a per-line step budget the scan of this
+    // one 200 KB line takes time quadratic in its length.
+    let t = Tree::new();
+    t.put("min.js", "-eyJ".repeat(50_000).as_bytes());
+    let started = Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lucina-ci"))
+        .args(["key-scan", "--root"])
+        .arg(&t.0)
+        .args(["--", "min.js"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("still scanning one line after 60 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(o.status.code(), Some(2), "{out}");
+    assert!(
+        out.contains("key-scan: min.js: too costly to scan"),
         "{out}"
     );
 }

@@ -273,7 +273,31 @@ fn one(node: &Node, text: &[char], pos: usize) -> bool {
 
 type Cont<'a> = &'a mut dyn FnMut(usize, &mut Caps) -> bool;
 
+/// The step budget of one pattern over one line: `STEPS_PER_CHAR` for each character of the line and a floor. A table
+/// line the parser accepts can still cost time quadratic in the line (`[A-Za-z0-9]{4,}x` tried at every start of a long
+/// line, or the `jwt` pattern over a line of `-eyJ` repeated), and the line may be a 4 MiB minified file. Over the
+/// budget the match gives up and `find_all` reports it: the file fails the scan, it is never passed as clean.
+const STEPS_PER_CHAR: u64 = 400;
+const STEPS_FLOOR: u64 = 200_000;
+
+thread_local! {
+    static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static LIMIT: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+/// Counts `n` steps; true once the budget of this line is spent.
+fn tick(n: u64) -> bool {
+    STEPS.with(|s| {
+        let v = s.get().saturating_add(n);
+        s.set(v);
+        v > LIMIT.with(std::cell::Cell::get)
+    })
+}
+
 fn run(items: &[Item], idx: usize, text: &[char], pos: usize, caps: &mut Caps, k: Cont) -> bool {
+    if tick(1) {
+        return false;
+    }
     let Some(it) = items.get(idx) else {
         return k(pos, caps);
     };
@@ -285,7 +309,7 @@ fn run(items: &[Item], idx: usize, text: &[char], pos: usize, caps: &mut Caps, k
             while n < it.max && one(node, text, pos + n) {
                 n += 1;
             }
-            if n < it.min {
+            if tick(n as u64) || n < it.min {
                 return false;
             }
             for take in (it.min..=n).rev() {
@@ -334,8 +358,11 @@ fn group(
     count >= it.min && run(items, idx + 1, text, pos, caps, k)
 }
 
-/// Every match of `p` in one line: (start of capture group 1, end of it). Without a group, the whole match.
-pub fn find_all(p: &Pattern, line: &[char]) -> Vec<(usize, usize)> {
+/// Every match of `p` in one line: (start of capture group 1, end of it). Without a group, the whole match. `Err` when
+/// the line is over the step budget: what was found is then not the whole answer.
+pub fn find_all(p: &Pattern, line: &[char]) -> Result<Vec<(usize, usize)>, String> {
+    STEPS.with(|s| s.set(0));
+    LIMIT.with(|l| l.set(STEPS_FLOOR + STEPS_PER_CHAR * line.len() as u64));
     let mut hits = Vec::new();
     let mut start = 0;
     while start <= line.len() {
@@ -353,16 +380,24 @@ pub fn find_all(p: &Pattern, line: &[char]) -> Vec<(usize, usize)> {
             start += 1;
         }
     }
-    hits
+    if STEPS.with(std::cell::Cell::get) > LIMIT.with(std::cell::Cell::get) {
+        return Err(format!(
+            "{}: over the step budget of {} steps",
+            p.kind,
+            STEPS_FLOOR + STEPS_PER_CHAR * line.len() as u64
+        ));
+    }
+    Ok(hits)
 }
 
-/// The hits in one text, as (kind, 1-based line, first four characters of the key).
-pub fn scan_text(pats: &[Pattern], text: &str) -> Vec<(String, usize, String)> {
+/// The hits in one text, as (kind, 1-based line, first four characters of the key). `Err` names the line and the kind
+/// of the first pattern that went over its step budget.
+pub fn scan_text(pats: &[Pattern], text: &str) -> Result<Vec<(String, usize, String)>, String> {
     let mut out = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         for p in pats {
-            for (a, _) in find_all(p, &chars) {
+            for (a, _) in find_all(p, &chars).map_err(|e| format!("line {}: {e}", n + 1))? {
                 out.push((
                     p.kind.clone(),
                     n + 1,
@@ -371,7 +406,7 @@ pub fn scan_text(pats: &[Pattern], text: &str) -> Vec<(String, usize, String)> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 enum Got {
@@ -425,7 +460,52 @@ fn tracked(root: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// `args` are what follows `key-scan`: `--root DIR` and file names. Exit 0 clean, 1 a match, 2 an error.
+/// Whether a touched path is gone from the work tree. A path that cannot be told apart from absent because it cannot be
+/// statted (a parent directory without search permission) is NOT absent: it is handed over, and `key-scan` fails on it.
+pub fn is_absent(root: &Path, path: &str) -> bool {
+    matches!(root.join(path).try_exists(), Ok(false))
+}
+
+/// The touched paths that are to be handed to `key-scan`, and how many directory paths (a submodule) were left out. A
+/// path whose `lstat` fails is handed over, so that `key-scan` names it and fails the step.
+pub struct Handover {
+    pub files: Vec<String>,
+    pub directories: usize,
+}
+
+pub fn hand_over(root: &Path, touched: &[String]) -> Handover {
+    let mut h = Handover {
+        files: Vec::new(),
+        directories: 0,
+    };
+    for p in touched {
+        match root.join(p).symlink_metadata() {
+            Ok(m) if m.is_dir() => h.directories += 1,
+            _ => h.files.push(p.clone()),
+        }
+    }
+    h
+}
+
+fn quote(p: &str) -> String {
+    format!("'{}'", p.replace('\'', "'\\''"))
+}
+
+/// The shell command of the `secrets` step: `key-scan` over `files` first (`--` ends its options, so a file called
+/// `--root` is a file), then, when `gitleaks` is given as (config option, files), the gitleaks pass.
+pub fn secrets_command(exe: &str, files: &[String], gitleaks: Option<(&str, &[String])>) -> String {
+    let list = files.iter().map(|p| quote(p)).collect::<Vec<_>>().join(" ");
+    let mut cmd = format!("{exe} key-scan --root . -- {list}");
+    if let Some((config, files)) = gitleaks {
+        let list = files.iter().map(|p| quote(p)).collect::<Vec<_>>().join(" ");
+        cmd.push_str(&format!(
+            " && for f in {list}; do gitleaks dir --no-banner --redact {config} \"$f\" || exit 1; done"
+        ));
+    }
+    cmd
+}
+
+/// `args` are what follows `key-scan`:`--root DIR` and file names. Exit 0 clean, 1 a match, 2 an error.
 pub fn cmd(args: &[String]) -> Result<i32, String> {
     let mut root = PathBuf::from(".");
     let mut files: Vec<String> = Vec::new();
@@ -454,9 +534,18 @@ pub fn cmd(args: &[String]) -> Result<i32, String> {
         match read_text(&root.join(f)) {
             Got::Text(t) => {
                 scanned += 1;
-                for (kind, line, head) in scan_text(&pats, &t) {
-                    hits += 1;
-                    println!("key-scan: {kind} at {f}:{line} (redacted: {head}...)");
+                match scan_text(&pats, &t) {
+                    Ok(found) => {
+                        for (kind, line, head) in found {
+                            hits += 1;
+                            println!("key-scan: {kind} at {f}:{line} (redacted: {head}...)");
+                        }
+                    }
+                    Err(why) => {
+                        // Not scanned to the end: an error, never a clean file.
+                        unreadable += 1;
+                        println!("key-scan: {f}: too costly to scan, {why}");
+                    }
                 }
             }
             Got::Binary => {
@@ -503,7 +592,7 @@ mod tests {
 
     fn hit(kind: &str, s: &str) -> bool {
         let c: Vec<char> = s.chars().collect();
-        !find_all(&pat(kind), &c).is_empty()
+        !find_all(&pat(kind), &c).unwrap().is_empty()
     }
 
     #[test]
@@ -518,7 +607,7 @@ mod tests {
     #[test]
     fn the_table_holds_no_key_shaped_literal() {
         let pats = load().unwrap();
-        assert!(scan_text(&pats, PATTERNS).is_empty());
+        assert!(scan_text(&pats, PATTERNS).unwrap().is_empty());
     }
 
     #[test]
@@ -604,5 +693,157 @@ mod tests {
             assert!(e.contains(why), "{bad}: {e}");
         }
         assert!(load_from("k\t(?:a|b){1,2}c{2,3}\n").is_ok());
+    }
+
+    /// The table is kept byte-identical in the two repositories that share the scanner, and nothing but this pin makes
+    /// an edit of one copy fail where it is made.
+    const TABLE_LEN: usize = 1107;
+    const TABLE_FNV1A: u64 = 0xdcee_2987_d1b5_92d3;
+
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn the_table_is_the_one_both_repositories_pin() {
+        let (len, sum) = (PATTERNS.len(), fnv1a(PATTERNS.as_bytes()));
+        assert_eq!(
+            (len, sum),
+            (TABLE_LEN, TABLE_FNV1A),
+            "tools/ci/key-patterns.txt changed. The file is kept byte-identical in the SecretaryIOS and the LucinaOS \
+             repositories: copy it to the other repository and set TABLE_LEN = {len} and TABLE_FNV1A = {sum:#x} in \
+             tools/ci/lucina-ci/src/keyscan.rs, in both."
+        );
+    }
+
+    /// A scratch directory that is removed on panic too, with the permissions a test took away given back first.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(tag: &str) -> Dir {
+            let d = std::env::temp_dir().join(format!("keyscan-unit-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&d);
+            fs::create_dir_all(&d).unwrap();
+            Dir(d)
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(self.0.join("locked"), fs::Permissions::from_mode(0o755));
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn touched() -> Vec<String> {
+        [
+            "--root",
+            "has space.txt",
+            "it's.txt",
+            "adir",
+            "ghost.txt",
+            "locked/secret.txt",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    fn tree(tag: &str) -> Dir {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new(tag);
+        for f in ["--root", "has space.txt", "it's.txt", "locked/secret.txt"] {
+            fs::create_dir_all(d.0.join(f).parent().unwrap()).unwrap();
+            fs::write(d.0.join(f), "text\n").unwrap();
+        }
+        fs::create_dir_all(d.0.join("adir")).unwrap();
+        fs::set_permissions(d.0.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_statted_is_not_absent_and_is_handed_over() {
+        let d = tree("stat");
+        // As root a directory without permissions is still searchable: the stat then works and there is nothing to test.
+        let locked = d.0.join("locked/secret.txt").symlink_metadata().is_err();
+        assert!(is_absent(&d.0, "ghost.txt"));
+        assert!(!is_absent(&d.0, "has space.txt"));
+        if locked {
+            assert!(
+                !is_absent(&d.0, "locked/secret.txt"),
+                "an unreadable path was taken for a deleted one"
+            );
+        }
+        let existing: Vec<String> = touched()
+            .into_iter()
+            .filter(|p| !is_absent(&d.0, p))
+            .collect();
+        assert!(!existing.contains(&"ghost.txt".to_string()));
+        let h = hand_over(&d.0, &existing);
+        assert_eq!(h.directories, 1);
+        let mut want: Vec<&str> = vec!["--root", "has space.txt", "it's.txt"];
+        if locked {
+            want.push("locked/secret.txt");
+        }
+        assert_eq!(h.files, want);
+    }
+
+    #[test]
+    fn the_secrets_command_hands_every_name_over_as_one_argument() {
+        let d = tree("cmd");
+        let existing: Vec<String> = touched()
+            .into_iter()
+            .filter(|p| !is_absent(&d.0, p))
+            .collect();
+        let h = hand_over(&d.0, &existing);
+        // `printf` in the place of the launcher prints each argument it was handed, as the shell split it.
+        let cmd = secrets_command("printf '[%s]\\n'", &h.files, None);
+        let out = Command::new("sh").args(["-c", &cmd]).output().unwrap();
+        let got = String::from_utf8_lossy(&out.stdout);
+        let mut want = vec![
+            "[key-scan]",
+            "[--root]",
+            "[.]",
+            "[--]",
+            "[--root]",
+            "[has space.txt]",
+            "[it's.txt]",
+        ];
+        if h.files.iter().any(|f| f == "locked/secret.txt") {
+            want.push("[locked/secret.txt]");
+        }
+        assert_eq!(got.lines().collect::<Vec<_>>(), want, "{cmd}");
+        // The gitleaks pass follows with the same quoting.
+        let both = secrets_command(
+            "lucina-ci",
+            &["it's.txt".to_string()],
+            Some(("--config .gitleaks.toml", &["has space.txt".to_string()])),
+        );
+        assert_eq!(
+            both,
+            "lucina-ci key-scan --root . -- 'it'\\''s.txt' && for f in 'has space.txt'; do gitleaks dir --no-banner --redact --config .gitleaks.toml \"$f\" || exit 1; done"
+        );
+    }
+
+    #[test]
+    fn a_long_line_that_makes_a_pattern_quadratic_goes_over_the_budget_fast() {
+        let jwt = pat("jwt");
+        let line: Vec<char> = "-eyJ".repeat(50_000).chars().collect();
+        let t = std::time::Instant::now();
+        let r = find_all(&jwt, &line);
+        assert!(r.is_err(), "the adversarial line was not refused");
+        assert!(t.elapsed().as_secs() < 30, "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn an_ordinary_long_line_stays_inside_the_budget_and_still_finds_its_key() {
+        let key = format!("{}{}", "AIza", "q".repeat(35));
+        let line = format!("{} {key}", "x ".repeat(100_000));
+        let pats = load().unwrap();
+        let found = scan_text(&pats, &line).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "google-api-key");
     }
 }

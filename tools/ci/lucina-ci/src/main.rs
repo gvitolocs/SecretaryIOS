@@ -130,7 +130,7 @@ fn proof_unit(units: &[Unit], branch: &str) -> Option<Vec<Unit>> {
 
 fn changed_between(root: &Path, a: &str, b: &str) -> Result<Vec<String>, String> {
     let o = Command::new("git")
-        .args(["diff", "--name-only", a, b])
+        .args(["diff", "--name-only", "-z", a, b])
         .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;
@@ -138,7 +138,8 @@ fn changed_between(root: &Path, a: &str, b: &str) -> Result<Vec<String>, String>
         return Err(format!("git diff {a} {b} failed"));
     }
     Ok(String::from_utf8_lossy(&o.stdout)
-        .lines()
+        .split('\0')
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect())
 }
@@ -1646,17 +1647,18 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
             .output()
             .map(|o| {
                 String::from_utf8_lossy(&o.stdout)
-                    .lines()
+                    .split('\0')
+                    .filter(|s| !s.is_empty())
                     .map(str::to_string)
                     .collect()
             })
             .unwrap_or_default()
     };
-    changed.extend(git_lines(&["diff", "--name-only", "HEAD"]));
-    changed.extend(git_lines(&["ls-files", "-o", "--exclude-standard"]));
+    changed.extend(git_lines(&["diff", "--name-only", "-z", "HEAD"]));
+    changed.extend(git_lines(&["ls-files", "-z", "-o", "--exclude-standard"]));
     let existing: Vec<String> = changed
         .iter()
-        .filter(|p| root.join(p).exists())
+        .filter(|p| !keyscan::is_absent(&root, p))
         .cloned()
         .collect();
     if changed.is_empty() {
@@ -1880,42 +1882,41 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     }
     // The key formats of tools/ci/key-patterns.txt fail on any touched file, with no allowlist and without gitleaks: the
     // gitleaks pass after it is the second line, not the first (docs/ci/SHIFT-LEFT.md).
-    let quote = |p: &String| format!("'{}'", p.replace('\'', "'\\''"));
-    // A file the change deleted is not scanned, and it is said. A directory (a submodule path) is not a file; neither is
-    // handed over, because key-scan treats a named file it cannot read as an error. `--` ends the options: a touched
-    // file called `--root` is a file.
+    // A deleted path is not handed over, and a directory path (a submodule) is not either, because key-scan treats a named
+    // path it cannot read as an error; both are counted in the line below. A path that cannot be statted is not "deleted":
+    // it is handed over and key-scan fails on it. The command is built in keyscan.rs, where it is tested.
     let gone = changed.len() - existing.len();
-    if gone > 0 {
-        println!("check-fast: secrets: {gone} deleted file(s) not scanned");
+    let handover = keyscan::hand_over(&root, &existing);
+    if gone > 0 || handover.directories > 0 {
+        println!(
+            "check-fast: secrets: {gone} deleted file(s) and {} directory path(s) not handed to key-scan",
+            handover.directories
+        );
     }
-    let scan_list = existing
+    if handover.files.is_empty() && !existing.is_empty() {
+        skipped.push(
+            "secret scan: every touched path is a directory (a submodule): nothing to hand to key-scan or gitleaks".into(),
+        );
+    }
+    let gitleaks_files: Vec<String> = existing
         .iter()
-        .filter(|p| root.join(p).symlink_metadata().is_ok_and(|m| !m.is_dir()))
-        .map(quote)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut secrets_cmd = format!("{} key-scan --root . -- {scan_list}", own_copy.display());
-    if tool_exists("gitleaks") {
+        .filter(|p| !p.starts_with("third_party/"))
+        .cloned()
+        .collect();
+    let gitleaks = if tool_exists("gitleaks") {
         let config = if root.join(".gitleaks.toml").exists() {
             "--config .gitleaks.toml"
         } else {
             ""
         };
-        let list = existing
-            .iter()
-            .filter(|p| !p.starts_with("third_party/"))
-            .map(quote)
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !list.is_empty() {
-            secrets_cmd.push_str(&format!(
-                " && for f in {list}; do gitleaks dir --no-banner --redact {config} \"$f\" || exit 1; done"
-            ));
-        }
+        Some((config, &gitleaks_files[..])).filter(|(_, l)| !l.is_empty())
     } else {
         skipped.push("secret scan: gitleaks not installed here (key-scan still ran)".into());
-    }
-    if !scan_list.is_empty() {
+        None
+    };
+    let secrets_cmd =
+        keyscan::secrets_command(&own_copy.display().to_string(), &handover.files, gitleaks);
+    if !handover.files.is_empty() {
         step(
             "secrets",
             &secrets_cmd,
