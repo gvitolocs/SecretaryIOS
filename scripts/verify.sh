@@ -15,7 +15,7 @@
 #      CARGO_TARGET_DIR, TLC_WORKERS,
 #      TLC_TIMEOUT (seconds per cfg, default 900), CARGO_JOBS (default 2).
 
-# GATE-12 / PF-C046: proofs run on GitHub; a lane worker starts none.
+# Refuse to run inside a lane worker.
 . "$(dirname "$0")/lib/in-lane-worker.sh" || exit 75
 if in_lane_worker; then
     echo "verify.sh: refused inside a lane worker (proofs run on GitHub)" >&2

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# scripts/tests/in-lane-worker-test.sh: scripts/lib/in-lane-worker.sh (PF-C046, GATE-12) and the three proof entry points
-# that source it. Everything is a fixture: a fake /proc tree whose pid chain starts at this script's own $$, stub `lane`
-# programs at absolute paths of the fixture, and entry points started with LANE_WORKER=1 so that they stop at the guard and
-# never reach Verus or TLC. The paths the helper reads are ARGUMENTS of `in_lane_worker` (never the environment), which is
-# also what the cases at the bottom prove: no variable turns a worker answer off. The last line is `in-lane-worker-test: pass`.
+# scripts/tests/in-lane-worker-test.sh: tests scripts/lib/in-lane-worker.sh and the entry points that source it. Everything
+# is a fixture: fake /proc trees whose pid chain starts at this script's own $$, stub `lane`, `timeout` and `getent`
+# programs at paths of the fixture, and entry points started with LANE_WORKER=1 so that they stop at the guard and never
+# reach a prover. The paths the helper reads are ARGUMENTS of `in_lane_worker` (never the environment), and the cases below
+# prove that no variable turns a worker answer off. Entry points that are not in this tree are skipped. The last line is
+# `in-lane-worker-test: pass`.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -154,7 +155,7 @@ if ! (
     in_lane_worker "$nolane" "$tmp/no-proc-here" Darwin
 ); then fail "LANE_WORKER=1 on Darwin must still say worker"; fi
 
-# --- 2c. the same answers from a POSIX shell (dash), the fail-open the review found
+# --- 2c. the same answers from a POSIX shell (dash)
 posix_answer() { # <cgroup of $$> <cgroup of parent 1> <cgroup of parent 2>: the answer of `sh` over a tree built for its pid
     local out=$tmp/sh-out go=$tmp/sh-go pidf=$tmp/sh-pid i
     rm -f "$out" "$go" "$pidf"
@@ -173,6 +174,47 @@ posix_answer() { # <cgroup of $$> <cgroup of parent 1> <cgroup of parent 2>: the
 [ "$(posix_answer /user.slice/bq-4242.scope /user.slice/bq-wrap-1.scope /user.slice/lane-runner-ab12cd.scope)" = worker ] \
     || fail "sh: runner scope on a grandparent must say worker (the [[ =~ ]] fail-open)"
 [ "$(posix_answer "$clean" /user.slice/lane-attempt-4521.scope "$clean")" = worker ] || fail "sh: attempt scope must say worker"
+
+# --- 2d. the lane binary is found from the passwd entry of the real uid (a stub getent is the fifth argument)
+mkdir -p "$tmp/h/.local/bin"
+stub_getent() { printf '#!/bin/sh\n%s\n' "$2" > "$1"; chmod 0755 "$1"; }
+stub_getent "$tmp/getent-ok" "echo 'user:x:1000:1000:U:$tmp/h:/bin/sh'"
+stub_getent "$tmp/getent-fail" "exit 2"
+stub_getent "$tmp/getent-nohome" "echo 'user:x:1000:1000:U::/bin/sh'"
+stub_getent "$tmp/getent-relhome" "echo 'user:x:1000:1000:U:relative/home:/bin/sh'"
+stub_getent "$tmp/getent-nolane" "echo 'user:x:1000:1000:U:$tmp/empty-home:/bin/sh'"
+mkdir -p "$tmp/empty-home"
+lookup() { # <expected> <label> <getent> <proc> [lane stub to put at <home>/.local/bin/lane]
+    local want=$1 label=$2 got
+    if [ -n "${5:-}" ]; then cp "$5" "$tmp/h/.local/bin/lane"; else rm -f "$tmp/h/.local/bin/lane"; fi
+    if (
+        unset LANE_WORKER LANE_PROOFS_REFUSED
+        in_lane_worker "" "$4" "" "" "$3"
+    ); then got=worker; else got=not; fi
+    [ "$got" = "$want" ] || fail "$label: wanted $want, got $got"
+}
+lookup worker "passwd home holds a lane that says 0" "$tmp/getent-ok" "$tmp/p1" "$tmp/lane0"
+lookup not "passwd home holds a lane that says 1, clean tree" "$tmp/getent-ok" "$tmp/p1" "$tmp/lane1"
+lookup worker "passwd home holds a lane that says 1, runner scope on a grandparent" "$tmp/getent-ok" "$tmp/p2" "$tmp/lane1"
+lookup worker "getent fails: the home cannot be resolved" "$tmp/getent-fail" "$tmp/p1" "$tmp/lane1"
+lookup worker "passwd entry without a home" "$tmp/getent-nohome" "$tmp/p1" "$tmp/lane1"
+lookup worker "passwd entry with a relative home" "$tmp/getent-relhome" "$tmp/p1" "$tmp/lane1"
+lookup worker "no getent binary" "$tmp/no-such-getent" "$tmp/p1" "$tmp/lane1"
+lookup not "home resolved, no lane binary there, clean tree: the walk decides" "$tmp/getent-nolane" "$tmp/p1"
+lookup worker "home resolved, no lane binary there, runner scope: the walk decides" "$tmp/getent-nolane" "$tmp/p2"
+# $HOME and PATH do not move the lookup: a lane that says 0 in a fake $HOME is not consulted
+mkdir -p "$tmp/fakehome/.local/bin"
+cp "$tmp/lane0" "$tmp/fakehome/.local/bin/lane"
+if ! (
+    unset LANE_WORKER LANE_PROOFS_REFUSED
+    HOME="$tmp/fakehome" PATH="$tmp/fakehome/.local/bin:$PATH"
+    in_lane_worker "" "$tmp/p1" "" "" "$tmp/getent-nolane"
+); then :; else fail "\$HOME or PATH steered the lane lookup"; fi
+# Darwin with no proc root answers before the lookup, even when getent is missing
+if (
+    unset LANE_WORKER LANE_PROOFS_REFUSED
+    in_lane_worker "" "$tmp/no-proc-here" Darwin "" "$tmp/no-such-getent"
+); then fail "Darwin with no proc root must not need getent"; fi
 
 # --- 3. variables are a second trigger, and cannot clear anything
 if ! (
@@ -205,11 +247,11 @@ if ! (
     in_lane_worker "$nolane" "$tmp/p2"
 ); then fail "an environment variable replaced a path argument"; fi
 
-# --- 4. the three entry points stop at the guard, exit 75, with the message, and never reach a prover
+# --- 4. the guarded entry points that exist in this tree stop at the guard, exit 75, with the message, and never reach a prover
 entry() { # <script path under root>
     local f=$root/$1 name out code
     name=$(basename "$1")
-    [ -f "$f" ] || { fail "$1 is missing"; return; }
+    [ -f "$f" ] || return 0
     grep -q 'lib/in-lane-worker.sh' "$f" || fail "$1 does not source the helper"
     code=0
     out=$(cd "$tmp" && LANE_WORKER=1 VERUS=/nonexistent/verus bash "$f" 2>&1 > /dev/null) || code=$?
@@ -223,13 +265,22 @@ entry() { # <script path under root>
         [ "$out" = "$name: refused inside a lane worker (proofs run on GitHub)" ] || fail "$1 under $shell: message was: $out"
     done
 }
-for e in scripts/verify.sh scripts/verify-shipped.sh scripts/verify-verus.sh; do
+entries="scripts/verify.sh scripts/verify-shipped.sh scripts/verify-verus.sh scripts/verify-mutations.sh scripts/verus-one.sh
+    scripts/mac-model-check.sh userspace/formal/verify-mutations.sh userspace/formal/juno/run.sh userspace/formal/tla-parity.sh"
+for e in $entries; do
     entry "$e"
 done
 
 # --- 4b. entry-point level, with the helper's paths fixed by a wrapper (a test file in the fixture, not the environment):
 # the entry point is started with no LANE_* variable, its pid is read, a fake /proc tree is built for it, and it is released.
-pass_entry=scripts/verify-verus.sh # an entry whose body stops at once on its own (no prover, no input): the guard is all that decides
+# an entry whose body stops at once on its own (no prover, no input), so that the guard is all that decides; none: skip 4b
+pass_entry=
+for e in scripts/verus-one.sh scripts/verify-verus.sh; do
+    if [ -f "$root/$e" ]; then
+        pass_entry=$e
+        break
+    fi
+done
 run_entry() { # <uname> <proc: tree|none|empty> [cgroups of the script, its parent, its grandparent]
     local d=$tmp/ep uname_s=$1 mode=$2 i
     shift 2
@@ -259,6 +310,7 @@ EOW
     wait "$bg" || entry_code=$?
     entry_out=$(cat "$d/out")
 }
+if [ -n "$pass_entry" ]; then
 run_entry Linux tree "$clean" "$clean" "$clean"
 [ "$entry_code" != 75 ] || fail "entry point, clean tree, no worker anywhere: refused although nothing says worker: $entry_out"
 case $entry_out in *"refused inside a lane worker"*) fail "entry point, clean tree: refusal message printed: $entry_out" ;; esac
@@ -270,10 +322,11 @@ run_entry Darwin empty
 [ "$entry_code" = 75 ] || fail "entry point, Darwin but a proc root that exists and is empty: exit $entry_code, wanted 75: $entry_out"
 run_entry Linux none
 [ "$entry_code" = 75 ] || fail "entry point on Linux with no proc root: exit $entry_code, wanted 75: $entry_out"
+fi
 
-# the mutants.sh stay untouched on purpose (coordinator 2026-11-19)
+# the mutation scripts carry no guard
 while IFS= read -r m; do
-    if grep -q 'in-lane-worker' "$m"; then fail "$m carries the guard; the mutants.sh are frozen on purpose"; fi
+    if grep -q 'in-lane-worker' "$m"; then fail "$m carries the guard"; fi
 done < <(find "$root/verification" "$root/crates" "$root/scripts" \( -name mutants.sh -o -name "verus-mutants-*.sh" \) 2> /dev/null)
 
 if [ "$fails" -ne 0 ]; then

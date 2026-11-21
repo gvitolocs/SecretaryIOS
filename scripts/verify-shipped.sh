@@ -10,7 +10,7 @@
 # Mutants that must fail: verification/*/mutants.sh.
 # Run one file only: FILES=crates/secretary-server/src/voice_rules.rs scripts/verify-shipped.sh
 
-# GATE-12 / PF-C046: proofs run on GitHub; a lane worker starts none.
+# Refuse to run inside a lane worker.
 . "$(dirname "$0")/lib/in-lane-worker.sh" || exit 75
 if in_lane_worker; then
     echo "verify-shipped.sh: refused inside a lane worker (proofs run on GitHub)" >&2
