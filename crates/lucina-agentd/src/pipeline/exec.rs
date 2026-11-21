@@ -224,7 +224,9 @@ fn queue_failure(code: Option<i32>, bq_says: &str, waited_secs: u64) -> String {
         return "the bq job started but could not write its grant marker (wrapper exit 97), so the gate did not run".into();
     }
     if let Some(l) = line("no build slot in") {
-        return format!("waited for a bq slot for {waited_secs} s without a grant (bq exit {exit}): {l}");
+        return format!(
+            "waited for a bq slot for {waited_secs} s without a grant (bq exit {exit}): {l}"
+        );
     }
     if let Some(l) = line("GiB free, the floor is") {
         return format!("bq refused the job at once, before any queueing (bq exit {exit}): {l}");
@@ -4914,7 +4916,8 @@ mod tests {
             assert!(!log.contains(&format!("failed: {must_not}")), "{file}: {log}");
         }
         // The wrapper's own exit, and a bq that fails with nothing the executor knows.
-        assert!(queue_failure(Some(97), "", 3).contains("could not write its grant marker (wrapper exit 97)"));
+        assert!(queue_failure(Some(97), "", 3)
+            .contains("could not write its grant marker (wrapper exit 97)"));
         assert!(queue_failure(Some(125), "bq: unknown option x", 3)
             .contains("bq failed before the gate ran (bq exit 125)"));
     }
@@ -4946,7 +4949,11 @@ mod tests {
         let log = slot_log(&dir);
         assert_eq!(out.code, "GATE_FAILED", "{out:?}\n{log}");
         let calls = std::fs::read_to_string(fake.join("calls")).unwrap();
-        assert_eq!(calls.lines().count(), 1, "the gate was tried again\n{calls}\n{log}");
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "the gate was tried again\n{calls}\n{log}"
+        );
         assert!(!log.contains("running it once more"), "{log}");
         assert!(log.contains("gate failed in the bq queue: build"), "{log}");
     }
