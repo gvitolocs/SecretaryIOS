@@ -1272,9 +1272,9 @@ mod tests {
                 );
             }
         }
-        assert!(decide_on(&format!("LAGENT_BYPASS= find {TGT} -delete"), "/tmp", true).is_some());
+        assert!(decide_on(&format!("LAGENT_BYPASS= find {TGT} -delete"), "/home/nez/scratch", true).is_some());
         // Unexpanded variables fail open.
-        assert!(decide_on("rm $CARGO_TARGET_DIR/debug/deps/*.rlib", "/tmp", true).is_none());
+        assert!(decide_on("rm $CARGO_TARGET_DIR/debug/deps/*.rlib", "/home/nez/scratch", true).is_none());
     }
 
     #[test]
@@ -1284,8 +1284,8 @@ mod tests {
         std::fs::write(dir.join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n").unwrap();
         std::fs::write(dir.join(".rustc_info.json"), "{}").unwrap();
         let c = format!("find {}/probe/deps -type f -delete", dir.display());
-        let on_host = decide_on(&c, "/tmp", false).is_some();
-        let on_mac = decide_on(&c, "/tmp", true).is_none();
+        let on_host = decide_on(&c, "/home/nez/scratch", false).is_some();
+        let on_mac = decide_on(&c, "/home/nez/scratch", true).is_none();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(on_host, "the Linux binary sees the markers");
         assert!(on_mac, "the Mac binary goes by names only");
