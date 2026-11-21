@@ -207,6 +207,34 @@ fn slot_wrapper(bq: &Path, who: &str, cap_secs: u64) -> String {
     )
 }
 
+/// Why a slotted step that bq never granted ended, in the words of what bq printed (`bq_says`: its lines in
+/// the job log) and how it exited (tools/bq/src/main.rs: every `bq run` error is `bq: <sentence>` and exit
+/// 125; the job's own status is bq's exit otherwise). "Waited" is said only of a wait that bq itself gave up
+/// (`--max-wait`); a refusal at once, a grant whose job did not start, and anything else each say what they are.
+fn queue_failure(code: Option<i32>, bq_says: &str, waited_secs: u64) -> String {
+    let exit = code.map_or("signal".to_string(), |c| c.to_string());
+    let line = |needle: &str| {
+        bq_says
+            .lines()
+            .find(|l| l.contains(needle))
+            .map(|l| l.trim().trim_start_matches("bq: ").to_string())
+    };
+    // 97 is the wrapper's own: the job started and could not write the grant marker.
+    if code == Some(97) {
+        return "the bq job started but could not write its grant marker (wrapper exit 97), so the gate did not run".into();
+    }
+    if let Some(l) = line("no build slot in") {
+        return format!("waited for a bq slot for {waited_secs} s without a grant (bq exit {exit}): {l}");
+    }
+    if let Some(l) = line("GiB free, the floor is") {
+        return format!("bq refused the job at once, before any queueing (bq exit {exit}): {l}");
+    }
+    if let Some(l) = line("bq: got ") {
+        return format!("bq granted the slot ({l}) but the job did not start (exit {exit}): the scope or the wrapper failed, it was not a queue wait");
+    }
+    format!("bq failed before the gate ran (bq exit {exit}), without a line the executor knows: see the lines above")
+}
+
 /// The home directory of this uid from the passwd entry, as `scripts/check-fast` reads it: never
 /// `$HOME`.
 fn passwd_home() -> Option<PathBuf> {
@@ -1013,6 +1041,9 @@ impl Exec {
             let _ = std::fs::remove_file(&s.marker);
         }
         let started_at = Instant::now();
+        let log_from = std::fs::metadata(self.dir.join("log"))
+            .map(|m| m.len())
+            .unwrap_or(0);
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -1098,16 +1129,14 @@ impl Exec {
         // `--max-wait`, or bq refusing the job), and the limit of the gate was never in play.
         if slot.is_some() && ended.granted_after.is_none() && !ended.timed_out {
             if let Some(code) = ended.status.filter(|s| !s.success()) {
-                // 97 is the wrapper's own: the job started and could not write the grant marker.
-                let waited = if code.code() == Some(97) {
-                    "the bq job started but could not write its grant marker (wrapper exit 97), so the gate did not run".to_string()
-                } else {
-                    format!(
-                        "waited for a bq slot for {} s without a grant (bq exit {})",
-                        started_at.elapsed().as_secs(),
-                        code.code().map_or("signal".to_string(), |c| c.to_string())
-                    )
-                };
+                // What bq itself printed for this step (its lines are in the job log, after where the step began).
+                let bq_says = std::fs::read(self.dir.join("log"))
+                    .map(|b| {
+                        String::from_utf8_lossy(b.get(log_from as usize..).unwrap_or(&[]))
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                let waited = queue_failure(code.code(), &bq_says, started_at.elapsed().as_secs());
                 self.say(&format!("failed: {waited}"));
                 self.queue_failed = true;
                 return Some(waited);
@@ -4584,6 +4613,8 @@ mod tests {
                  shift\nmaxwait=0\n\
                  while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do\n\
                  case \"$1\" in --max-wait) maxwait=$2; shift;; esac; shift\ndone\nshift\n\
+                 if [ -f \"$d/refuse\" ]; then echo \"bq: only 12 GiB free, the floor is 30 GiB: refusing to build rather than fill the disk.\" >&2; exit 125; fi\n\
+                 if [ -f \"$d/nostart\" ]; then echo \"bq: got long-0 after 0s\" >&2; echo \"Failed to connect to user scope bus\" >&2; exit 1; fi\n\
                  if [ -f \"$d/e125\" ]; then echo \"bq: no build slot in 1800 s: the long queue is full\" >&2; exit 125; fi\n\
                  if [ -f \"$d/hang\" ]; then sleep 20; exit 1; fi\n\
                  if [ -f \"$d/never\" ]; then sleep \"$maxwait\"; echo \"no build slot in $maxwait s: the long queue is full\" >&2; exit 1; fi\n\
@@ -4856,6 +4887,36 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&plain).unwrap(), "0");
             assert_eq!(std::fs::read_to_string(&slotted).unwrap(), "0");
         }
+    }
+
+    /// Each way a slotted step ends without a grant says what it is: a refusal at once (the disk floor), a
+    /// grant whose job did not start (`systemd-run` failing), a bq that gave up its wait, and the wrapper's 97.
+    #[test]
+    fn slot_a_step_that_was_not_granted_says_which_way_it_failed() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let fake = root.join("fake");
+        let bq = fake_bq(&fake);
+        for (file, must, must_not) in [
+            ("refuse", "bq refused the job at once, before any queueing (bq exit 125): only 12 GiB free, the floor is 30 GiB", "waited"),
+            ("nostart", "bq granted the slot (got long-0 after 0s) but the job did not start (exit 1)", "waited"),
+            ("never", "waited for a bq slot for ", "refused"),
+        ] {
+            for f in ["refuse", "nostart", "never"] {
+                let _ = std::fs::remove_file(fake.join(f));
+            }
+            std::fs::write(fake.join(file), "").unwrap();
+            let (mut x, dir) = slot_exec(root, Some(bq.clone()));
+            x.bq_queue_cap_secs = 1;
+            assert!(!x.gate_run(root, "build", "true", true, Duration::from_secs(30), "30 s"));
+            let log = slot_log(&dir);
+            assert!(log.contains(&format!("failed: {must}")) || log.contains(must), "{file}: {log}");
+            assert!(!log.contains(&format!("failed: {must_not}")), "{file}: {log}");
+        }
+        // The wrapper's own exit, and a bq that fails with nothing the executor knows.
+        assert!(queue_failure(Some(97), "", 3).contains("could not write its grant marker (wrapper exit 97)"));
+        assert!(queue_failure(Some(125), "bq: unknown option x", 3)
+            .contains("bq failed before the gate ran (bq exit 125)"));
     }
 
     /// A gate that failed in the bq queue (the fake exits 125, no slot in time) is tried once, not twice:
