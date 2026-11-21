@@ -922,3 +922,179 @@ async fn a_task_can_be_based_on_a_trunk_commit_and_on_nothing_else() {
     assert_eq!(msg, "base not-a-rev is not a commit in Baseable");
     assert!(git(&repo, &["branch", "--list", "words-base"]).is_empty());
 }
+
+#[tokio::test]
+async fn a_title_that_starts_with_error_is_refused_but_a_word_inside_one_is_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Titled", "true");
+    let m = manager(&root);
+    let start = |title: &str, branch: &str| {
+        let m = m.clone();
+        let (title, branch) = (title.to_string(), branch.to_string());
+        let repo = repo.display().to_string();
+        async move {
+            m.start_task(StartTask {
+                title,
+                repo: Some(repo),
+                branch: Some(branch),
+                ..StartTask::default()
+            })
+            .await
+        }
+    };
+    // A failed `lagent id new` substituted into a title (AGENT-10), in any case and after blanks.
+    for bad in ["Error: refs: no id", "  error: x", "ERROR:y"] {
+        let ManagerError::Invalid(msg) = start(bad, "poisoned").await.expect_err(bad) else {
+            panic!("{bad}: a refused request");
+        };
+        assert!(msg.contains("\"Error:\""), "{msg}");
+        assert!(msg.contains(bad.trim()), "the title is named: {msg}");
+    }
+    assert!(git(&repo, &["branch", "--list", "poisoned"]).is_empty());
+    assert!(m.pipeline().tasks().is_empty(), "no task was made");
+    // Only a LEADING `Error:` counts.
+    start("Fix Error: handling", "fine").await.unwrap();
+    start("Error handling", "fine-too").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_merge_of_a_workspace_titled_error_is_refused_and_nothing_is_queued() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Poisoned", "true");
+    let wt = topic(&root, &repo, "Poisoned", "oops");
+    let m = manager(&root);
+    // Adopting keeps the stored title as given; the merge is where it would become a subject.
+    let (_, w) = m
+        .adopt_task(AdoptTask {
+            path: wt.display().to_string(),
+            title: Some("Error: refs: no id".into()),
+            ..AdoptTask::default()
+        })
+        .await
+        .unwrap();
+    let ManagerError::Invalid(msg) = m
+        .queue_merge(MergeRequest {
+            workspace: w.workspace_id.clone(),
+            ..MergeRequest::default()
+        })
+        .await
+        .expect_err("a poisoned title is refused")
+    else {
+        panic!("a refused request");
+    };
+    assert!(msg.contains("starts with \"Error:\""), "{msg}");
+    assert!(m.pipeline().active_jobs().is_empty(), "nothing was queued");
+}
+
+#[tokio::test]
+async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Ids", "true");
+    let m = manager(&root);
+    let queue = |name: &str| {
+        let m = m.clone();
+        let workspace = name.to_string();
+        async move {
+            m.adopt_task(AdoptTask {
+                path: workspace.clone(),
+                ..AdoptTask::default()
+            })
+            .await
+            .unwrap();
+            m.queue_merge(MergeRequest {
+                workspace,
+                ..MergeRequest::default()
+            })
+            .await
+            .unwrap()
+        }
+    };
+
+    // Two commits with trailers (and a repeat), a third without any: every distinct id, once.
+    let wt = topic(&root, &repo, "Ids", "tagged");
+    commit(&wt, "t1.txt", "1\n", "one\n\nLead: LA\nChange: LA-C001");
+    commit(&wt, "t2.txt", "2\n", "two\n\nLead: PF\nChange: PF-C002");
+    commit(
+        &wt,
+        "t3.txt",
+        "3\n",
+        "three\n\nLead: LA\nChange: PF-C002\n\nCo-Authored-By: t <t@t>",
+    );
+    commit(&wt, "t4.txt", "4\n", "four, no trailers");
+    let job = queue(&wt.display().to_string()).await;
+    assert_eq!(job.spec.leads, ["LA", "PF"]);
+    assert_eq!(job.spec.changes, ["LA-C001", "PF-C002"]);
+    let done = run_until_done(&m, &job.job_id).await;
+    assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
+    let text = std::fs::read_to_string(
+        root.join("state/pipeline/jobs")
+            .join(&job.job_id)
+            .join("job.json"),
+    )
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["leads"], serde_json::json!(["LA", "PF"]), "{text}");
+    assert_eq!(
+        v["changes"],
+        serde_json::json!(["LA-C001", "PF-C002"]),
+        "{text}"
+    );
+
+    // A branch with no trailers: nothing recorded, and `job.json` says nothing about it.
+    let plain = topic(&root, &repo, "Ids", "plain");
+    let job = queue(&plain.display().to_string()).await;
+    assert!(
+        job.spec.leads.is_empty() && job.spec.changes.is_empty(),
+        "{:?}",
+        job.spec
+    );
+    let done = run_until_done(&m, &job.job_id).await;
+    assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
+    let text = std::fs::read_to_string(
+        root.join("state/pipeline/jobs")
+            .join(&job.job_id)
+            .join("job.json"),
+    )
+    .unwrap();
+    assert!(
+        !text.contains("leads") && !text.contains("changes"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_cannot_be_renamed_to_a_title_that_starts_with_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Renamed", "true");
+    let wt = topic(&root, &repo, "Renamed", "named");
+    let m = manager(&root);
+    let (_, w) = m
+        .adopt_task(AdoptTask {
+            path: wt.display().to_string(),
+            title: Some("My title".into()),
+            ..AdoptTask::default()
+        })
+        .await
+        .unwrap();
+    let id = w.workspace_id.as_str();
+    // A leading "Error:" (a failed command substituted into the title) is refused (AGENT-10) and
+    // changes nothing; the word elsewhere is fine.
+    let e = m
+        .workspaces()
+        .rename(id, Some("Error: refs: no id".into()))
+        .expect_err("a poisoned title is refused");
+    assert!(e.to_string().contains("\"Error:\" is refused"), "{e}");
+    assert_eq!(
+        m.workspaces().get(id).unwrap().title.as_deref(),
+        Some("My title")
+    );
+    let ok = m
+        .workspaces()
+        .rename(id, Some("Fix Error: handling".into()))
+        .unwrap();
+    assert_eq!(ok.title.as_deref(), Some("Fix Error: handling"));
+}

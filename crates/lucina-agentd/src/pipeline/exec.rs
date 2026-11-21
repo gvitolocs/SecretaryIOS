@@ -2092,6 +2092,8 @@ mod tests {
             full: false,
             ledger: None,
             requested_by: None,
+            leads: vec![],
+            changes: vec![],
         }
     }
 

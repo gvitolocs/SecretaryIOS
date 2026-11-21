@@ -307,7 +307,37 @@ fn job_line(j: &Value) -> Vec<String> {
         s(&j["outcome"]["code"]),
         s(&j["createdAt"]),
         s(&j["requestedBy"]),
+        ids_cell(j),
     ]
+}
+
+/// LA-C039: the Lead and Change ids a merge job lands, `-` when it names none (and for a deploy).
+fn ids_cell(j: &Value) -> String {
+    let list = |k: &str| {
+        j["spec"][k]
+            .as_array()
+            .map(|a| {
+                let mut v = a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                // A job keeps 8 at most, so a full list may have been cut.
+                if a.len() >= 8 {
+                    v.push_str(",...");
+                }
+                v
+            })
+            .filter(|s| !s.is_empty())
+    };
+    match (list("leads"), list("changes")) {
+        (None, None) => "-".into(),
+        (l, c) => format!(
+            "{} / {}",
+            l.as_deref().unwrap_or("-"),
+            c.as_deref().unwrap_or("-")
+        ),
+    }
 }
 
 fn job_output(j: Value) -> Result<Output, CmdError> {
@@ -443,7 +473,10 @@ pub async fn job(client: &Client, cmd: &JobCommand) -> Result<Output, CmdError> 
             let jobs = v["jobs"].as_array().cloned().unwrap_or_default();
             let rows: Vec<Vec<String>> = jobs.iter().map(job_line).collect();
             Ok(Output {
-                text: table(&["JOB", "WHAT", "STATE", "RESULT", "QUEUED", "BY"], &rows),
+                text: table(
+                    &["JOB", "WHAT", "STATE", "RESULT", "QUEUED", "BY", "IDS"],
+                    &rows,
+                ),
                 json: Some(Value::Array(jobs)),
             })
         }
@@ -744,7 +777,7 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
     if !q.is_empty() {
         text.push('\n');
         text.push_str(&table(
-            &["JOB", "WHAT", "STATE", "RESULT", "QUEUED", "BY"],
+            &["JOB", "WHAT", "STATE", "RESULT", "QUEUED", "BY", "IDS"],
             &q.iter().map(job_line).collect::<Vec<_>>(),
         ));
     }
@@ -822,5 +855,18 @@ mod tests {
         deploy["kind"] = json!("deploy");
         deploy["runtime"] = json!("srv");
         assert_eq!(job_line(&deploy)[1], "deploy srv");
+    }
+
+    #[test]
+    fn the_ids_cell_names_leads_and_changes_or_a_dash() {
+        assert_eq!(job_line(&merge_job(None))[6], "-");
+        let mut j = merge_job(None);
+        j["spec"]["leads"] = json!(["LA", "PF"]);
+        j["spec"]["changes"] = json!(["LA-C001", "PF-C002"]);
+        assert_eq!(job_line(&j)[6], "LA,PF / LA-C001,PF-C002");
+        j["spec"]["leads"] = json!([]);
+        assert_eq!(job_line(&j)[6], "- / LA-C001,PF-C002");
+        j["spec"]["leads"] = json!(["1", "2", "3", "4", "5", "6", "7", "8"]);
+        assert_eq!(job_line(&j)[6], "1,2,3,4,5,6,7,8,... / LA-C001,PF-C002");
     }
 }

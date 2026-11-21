@@ -212,6 +212,56 @@ async fn requested_base(repo: &Trunk, rev: &str) -> Result<String, ManagerError>
     .map_err(invalid)
 }
 
+/// A title that starts with "Error:" is a failed command's output substituted into it (AGENT-10).
+pub(crate) fn poisoned_title(t: &str) -> bool {
+    t.trim()
+        .get(..6)
+        .is_some_and(|p| p.eq_ignore_ascii_case("error:"))
+}
+
+/// The `Lead:` and `Change:` trailer values of the commits a branch adds to its trunk (LA-C039), for the
+/// job list. Any git failure gives nothing: this never refuses or delays a queue.
+async fn landing_ids(dir: &Path, base_ref: &str, head: &str) -> (Vec<String>, Vec<String>) {
+    let Some(base) = git::read(dir, &["merge-base", base_ref, head]).await else {
+        return Default::default();
+    };
+    let range = format!("{base}..{head}");
+    // The whole message of each commit: our commits keep their trailers in more than one paragraph
+    // (`Lead:`/`Change:`/`Refs:`, a blank line, `Co-Authored-By:`), and git reads only the last.
+    match git::read(dir, &["log", "--reverse", "--format=%B%x1f", &range]).await {
+        Some(out) => parse_landing_ids(&out),
+        None => Default::default(),
+    }
+}
+
+/// The longest id kept, and how many of each a job stores.
+const ID_LEN: usize = 40;
+pub(crate) const MAX_IDS: usize = 8;
+
+/// One message per `\x1f`: the lines that START with `Lead:` or `Change:` (case-sensitive, so a word
+/// in the middle of a sentence is not one), to the distinct values of each in first-seen order, at
+/// most [`MAX_IDS`]. A value loses its control characters and is cut at [`ID_LEN`] characters.
+fn parse_landing_ids(log: &str) -> (Vec<String>, Vec<String>) {
+    fn add(into: &mut Vec<String>, v: &str) {
+        let v: String = v.chars().filter(|c| !c.is_ascii_control()).collect();
+        let v: String = v.trim().chars().take(ID_LEN).collect();
+        if !v.is_empty() && into.len() < MAX_IDS && !into.contains(&v) {
+            into.push(v);
+        }
+    }
+    let (mut leads, mut changes) = (Vec::new(), Vec::new());
+    for message in log.split('\x1f') {
+        for line in message.lines() {
+            if let Some(v) = line.strip_prefix("Lead:") {
+                add(&mut leads, v);
+            } else if let Some(v) = line.strip_prefix("Change:") {
+                add(&mut changes, v);
+            }
+        }
+    }
+    (leads, changes)
+}
+
 fn slug(title: &str) -> String {
     let s = lucina_agents::branch_slug::slugify(title);
     let s: String = s.chars().take(48).collect();
@@ -271,6 +321,12 @@ impl Manager {
     ) -> Result<(Task, WorkspaceRecord), ManagerError> {
         if req.title.trim().is_empty() {
             return Err(invalid("A task needs a title"));
+        }
+        if poisoned_title(&req.title) {
+            return Err(invalid(format!(
+                "A title that starts with \"Error:\" is refused (typically a failed command substituted into it): {}",
+                req.title.trim().chars().take(40).collect::<String>()
+            )));
         }
         let repo = repo_info(Path::new(&req.repo.clone().unwrap_or_else(default_repo)))?;
         if let Some(r) = &repo.remote {
@@ -441,6 +497,12 @@ impl Manager {
                 w.cwd
             )));
         }
+        if poisoned_title(w.name()) {
+            return Err(invalid(format!(
+                "The workspace title starts with \"Error:\" and would become the merge commit subject (typically a failed command substituted into it): {}; rename it, then merge",
+                w.name().chars().take(40).collect::<String>()
+            )));
+        }
         let dir = PathBuf::from(&w.cwd);
         let branch = git::info(&dir)
             .await
@@ -483,6 +545,7 @@ impl Manager {
                 })
                 .await;
         }
+        let (leads, changes) = landing_ids(&dir, &repo.base_ref(), &head).await;
         let id = pipeline::new_id("job");
         let spec = Spec {
             job_id: id.clone(),
@@ -515,6 +578,8 @@ impl Manager {
             full: req.full,
             ledger: Some(self.ledger_path()),
             requested_by: req.requested_by.clone(),
+            leads,
+            changes,
         };
         let job = Job {
             job_id: id.clone(),
@@ -595,6 +660,8 @@ impl Manager {
             full: false,
             ledger: Some(self.ledger_path()),
             requested_by: None,
+            leads: vec![],
+            changes: vec![],
         };
         let job = Job {
             job_id: id,
@@ -1512,5 +1579,37 @@ mod tests {
             verdict("not-a-rev", &["upstream-56"], None, false, false).unwrap_err(),
             "base not-a-rev is not a commit in LucinaNet-servo"
         );
+    }
+    /// LA-C039: trailers come from the whole message; distinct, first-seen order, cleaned, capped.
+    #[test]
+    fn landing_ids_are_read_from_the_whole_message_and_cleaned() {
+        // Two paragraphs, as our own commits have them; a repeat; an empty value.
+        let log =
+            "one\n\nLead: LA\nChange: LA-C001\nRefs: PIPE-09\n\nCo-Authored-By: x <x@y>\n\x1f\
+                   two\n\nLead: PF\nChange: PF-C002\n\x1f\
+                   three\n\nLead: LA\nChange:\n\x1f";
+        assert_eq!(
+            parse_landing_ids(log),
+            (
+                vec!["LA".to_string(), "PF".into()],
+                vec!["LA-C001".to_string(), "PF-C002".into()]
+            )
+        );
+        // Only a line that STARTS with the key counts, and the key is case-sensitive.
+        let log = "The Lead: of this is LA and the Change: is LA-C001\n\nlead: x\n  Lead: y\n\x1f";
+        assert_eq!(parse_landing_ids(log), (vec![], vec![]));
+        assert_eq!(parse_landing_ids(""), (vec![], vec![]));
+        // Control characters go, a long value is cut at 40 characters, nothing stores more than 8.
+        let long = "x".repeat(500);
+        let log = format!("Lead: A\x07B\x1bC\u{0}\nChange: {long}\n\x1f");
+        let (l, c) = parse_landing_ids(&log);
+        assert_eq!(l, ["ABC"]);
+        assert_eq!(c, ["x".repeat(40)]);
+        let many: String = (1..=10)
+            .map(|i| format!("Lead: L{i}\nChange: C{i}\n\x1f"))
+            .collect();
+        let (l, c) = parse_landing_ids(&many);
+        assert_eq!((l.len(), c.len()), (8, 8));
+        assert_eq!(l[7], "L8");
     }
 }

@@ -1164,6 +1164,17 @@ fn a_work_start_issues_the_run_and_follows_it_to_its_end() {
     assert_eq!(v["state"], "started");
     assert_eq!(v["refs"], json!(["LA-C001"]));
     assert_eq!(v["by"], "qoder auto-free");
+    // LA-C039: the daemon's own row names its agent: the lane run id.
+    assert_eq!(v["agent"], id.as_str());
+    assert_eq!(started["agent"], id.as_str());
+    // ...while a run declared by hand without an agent is still refused, naming it.
+    let e = refused(
+        &d,
+        &[
+            "id", "new", "run", "--lead", "LA", "--title", "t", "--by", "qoder",
+        ],
+    );
+    assert!(e.contains("agent"), "{e}");
     assert_eq!(v["lane"], "qoder");
     assert_eq!(v["model"], "auto-free");
     assert_eq!(v["modelRaw"], "auto-free");

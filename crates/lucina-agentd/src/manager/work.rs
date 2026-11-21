@@ -959,6 +959,9 @@ impl Manager {
                 chosen = id;
                 IdRow {
                     state: "started".into(),
+                    // The agent that does the work is the lane run itself: the id `lane` and the
+                    // commit trailers carry (LA-C039).
+                    agent: Some(chosen.clone()),
                     title: run_title.clone(),
                     by,
                     spec: spec_path,

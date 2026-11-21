@@ -163,6 +163,14 @@ pub struct Spec {
     /// Merge: who requested it (`by` in the waivers file); absent in jobs queued by older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_by: Option<String>,
+    /// Merge: the `Lead:` trailer values of the commits it lands (distinct, first seen first, at most 8,
+    /// each cleaned and at most 40 characters), read when it was queued; empty when none, when git failed, and in jobs
+    /// queued by older daemons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leads: Vec<String>,
+    /// Merge: the same for the `Change:` trailers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -581,7 +589,23 @@ mod tests {
             full: false,
             ledger: None,
             requested_by: None,
+            leads: vec![],
+            changes: vec![],
         };
+        // LA-C039: ids a merge lands are kept when there are some, left out when not, and a
+        // `job.json` written by an older daemon (no such keys) still loads.
+        let with = Spec {
+            leads: vec!["LA".into()],
+            changes: vec!["LA-C001".into()],
+            ..spec.clone()
+        };
+        let text = serde_json::to_string(&with).unwrap();
+        assert!(text.contains(r#""leads":["LA"]"#) && text.contains(r#""changes":["LA-C001"]"#));
+        assert_eq!(serde_json::from_str::<Spec>(&text).unwrap(), with);
+        let old = serde_json::to_string(&spec).unwrap();
+        assert!(!old.contains("leads") && !old.contains("changes"), "{old}");
+        let loaded: Spec = serde_json::from_str(&old).unwrap();
+        assert!(loaded.leads.is_empty() && loaded.changes.is_empty());
         for (i, id) in ["job_1", "job_2"].iter().enumerate() {
             let j = Job {
                 job_id: id.to_string(),
