@@ -10,7 +10,9 @@
 //! silent mismatch.
 //!
 //! What it sees: the text of the files it is given (every `git ls-files` entry when none are named). What it cannot see:
-//! a key assembled at run time from parts, compressed or binary files (a NUL in the first 8 KiB), files over 4 MiB,
+//! a key assembled at run time from parts, compressed or binary files (a NUL in the first 8 KiB, skipped and named),
+//! files over 4 MiB (skipped and named), a symlink (skipped and named, never followed), a file named on the command
+//! line that cannot be read (named, exit 2),
 //! untracked files, and history.
 
 use std::fs;
@@ -185,10 +187,48 @@ impl Parser<'_> {
     }
 }
 
-/// The table, parsed. An error names the line.
+/// The table, parsed. An error names the line and the kind.
 pub fn load() -> Result<Vec<Pattern>, String> {
+    load_from(PATTERNS)
+}
+
+/// Whether a repetition with no upper bound sits anywhere in `alts`, groups inside groups included.
+fn holds_unbounded(alts: &[Vec<Item>]) -> bool {
+    alts.iter()
+        .flatten()
+        .any(|it| it.max == NO_MAX || matches!(&it.node, Node::Group(_, a) if holds_unbounded(a)))
+}
+
+/// What a table line may not hold, beyond what the parser refuses: a count with n > m (it would match nothing, so a
+/// typo would silently switch a detector off), an empty group, and a group that repeats and holds an unbounded
+/// repetition or has no upper bound itself (exponential time on a long line, so a table edit could hang the step).
+fn check_items(items: &[Item]) -> Result<(), String> {
+    for it in items {
+        if it.min > it.max {
+            return Err(format!("a count {{{},{}}} with n > m", it.min, it.max));
+        }
+        if let Node::Group(_, alts) = &it.node {
+            if alts.iter().any(Vec::is_empty) {
+                return Err("an empty group or branch".into());
+            }
+            if it.max == NO_MAX {
+                return Err("a group with no upper bound".into());
+            }
+            if it.max > 1 && holds_unbounded(alts) {
+                return Err("a repeated group that holds an unbounded repetition".into());
+            }
+            for a in alts {
+                check_items(a)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `load` over a given text, for the tests.
+pub fn load_from(text: &str) -> Result<Vec<Pattern>, String> {
     let mut out = Vec::new();
-    for (n, line) in PATTERNS.lines().enumerate() {
+    for (n, line) in text.lines().enumerate() {
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
@@ -203,10 +243,17 @@ pub fn load() -> Result<Vec<Pattern>, String> {
         };
         let alts = p
             .alt(false)
-            .map_err(|e| format!("key-patterns.txt:{}: {e}", n + 1))?;
+            .map_err(|e| format!("key-patterns.txt:{}: {kind}: {e}", n + 1))?;
         if alts.len() != 1 {
-            return Err(format!("key-patterns.txt:{}: top-level |", n + 1));
+            return Err(format!("key-patterns.txt:{}: {kind}: top-level |", n + 1));
         }
+        if alts[0].is_empty() {
+            return Err(format!(
+                "key-patterns.txt:{}: {kind}: an empty regex",
+                n + 1
+            ));
+        }
+        check_items(&alts[0]).map_err(|e| format!("key-patterns.txt:{}: {kind}: {e}", n + 1))?;
         out.push(Pattern {
             kind: kind.to_string(),
             alts: alts.into_iter().next().unwrap_or_default(),
@@ -331,13 +378,18 @@ enum Got {
     Text(String),
     Binary,
     TooBig,
+    Symlink,
     Gone,
 }
 
 fn read_text(path: &Path) -> Got {
-    let Ok(meta) = fs::metadata(path) else {
+    let Ok(meta) = fs::symlink_metadata(path) else {
         return Got::Gone;
     };
+    // A symlink is never followed: it could point at a file outside the repository.
+    if meta.file_type().is_symlink() {
+        return Got::Symlink;
+    }
     if !meta.is_file() {
         return Got::Gone;
     }
@@ -378,20 +430,26 @@ pub fn cmd(args: &[String]) -> Result<i32, String> {
     let mut root = PathBuf::from(".");
     let mut files: Vec<String> = Vec::new();
     let mut it = args.iter();
+    // Options come first. A `--`, or the first argument that is not an option, ends them: everything after is a file
+    // name, so a touched file called `--root` is a file and never an option.
     while let Some(a) = it.next() {
-        if a == "--root" {
+        if a == "--" {
+            files.extend(it.by_ref().cloned());
+        } else if a == "--root" {
             root = PathBuf::from(it.next().ok_or("--root needs a directory")?);
         } else if a.starts_with("--") {
             return Err(format!("key-scan: unknown option {a}"));
         } else {
             files.push(a.clone());
+            files.extend(it.by_ref().cloned());
         }
     }
+    let named = !files.is_empty();
     let pats = load()?;
     if files.is_empty() {
         files = tracked(&root)?;
     }
-    let (mut scanned, mut skipped, mut hits) = (0usize, 0usize, 0usize);
+    let (mut scanned, mut skipped, mut hits, mut unreadable) = (0usize, 0usize, 0usize, 0usize);
     for f in &files {
         match read_text(&root.join(f)) {
             Got::Text(t) => {
@@ -409,10 +467,25 @@ pub fn cmd(args: &[String]) -> Result<i32, String> {
                 skipped += 1;
                 println!("key-scan: skipped {f} (over 4 MiB)");
             }
-            Got::Gone => {}
+            Got::Symlink => {
+                skipped += 1;
+                println!("key-scan: skipped {f} (symlink: never followed)");
+            }
+            Got::Gone => {
+                skipped += 1;
+                println!("key-scan: skipped {f} (not a readable regular file)");
+                // A file the caller named that cannot be read is an error, not a clean file. In the whole-tree mode a
+                // tracked path that is gone from the work tree (deleted, a submodule) is only said.
+                if named {
+                    unreadable += 1;
+                }
+            }
         }
     }
     println!("key-scan: {scanned} file(s) scanned, {skipped} skipped, {hits} match(es)");
+    if unreadable > 0 {
+        return Ok(2);
+    }
     Ok(i32::from(hits > 0))
 }
 
@@ -500,5 +573,36 @@ mod tests {
             };
             assert!(p.alt(false).is_err(), "{bad} was accepted");
         }
+    }
+
+    #[test]
+    fn a_table_line_that_would_silently_switch_a_detector_off_or_hang_it_is_an_error() {
+        for (bad, why) in [
+            ("a{5,3}", "n > m"),
+            ("", "an empty regex"),
+            ("(?:)", "an empty group"),
+            ("(?:a|)", "an empty group or branch"),
+            ("(?:a+)?b{2,1}", "n > m"),
+            (
+                "(?:a+){2}",
+                "a repeated group that holds an unbounded repetition",
+            ),
+            (
+                "(?:(?:a+)?){2}",
+                "a repeated group that holds an unbounded repetition",
+            ),
+            ("(?:ab)*", "a group with no upper bound"),
+            ("(?:a){1,}", "a group with no upper bound"),
+        ] {
+            let e = load_from(&format!("some-kind\t{bad}\n"))
+                .err()
+                .unwrap_or_else(|| panic!("{bad} was accepted"));
+            assert!(
+                e.contains("some-kind"),
+                "{bad}: the error names no kind: {e}"
+            );
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+        assert!(load_from("k\t(?:a|b){1,2}c{2,3}\n").is_ok());
     }
 }

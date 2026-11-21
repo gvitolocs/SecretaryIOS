@@ -50,16 +50,26 @@ impl Tree {
         let p = self.0.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, bytes).unwrap();
-        self.git(&["add", "-f", rel]);
+        self.git(&["add", "-f", "--", rel]);
     }
 
     /// `key-scan --root <tree> files...`; with no file, the whole tracked tree.
     fn scan(&self, files: &[&str]) -> (i32, String) {
+        // The way check-fast calls it: `--` before the file names.
+        let mut args = vec!["--root", self.0.to_str().unwrap()];
+        if !files.is_empty() {
+            args.push("--");
+            args.extend(files);
+        }
+        self.scan_args(&args)
+    }
+
+    /// `key-scan <args>` exactly as given.
+    fn scan_args(&self, args: &[&str]) -> (i32, String) {
         let o: Output = Command::new(env!("CARGO_BIN_EXE_lucina-ci"))
             .arg("key-scan")
-            .arg("--root")
-            .arg(&self.0)
-            .args(files)
+            .args(args)
+            .current_dir(&self.0)
             .output()
             .unwrap();
         let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -153,6 +163,11 @@ fn text_that_only_looks_like_a_key_passes() {
         format!("{}BEGIN CERTIFICATE{}", "-".repeat(5), "-".repeat(5)),
         format!("{}BEGIN PUBLIC KEY{}", "-".repeat(5), "-".repeat(5)),
         format!("x{}{}", "AIza", "q".repeat(35)),
+        // The formats the table deliberately does not cover: a fine-grained token one short, Slack's `xoxe` family,
+        // an AWS id of another prefix.
+        format!("{}_{}", "github_pat", "q".repeat(21)),
+        format!("{}-1-{}", "xoxe", "q".repeat(30)),
+        format!("{}{}", "ABIA", "Q".repeat(16)),
     ];
     t.put("notes.txt", near.join("\n").as_bytes());
     let (code, out) = t.scan(&["notes.txt"]);
@@ -188,17 +203,88 @@ fn the_full_key_never_appears_in_the_output() {
         t.put("f.txt", format!("secret = {key}\n").as_bytes());
         let (code, out) = t.scan(&["f.txt"]);
         assert_eq!(code, 1, "{kind}: {out}");
-        let tail = &key[key.len().min(8)..];
+        // The first four characters are printed, exactly, and nothing of the key beyond them: no run of five characters
+        // of it that starts after the head.
         assert!(
-            !out.contains(&key),
+            out.contains(&format!("(redacted: {}...)", &key[..4])),
+            "{kind}: the head is not printed as promised: {out}"
+        );
+        assert!(
+            !out.contains(&key[4..]),
             "{kind}: the key is in the output: {out}"
         );
-        assert!(
-            !out.contains(tail),
-            "{kind}: part of the key is in the output: {out}"
-        );
-        assert!(out.contains("(redacted: "), "{kind}: {out}");
+        for i in 4..=key.len() - 5 {
+            assert!(
+                !out.contains(&key[i..i + 5]),
+                "{kind}: characters {i}.. of the key are in the output: {out}"
+            );
+        }
     }
+}
+
+#[test]
+fn a_touched_file_named_like_an_option_is_a_file_and_the_other_files_are_still_scanned() {
+    let t = Tree::new();
+    t.put("--root", b"nothing here\n");
+    t.put("other.txt", format!("{}\n", samples()[0].1).as_bytes());
+    // As check-fast passes them: `--` first, the files sorted, `--root` before the file that holds the key.
+    let (code, out) = t.scan(&["--root", "other.txt"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("other.txt:1"), "{out}");
+    assert!(out.contains("2 file(s) scanned"), "{out}");
+    // Without the `--`: the first argument that is not an option ends the options.
+    let (code, out) = t.scan_args(&["--root", ".", "other.txt", "--root"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("2 file(s) scanned"), "{out}");
+    // An option before the files that is not known is still an error.
+    let (code, _) = t.scan_args(&["--nope", "other.txt"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn a_named_file_that_cannot_be_read_is_an_error_not_a_clean_file() {
+    let t = Tree::new();
+    t.put("a.txt", b"fine\n");
+    fs::create_dir_all(t.0.join("adir")).unwrap();
+    for gone in ["ghost.txt", "adir"] {
+        let (code, out) = t.scan(&["a.txt", gone]);
+        assert_eq!(code, 2, "{gone}: {out}");
+        assert!(
+            out.contains(&format!(
+                "key-scan: skipped {gone} (not a readable regular file)"
+            )),
+            "{gone}: {out}"
+        );
+    }
+}
+
+#[test]
+fn a_tracked_file_gone_from_the_work_tree_is_said_in_the_whole_tree_mode_and_is_no_error() {
+    let t = Tree::new();
+    t.put("a.txt", b"fine\n");
+    t.put("b.txt", b"fine\n");
+    fs::remove_file(t.0.join("b.txt")).unwrap();
+    let (code, out) = t.scan(&[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("skipped b.txt (not a readable regular file)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_symlink_is_skipped_and_named_never_followed() {
+    let t = Tree::new();
+    let outside = Tree::new();
+    outside.put("secret.txt", format!("{}\n", samples()[0].1).as_bytes());
+    t.put("a.txt", b"fine\n");
+    std::os::unix::fs::symlink(outside.0.join("secret.txt"), t.0.join("link.txt")).unwrap();
+    let (code, out) = t.scan(&["a.txt", "link.txt"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("skipped link.txt (symlink: never followed)"),
+        "{out}"
+    );
 }
 
 #[test]

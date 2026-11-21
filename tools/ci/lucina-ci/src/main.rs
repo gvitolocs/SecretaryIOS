@@ -1881,8 +1881,20 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
     // The key formats of tools/ci/key-patterns.txt fail on any touched file, with no allowlist and without gitleaks: the
     // gitleaks pass after it is the second line, not the first (docs/ci/SHIFT-LEFT.md).
     let quote = |p: &String| format!("'{}'", p.replace('\'', "'\\''"));
-    let scan_list = existing.iter().map(quote).collect::<Vec<_>>().join(" ");
-    let mut secrets_cmd = format!("{} key-scan --root . {scan_list}", own_copy.display());
+    // A file the change deleted is not scanned, and it is said. A directory (a submodule path) is not a file; neither is
+    // handed over, because key-scan treats a named file it cannot read as an error. `--` ends the options: a touched
+    // file called `--root` is a file.
+    let gone = changed.len() - existing.len();
+    if gone > 0 {
+        println!("check-fast: secrets: {gone} deleted file(s) not scanned");
+    }
+    let scan_list = existing
+        .iter()
+        .filter(|p| root.join(p).symlink_metadata().is_ok_and(|m| !m.is_dir()))
+        .map(quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut secrets_cmd = format!("{} key-scan --root . -- {scan_list}", own_copy.display());
     if tool_exists("gitleaks") {
         let config = if root.join(".gitleaks.toml").exists() {
             "--config .gitleaks.toml"
