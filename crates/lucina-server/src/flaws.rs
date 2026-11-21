@@ -106,6 +106,14 @@ impl FlawSettings {
     }
 }
 
+/// What the start line says about the switches: dispatch, triage and the triage steps in use.
+fn tracker_on_summary(s: &FlawSettings) -> String {
+    format!(
+        "auto={} triage={} triage_steps={}",
+        s.policy.auto_dispatch, s.policy.auto_triage, s.policy.triage_steps
+    )
+}
+
 /// A database that can't be opened turns the tracker off with a warning (never a failed start).
 pub fn open(s: &FlawSettings) -> Option<Arc<Flaws>> {
     if !s.enabled {
@@ -113,7 +121,7 @@ pub fn open(s: &FlawSettings) -> Option<Arc<Flaws>> {
     }
     match Flaws::open(&s.db) {
         Ok(f) => {
-            tracing::info!(db = %s.db.display(), auto = s.policy.auto_dispatch, "flaw tracker: on");
+            tracing::info!(db = %s.db.display(), "flaw tracker: on ({})", tracker_on_summary(s));
             Some(Arc::new(f))
         }
         Err(e) => {
@@ -355,6 +363,11 @@ pub trait Hands: Send + Sync {
     async fn record_lane_open(&self, lane: &str, why: &str);
     /// Tell him, in his chat and on his phone. `false`: try again next tick.
     async fn tell(&self, text: &str) -> bool;
+    /// [`Hands::tell`] under a dedup key of the caller's (the breaker notices), where the real
+    /// hands key the push by it instead of by the text.
+    async fn tell_keyed(&self, _key: &str, text: &str) -> bool {
+        self.tell(text).await
+    }
     /// A line on his timeline that an attempt started, and on which agent. The timeline only: he
     /// hears on the phone about what came of it, not about every start.
     async fn tell_start(&self, text: &str);
@@ -1297,6 +1310,34 @@ fn lane_reason(error: &str) -> Option<&'static str> {
     }
 }
 
+/// The notice of a breaker event (LA-C042). Built from the lane key, the new state, the class
+/// word of the stored failure and the retry time, and nothing else: the stored text carries
+/// agent output, so only the static class word of [`lane_reason`] is taken from it.
+fn lane_notice(e: &lucina_flaws::LaneEvent) -> String {
+    if e.state != LaneState::Open {
+        return format!("Lane {} breaker CLOSED: dispatch can use it again.", e.lane);
+    }
+    let class = e.reason.as_deref().and_then(lane_reason);
+    let until = e
+        .until
+        .as_deref()
+        .and_then(|u| chrono::DateTime::parse_from_rfc3339(u).ok())
+        .map_or_else(
+            || "its probe passes".to_owned(),
+            |u| u.with_timezone(&Utc).format("%H:%MZ").to_string(),
+        );
+    match class {
+        Some(c) => format!(
+            "Lane {} breaker OPEN ({c}): no new agents on it until {until}.",
+            e.lane
+        ),
+        None => format!(
+            "Lane {} breaker OPEN: no new agents on it until {until}.",
+            e.lane
+        ),
+    }
+}
+
 /// How an ended agent's claim ended.
 #[derive(Debug, PartialEq, Eq)]
 enum Ended {
@@ -2000,6 +2041,27 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             }
         }
     }
+    tell_lane_events(flaws, hands).await;
+}
+
+/// One notice per lane whose breaker opened or closed since the owner was told (LA-C042), after
+/// the dispatch lock is let go. A send that fails or is too slow leaves the event untold and the
+/// breaker as it is; the next tick sends it again.
+async fn tell_lane_events(flaws: &Flaws, hands: &dyn Hands) {
+    for e in flaws.lane_events_untold().unwrap_or_default() {
+        let key = format!("lane-breaker:{}:{}", e.lane, e.event);
+        let text = lane_notice(&e);
+        match within(hands.limits().record, hands.tell_keyed(&key, &text)).await {
+            Some(true) => {
+                let _ = flaws.lane_mark_told(&e.lane, &e.event);
+            }
+            Some(false) => {}
+            None => tracing::warn!(
+                lane = %e.lane,
+                "flaws: the notice of the lane's breaker did not go out in time; sent again next tick"
+            ),
+        }
+    }
 }
 
 /// Every minute, while the tracker is on.
@@ -2367,13 +2429,22 @@ impl Hands for StateHands {
     }
 
     async fn tell(&self, text: &str) -> bool {
+        let key = format!(
+            "flaws:{:x}",
+            text.bytes()
+                .fold(0u64, |h, b| h.wrapping_mul(1099511628211) ^ b as u64)
+        );
+        self.tell_keyed(&key, text).await
+    }
+
+    async fn tell_keyed(&self, key: &str, text: &str) -> bool {
         let item = self.st.timeline.record(flaw_line(text));
         let mut body = json!({
             "category": "lucina_message",
             "title": "Flaws",
             "body": clip(text, 480),
             "route": "/",
-            "dedupKey": format!("flaws:{:x}", text.bytes().fold(0u64, |h, b| h.wrapping_mul(1099511628211) ^ b as u64)),
+            "dedupKey": key,
         });
         if let Some(item) = item {
             body["timelineId"] = json!(item.id);
@@ -2629,6 +2700,15 @@ mod tests {
         merged: Mutex<HashMap<String, String>>,
         stopped: Mutex<Vec<String>>,
         told: Mutex<Vec<String>>,
+        /// The breaker notices told, with their dedup keys (`tell_keyed`).
+        notices: Mutex<Vec<(String, String)>>,
+        /// `tell_keyed` answers false (the push did not go out), and tells nothing.
+        tell_fails: Mutex<bool>,
+        /// `tell_keyed` never answers.
+        tell_hangs: Mutex<bool>,
+        /// With this set, each `tell_keyed` notes whether the dispatch lock was free while it ran.
+        lock_probe: Mutex<Option<Arc<DispatchLock>>>,
+        lock_free: Mutex<Vec<bool>>,
         /// The lines the dispatcher wrote in his chat when a try started.
         started: Mutex<Vec<String>>,
         asked: Mutex<Vec<String>>,
@@ -2927,6 +3007,27 @@ mod tests {
         }
         async fn tell(&self, text: &str) -> bool {
             self.told.lock().unwrap().push(text.to_owned());
+            true
+        }
+        /// The breaker notices: kept apart from the outcomes, with their dedup key.
+        async fn tell_keyed(&self, key: &str, text: &str) -> bool {
+            let probe = self.lock_probe.lock().unwrap().clone();
+            if let Some(lock) = probe {
+                self.lock_free
+                    .lock()
+                    .unwrap()
+                    .push(lock.try_acquire().is_some());
+            }
+            if *self.tell_hangs.lock().unwrap() {
+                std::future::pending::<()>().await;
+            }
+            if *self.tell_fails.lock().unwrap() {
+                return false;
+            }
+            self.notices
+                .lock()
+                .unwrap()
+                .push((key.to_owned(), text.to_owned()));
             true
         }
         fn limits(&self) -> Limits {
@@ -4264,6 +4365,246 @@ mod tests {
         }
         assert!(h.agents.lock().unwrap().is_empty());
         assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+    }
+
+    // LA-C042: the notice when a lane's breaker opens or closes.
+
+    /// The breaker notices he was told.
+    fn notices(h: &Fake) -> Vec<String> {
+        h.notices
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|n| n.1.clone())
+            .collect()
+    }
+
+    const OPENED: &str =
+        "Lane claude-sonnet breaker OPEN (sign-in refused): no new agents on it until its probe passes.";
+    const CLOSED: &str = "Lane claude-sonnet breaker CLOSED: dispatch can use it again.";
+
+    /// An open lane whose probe keeps failing, so no tick half-opens it.
+    fn open_and_out(s: &Flaws, h: &Fake) {
+        s.lane_open("claude-sonnet", SIGN_IN).unwrap();
+        *h.out.lock().unwrap() = true;
+    }
+
+    #[tokio::test]
+    async fn an_opened_breaker_is_told_once_and_not_again_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("flaws.db");
+        let p = one_lane();
+        {
+            let (s, h) = (Flaws::open(&db).unwrap(), Fake::default());
+            due(&s, "emoji", Platform::Web, None);
+            *h.dies_with.lock().unwrap() = Some(SIGN_IN.into());
+            for _ in 0..4 {
+                tick(&s, &p, &h).await;
+            }
+            assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+            assert_eq!(notices(&h), [OPENED], "one notice, however many ticks");
+            assert_eq!(
+                h.notices.lock().unwrap()[0].0,
+                "lane-breaker:claude-sonnet:open:1"
+            );
+        }
+        let (s, h) = (Flaws::open(&db).unwrap(), Fake::default());
+        h.step_out(&p.chain[0], "still out");
+        for _ in 0..3 {
+            tick(&s, &p, &h).await;
+        }
+        assert!(notices(&h).is_empty(), "a restart tells nothing again");
+    }
+
+    #[tokio::test]
+    async fn a_closed_breaker_is_told_once_whichever_way_it_closed() {
+        // A lead's clear (the route calls `lane_close`).
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        open_and_out(&s, &h);
+        tick(&s, &p, &h).await;
+        assert_eq!(notices(&h), [OPENED]);
+        s.lane_close("claude-sonnet").unwrap();
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(notices(&h), [OPENED, CLOSED]);
+
+        // The trial agent's first turn worked and it is still running, and one that went idle.
+        for idle in [false, true] {
+            let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+            let clock = with_clock(&s);
+            due(&s, "emoji", Platform::Web, None);
+            s.lane_open("claude-sonnet", SIGN_IN).unwrap();
+            tick(&s, &p, &h).await;
+            assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::HalfOpen);
+            assert!(notices(&h).is_empty(), "half-open alone says nothing");
+            h.worked.lock().unwrap().insert("ag0".into());
+            if idle {
+                h.status.lock().unwrap().insert("ag0".into(), "idle".into());
+            }
+            clock.fetch_add(1, Ordering::SeqCst);
+            tick(&s, &p, &h).await;
+            tick(&s, &p, &h).await;
+            assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Closed);
+            assert_eq!(notices(&h), [CLOSED], "idle={idle}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lane_that_opened_and_closed_within_one_tick_is_told_as_closed() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        s.lane_open("claude-sonnet", SIGN_IN).unwrap();
+        s.lane_half_open("claude-sonnet").unwrap();
+        s.lane_close("claude-sonnet").unwrap();
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(notices(&h), [CLOSED]);
+    }
+
+    #[tokio::test]
+    async fn a_flapping_lane_is_told_once_per_real_transition_in_order() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        let clock = with_clock(&s);
+        open_and_out(&s, &h);
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        s.lane_half_open("claude-sonnet").unwrap();
+        tick(&s, &p, &h).await;
+        s.lane_close("claude-sonnet").unwrap();
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        // Opens again, a second time: a new notice.
+        s.lane_open("claude-sonnet", SIGN_IN).unwrap();
+        tick(&s, &p, &h).await;
+        // Half-open and fails its trial: it opens a third time, with a back-off of 5 minutes.
+        s.lane_half_open("claude-sonnet").unwrap();
+        s.lane_open("claude-sonnet", SIGN_IN).unwrap();
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        clock.fetch_add(10, Ordering::SeqCst);
+        s.lane_half_open("claude-sonnet").unwrap();
+        s.lane_close("claude-sonnet").unwrap();
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(
+            notices(&h),
+            [
+                OPENED.to_owned(),
+                CLOSED.to_owned(),
+                OPENED.to_owned(),
+                "Lane claude-sonnet breaker OPEN (sign-in refused): no new agents on it until 00:48Z."
+                    .to_owned(),
+                CLOSED.to_owned(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notice_carries_the_lane_the_state_the_class_and_the_time_and_nothing_else() {
+        let p = one_lane();
+        let (s, h) = (Flaws::in_memory().unwrap(), Fake::default());
+        let f = due(&s, "emoji MARKER_TITLE_91", Platform::Web, None);
+        // The agent's failure text reaches the flaw's failures and the lane's stored reason.
+        *h.dies_with.lock().unwrap() = Some("Failed to authenticate: MARKER_ERR_77".into());
+        for _ in 0..3 {
+            tick(&s, &p, &h).await;
+        }
+        h.lanes_out.lock().unwrap().push("other-lane".into());
+        s.lane_open("other-lane", "provider is unavailable: MARKER_LANE_55")
+            .unwrap();
+        tick(&s, &p, &h).await;
+        let stored: Vec<String> = s
+            .lanes()
+            .unwrap()
+            .into_iter()
+            .filter_map(|b| b.reason)
+            .collect();
+        assert!(
+            stored.iter().any(|r| r.contains("MARKER_ERR_77"))
+                && stored.iter().any(|r| r.contains("MARKER_LANE_55")),
+            "the markers are in the store, so the test can fail: {stored:?}"
+        );
+        let mut told = h.told.lock().unwrap().clone();
+        told.extend(notices(&h));
+        assert!(
+            notices(&h).contains(&"Lane other-lane breaker OPEN (provider unavailable): no new agents on it until its probe passes.".to_owned()),
+            "{told:?}"
+        );
+        assert!(notices(&h).contains(&OPENED.to_owned()), "{told:?}");
+        for t in &told {
+            for marker in [
+                "MARKER_TITLE_91",
+                "MARKER_ERR_77",
+                "MARKER_LANE_55",
+                f.id.as_str(),
+            ] {
+                assert!(!t.contains(marker), "{marker} leaked into {t:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_notice_that_does_not_go_out_changes_nothing_and_goes_again_next_tick() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        *h.lock_probe.lock().unwrap() = Some(dispatch_lock(&s));
+        open_and_out(&s, &h);
+        // `tell` answers false.
+        *h.tell_fails.lock().unwrap() = true;
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+        assert_eq!(s.lane_events_untold().unwrap().len(), 1, "still untold");
+        assert!(notices(&h).is_empty());
+        // `tell` never answers: the tick still ends, at the short limit.
+        *h.tell_fails.lock().unwrap() = false;
+        *h.tell_hangs.lock().unwrap() = true;
+        *h.limits.lock().unwrap() = Some(quick());
+        tokio::time::timeout(Duration::from_secs(5), tick(&s, &p, &h))
+            .await
+            .expect("a notice that hangs does not hold the tick");
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+        assert_eq!(s.lane_events_untold().unwrap().len(), 1, "still untold");
+        // It answers: sent, once.
+        *h.tell_hangs.lock().unwrap() = false;
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(notices(&h), [OPENED]);
+        assert!(s.lane_events_untold().unwrap().is_empty());
+        let free = h.lock_free.lock().unwrap().clone();
+        assert!(
+            free.len() >= 4 && free.iter().all(|f| *f),
+            "no lock held: {free:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_database_from_before_the_notice_says_nothing_about_its_open_breaker() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("flaws.db");
+        {
+            // The `lane_breakers` table as it was before the notice: no `told` column.
+            let c = rusqlite::Connection::open(&db).unwrap();
+            c.execute_batch(
+                "CREATE TABLE lane_breakers (lane TEXT PRIMARY KEY, state TEXT NOT NULL, opened_at TEXT,
+                    reason TEXT, until TEXT, fails INTEGER NOT NULL DEFAULT 0,
+                    opens INTEGER NOT NULL DEFAULT 0, trial TEXT);
+                 INSERT INTO lane_breakers (lane, state, reason, opens)
+                    VALUES ('claude-sonnet', 'open', 'sign-in refused: x', 1);",
+            )
+            .unwrap();
+        }
+        let (s, h, p) = (Flaws::open(&db).unwrap(), Fake::default(), one_lane());
+        *h.out.lock().unwrap() = true;
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+        assert!(notices(&h).is_empty(), "no replay: {:?}", notices(&h));
+        // A lane that opens afterwards is told.
+        s.lane_open("qoder-lane", "x").unwrap();
+        tick(&s, &p, &h).await;
+        assert_eq!(
+            notices(&h),
+            ["Lane qoder-lane breaker OPEN: no new agents on it until its probe passes."]
+        );
     }
 
     #[tokio::test]
@@ -5904,6 +6245,34 @@ mod tests {
             Path::new("/data"),
         )
         .is_err());
+    }
+
+    #[test]
+    fn the_start_line_says_whether_triage_is_on_and_how_many_steps_it_has() {
+        let line = |k: &'static str, v: &'static str| {
+            let s = FlawSettings::from_lookup(
+                move |key| (key == k).then(|| v.to_owned()),
+                Path::new("/data"),
+            )
+            .expect("the server's settings build");
+            tracker_on_summary(&s)
+        };
+        assert_eq!(
+            line("UNSET", ""),
+            "auto=true triage=true triage_steps=1",
+            "the default"
+        );
+        assert!(line("LUCINA_FLAWS_AUTO_TRIAGE", "off").contains("triage=false"));
+        assert!(line("LUCINA_FLAWS_AUTO_TRIAGE", "off").contains("triage_steps=1"));
+        assert!(line("LUCINA_FLAWS_AUTO_DISPATCH", "off").contains("auto=false"));
+        // A bad count: the default is used, and the line says so.
+        for bad in ["0", "abc"] {
+            let l = line("LUCINA_FLAWS_TRIAGE_STEPS", bad);
+            assert!(
+                l.contains("triage=true") && l.contains("triage_steps=1"),
+                "{l}"
+            );
+        }
     }
 
     #[tokio::test]
