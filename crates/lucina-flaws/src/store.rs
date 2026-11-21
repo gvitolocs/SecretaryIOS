@@ -333,11 +333,6 @@ pub struct LaneEvent {
     pub until: Option<String>,
 }
 
-/// Lane failures of one target inside the window after which it is `blocked` for a lead. A lane
-/// failure still costs no attempt: the second backs the target off 5 minutes, the third needs a
-/// lead.
-pub const LANE_FAILURES_BEFORE_LEAD: usize = 3;
-
 /// The minutes a target waits after its `n`th task failure (1-based) in the window: 5, doubling,
 /// at most two hours.
 pub fn backoff_minutes(n: usize) -> i64 {
@@ -1240,10 +1235,7 @@ impl Flaws {
         lane_failure: bool,
         actor: &str,
     ) -> Result<Option<Target>> {
-        let now_dt = self.clock_now();
-        let at = now_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
-        let since = (now_dt - chrono::Duration::hours(FAILURE_WINDOW_HOURS))
-            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        let at = self.clock_now().to_rfc3339_opts(SecondsFormat::Secs, true);
         self.tx(|c| {
             let t = target_of(c, id, p)?;
             if !Self::holds(&t, claim) {
@@ -1260,29 +1252,10 @@ impl Flaws {
                     "INSERT INTO flaw_failures (flaw_id, platform, kind, agent, error, at) VALUES (?1,?2,'lane',?3,?4,?5)",
                     params![id, p.as_str(), claim.agent, clip(why, 400), at],
                 )?;
-                // A flaw whose agents keep ending on lane failures must not go round the
-                // half-open slot for ever: the first is free (the walk below the lane takes it),
-                // the second waits 5 minutes, the third needs a lead.
-                let n: i64 = c.query_row(
-                    "SELECT count(*) FROM flaw_failures WHERE flaw_id=?1 AND platform=?2 AND kind='lane' AND at>=?3",
-                    params![id, p.as_str(), since],
-                    |r| r.get(0),
-                )?;
-                let n = n.max(1) as usize;
-                if n >= LANE_FAILURES_BEFORE_LEAD {
-                    c.execute(
-                        "UPDATE flaw_targets SET status='blocked', next_try_at=NULL WHERE flaw_id=?1 AND platform=?2",
-                        params![id, p.as_str()],
-                    )?;
-                    event(c, id, Some(p), "released", actor, json!({"to": "blocked", "why": "needs a lead", "lane_failures": n, "error": clip(why, 200)}))?;
-                } else if n >= 2 {
-                    let next = (now_dt + chrono::Duration::minutes(backoff_minutes(n - 1)))
-                        .to_rfc3339_opts(SecondsFormat::Secs, true);
-                    c.execute(
-                        "UPDATE flaw_targets SET next_try_at=?1 WHERE flaw_id=?2 AND platform=?3",
-                        params![next, id, p.as_str()],
-                    )?;
-                }
+                // LA-C048: a lane failure is not the flaw's failure. It never blocks the flaw and
+                // never delays it: the lane's breaker bounds the half-open trials (a failed
+                // trial re-opens it for 5 minutes, doubling to 2 hours), and while it is open the
+                // walk down the chain takes the flaw to another lane.
             }
             let kind = if lane_failure { "lane_failure" } else { "not_started" };
             event(c, id, Some(p), kind, actor, json!({"why": why, "agent": claim.agent}))?;
@@ -1567,6 +1540,21 @@ impl Flaws {
                 })
             })
             .collect())
+    }
+
+    /// The last event of the lane the owner was told (`open:<opens>` or `closed:<opens>`), or
+    /// `None` when he was never told of it (LA-C048: an opening is told only after a close or
+    /// none).
+    pub fn lane_told(&self, lane: &str) -> Result<Option<String>> {
+        let t: Option<Option<String>> = self
+            .lock()
+            .query_row(
+                "SELECT told FROM lane_breakers WHERE lane = ?1",
+                [lane],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(t.flatten())
     }
 
     /// The owner has been told this event of the lane. `true`: it was not marked yet.
@@ -2934,76 +2922,52 @@ CREATE TABLE flaw_events (
     }
 
     #[test]
-    fn a_lane_failure_is_not_an_attempt_but_backs_the_target_off_and_then_needs_a_lead() {
-        // LA-C035 condition 1 changed what this pinned. A lane failure still costs no attempt, but
-        // the second one on a target inside a day backs it off 5 minutes and the third needs a
-        // lead: a flaw whose agents keep ending on a healthy-looking lane must not go round the
-        // half-open slot for ever (before, five of them in a row were fine).
+    fn a_lane_failure_never_blocks_or_delays_the_target() {
+        // LA-C048 (DISP-12): a lane failure is not the flaw's failure. It costs no attempt, leaves
+        // the audit row, and never blocks the target nor sets a back-off: the lane's breaker
+        // bounds the half-open trials, not the flaw. (LA-C035 condition 1 had the second wait 5
+        // minutes and the third need a lead.)
         let s = Flaws::in_memory().unwrap();
         let clock = with_clock(&s);
         let f = due_on(&s, "x", Platform::Web);
-        let end = || {
+        for n in 1..=10usize {
             let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
-            s.give_back_if(
-                &f.id,
-                Platform::Web,
-                &t.claim_ref(),
-                "Failed to authenticate: OAuth session expired",
-                true,
-                "d",
-            )
+            let t = s
+                .give_back_if(
+                    &f.id,
+                    Platform::Web,
+                    &t.claim_ref(),
+                    "Failed to authenticate: OAuth session expired",
+                    true,
+                    "d",
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0), "{n}");
+            assert!(t.next_try_at.is_none(), "{n}: no back-off");
+            assert_eq!(s.due().unwrap().len(), 1, "{n}: still due");
+            assert_eq!(
+                s.failures_since(&f.id, Platform::Web, "2000-01-01T00:00:00Z")
+                    .unwrap()
+                    .len(),
+                n,
+                "{n}: the audit row is written"
+            );
+            clock.fetch_add(1, Ordering::SeqCst);
+        }
+        assert!(s.untold().unwrap().is_empty(), "nothing to tell");
+        assert!(s
+            .get(&f.id)
             .unwrap()
-            .unwrap()
-        };
-        let t = end();
-        assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0));
-        assert!(
-            t.next_try_at.is_none(),
-            "the first is free: the walk below takes it"
-        );
-        let t = end();
-        assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0));
-        assert!(t.next_try_at.is_some(), "the second waits");
-        assert!(s.due().unwrap().is_empty());
-        assert_eq!(
-            s.claim(&f.id, Platform::Web, "/r", "d").unwrap_err().code(),
-            "busy"
-        );
-        clock.fetch_add(5, Ordering::SeqCst);
-        let t = end();
-        assert_eq!(t.status, TargetStatus::Blocked, "the third needs a lead");
-        assert_eq!(t.attempts, 0, "and none of it was an attempt");
-        let d = s.get(&f.id).unwrap();
-        let e = d
             .events
             .iter()
-            .rev()
-            .find(|e| e.kind == "released")
-            .unwrap();
-        assert_eq!(e.detail["why"], "needs a lead");
-        assert_eq!(e.detail["lane_failures"], 3);
-        assert_eq!(s.untold().unwrap().len(), 1, "he is told once");
+            .all(|e| !(e.kind == "released" && e.detail["why"] == "needs a lead")));
         assert_eq!(s.task_failures(&f.id, Platform::Web).unwrap(), 0);
         let fails = s
             .failures_since(&f.id, Platform::Web, "2000-01-01T00:00:00Z")
             .unwrap();
-        assert_eq!(fails.len(), 3);
         assert!(fails.iter().all(|x| x.kind == "lane"));
-        assert_eq!(s.get(&f.id).unwrap().targets[0].claim_seq, 3);
-        // A day later the count starts again.
-        let g = due_on(&s, "y", Platform::Web);
-        for _ in 0..2 {
-            let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
-            s.give_back_if(&g.id, Platform::Web, &t.claim_ref(), "x", true, "d")
-                .unwrap();
-            clock.fetch_add(25 * 60, Ordering::SeqCst);
-        }
-        let t = s.claim(&g.id, Platform::Web, "/r", "d").unwrap();
-        let t = s
-            .give_back_if(&g.id, Platform::Web, &t.claim_ref(), "x", true, "d")
-            .unwrap()
-            .unwrap();
-        assert!(t.next_try_at.is_none() && t.status == TargetStatus::Affected);
+        assert_eq!(s.get(&f.id).unwrap().targets[0].claim_seq, 10);
     }
 
     #[test]
@@ -3105,8 +3069,7 @@ CREATE TABLE flaw_events (
                     .unwrap()
             }
         };
-        // Lane failures block no task failure's count (LA-C035 condition 1: two of them, the
-        // second backing the target off; a third would need a lead of its own).
+        // Lane failures block no task failure's count and delay nothing (LA-C048).
         for _ in 0..2 {
             assert_eq!(end(true, 6).status, TargetStatus::Affected);
         }

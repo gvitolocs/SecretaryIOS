@@ -140,13 +140,14 @@ the walk finds no usable step at all does the target wait, so an outage leaves n
 After a deploy, `lucina-rs flaws restore-lane-failures --since <rfc3339> [--apply]` lists, and with `--apply` resets, the
 blocked targets whose every failure since was a lane failure by the stored agent error text.
 
-**Lane failures that repeat (LA-C035 review).** A lane failure costs a target no attempt, but the second one on a target
-inside 24 hours backs it off 5 minutes and the third (`LANE_FAILURES_BEFORE_LEAD`) marks it `blocked`, "needs a lead", told once:
-an agent that ends with no tool call and no commit on a lane whose probe says ok would otherwise go round the half-open slot
-for ever. The breaker keeps its own back-off: a trial agent that fails shuts the lane again for 5 minutes, doubling per failed
+**Lane failures that repeat (LA-C035 review, changed by LA-C048).** A lane failure is not the flaw's failure: it costs a target
+no attempt, is kept in the failure history (kind `lane`), and never blocks the target nor delays it (before LA-C048 the second
+on a target inside 24 hours backed it off and the third blocked it). What bounds the retries is the lane's breaker, which keeps
+its own back-off: a trial agent that fails shuts the lane again for 5 minutes, doubling per failed
 trial (`lane_breakers.until`, `fails`), and a lane is never healed in the tick that opened it. Only the trial agent (the claim a
 half-open lane let through, `lane_breakers.trial`) closes it, on a first turn that ran or a work-doing idle end. The ops
-record's key is the lane and how many times it has opened, never a time. Triage is covered the same way: a triage agent that
+record's key is the lane and how many times it has opened, never a time. The owner is told one OPEN and one CLOSED: a re-open
+after a failed trial (the last told event is an `open:`) is marked told and says nothing. Triage is covered the same way: a triage agent that
 ends on a sign-in failure, a limit or an unavailable provider opens its lane's breaker and leaves the flaw triage-due (given back,
 three times at most, as for a limit); any other end is an answer, as before.
 
