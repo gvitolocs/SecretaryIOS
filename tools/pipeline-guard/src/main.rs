@@ -63,6 +63,45 @@ pub fn without_heredocs(command: &str) -> String {
     out
 }
 
+/// Whether `command` carries a real bypass: some `LAGENT_BYPASS=<reason>` whose value, quotes and
+/// variable references removed (`$VAR`, `${VAR}`: the guard cannot expand them), still has a
+/// non-whitespace character. `LAGENT_BYPASS=`, `=""`, `=''`, `=" "` and `=$EMPTY` give none.
+/// One valid occurrence is enough. Every rule that honours a bypass asks this one function.
+fn bypass_given(command: &str) -> bool {
+    const KEY: &str = "LAGENT_BYPASS=";
+    let refs = Regex::new(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?!$-]").ok();
+    let mut rest = command;
+    while let Some(at) = rest.find(KEY) {
+        let word_start = rest[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let after = &rest[at + KEY.len()..];
+        let (value, tail) = match after.chars().next() {
+            Some(q @ ('"' | '\'')) => match after[1..].find(q) {
+                Some(end) => (&after[1..1 + end], &after[end + 2..]),
+                None => (&after[1..], ""),
+            },
+            _ => {
+                let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                (&after[..end], &after[end..])
+            }
+        };
+        rest = tail;
+        if word_start {
+            continue;
+        }
+        let value = match &refs {
+            Some(r) => r.replace_all(value, "").into_owned(),
+            None => value.to_string(),
+        };
+        if !value.trim().is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
 /// What a command does that the pipeline does instead, if anything.
 pub fn verdict(command: &str, cwd: &str) -> Option<String> {
     let command = &without_heredocs(command);
@@ -70,7 +109,7 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
     if !scope.is_match(command) && !scope.is_match(cwd) {
         return None;
     }
-    if Regex::new(r"\bLAGENT_BYPASS=\S").ok()?.is_match(command) {
+    if bypass_given(command) {
         return None;
     }
     // One shell segment at a time (`;`, `&&`, `||`, `|`, newlines, quotes of ssh commands).
@@ -217,7 +256,7 @@ fn decide_on(command: &str, cwd: &str, is_mac: bool) -> Option<String> {
     if let Some(r) = verdict(command, cwd) {
         return Some(r);
     }
-    if command.contains("LAGENT_BYPASS=") || single_ios_install(command) {
+    if bypass_given(command) || single_ios_install(command) {
         return None;
     }
     if in_scope(command) || in_scope(cwd) {
@@ -280,6 +319,9 @@ struct Word {
 #[derive(Default)]
 struct Scan {
     cmds: Vec<Vec<Word>>,
+    /// `piped[k]`: command `k` reads the output of command `k - 1` (a single `|` came before it).
+    piped: Vec<bool>,
+    pipe_next: bool,
     nested: Vec<String>,
     cmd: Vec<Word>,
     cur: String,
@@ -304,6 +346,7 @@ impl Scan {
         self.end_word();
         if !self.cmd.is_empty() {
             let cmd = std::mem::take(&mut self.cmd);
+            self.piped.push(std::mem::take(&mut self.pipe_next));
             self.cmds.push(cmd);
         }
     }
@@ -436,6 +479,8 @@ fn scan(s: &str) -> Scan {
             }
             ';' | '&' | '|' | '\n' | '(' | ')' => {
                 sc.end_cmd();
+                sc.pipe_next =
+                    c == '|' && ch.get(i + 1) != Some(&'|') && (i == 0 || ch[i - 1] != '|');
                 i += 1;
             }
             c if c.is_whitespace() => {
@@ -658,7 +703,7 @@ pub fn local_kill(command: &str) -> Option<String> {
 
 /// The pattern-kill check as wired in: on the Mac only, every session, bypassable like the rest.
 fn mac_kill_verdict(command: &str, is_mac: bool) -> Option<String> {
-    if !is_mac || Regex::new(r"\bLAGENT_BYPASS=\S").is_ok_and(|r| r.is_match(command)) {
+    if !is_mac || bypass_given(command) {
         return None;
     }
     local_kill(command)
@@ -894,13 +939,16 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
                 program(rest)
                     .filter(|&q| basename(&rest[q].val) == "rm")
                     .and_then(|q| {
-                        // The files come down the pipe: the command before it, the directory, or its own operands.
-                        let before = idx
-                            .checked_sub(1)
-                            .map(|k| sc.cmds[k].iter().skip(1))
+                        // The files come down the pipe: any earlier stage of this pipeline, the directory,
+                        // or its own operands.
+                        let mut k = idx;
+                        let mut stages: Vec<&Word> = Vec::new();
+                        while k > 0 && sc.piped[k] {
+                            k -= 1;
+                            stages.extend(sc.cmds[k].iter().skip(1));
+                        }
+                        stages
                             .into_iter()
-                            .flatten();
-                        before
                             .chain(rest[q + 1..].iter())
                             .filter(|w| !w.val.starts_with('-'))
                             .find_map(|w| hit(&w.val, &dir))
@@ -941,7 +989,7 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
 
 /// The cargo-target deletion check as wired in: every session, bypassable like the rest.
 fn target_verdict(command: &str, cwd: &str, on_host: bool) -> Option<String> {
-    if Regex::new(r"\bLAGENT_BYPASS=\S").is_ok_and(|r| r.is_match(command)) {
+    if bypass_given(command) {
         return None;
     }
     target_deletion(command, cwd, on_host, 0)
@@ -1337,5 +1385,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(on_host, "the Linux binary sees the markers");
         assert!(on_mac, "the Mac binary goes by names only");
+    }
+    /// The coordinator's recorded acceptance cases (nezopt `/home/nez/scratch/co-audit/la-c040-acceptance.jsonl`,
+    /// 12 lines, then `la-c040-acceptance-2.jsonl`, 9 lines): the command, and whether it must be refused.
+    #[test]
+    fn the_recorded_acceptance_cases() {
+        let cases: [(&str, bool); 21] = [
+            // la-c040-acceptance.jsonl, lines 1-12
+            ("find /home/nez/.cache/cargo-target/secretaryios/debug/deps -type f -mtime +2 -delete", true),
+            ("ssh nezopt 'find ~/.cache/cargo-target/secretaryios/debug/deps -type f -mtime +2 -delete'", true),
+            ("ssh -o ConnectTimeout=8 nezopt 'cd ~/.cache/cargo-target/secretaryios/debug && find deps build -mtime +2 -delete'", true),
+            ("bash -c 'find target/debug/incremental -mmin +600 -exec rm {} +'", true),
+            ("ls -t target/debug/deps/*.rlib | tail -n +50 | xargs rm", true),
+            ("rm -f target/release/deps/*.rmeta", true),
+            ("LAGENT_BYPASS=\"\" find target/debug/deps -type f -delete", true),
+            ("rm -rf /home/nez/.cache/cargo-target/secretaryios/debug", false),
+            ("cargo clean -p lucina-ci", false),
+            ("ls -la", false),
+            ("find ./logs -name '*.log' -mtime +7 -delete", false),
+            ("ssh nezopt 'rm -rf ~/.cache/lucina-check-target'", false),
+            // la-c040-acceptance-2.jsonl, lines 1-9: all refused
+            ("find target/debug/deps -type f -delete", true),
+            ("FOO=1 find target/debug/deps -type f -delete", true),
+            ("LAGENT_BYPASS=\"\" rm -f target/release/deps/*.rmeta", true),
+            ("ls target/debug/deps | xargs rm", true),
+            ("ls -t target/debug/deps/*.rlib | tail -n +50 | xargs rm -f", true),
+            ("find target/debug/deps -type f -mtime +2 | xargs rm -f", true),
+            ("timeout 60 find target/debug/deps -type f -delete", true),
+            ("nice -n 10 find target/debug/deps -type f -delete", true),
+            ("cd /home/nez/.cache/cargo-target/secretaryios && FOO=1 rm -f debug/deps/*.rlib", true),
+        ];
+        let mut wrong = Vec::new();
+        for (n, (c, refused)) in cases.into_iter().enumerate() {
+            for is_mac in [true, false] {
+                if decide_on(c, "/home/nez/scratch", is_mac).is_some() != refused {
+                    wrong.push(format!("case {} (mac {is_mac}): {c}", n + 1));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "wrong verdicts:\n{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn a_stage_between_the_lister_and_xargs_rm_still_counts() {
+        for c in [
+            format!("ls -t {TGT}/debug/deps | head -n 5 | xargs rm"),
+            format!(
+                "ls {TGT}/debug/deps | sort | grep rlib | awk '{{print $1}}' | xargs -n 10 rm -f"
+            ),
+            format!("cd {TGT}/debug && ls deps | tail -n +3 | sed s/x/y/ | xargs rm"),
+        ] {
+            assert!(decide_on(&c, "/home/nez/scratch", false).is_some(), "{c}");
+        }
+        for c in [
+            "ls ./logs | tail -n +5 | xargs rm",
+            "ls ./logs | xargs rm",
+            "cat list.txt | sort | xargs rm -f",
+        ] {
+            assert!(decide_on(c, "/home/nez/scratch", false).is_none(), "{c}");
+        }
+    }
+
+    #[test]
+    fn a_blank_bypass_is_no_bypass_for_every_rule() {
+        let blanks = [
+            "LAGENT_BYPASS=",
+            "LAGENT_BYPASS=\"\"",
+            "LAGENT_BYPASS=''",
+            "LAGENT_BYPASS=\" \"",
+            "LAGENT_BYPASS=$EMPTY",
+            "LAGENT_BYPASS=${EMPTY}",
+            "LAGENT_BYPASS=\"$EMPTY\"",
+        ];
+        let reasons = [
+            "LAGENT_BYPASS=x",
+            "LAGENT_BYPASS=\"owner approved\"",
+            "LAGENT_BYPASS='x y'",
+        ];
+        let rules = [
+            // merge / push-to-main rule, kill rule, install rule, target rule
+            ("git push origin HEAD:main", LUCINA, false),
+            ("pkill -f x", "/home/nez/scratch", true),
+            (
+                "xcodebuild test -scheme Secretary -destination 'id=00008140-001225CE1A03801C'",
+                LUCINA,
+                false,
+            ),
+            (
+                "find target/debug/deps -type f -delete",
+                "/home/nez/scratch",
+                false,
+            ),
+        ];
+        for (cmd, cwd, is_mac) in rules {
+            assert!(decide_on(cmd, cwd, is_mac).is_some(), "{cmd}");
+            for b in blanks {
+                let c = format!("{b} {cmd}");
+                assert!(decide_on(&c, cwd, is_mac).is_some(), "{c}");
+            }
+            for b in reasons {
+                let c = format!("{b} {cmd}");
+                assert!(decide_on(&c, cwd, is_mac).is_none(), "{c}");
+            }
+            // One valid occurrence is enough.
+            let c = format!("LAGENT_BYPASS= LAGENT_BYPASS=ok {cmd}");
+            assert!(decide_on(&c, cwd, is_mac).is_none(), "{c}");
+        }
     }
 }
