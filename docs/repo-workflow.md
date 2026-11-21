@@ -257,6 +257,20 @@ lagent device release iphone
 
   Don't work around it. If `lagent` refuses, report why to the coordinator.
 
+- **Scope of the work rules (LA-C045, HOST-18).** The hook's rules "start work with `lagent task start`" (`git worktree add`,
+  `wt add`), "main moves only through the merge queue" (`git push … main`) and the hand merge into a main checkout apply to
+  a call that acts on a real Lucina repo or worktree: its directory (the session cwd, followed through `cd <literal path>`
+  and `git -C <literal path>`, also inside `ssh host '…'`, `bash -c '…'`, `sh -c "…"`, a here-string, `eval`) is inside
+  `…/Projects/Lucina/<Repo>` or `…/.worktrees/<Repo>`, or the call's own words name such a path or a repo
+  (`SecretaryIOS`, `lucinaos`, `LucinaAndroidOS`, `lucina-rs`). The bare group folder `…/Projects/Lucina`, where the lead
+  sessions sit, no longer puts every command in scope, and a mention in another command, an `echo` or a commit message
+  does not either. So scratch repos (`git init` then a worktree under `~/scratch`) need no `LAGENT_BYPASS`. A call
+  the hook cannot place (`xargs git …`, an unknown wrapper) keeps the old whole-text rule. Accepted fail-opens: with the
+  session in the group folder, a repo path held in a variable or substitution (`git -C $R …`, `cd $DIR`), a
+  symlink from scratch to a repo, a script file run by `bash script.sh` (not read for these rules), an alias or a function;
+  a `cd` inside a `( … )` group also carries to the commands after it. A session whose cwd is inside a repo or worktree
+  stays in scope for a call with an unresolved variable path. The iPhone, kill and cargo-target rules are unchanged.
+
 - On the owner's Mac, in every session (Lucina or not), the same hook also denies pattern-based process kills run
   locally: `pkill`, `killall`, `xargs kill` and `kill $(pgrep …)` (also inside `$( )`, backticks, groups and `bash -c`).
   Text for another host passes: `ssh nezopt 'pkill -f "[b]uild.sh"'`. So do `kill <pid>`, `kill $pid`, and words that
