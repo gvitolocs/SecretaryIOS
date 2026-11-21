@@ -211,6 +211,9 @@ fn decide_on(command: &str, cwd: &str, is_mac: bool) -> Option<String> {
     if let Some(r) = mac_kill_verdict(command, is_mac) {
         return Some(r);
     }
+    if let Some(r) = target_verdict(command, cwd, !is_mac) {
+        return Some(r);
+    }
     if let Some(r) = verdict(command, cwd) {
         return Some(r);
     }
@@ -661,6 +664,259 @@ fn mac_kill_verdict(command: &str, is_mac: bool) -> Option<String> {
     local_kill(command)
 }
 
+fn target_reason(what: &str, path: &str) -> String {
+    format!(
+        "this deletes single files under a cargo target directory (`{what}`, `{path}`). Cargo does not notice a deleted \
+         dependency output while its `.fingerprint` says fresh, so the next build breaks (HOST-12). Instead delete a whole \
+         profile or target (`rm -rf <target>/<profile>` or `rm -rf <target>`), run `cargo clean` (or `cargo clean -p <crate>`), \
+         or use LB's by-unit sweep (`lane sweep-targets`)."
+    )
+}
+
+/// `word` as an absolute, lexically normalised path: a leading `~/` and the text `$HOME` are
+/// expanded, a relative word is joined on `dir`. Any other `$VAR` (`$CARGO_TARGET_DIR`) and
+/// `$(…)` stay unexpanded, so they fail open here exactly as in every other rule of this hook.
+fn resolve_path(word: &str, dir: &str, home: &str) -> String {
+    let w = word.replace("${HOME}", home).replace("$HOME", home);
+    let w = if w == "~" {
+        home.to_string()
+    } else if let Some(rest) = w.strip_prefix("~/") {
+        format!("{home}/{rest}")
+    } else {
+        w
+    };
+    let joined = if w.starts_with('/') {
+        w
+    } else {
+        format!("{dir}/{w}")
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for c in joined.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// Whether `path` is a cargo target directory or lies inside one: a component named `target` or
+/// `target-*`, anything under `.cache/cargo-target`, the gate's own `lucina-check-target`, and
+/// (`on_host` only: the Linux binary on the machine owning the disk) a directory holding both
+/// `CACHEDIR.TAG` and `.rustc_info.json`. Every direct child of a target is a profile.
+fn under_target(path: &str, on_host: bool) -> bool {
+    let comps: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
+    if comps
+        .iter()
+        .any(|c| *c == "target" || c.starts_with("target-") || *c == "lucina-check-target")
+        || comps
+            .windows(2)
+            .any(|w| w[0] == ".cache" && w[1] == "cargo-target")
+    {
+        return true;
+    }
+    if !on_host {
+        return false;
+    }
+    let mut cur = std::path::PathBuf::from("/");
+    let marked = |d: &std::path::Path| {
+        d.join("CACHEDIR.TAG").is_file() && d.join(".rustc_info.json").is_file()
+    };
+    if marked(&cur) {
+        return true;
+    }
+    for c in comps {
+        if c.contains(['*', '?', '[']) {
+            break;
+        }
+        cur.push(c);
+        if marked(&cur) {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_glob(word: &str) -> bool {
+    word.contains(['*', '?', '['])
+}
+
+/// `ssh [options] host command…` as the text the remote shell runs (a lone word as it is).
+fn remote_text(args: &[Word]) -> Option<Vec<String>> {
+    let mut j = 0;
+    while let Some(w) = args.get(j).filter(|w| w.val.starts_with('-')) {
+        j += if matches!(
+            w.val.as_str(),
+            "-p" | "-l" | "-o" | "-i" | "-c" | "-F" | "-b" | "-D" | "-L" | "-R" | "-m" | "-S"
+        ) {
+            2
+        } else {
+            1
+        };
+    }
+    let rest = args.get(j + 1..).filter(|r| !r.is_empty())?; // after the host
+    if let [one] = rest {
+        return Some(vec![one.val.clone()]);
+    }
+    let quote = |w: &str| {
+        if !w.is_empty()
+            && w.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,~".contains(c))
+        {
+            w.to_string()
+        } else {
+            format!("'{}'", w.replace('\'', "'\\''"))
+        }
+    };
+    // ssh joins its words with spaces and the remote shell parses them again; read both that and the words as given.
+    Some(vec![
+        rest.iter().map(|w| w.val.as_str()).collect::<Vec<_>>().join(" "),
+        rest.iter().map(|w| quote(&w.val)).collect::<Vec<_>>().join(" "),
+    ])
+}
+
+/// Why `command` deletes single files under a cargo target directory, if it does: `find … -delete`,
+/// `find … -exec rm`, `… | xargs rm`, `rm` with a glob; also inside `$( )`, `bash -c` and the command
+/// text of `ssh host '…'` (run in the remote home). A `cd` carries to the commands after it.
+/// Whole profiles and targets (`rm -rf <target>/debug`) and `cargo clean` pass. Not seen: variables
+/// (`$CARGO_TARGET_DIR`), `$(…)` paths, `python -c`, `perl -e`, `make clean`.
+fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let text = if depth == 0 {
+        without_heredocs(command)
+    } else {
+        command.to_string()
+    };
+    let sc = scan(&text);
+    let mut dir = cwd.to_string();
+    let hit = |w: &str, dir: &str| {
+        let p = resolve_path(w, dir, &home);
+        under_target(&p, on_host).then_some(p)
+    };
+    for (idx, words) in sc.cmds.iter().enumerate() {
+        let Some(p) = program(words) else { continue };
+        let name = basename(&words[p].val);
+        let args = &words[p + 1..];
+        let found = match name {
+            "cd" => {
+                match args.iter().find(|a| a.val != "--").map(|a| a.val.as_str()) {
+                    Some("-") => {}
+                    Some(d) => dir = resolve_path(d, &dir, &home),
+                    None => dir = home.clone(),
+                }
+                None
+            }
+            "find" => {
+                let how = args.iter().enumerate().find_map(|(i, a)| match a.val.as_str() {
+                    "-delete" => Some("find … -delete"),
+                    "-exec" | "-execdir" | "-ok" | "-okdir"
+                        if args.get(i + 1).is_some_and(|n| basename(&n.val) == "rm") =>
+                    {
+                        Some("find … -exec rm")
+                    }
+                    _ => None,
+                });
+                how.and_then(|how| {
+                    let mut j = 0;
+                    while args
+                        .get(j)
+                        .is_some_and(|w| matches!(w.val.as_str(), "-H" | "-L" | "-P"))
+                    {
+                        j += 1;
+                    }
+                    let roots: Vec<&str> = args[j..]
+                        .iter()
+                        .take_while(|w| !w.val.starts_with('-') && !matches!(w.val.as_str(), "!" | "("))
+                        .map(|w| w.val.as_str())
+                        .collect();
+                    let roots = if roots.is_empty() { vec!["."] } else { roots };
+                    roots
+                        .into_iter()
+                        .find_map(|r| hit(r, &dir))
+                        .map(|path| target_reason(how, &path))
+                })
+            }
+            "rm" => args
+                .iter()
+                .filter(|a| !a.val.starts_with('-') && has_glob(&a.val))
+                .find_map(|a| hit(&a.val, &dir))
+                .map(|path| target_reason("rm with a glob", &path)),
+            "xargs" => {
+                let mut j = 0;
+                while let Some(w) = args.get(j).filter(|w| w.val.starts_with('-')) {
+                    j += if matches!(
+                        w.val.as_str(),
+                        "-n" | "-I" | "-P" | "-L" | "-s" | "-d" | "-E" | "-a" | "-J"
+                    ) {
+                        2
+                    } else {
+                        1
+                    };
+                }
+                let rest = args.get(j..).unwrap_or_default();
+                program(rest)
+                    .filter(|&q| basename(&rest[q].val) == "rm")
+                    .and_then(|q| {
+                        // The files come down the pipe: the command before it, the directory, or its own operands.
+                        let before = idx
+                            .checked_sub(1)
+                            .map(|k| sc.cmds[k].iter().skip(1))
+                            .into_iter()
+                            .flatten();
+                        before
+                            .chain(rest[q + 1..].iter())
+                            .filter(|w| !w.val.starts_with('-'))
+                            .find_map(|w| hit(&w.val, &dir))
+                            .or_else(|| hit(".", &dir))
+                            .map(|path| target_reason("… | xargs rm", &path))
+                    })
+            }
+            "bash" | "sh" | "zsh" => {
+                let mut script = None;
+                let mut j = 0;
+                while let Some(w) = args.get(j) {
+                    if w.val.starts_with('-') && !w.val.starts_with("--") {
+                        if w.val.contains('c') {
+                            script = args.get(j + 1).map(|s| s.val.as_str());
+                            break;
+                        }
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                script.and_then(|s| target_deletion(s, &dir, on_host, depth + 1))
+            }
+            "ssh" => remote_text(args).and_then(|ts| {
+                ts.iter()
+                    .find_map(|t| target_deletion(t, &home, on_host, depth + 1))
+            }),
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    sc.nested
+        .iter()
+        .find_map(|inner| target_deletion(inner, &dir, on_host, depth + 1))
+}
+
+/// The cargo-target deletion check as wired in: every session, bypassable like the rest.
+fn target_verdict(command: &str, cwd: &str, on_host: bool) -> Option<String> {
+    if Regex::new(r"\bLAGENT_BYPASS=\S").is_ok_and(|r| r.is_match(command)) {
+        return None;
+    }
+    target_deletion(command, cwd, on_host, 0)
+}
+
+
 fn main() {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -951,5 +1207,87 @@ mod tests {
         assert!(decide_on("ssh nezopt 'pkill -f x'", LUCINA, true).is_none());
         // The same wiring in every session: also inside Lucina scope.
         assert!(decide_on("pkill -f x", LUCINA, true).is_some());
+    }
+    const TGT: &str = "/home/nez/.cache/cargo-target/secretaryios";
+    const INCIDENT: &str = r#"find debug/deps debug/build probe/deps probe/build -type f -mmin +720 ! -name "*.d" -delete"#;
+
+    #[test]
+    fn single_file_deletes_under_a_cargo_target_are_refused() {
+        for c in [
+            format!("cd {TGT} && {INCIDENT}"),
+            format!("ssh nezopt 'cd {TGT} && {INCIDENT}'"),
+            format!("ssh nezopt \"cd ~/.cache/cargo-target/secretaryios && {INCIDENT}\""),
+            "ssh -o ConnectTimeout=8 nezopt 'cd ~/.cache/cargo-target/x/debug && find . -delete'".to_string(),
+            "ssh -o ConnectTimeout=8 nezopt cd '$HOME/.cache/cargo-target/x/debug' '&&' find . -delete".to_string(),
+            format!("ssh nezopt bash -c 'cd {TGT} && find probe/deps -delete'"),
+            format!("bash -c 'cd {TGT}/debug && find . -type f -delete'"),
+            format!("ssh nezopt bash -s <<'EOF'\ncd {TGT}\nfind debug/deps -delete\nEOF"),
+            format!("find {TGT}/debug/deps -exec rm {{}} \\;"),
+            format!("find {TGT}/debug/deps -execdir rm {{}} +"),
+            format!("ls {TGT}/debug/deps | xargs rm"),
+            format!("find {TGT}/probe -name '*.rlib' -print0 | xargs -0 rm -f"),
+            format!("cd {TGT}/debug && ls deps | xargs -n 50 rm"),
+            format!("rm {TGT}/debug/deps/*.rlib"),
+            "rm ~/.cache/cargo-target/secretaryios/debug/deps/lib?.rlib".to_string(),
+            "rm $HOME/.cache/lucina-check-target/debug/deps/*.rmeta".to_string(),
+            "cd target/release && rm -f deps/*.d".to_string(),
+            "find ../target/debug -delete".to_string(),
+        ] {
+            for is_mac in [true, false] {
+                let r = decide_on(&c, "/home/nez/Projects/Lucina/Other", is_mac);
+                assert!(r.is_some_and(|r| r.contains("rm -rf") && r.contains("cargo clean")), "{c} (mac {is_mac})");
+            }
+        }
+        // The shared target as the session's own directory, no `cd`.
+        for is_mac in [true, false] {
+            assert!(decide_on(INCIDENT, TGT, is_mac).is_some());
+            assert!(decide_on("rm *.rlib", &format!("{TGT}/debug/deps"), is_mac).is_some());
+        }
+    }
+
+    #[test]
+    fn whole_profiles_and_targets_and_other_deletes_pass() {
+        for c in [
+            format!("rm -rf {TGT}/debug"),
+            "rm -rf ~/.cache/cargo-target/secretaryios".to_string(),
+            format!("ssh nezopt 'rm -rf {TGT}/probe'"),
+            "cargo clean".to_string(),
+            "cargo clean -p lucina-agentd".to_string(),
+            "ssh nezopt 'cd ~/Projects/x && cargo clean -p lucina-agentd'".to_string(),
+            "lane sweep-targets".to_string(),
+            "find ./build-output -name '*.o' -delete".to_string(),
+            "ssh nezopt 'find ~/scratch/out -type f -delete'".to_string(),
+            "rm -f target/x.log".to_string(),
+            "rm build/*.o".to_string(),
+            "ls out | xargs rm".to_string(),
+            format!("find {TGT}/debug -name '*.rlib'"),
+            format!("echo \"find {TGT} -delete\""),
+            format!("cat > notes.md <<'EOF'\nfind {TGT} -delete\nEOF"),
+            format!("LAGENT_BYPASS=\"owner approved\" find {TGT}/debug -delete"),
+        ] {
+            for is_mac in [true, false] {
+                assert!(
+                    decide_on(&c, "/home/nez/Projects/Lucina/Other", is_mac).is_none(),
+                    "{c} (mac {is_mac})"
+                );
+            }
+        }
+        assert!(decide_on(&format!("LAGENT_BYPASS= find {TGT} -delete"), "/tmp", true).is_some());
+        // Unexpanded variables fail open.
+        assert!(decide_on("rm $CARGO_TARGET_DIR/debug/deps/*.rlib", "/tmp", true).is_none());
+    }
+
+    #[test]
+    fn a_cargo_marker_directory_counts_only_on_its_host() {
+        let dir = std::env::temp_dir().join(format!("pipeline-guard-tgt-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("probe/deps")).unwrap();
+        std::fs::write(dir.join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n").unwrap();
+        std::fs::write(dir.join(".rustc_info.json"), "{}").unwrap();
+        let c = format!("find {}/probe/deps -type f -delete", dir.display());
+        let on_host = decide_on(&c, "/tmp", false).is_some();
+        let on_mac = decide_on(&c, "/tmp", true).is_none();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(on_host, "the Linux binary sees the markers");
+        assert!(on_mac, "the Mac binary goes by names only");
     }
 }
