@@ -110,6 +110,53 @@ pub struct GateRule {
     pub run: String,
     #[serde(default)]
     pub timeout_min: Option<u64>,
+    /// `queue = "long" | "none"`: opt the gate in or out of the bq slot it waits for before its
+    /// clock starts. Absent: derived from the command ([`takes_slot`]).
+    #[serde(default)]
+    pub queue: Option<GateQueue>,
+}
+
+/// `queue = "long" | "none"` of a `[[gate]]`: whether the gate command waits for a bq `long` slot
+/// before its clock starts (LA-C038, WORK-26).
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+pub enum GateQueue {
+    #[serde(rename = "long")]
+    Long,
+    #[serde(rename = "none")]
+    Off,
+}
+
+/// Does a gate command take a bq slot before its clock starts? An explicit `queue` decides. Without
+/// one, a command that runs `scripts/check-fast` (any path ending in `check-fast`) or `cargo`, as the
+/// command of any step of a `;`, `&&`, `||`, `|` or multi-line command, is a build or a check and
+/// does; everything else (the GitHub poll, `diffgate`, `sleep`, a shell test) does not.
+pub fn takes_slot(run: &str, queue: Option<GateQueue>) -> bool {
+    match queue {
+        Some(GateQueue::Long) => return true,
+        Some(GateQueue::Off) => return false,
+        None => {}
+    }
+    run.split([';', '&', '|', '\n', '(', ')', '{', '}'])
+        .any(|step| {
+            let mut words = step.split_whitespace().peekable();
+            // Leading `NAME=value` words and the wrappers that only start another command.
+            while let Some(w) = words.peek() {
+                let assignment = w.split_once('=').is_some_and(|(n, _)| {
+                    !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                });
+                if !(assignment || matches!(*w, "env" | "exec" | "command" | "time" | "nice")) {
+                    break;
+                }
+                words.next();
+            }
+            let mut first = words.next().unwrap_or("");
+            if matches!(first, "bash" | "sh") {
+                first = words.find(|w| !w.starts_with('-')).unwrap_or("");
+            }
+            let name = first.trim_matches(|c| c == '"' || c == '\'');
+            let base = name.rsplit('/').next().unwrap_or(name);
+            base == "cargo" || base == "check-fast"
+        })
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -197,6 +244,8 @@ pub struct Gate {
     pub name: String,
     pub run: String,
     pub timeout_min: u64,
+    /// Waits for a bq slot before its clock starts (see takes_slot, LA-C038).
+    pub slot: bool,
 }
 
 /// The gates a change needs, cheapest first, so a refusal costs seconds, not a test run:
@@ -238,6 +287,7 @@ pub fn plan_with(
             name: "diffgate".into(),
             run,
             timeout_min: 10,
+            slot: false,
         });
     }
     let run_check = mode != CargoMode::None;
@@ -278,6 +328,7 @@ pub fn plan_with(
                 name: "cargo check (workspace)".into(),
                 run: "cargo check --quiet --workspace".into(),
                 timeout_min: t,
+                slot: true,
             });
         }
         // Crates the tests cover need no separate check; a crate left out of the tests (test_skip) is still checked.
@@ -291,6 +342,7 @@ pub fn plan_with(
                 name: "cargo check (touched crates)".into(),
                 run: format!("cargo check --quiet {}", ps.join(" ")),
                 timeout_min: t,
+                slot: true,
             });
         }
         for dir in standalone
@@ -301,6 +353,7 @@ pub fn plan_with(
                 name: format!("cargo check ({dir})"),
                 run: format!("cargo check --quiet --manifest-path {dir}/Cargo.toml"),
                 timeout_min: t,
+                slot: true,
             });
         }
     }
@@ -312,6 +365,7 @@ pub fn plan_with(
                 name: "cargo test (touched crates)".into(),
                 run: format!("cargo test --quiet {}", ps.join(" ")),
                 timeout_min: t,
+                slot: true,
             });
         }
         for dir in &test_standalone {
@@ -319,6 +373,7 @@ pub fn plan_with(
                 name: format!("cargo test ({dir})"),
                 run: format!("cargo test --quiet --manifest-path {dir}/Cargo.toml"),
                 timeout_min: t,
+                slot: true,
             });
         }
     }
@@ -353,6 +408,7 @@ pub fn plan_with(
                 name: g.name.clone(),
                 run: g.run.clone(),
                 timeout_min: g.timeout_min.unwrap_or(t),
+                slot: takes_slot(&g.run, g.queue),
             });
         }
     }
@@ -575,18 +631,21 @@ mod tests {
             paths: vec![],
             run: "bash scripts/gate-github-checks.sh".into(),
             timeout_min: None,
+            queue: None,
         });
         r.gates.push(GateRule {
             name: "fast".into(),
             paths: vec![],
             run: "scripts/check-fast --base HEAD^1 --merge-gate".into(),
             timeout_min: None,
+            queue: None,
         });
         r.gates.push(GateRule {
             name: "apply".into(),
             paths: vec![],
             run: "(cd tools && bash scripts/x.sh apply)".into(),
             timeout_min: None,
+            queue: None,
         });
         r
     }
@@ -816,6 +875,7 @@ mod tests {
             paths: vec!["web/".into()],
             run: "make web".into(),
             timeout_min: None,
+            queue: None,
         });
         let changed = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Rust crates: tests of the touched ones, then the workspace check, then diffgate.
@@ -987,6 +1047,7 @@ mod tests {
             paths: vec!["web/".into()],
             run: "make web".into(),
             timeout_min: None,
+            queue: None,
         });
         let mut ch = two();
         ch.push("crates/secretary-pixiv/src/x.rs".into());
@@ -1298,5 +1359,81 @@ mod tests {
         let get = |k: &str| f.iter().find(|(n, _)| n == k).unwrap().1.clone();
         assert_eq!(get("rule"), "rule");
         assert_eq!(get("reason"), reason);
+    }
+
+    #[test]
+    fn a_gate_takes_a_bq_slot_when_it_builds_or_checks() {
+        for run in [
+            "bash scripts/check-fast --base HEAD^1 --merge-gate",
+            "scripts/check-fast --base HEAD^1 --merge-gate",
+            "./scripts/check-fast",
+            "cargo check --quiet --workspace",
+            "cargo test --quiet -p a -p b",
+            "CARGO_INCREMENTAL=0 cargo build",
+            "env FOO=1 cargo clippy",
+            "cd web && cargo check",
+            "(cd tools && bash scripts/x.sh apply); cargo test",
+            "git status | cargo run",
+        ] {
+            assert!(takes_slot(run, None), "{run}");
+        }
+        for run in [
+            "bash scripts/gate-github-checks.sh",
+            "sh scripts/check-deploy-sh.sh",
+            "diffgate --repo . --range a..b",
+            "sleep 3",
+            "exit 3",
+            "test -f b.txt",
+            "echo cargo is not run here",
+            "(cd tools && bash scripts/x.sh apply)",
+            "",
+        ] {
+            assert!(!takes_slot(run, None), "{run}");
+        }
+    }
+
+    #[test]
+    fn an_explicit_queue_decides_whether_a_gate_takes_a_slot() {
+        assert!(takes_slot("sleep 3", Some(GateQueue::Long)));
+        assert!(!takes_slot("cargo check", Some(GateQueue::Off)));
+        assert!(!takes_slot("bash scripts/check-fast", Some(GateQueue::Off)));
+    }
+
+    #[test]
+    fn the_queue_field_is_optional_and_checked() {
+        // A file written before the field existed parses and decides by its commands.
+        let old = Rules::parse(
+            "[merge]\ndiffgate = false\n[[gate]]\nname = \"fast\"\nrun = \"bash scripts/check-fast\"\ntimeout_min = 70\n[[gate]]\nname = \"poll\"\nrun = \"bash scripts/gate-github-checks.sh\"\n",
+        )
+        .unwrap();
+        assert!(old.gates.iter().all(|g| g.queue.is_none()));
+        let (gates, _) = plan_with(&old, &[], &[], false, "a..b", &[], false);
+        let slots: Vec<(&str, bool)> = gates.iter().map(|g| (g.name.as_str(), g.slot)).collect();
+        assert_eq!(slots, vec![("fast", true), ("poll", false)]);
+        // The override opts a gate in or out; anything else is refused at parse time.
+        let r = Rules::parse(
+            "[merge]\ndiffgate = false\n[[gate]]\nname = \"a\"\nrun = \"sleep 1\"\nqueue = \"long\"\n[[gate]]\nname = \"b\"\nrun = \"cargo check\"\nqueue = \"none\"\n",
+        )
+        .unwrap();
+        let (gates, _) = plan_with(&r, &[], &[], false, "a..b", &[], false);
+        let slots: Vec<(&str, bool)> = gates.iter().map(|g| (g.name.as_str(), g.slot)).collect();
+        assert_eq!(slots, vec![("a", true), ("b", false)]);
+        assert!(Rules::parse("[[gate]]\nname = \"a\"\nrun = \"x\"\nqueue = \"short\"\n").is_err());
+    }
+
+    #[test]
+    fn the_built_in_gates_say_which_take_a_slot() {
+        let rules = Rules::default();
+        let crates = vec![Crate {
+            dir: "crates/a".into(),
+            name: "a".into(),
+            standalone: false,
+        }];
+        let changed = vec!["crates/a/src/lib.rs".to_string()];
+        let (gates, _) = plan_with(&rules, &changed, &crates, true, "x..y", &[], false);
+        let by_name: Vec<(&str, bool)> = gates.iter().map(|g| (g.name.as_str(), g.slot)).collect();
+        assert_eq!(by_name[0], ("diffgate", false));
+        assert!(by_name[1..].iter().all(|(_, s)| *s), "{by_name:?}");
+        assert!(by_name.len() > 1);
     }
 }

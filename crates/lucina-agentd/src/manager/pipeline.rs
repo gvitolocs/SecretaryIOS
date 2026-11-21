@@ -1239,6 +1239,12 @@ const AGENTD_PID_VAR: &str = "LUCINA_AGENTD_PID";
 
 /// The arguments of the `systemd-run` that starts the executor: the unit, the working directory,
 /// the job's `PATH`, the daemon's pid, and the command under the merge lock.
+///
+/// The executor's gate steps run in scopes that `BindsTo=` this unit (`pipeline::exec`), so stopping or
+/// restarting the unit by hand (`systemctl --user restart lagent-job-<id>`) ends the step's scope and the `bq`
+/// in it, which frees the slot; that is the point (a dead executor frees its slot), not a side effect. What
+/// does not die is the build the gate started: `bq` runs it in its own sibling scope, which the binding does
+/// not cover, and it runs on until it ends.
 fn systemd_run_args(
     unit: &str,
     dir: &Path,
@@ -1313,7 +1319,7 @@ async fn start_runner(
     let agentd_pid = std::process::id();
     let agentd_exe = agentd_exe();
     if cfg.systemd {
-        let unit = format!("lagent-job-{}", id.trim_start_matches("job_"));
+        let unit = pipeline::runner_unit(id);
         let out = tokio::process::Command::new("systemd-run")
             .args(systemd_run_args_with_exe(
                 &unit,

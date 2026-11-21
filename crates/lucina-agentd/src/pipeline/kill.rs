@@ -1025,13 +1025,39 @@ pub(crate) struct Step {
     agentd: Option<AgentdIds>,
     agentd_notes: Vec<String>,
     agentd_at: Option<Instant>,
+    /// A step that waits for a bq slot before its work: its deadline counts from the grant.
+    grant: Option<Grant>,
+}
+
+/// What a [`Grant`] tells: the slot name and the time since the step started.
+pub(crate) type GrantSeen = Box<dyn FnMut(&str, Duration)>;
+
+/// The grant a step that queues for a bq slot waits for (LA-C038, WORK-26). `marker` is a file the
+/// wrapped job writes first, once bq has granted the slot and started it; until it exists the step's
+/// deadline has not started, and the step's wait stays bounded by bq's own `--max-wait`. The marker
+/// is in the job's own directory, which the executor owns: a step that forges it only starts its own
+/// clock early. `seen` is told, once, the slot's name (the marker's text) and the time since the
+/// step was started.
+pub(crate) struct Grant {
+    pub(crate) marker: PathBuf,
+    /// How long the step may wait for the grant, measured from its start: past it the step is ended
+    /// like one that passed its deadline, so a `bq` that neither grants nor exits cannot hold the job.
+    pub(crate) queue_bound: Duration,
+    pub(crate) seen: GrantSeen,
 }
 
 impl Step {
+    /// The step's deadline counts from the grant of a bq slot, not from its start.
+    pub(crate) fn with_grant(mut self, grant: Grant) -> Self {
+        self.grant = Some(grant);
+        self
+    }
+
     /// The step whose direct child is `pid`, asked into unit `unit` (`None`: no scope, the group
     /// alone is what this step owns), with `ctl` the `systemctl` the job can ask.
     pub(crate) fn new(pgid: u32, unit: Option<String>, ctl: Option<PathBuf>) -> Self {
         Step {
+            grant: None,
             pgid,
             unit,
             cg: None,
@@ -1370,6 +1396,10 @@ pub(crate) struct Ended {
     pub(crate) scope: Sighting,
     /// Set when the user manager did not answer its one ask in time, and was ended.
     pub(crate) manager_note: Option<String>,
+    /// A step with a [`Grant`]: how long after its start the slot was granted, `None` when it never was.
+    pub(crate) granted_after: Option<Duration>,
+    /// A step with a [`Grant`] that was ended because no grant came within its `queue_bound`.
+    pub(crate) queue_expired: bool,
 }
 
 impl Step {
@@ -1384,15 +1414,42 @@ impl Step {
         let mut timed_out = false;
         let mut miss = Miss::default();
         let mut left = 0;
+        // A step that waits for a bq slot has its deadline from the grant; one that does not, from its start.
+        let mut granted_at: Option<Instant> = None;
+        let mut expired_at: Option<Instant> = None;
         let status = loop {
             let looked = start.elapsed() < SCOPE_LOOK;
             if !self.cgroup_known() && looked {
                 self.look_for_cgroup(pid);
             }
+            // Looked at before the wait on the child, so a step that ends in the tick it was granted in is seen granted.
+            if let Some(g) = self
+                .grant
+                .as_mut()
+                .filter(|g| granted_at.is_none() && expired_at.is_none() && g.marker.is_file())
+            {
+                granted_at = Some(Instant::now());
+                let slot = fs::read_to_string(&g.marker).unwrap_or_default();
+                (g.seen)(slot.trim(), start.elapsed());
+            }
             if let Ok(Some(s)) = child.try_wait() {
                 break Some(s);
             }
-            let e = start.elapsed();
+            let e = match (&self.grant, granted_at) {
+                (None, _) => start.elapsed(),
+                (Some(_), Some(at)) => at.elapsed(),
+                // Not granted yet: no deadline of the gate, but the wait has a bound of its own. Past it the
+                // step is treated as at its deadline, and the TERM, the grace, the KILL rounds and the hard
+                // bound follow from there (a late grant is ignored).
+                (Some(g), None) => match expired_at {
+                    Some(t) => cap + t.elapsed(),
+                    None if start.elapsed() >= g.queue_bound => {
+                        expired_at = Some(Instant::now());
+                        cap
+                    }
+                    None => Duration::ZERO,
+                },
+            };
             // The window in which the step's own `/proc` entry could still have named the unit is over and
             // it named nothing: ask the manager, whose answer does not need a live process of the step.
             if !looked && !self.cgroup_known() {
@@ -1438,6 +1495,8 @@ impl Step {
                 Some(u) => Sighting::NeverSeen(u.clone()),
             },
             manager_note: self.manager_note.take(),
+            granted_after: granted_at.map(|at| at.duration_since(start)),
+            queue_expired: expired_at.is_some(),
         }
     }
 }
