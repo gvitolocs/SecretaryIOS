@@ -1177,7 +1177,7 @@ fn target_verdict(command: &str, cwd: &str, on_host: bool, bypass: bool) -> Opti
 }
 
 /// One `bypass.log` line: session, cwd, `honoured` or `denied`, the command. Control characters
-/// (tab, CR, newline) become spaces and each field is cut at 2000 characters, so it stays one
+/// (tab, CR, newline), U+2028/2029 and the format and bidi characters (see `plain`) become spaces and each field is cut at 2000 characters, so it stays one
 /// bounded line.
 fn bypass_log_line(session: &str, cwd: &str, honoured: bool, command: &str) -> String {
     let clean = |s: &str| plain(s, 2000);
@@ -1221,7 +1221,7 @@ fn rotate_log(path: &std::path::Path) {
 /// `true` (phase 2, the coordinator's word): it is denied after the ledger line is written.
 const ENFORCE_IDENTITY: bool = false;
 
-/// Control characters (tab, CR, newline, U+0085) and U+2028/2029 become spaces; cut by characters.
+/// Control characters (tab, CR, newline, U+0085), U+2028/2029, the format and bidi characters U+200B-200F, U+202A-202E, U+2060-2064, U+2066-2069 and U+FEFF become spaces; cut by characters.
 fn plain(s: &str, max: usize) -> String {
     s.chars()
         .take(max)
@@ -1387,9 +1387,10 @@ fn slot(path: &std::path::Path) -> Slot {
 /// Appends one whole line to `dir/name` (created 0600, `O_APPEND`, one `write_all`, then `sync_all`).
 /// A symlinked state directory (its last component only), or a symlink, FIFO or directory at the file, is
 /// refused (`Err` names why). After the open the file must still be a regular file with one link and the
-/// same (dev, ino) as the checked path, else it is refused: a hard link to a foreign file never gets text,
-/// and a swap between the check and the open is narrowed to an exact same-inode swap, not removed. A file
-/// with group/other bits is set to 0600 (after those checks, so a foreign inode is never chmod-ed).
+/// same (dev, ino) as the checked path (only when it existed before the open; a file created in the gap
+/// is not compared), else it is refused: a hard link to a foreign file never gets text, and a swap between
+/// the check and the open is narrowed, not removed. A file with group/other bits is set to 0600 on a best
+/// effort basis (after those checks, so a foreign inode is never chmod-ed).
 fn append_line(dir: &std::path::Path, name: &str, line: &str) -> Result<(), String> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let kind = |e: std::io::Error| e.kind().to_string();
@@ -1554,7 +1555,7 @@ fn try_capture(dir: &std::path::Path, now: u64, v: &Value) -> Option<()> {
 
 /// Records one attempt in `bypass.log`, best effort: through the checked append (a symlink, FIFO,
 /// directory or hard link at the file, or a symlinked state directory, skips the write silently), after a
-/// rotation check. It never changes a verdict and never blocks.
+/// rotation check. A planted object never changes a verdict or blocks; a swap between the check and the open could still block.
 fn log_attempt(dir: &std::path::Path, session: &str, cwd: &str, honoured: bool, command: &str) {
     rotate_log(&dir.join("bypass.log"));
     let _ = append_line(
