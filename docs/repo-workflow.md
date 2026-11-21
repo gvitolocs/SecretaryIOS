@@ -273,6 +273,44 @@ lagent device release iphone
   Known over-refusals: a non-cargo directory named `target` or `target-*` (and `cargo-target` or `lucina-check-target`: these four names count on their own anywhere in a path), and a whole-profile delete routed through
   `xargs rm -rf` (do `rm -rf <target>/<profile>` directly). The marker rule also fires for any ANCESTOR of the operand.
 
+- **Bypass ledger (LA-C044, HOST-17).** Every `LAGENT_BYPASS=<reason>` that actually flips a verdict (the command
+  would have been denied without it) is an honoured override. The hook appends one line to
+  `~/.local/state/pipeline-guard/bypass-ledger.tsv` (a newly created file is mode 0600; writes are append-only and
+  synced; an existing regular file with group/other bits is set to 0600 on a best-effort basis, the chmod can be
+  refused): UTC time, host, session id, app id (`CLAUDE_CODE_HOST_SESSION_ID`), `agent_id`, identity status, the
+  literal reason (200 characters) and the first 120 characters of the command. A marker in a command nothing would
+  deny (an echo) leaves no line; a marker inside a heredoc body counts as data only for the merge rule (the target
+  and kill rules read the whole text, so there it still leaves a line). **If the ledger cannot be written, the
+  override is refused** ("bypass not recorded (<kind>): <dir> is not writable or not a regular ledger"): when the
+  state directory or the ledger is a symlink, the ledger is a FIFO or a directory, or it has several hard links or was
+  swapped between the check and the open; tell the coordinator. The coordinator list is
+  `~/.local/state/pipeline-guard/coordinators` (one session id or `local_<uuid>` per line; `#` starts a comment, so an
+  id cannot contain `#`; a file over 64 KiB is cut at the bound and the last line of the cut text is dropped, so a
+  whole line is lost too when its newline lands on the bound); the coordinator keeps it, the hook never writes it.
+  Status: `coordinator` (no `agent_id`, session or app id listed), `would-refuse:subagent` (`agent_id` set) or
+  `would-refuse:not-listed`. Phase 1 only logs: nothing is refused by identity yet (`ENFORCE_IDENTITY` in
+  `tools/pipeline-guard/src/main.rs`, flipped on the coordinator's word). `bypass.log` still lists every attempt,
+  blank ones too; it is now written best effort through the same checked append (new files are mode 0600; an
+  existing loose file is set to 0600 when the chmod is allowed). A planted symlink, FIFO, directory or hard link
+  there skips the write and never changes a verdict or blocks; a swap between the check and the open could still
+  block. Rotation at 1 MiB is best effort too (the rename can be refused or skipped silently, and a non-regular
+  `bypass.log.1` stops it). `payload-keys.tsv` holds the top-level key names (no values) of the first 50 PreToolUse
+  payloads with and 50 without `agent_id`; `payload-keys.done` is written only when BOTH classes are full, and stops
+  the capture; it proves that subagent detection works.
+  Honest limits: this is accountability, not a boundary. A process of the same user can append itself to
+  `coordinators`, delete it, make the ledger unwritable, or hard-link the ledger to another file, which makes every
+  override refuse (the coordinator's included; fail-closed by design), and the ledger cannot tell "file missing" from
+  "not listed". For the ledger, the capture file and `bypass.log` the guard refuses to write through a symlink, to
+  write a FIFO, a directory or a file with several hard links, and to write a symlinked state directory; the state
+  directory check covers only its last path component (a symlinked parent such as `.local` is not checked), and the
+  places that READ the coordinator list or the capture file follow a symlinked state directory (accepted). The
+  check-then-open race is narrowed, not removed: comparing device and inode after the open only applies to a file that
+  existed before it (a file created in the gap is not compared). The pre-existing script reader in the guard (it
+  reads any regular file a command names) can still block on a path the agent names. Known gaps for a later change,
+  before phase 2: ancestors of the state directory are not checked; the three state opens have no
+  `O_NOFOLLOW`/`O_NONBLOCK` (no libc dependency); a bad `bypass.log.1` stops rotation. Subagent detection relies on
+  `agent_id` being on PreToolUse payloads, which `payload-keys.tsv` shows.
+
 ## Standalone crates
 
 The workspace is the root `Cargo.toml`. These crates stay outside it on purpose, each with its own
