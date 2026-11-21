@@ -485,6 +485,9 @@ fn the_merge_tool_s_own_rules_are_not_forwarded() {
 /// One line of the gate log, counting both sides.
 #[test]
 fn the_step_prints_one_line_about_the_waivers_it_was_given() {
+    if common::skip_without_scope("the_step_prints_one_line_about_the_waivers_it_was_given") {
+        return;
+    }
     let c = Case::setup("summary", None);
     c.write_lines(&[
         wline("skipped-test", "3:three #[ignore] variants; WM-C004"),
@@ -713,6 +716,10 @@ fn the_two_sources_of_a_waiver_travel_together() {
 /// not be able to waive diffgate for itself by naming a file of its own making.
 #[test]
 fn outside_the_merge_gate_the_waivers_file_is_ignored_and_says_so() {
+    if common::skip_without_scope("outside_the_merge_gate_the_waivers_file_is_ignored_and_says_so")
+    {
+        return;
+    }
     let c = Case::setup("not-merge-gate", None);
     c.write_lines(&[wline("skipped-test", GAL_REASON)]);
     let out = c.run_plain_check(Some(&c.waivers));
