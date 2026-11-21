@@ -750,7 +750,8 @@ fn remote_text(args: &[Word]) -> Option<Vec<String>> {
     while let Some(w) = args.get(j).filter(|w| w.val.starts_with('-')) {
         j += if matches!(
             w.val.as_str(),
-            "-p" | "-l" | "-o" | "-i" | "-c" | "-F" | "-b" | "-D" | "-L" | "-R" | "-m" | "-S"
+            "-B" | "-b" | "-c" | "-D" | "-E" | "-e" | "-F" | "-I" | "-i" | "-J" | "-L" | "-l" | "-m" | "-O"
+                | "-o" | "-p" | "-Q" | "-R" | "-S" | "-W" | "-w"
         ) {
             2
         } else {
@@ -788,7 +789,8 @@ fn remote_text(args: &[Word]) -> Option<Vec<String>> {
 /// `find … -exec rm`, `… | xargs rm`, `rm` with a glob; also inside `$( )`, `bash -c` and the command
 /// text of `ssh host '…'` (run in the remote home). A `cd` carries to the commands after it.
 /// Whole profiles and targets (`rm -rf <target>/debug`) and `cargo clean` pass. Not seen: variables
-/// (`$CARGO_TARGET_DIR`), `$(…)` paths, `python -c`, `perl -e`, `make clean`.
+/// (`$CARGO_TARGET_DIR`), `$(…)` paths, `python -c`, `perl -e`, `make clean`, `pushd`,
+/// `env -C`, `find -path` forms, and the remote text of `scp` and `rsync`.
 fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Option<String> {
     if depth > 8 {
         return None;
@@ -1228,6 +1230,7 @@ mod tests {
             format!("ssh nezopt 'cd {TGT} && {INCIDENT}'"),
             format!("ssh nezopt \"cd ~/.cache/cargo-target/secretaryios && {INCIDENT}\""),
             "ssh -o ConnectTimeout=8 nezopt 'cd ~/.cache/cargo-target/x/debug && find . -delete'".to_string(),
+            "ssh -J jumphost nezopt 'cd ~/.cache/cargo-target/x && find debug -delete'".to_string(),
             "ssh -o ConnectTimeout=8 nezopt cd '$HOME/.cache/cargo-target/x/debug' '&&' find . -delete".to_string(),
             format!("ssh nezopt bash -c 'cd {TGT} && find probe/deps -delete'"),
             format!("bash -c 'cd {TGT}/debug && find . -type f -delete'"),
