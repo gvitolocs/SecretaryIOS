@@ -591,6 +591,31 @@ fn split_provider(spec: &str, model: Option<String>) -> (String, Option<String>)
     }
 }
 
+/// The shared cargo target agentd hands an agent working in a worktree of a Rust repo:
+/// `CARGO_TARGET_DIR` and, with the same path, `LUCINA_AGENT_SHARED_TARGET` (so `scripts/check-fast`
+/// can tell the shared target from one the agent chose). Nothing when the repo has no root
+/// `Cargo.toml` or the request set its own `CARGO_TARGET_DIR`. The merge gate's `-landing`
+/// target keeps only the `CARGO_TARGET_DIR` push, never the marker.
+fn shared_target_env(
+    root: &std::path::Path,
+    request_sets_target: bool,
+    home: &str,
+) -> Vec<(String, String)> {
+    if !root.join("Cargo.toml").is_file() || request_sets_target {
+        return Vec::new();
+    }
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let path = format!("{home}/.cache/cargo-target/{name}");
+    let mut out = vec![("CARGO_TARGET_DIR".to_string(), path.clone())];
+    if !name.ends_with("-landing") {
+        out.push(("LUCINA_AGENT_SHARED_TARGET".to_string(), path));
+    }
+    out
+}
+
 fn session_config(record: &AgentRecord, env: Vec<(String, String)>) -> SessionConfig {
     SessionConfig {
         cwd: record.cwd.clone(),
@@ -1526,18 +1551,12 @@ impl Manager {
                 .get(w)
                 .and_then(|ws| ws.main_repo_root)
             {
-                let root = std::path::Path::new(&root);
-                if root.join("Cargo.toml").is_file() && !req.env.contains_key("CARGO_TARGET_DIR") {
-                    let name = root
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase())
-                        .unwrap_or_default();
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    env.push((
-                        "CARGO_TARGET_DIR".into(),
-                        format!("{home}/.cache/cargo-target/{name}"),
-                    ));
-                }
+                let home = std::env::var("HOME").unwrap_or_default();
+                env.extend(shared_target_env(
+                    std::path::Path::new(&root),
+                    req.env.contains_key("CARGO_TARGET_DIR"),
+                    &home,
+                ));
             }
         }
         let config = session_config(&record, env);
@@ -2484,5 +2503,50 @@ mod tests {
         ));
         assert!(check_juno_tool_with("claude", Some("acceptEdits"), None, true).is_ok());
         assert!(check_juno_tool_with("claude", None, None, true).is_ok());
+    }
+    fn target_env(repo: &str, with_cargo: bool, own_target: bool) -> Vec<(String, String)> {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(repo);
+        std::fs::create_dir_all(&root).unwrap();
+        if with_cargo {
+            std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        }
+        shared_target_env(&root, own_target, "/home/x")
+    }
+
+    fn get<'a>(env: &'a [(String, String)], k: &str) -> Option<&'a str> {
+        env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn rust_worktree_gets_both_target_variables_with_one_value() {
+        let env = target_env("SecretaryIOS", true, false);
+        assert_eq!(
+            get(&env, "CARGO_TARGET_DIR"),
+            Some("/home/x/.cache/cargo-target/secretaryios")
+        );
+        assert_eq!(
+            get(&env, "LUCINA_AGENT_SHARED_TARGET"),
+            get(&env, "CARGO_TARGET_DIR")
+        );
+    }
+
+    #[test]
+    fn landing_target_name_gets_no_shared_target_marker() {
+        for repo in ["SecretaryIOS-landing", "LucinaOS-LANDING"] {
+            let env = target_env(repo, true, false);
+            assert!(get(&env, "CARGO_TARGET_DIR").is_some(), "{repo}");
+            assert_eq!(get(&env, "LUCINA_AGENT_SHARED_TARGET"), None, "{repo}");
+        }
+    }
+
+    #[test]
+    fn request_with_its_own_target_gets_neither_variable() {
+        assert!(target_env("SecretaryIOS", true, true).is_empty());
+    }
+
+    #[test]
+    fn non_rust_workspace_gets_neither_variable() {
+        assert!(target_env("SecretaryIOS", false, false).is_empty());
     }
 }
