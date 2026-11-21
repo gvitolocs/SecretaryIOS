@@ -1221,7 +1221,12 @@ fn plain(s: &str, max: usize) -> String {
     s.chars()
         .take(max)
         .map(|c| {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{85}') {
+            if c.is_control()
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{85}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+                )
+            {
                 ' '
             } else {
                 c
@@ -1311,19 +1316,26 @@ fn ledger_line(e: &Entry) -> String {
     )
 }
 
-/// The coordinator list: one id per line, `#` comments and blank lines ignored. A missing, unreadable or
-/// oversized-garbage file is an empty list. The guard never writes this file.
+/// The coordinator list: one id per line; blank lines and `#` comments (whole-line or after an id) are
+/// ignored; a leading BOM and a bad byte are tolerated. Only a regular file, read in at most 64 KiB, counts:
+/// a missing, unreadable, FIFO or symlinked file is an empty list. The guard never writes this file.
 fn read_coordinators(dir: &std::path::Path) -> Vec<String> {
-    let Ok(f) = std::fs::File::open(dir.join("coordinators")) else {
-        return Vec::new();
-    };
-    let mut text = String::new();
-    if f.take(64 * 1024).read_to_string(&mut text).is_err() {
+    let path = dir.join("coordinators");
+    if !matches!(slot(&path), Slot::Regular(_)) {
         return Vec::new();
     }
+    let Ok(f) = std::fs::File::open(&path) else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::new();
+    if f.take(64 * 1024).read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let text: &str = text.strip_prefix('\u{feff}').unwrap_or(&text);
     text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split('#').next().unwrap_or_default().trim())
+        .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect()
 }
@@ -1342,17 +1354,52 @@ fn identity_status(list: &[String], session: &str, app: Option<&str>, agent: &st
     }
 }
 
+/// What is at a state path, looked at without following a symlink.
+enum Slot {
+    Absent,
+    Regular(std::fs::Metadata),
+    Other(&'static str),
+}
+
+fn slot(path: &std::path::Path) -> Slot {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => Slot::Other("ledger path is a symlink"),
+        Ok(m) if m.is_file() => Slot::Regular(m),
+        Ok(_) => Slot::Other("not a regular file"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Slot::Absent,
+        Err(_) => Slot::Other("not accessible"),
+    }
+}
+
 /// Appends one whole line to `dir/name` (created 0600, `O_APPEND`, one `write_all`, then `sync_all`).
-fn append_line(dir: &std::path::Path, name: &str, line: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::create_dir_all(dir)?;
+/// A symlinked state directory, or a symlink, FIFO or directory at the file, is refused (`Err` names
+/// why); a regular file with group/other bits is set to 0600, best effort. A swap between the check and
+/// the open is an accepted limit.
+fn append_line(dir: &std::path::Path, name: &str, line: &str) -> Result<(), String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let kind = |e: std::io::Error| e.kind().to_string();
+    if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("state directory is a symlink".to_string());
+    }
+    std::fs::create_dir_all(dir).map_err(kind)?;
+    let path = dir.join(name);
+    match slot(&path) {
+        Slot::Other(why) => return Err(why.to_string()),
+        Slot::Regular(m) => {
+            if m.permissions().mode() & 0o077 != 0 {
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+        Slot::Absent => {}
+    }
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(dir.join(name))?;
-    f.write_all(line.as_bytes())?;
-    f.sync_all()
+        .open(&path)
+        .map_err(kind)?;
+    f.write_all(line.as_bytes()).map_err(kind)?;
+    f.sync_all().map_err(kind)
 }
 
 /// What the verdict needs besides the command: the state directory, the clock, the platform, the app id
@@ -1397,10 +1444,10 @@ fn judge(v: &Value, command: &str, cwd: &str, ctx: &Ctx) -> Option<String> {
         reason: &reason,
         command,
     });
-    if let Err(e) = append_line(ctx.dir, "bypass-ledger.tsv", &line) {
+    if let Err(kind) = append_line(ctx.dir, "bypass-ledger.tsv", &line) {
         return Some(format!(
-            "pipeline-guard: bypass not recorded ({}): the ledger could not be written, so the override is refused; tell the coordinator",
-            e.kind()
+            "pipeline-guard: bypass not recorded ({kind}): {} is not writable or not a regular ledger; tell the coordinator",
+            ctx.dir.display()
         ));
     }
     if ctx.enforce && status != "coordinator" {
@@ -1427,6 +1474,11 @@ fn capture_keys(dir: &std::path::Path, now: u64, v: &Value) {
 }
 
 fn try_capture(dir: &std::path::Path, now: u64, v: &Value) -> Option<()> {
+    // Once both classes are full the sentinel is the only thing a call looks at.
+    let sentinel = "payload-keys.done";
+    if std::fs::symlink_metadata(dir.join(sentinel)).is_ok() {
+        return None;
+    }
     match v["hook_event_name"].as_str() {
         None | Some("PreToolUse") => {}
         Some(_) => return None,
@@ -1438,12 +1490,31 @@ fn try_capture(dir: &std::path::Path, now: u64, v: &Value) -> Option<()> {
         "agent_id=absent"
     };
     let path = dir.join("payload-keys.tsv");
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 64 * 1024) {
-        return None;
-    }
-    let seen = std::fs::read(&path).unwrap_or_default();
-    let seen = String::from_utf8_lossy(&seen);
-    if seen.lines().filter(|l| l.ends_with(tag)).count() >= CAPTURE_CLASS_MAX {
+    // Only a regular file of at most 64 KiB is read, and only through a bounded read.
+    let seen = match slot(&path) {
+        Slot::Other(_) => return None,
+        Slot::Regular(m) if m.len() > 64 * 1024 => return None,
+        Slot::Regular(_) => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(&path)
+                .ok()?
+                .take(64 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        Slot::Absent => String::new(),
+    };
+    let count = |t: &str| seen.lines().filter(|l| l.ends_with(t)).count();
+    let (mine, other) = if tag == "agent_id=present" {
+        (count(tag), count("agent_id=absent"))
+    } else {
+        (count(tag), count("agent_id=present"))
+    };
+    if mine >= CAPTURE_CLASS_MAX {
+        if other >= CAPTURE_CLASS_MAX {
+            let _ = append_line(dir, sentinel, "done\n");
+        }
         return None;
     }
     let mut keys: Vec<String> = obj.keys().map(|k| plain(k, 64)).collect();
@@ -1453,7 +1524,11 @@ fn try_capture(dir: &std::path::Path, now: u64, v: &Value) -> Option<()> {
         utc_stamp(now),
         field(&keys.join(","), 1000)
     );
-    append_line(dir, "payload-keys.tsv", &line).ok()
+    append_line(dir, "payload-keys.tsv", &line).ok()?;
+    if mine + 1 >= CAPTURE_CLASS_MAX && other >= CAPTURE_CLASS_MAX {
+        let _ = append_line(dir, sentinel, "done\n");
+    }
+    Some(())
 }
 
 fn main() {
@@ -2651,5 +2726,215 @@ mod tests {
                 .len(),
             70_000
         );
+    }
+
+    // ---- LA-C044 round 2: non-regular state files, parsing, sanitising, the sentinel ----
+
+    /// `mkfifo path`; `false` when the tool is missing (the test body is then skipped).
+    fn mkfifo(path: &std::path::Path) -> bool {
+        std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// Runs `f` on a thread; `None` when it does not return within 5 seconds (a blocked open).
+    fn within_5s<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).ok()
+    }
+
+    fn judge_in(dir: &std::path::Path, v: serde_json::Value, c: String) -> Option<Option<String>> {
+        let dir = dir.to_path_buf();
+        within_5s(move || super::judge(&v, &c, CWD, &ctx(&dir, None, false)))
+    }
+
+    #[test]
+    fn a_fifo_at_the_capture_file_does_not_block() {
+        let t = tmp("fifo-capture");
+        std::fs::create_dir_all(&t.0).unwrap();
+        if !mkfifo(&t.0.join("payload-keys.tsv")) {
+            return;
+        }
+        let dir = t.0.clone();
+        let done = within_5s(move || {
+            super::capture_keys(&dir, 1, &serde_json::json!({"a": 1}));
+        });
+        assert!(done.is_some(), "the capture blocked on a FIFO");
+        // The verdict is unchanged: a rule's denial and an allowed command.
+        let v = serde_json::json!({"session_id": "s"});
+        let got = judge_in(&t.0, v.clone(), DENIED.to_string());
+        assert!(got.expect("returned").is_some());
+        assert_eq!(judge_in(&t.0, v, "ls -la".into()), Some(None));
+    }
+
+    #[test]
+    fn a_fifo_at_the_coordinators_file_is_an_empty_list() {
+        let t = tmp("fifo-coord");
+        std::fs::create_dir_all(&t.0).unwrap();
+        if !mkfifo(&t.0.join("coordinators")) {
+            return;
+        }
+        let dir = t.0.clone();
+        let list = within_5s(move || super::read_coordinators(&dir));
+        assert_eq!(list, Some(Vec::<String>::new()), "blocked or not empty");
+        let v = serde_json::json!({"session_id": "s"});
+        let got = judge_in(&t.0, v, format!("LAGENT_BYPASS=why {DENIED}"));
+        assert_eq!(got, Some(None), "allowed, as with an empty list");
+        assert!(ledger(&t.0).contains("would-refuse:not-listed"));
+    }
+
+    #[test]
+    fn a_symlinked_ledger_is_refused_and_the_target_untouched() {
+        let t = tmp("symlink-ledger");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let foreign = t.0.join("foreign.txt");
+        std::fs::write(&foreign, "export X=1\n").unwrap();
+        let state = t.0.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::os::unix::fs::symlink(&foreign, state.join("bypass-ledger.tsv")).unwrap();
+        let v = serde_json::json!({"session_id": "s"});
+        let d = judge_in(&state, v, format!("LAGENT_BYPASS=why {DENIED}"))
+            .expect("returned")
+            .expect("refused");
+        assert!(d.contains("bypass not recorded ("), "{d}");
+        assert!(d.contains("symlink"), "{d}");
+        assert_eq!(std::fs::read_to_string(&foreign).unwrap(), "export X=1\n");
+    }
+
+    #[test]
+    fn a_fifo_ledger_and_a_directory_ledger_are_refused() {
+        let t = tmp("fifo-ledger");
+        let state = t.0.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let v = serde_json::json!({"session_id": "s"});
+        let c = format!("LAGENT_BYPASS=why {DENIED}");
+        if mkfifo(&state.join("bypass-ledger.tsv")) {
+            let d = judge_in(&state, v.clone(), c.clone())
+                .expect("returned (no blocking open)")
+                .expect("refused");
+            assert!(d.contains("bypass not recorded ("), "{d}");
+            assert!(d.contains("not a regular file"), "{d}");
+        }
+        let t2 = tmp("dir-ledger");
+        std::fs::create_dir_all(t2.0.join("bypass-ledger.tsv")).unwrap();
+        let d = judge_in(&t2.0, v, c).expect("returned").expect("refused");
+        assert!(d.contains("not a regular file"), "{d}");
+    }
+
+    #[test]
+    fn an_existing_loose_ledger_becomes_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tmp("loose-ledger");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let p = t.0.join("bypass-ledger.tsv");
+        std::fs::write(&p, "old\tline\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let v = serde_json::json!({"session_id": "s"});
+        let c = format!("LAGENT_BYPASS=why {DENIED}");
+        assert_eq!(super::judge(&v, &c, CWD, &ctx(&t.0, None, false)), None);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(ledger(&t.0).lines().count(), 2);
+    }
+
+    #[test]
+    fn a_symlinked_state_directory_is_refused() {
+        let t = tmp("symlink-dir");
+        let real = t.0.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = t.0.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let v = serde_json::json!({"session_id": "s"});
+        let c = format!("LAGENT_BYPASS=why {DENIED}");
+        let d = super::judge(&v, &c, CWD, &ctx(&link, None, false)).expect("refused");
+        assert!(d.contains("bypass not recorded ("), "{d}");
+        assert!(d.contains(&link.display().to_string()), "{d}");
+        assert!(!real.join("bypass-ledger.tsv").exists());
+        // The capture skips it silently too.
+        super::capture_keys(&link, 1, &serde_json::json!({"a": 1}));
+        assert!(!real.join("payload-keys.tsv").exists());
+    }
+
+    #[test]
+    fn the_coordinators_file_is_read_leniently() {
+        let t = tmp("coord-parse");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let p = t.0.join("coordinators");
+        let mut bytes = b"\xEF\xBB\xBFsess-1\r\n# whole line\r\nsess-2 # a note\r\n\r\n   \r\nlocal_x\xFFy\r\nsess-3".to_vec();
+        std::fs::write(&p, &bytes).unwrap();
+        let list = super::read_coordinators(&t.0);
+        assert_eq!(list.len(), 4, "{list:?}");
+        assert_eq!(&list[..2], ["sess-1", "sess-2"]);
+        assert!(
+            list[2].starts_with("local_x") && list[2].ends_with('y'),
+            "{list:?}"
+        );
+        assert_eq!(list[3], "sess-3");
+        bytes.clear();
+        std::fs::write(&p, b"sess-9 #\n#sess-8\n").unwrap();
+        assert_eq!(super::read_coordinators(&t.0), ["sess-9"]);
+    }
+
+    #[test]
+    fn format_and_bidi_characters_become_spaces() {
+        for c in [
+            '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}',
+            '\u{202C}', '\u{202D}', '\u{202E}', '\u{2060}', '\u{2064}', '\u{2066}', '\u{2067}',
+            '\u{2068}', '\u{2069}', '\u{FEFF}',
+        ] {
+            assert_eq!(super::plain(&format!("a{c}b"), 10), "a b", "{:x}", c as u32);
+        }
+        assert_eq!(super::plain("é–ü", 10), "é–ü");
+    }
+
+    #[test]
+    fn a_full_capture_stops_at_one_stat() {
+        let t = tmp("capture-sentinel");
+        let absent = serde_json::json!({"session_id": "s"});
+        let present = serde_json::json!({"session_id": "s", "agent_id": "a"});
+        for _ in 0..50 {
+            super::capture_keys(&t.0, 1, &absent);
+        }
+        assert!(!t.0.join("payload-keys.done").exists());
+        for _ in 0..50 {
+            super::capture_keys(&t.0, 1, &present);
+        }
+        assert!(t.0.join("payload-keys.done").exists());
+        assert_eq!(keys_file(&t.0).lines().count(), 100);
+        // The capture file is not opened any more: gone stays gone, a FIFO there does not block.
+        std::fs::remove_file(t.0.join("payload-keys.tsv")).unwrap();
+        super::capture_keys(&t.0, 1, &absent);
+        super::capture_keys(&t.0, 1, &present);
+        assert!(!t.0.join("payload-keys.tsv").exists());
+        if mkfifo(&t.0.join("payload-keys.tsv")) {
+            let dir = t.0.clone();
+            assert!(within_5s(move || super::capture_keys(&dir, 1, &absent)).is_some());
+        }
+    }
+
+    #[test]
+    fn another_rule_that_still_denies_leaves_no_ledger_line() {
+        let t = tmp("second-rule");
+        // The marker is only inside a heredoc body: the merge rule re-reads the stripped text and still denies.
+        let c = "git push origin HEAD:main <<'EOF'\nLAGENT_BYPASS=why\nEOF";
+        let v = serde_json::json!({"session_id": "s"});
+        let cx = ctx(&t.0, None, false);
+        assert!(super::judge(&v, c, "/home/nez/Projects/Lucina/SecretaryIOS", &cx).is_some());
+        assert_eq!(ledger(&t.0), "");
+    }
+
+    #[test]
+    fn a_heredoc_marker_honoured_by_the_target_rule_leaves_one_line() {
+        let t = tmp("heredoc-honoured");
+        let c = format!("cat <<'EOF'\nLAGENT_BYPASS=why\nEOF\n{DENIED}");
+        let v = serde_json::json!({"session_id": "s"});
+        assert_eq!(super::judge(&v, &c, CWD, &ctx(&t.0, None, false)), None);
+        assert_eq!(ledger(&t.0).lines().count(), 1);
     }
 }
