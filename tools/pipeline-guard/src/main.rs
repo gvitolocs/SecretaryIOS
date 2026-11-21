@@ -63,39 +63,116 @@ pub fn without_heredocs(command: &str) -> String {
     out
 }
 
-/// Whether `command` carries a real bypass: some `LAGENT_BYPASS=<reason>` whose value, quotes and
-/// variable references removed (`$VAR`, `${VAR}`: the guard cannot expand them), still has a
-/// non-whitespace character. `LAGENT_BYPASS=`, `=""`, `=''`, `=" "` and `=$EMPTY` give none.
-/// One valid occurrence is enough. Every rule that honours a bypass asks this one function.
+/// The literal text of the `LAGENT_BYPASS=` value that starts `after`, and what follows the shell
+/// word. The word is read like the shell does: quoted (`'…'`, `"…"`) and bare pieces join, up to an
+/// unquoted whitespace or one of `; & | < > ( )`. `$VAR` and `${VAR}` are dropped (the guard cannot
+/// expand them; a default such as `${X:-reason}` is unknown too, so it counts as nothing). `$(`,
+/// `$((`, a backtick, `$'` and a backslash make the value unknown: `None`, which is no bypass.
+fn bypass_value(after: &str) -> (Option<String>, &str) {
+    let ch: Vec<(usize, char)> = after.char_indices().collect();
+    let mut lit = String::new();
+    let mut known = true;
+    let mut i = 0;
+    let end_of = |i: usize| ch.get(i).map_or(after.len(), |&(b, _)| b);
+    while i < ch.len() {
+        let c = ch[i].1;
+        let next = ch.get(i + 1).map(|&(_, n)| n);
+        match c {
+            c if c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')') => break,
+            '\'' => {
+                i += 1;
+                while i < ch.len() && ch[i].1 != '\'' {
+                    lit.push(ch[i].1);
+                    i += 1;
+                }
+                i += 1;
+            }
+            '"' => {
+                i += 1;
+                while i < ch.len() && ch[i].1 != '"' {
+                    let c = ch[i].1;
+                    let next = ch.get(i + 1).map(|&(_, n)| n);
+                    match (c, next) {
+                        ('\\', _) | ('`', _) | ('$', Some('(' | '\'')) => known = false,
+                        ('$', Some('{')) => {
+                            while i < ch.len() && ch[i].1 != '}' {
+                                i += 1;
+                            }
+                        }
+                        ('$', Some(n)) if n.is_ascii_alphanumeric() || n == '_' => {
+                            while ch
+                                .get(i + 1)
+                                .is_some_and(|&(_, n)| n.is_ascii_alphanumeric() || n == '_')
+                            {
+                                i += 1;
+                            }
+                        }
+                        _ => lit.push(c),
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            '\\' | '`' => {
+                known = false;
+                i += 1;
+            }
+            '$' => match next {
+                Some('(' | '\'' | '"') => {
+                    known = false;
+                    i += 1;
+                }
+                Some('{') => {
+                    while i < ch.len() && ch[i].1 != '}' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                Some(n) if n.is_ascii_alphabetic() || n == '_' => {
+                    i += 1;
+                    while ch
+                        .get(i)
+                        .is_some_and(|&(_, n)| n.is_ascii_alphanumeric() || n == '_')
+                    {
+                        i += 1;
+                    }
+                }
+                Some(n) if n.is_ascii_digit() || "@*#?!$-".contains(n) => i += 2,
+                _ => {
+                    lit.push('$');
+                    i += 1;
+                }
+            },
+            c => {
+                lit.push(c);
+                i += 1;
+            }
+        }
+    }
+    let i = i.min(ch.len());
+    (known.then_some(lit), &after[end_of(i)..])
+}
+
+/// Whether `command` carries a real bypass: some `LAGENT_BYPASS=<reason>` whose value (read by
+/// `bypass_value`) has literal non-whitespace text left. `LAGENT_BYPASS=`, `=""`, `=''`, `=" "`,
+/// `=$EMPTY`, `=;`, `=$(true)` and `=\ ` give none. One valid occurrence is enough; a key that ends
+/// a longer name (`FOO_LAGENT_BYPASS=x`) is not one. At most 32 occurrences are read, then it
+/// fails closed. The marker is textual wherever it stands in the command (an accepted limit).
+/// Every rule that honours a bypass asks this one function.
 fn bypass_given(command: &str) -> bool {
     const KEY: &str = "LAGENT_BYPASS=";
-    let refs = Regex::new(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?!$-]").ok();
     let mut rest = command;
-    while let Some(at) = rest.find(KEY) {
-        let word_start = rest[..at]
+    for _ in 0..32 {
+        let Some(at) = rest.find(KEY) else {
+            return false;
+        };
+        let inside_name = rest[..at]
             .chars()
             .next_back()
             .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        let after = &rest[at + KEY.len()..];
-        let (value, tail) = match after.chars().next() {
-            Some(q @ ('"' | '\'')) => match after[1..].find(q) {
-                Some(end) => (&after[1..1 + end], &after[end + 2..]),
-                None => (&after[1..], ""),
-            },
-            _ => {
-                let end = after.find(char::is_whitespace).unwrap_or(after.len());
-                (&after[..end], &after[end..])
-            }
-        };
+        let (value, tail) = bypass_value(&rest[at + KEY.len()..]);
         rest = tail;
-        if word_start {
-            continue;
-        }
-        let value = match &refs {
-            Some(r) => r.replace_all(value, "").into_owned(),
-            None => value.to_string(),
-        };
-        if !value.trim().is_empty() {
+        if !inside_name && value.is_some_and(|v| v.chars().any(|c| !c.is_whitespace())) {
             return true;
         }
     }
@@ -478,9 +555,15 @@ fn scan(s: &str) -> Scan {
                 }
             }
             ';' | '&' | '|' | '\n' | '(' | ')' => {
+                // A delimiter that flushed no command (a newline after `|`, `(`, the `&` of `|&`)
+                // leaves the pipe flag alone; `||` is no pipe.
+                let had = !sc.cmd.is_empty() || sc.in_word;
                 sc.end_cmd();
-                sc.pipe_next =
-                    c == '|' && ch.get(i + 1) != Some(&'|') && (i == 0 || ch[i - 1] != '|');
+                if c == '|' {
+                    sc.pipe_next = ch.get(i + 1) != Some(&'|') && (i == 0 || ch[i - 1] != '|');
+                } else if had {
+                    sc.pipe_next = false;
+                }
                 i += 1;
             }
             c if c.is_whitespace() => {
@@ -848,6 +931,22 @@ fn remote_text(args: &[Word]) -> Option<Vec<String>> {
     ])
 }
 
+/// The script of `sh -c '…'` (after the shell's own short options), if the arguments have one.
+fn shell_script(args: &[Word]) -> Option<&str> {
+    let mut j = 0;
+    while let Some(w) = args.get(j) {
+        if w.val.starts_with('-') && !w.val.starts_with("--") {
+            if w.val.contains('c') {
+                return args.get(j + 1).map(|s| s.val.as_str());
+            }
+            j += 1;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
 /// Why `command` deletes single files under a cargo target directory, if it does: `find … -delete`,
 /// `find … -exec rm`, `… | xargs rm`, `rm` with a glob; also inside `$( )`, `bash -c` and the command
 /// text of `ssh host '…'` (run in the remote home). A `cd` carries to the commands after it.
@@ -937,13 +1036,24 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
                 }
                 let rest = args.get(j..).unwrap_or_default();
                 program(rest)
-                    .filter(|&q| basename(&rest[q].val) == "rm")
+                    .filter(|&q| {
+                        let prog = basename(&rest[q].val);
+                        // `xargs rm`, or `xargs sh -c '… rm …'`.
+                        prog == "rm"
+                            || (matches!(prog, "bash" | "sh" | "zsh")
+                                && shell_script(&rest[q + 1..]).is_some_and(|s| {
+                                    scan(s).cmds.iter().any(|w| {
+                                        program(w).is_some_and(|p| basename(&w[p].val) == "rm")
+                                    })
+                                }))
+                    })
                     .and_then(|q| {
-                        // The files come down the pipe: any earlier stage of this pipeline, the directory,
-                        // or its own operands.
+                        // The files come down the pipe: any earlier stage of this pipeline (at most 64; past
+                        // that the walk stops, so only a path already seen counts), the directory, or its
+                        // own operands.
                         let mut k = idx;
                         let mut stages: Vec<&Word> = Vec::new();
-                        while k > 0 && sc.piped[k] {
+                        while k > 0 && sc.piped[k] && idx - k < 64 {
                             k -= 1;
                             stages.extend(sc.cmds[k].iter().skip(1));
                         }
@@ -957,20 +1067,7 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
                     })
             }
             "bash" | "sh" | "zsh" => {
-                let mut script = None;
-                let mut j = 0;
-                while let Some(w) = args.get(j) {
-                    if w.val.starts_with('-') && !w.val.starts_with("--") {
-                        if w.val.contains('c') {
-                            script = args.get(j + 1).map(|s| s.val.as_str());
-                            break;
-                        }
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                script.and_then(|s| target_deletion(s, &dir, on_host, depth + 1))
+                shell_script(args).and_then(|s| target_deletion(s, &dir, on_host, depth + 1))
             }
             "ssh" => remote_text(args).and_then(|ts| {
                 ts.iter()
@@ -995,6 +1092,25 @@ fn target_verdict(command: &str, cwd: &str, on_host: bool) -> Option<String> {
     target_deletion(command, cwd, on_host, 0)
 }
 
+/// One `bypass.log` line: session, cwd, `honoured` or `denied`, the command. Control characters
+/// (tab, CR, newline) become spaces and each field is cut at 2000 characters, so it stays one
+/// bounded line.
+fn bypass_log_line(session: &str, cwd: &str, honoured: bool, command: &str) -> String {
+    let clean = |s: &str| -> String {
+        s.chars()
+            .take(2000)
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect()
+    };
+    format!(
+        "{}\t{}\t{}\t{}\n",
+        clean(session),
+        clean(cwd),
+        if honoured { "honoured" } else { "denied" },
+        clean(command)
+    )
+}
+
 fn main() {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -1017,12 +1133,15 @@ fn main() {
                 .append(true)
                 .open(format!("{dir}/bypass.log"))
             {
-                let _ = writeln!(
-                    f,
-                    "{}\t{}\t{}",
-                    v["session_id"].as_str().unwrap_or("?"),
-                    cwd,
-                    command.replace('\n', " ")
+                // Every occurrence is logged, honoured or denied, so a blank attempt leaves a record too.
+                let _ = f.write_all(
+                    bypass_log_line(
+                        v["session_id"].as_str().unwrap_or("?"),
+                        cwd,
+                        bypass_given(command),
+                        command,
+                    )
+                    .as_bytes(),
                 );
             }
         }
@@ -1417,9 +1536,14 @@ mod tests {
         ];
         let mut wrong = Vec::new();
         for (n, (c, refused)) in cases.into_iter().enumerate() {
-            for is_mac in [true, false] {
-                if decide_on(c, "/home/nez/scratch", is_mac).is_some() != refused {
-                    wrong.push(format!("case {} (mac {is_mac}): {c}", n + 1));
+            for (is_mac, cwd) in [
+                (true, "/home/nez/scratch"),
+                (false, "/home/nez/scratch"),
+                (true, "/home/nez"),
+                (false, "/home/nez"),
+            ] {
+                if decide_on(c, cwd, is_mac).is_some() != refused {
+                    wrong.push(format!("case {} (mac {is_mac}, cwd {cwd}): {c}", n + 1));
                 }
             }
         }
@@ -1433,7 +1557,7 @@ mod tests {
             format!(
                 "ls {TGT}/debug/deps | sort | grep rlib | awk '{{print $1}}' | xargs -n 10 rm -f"
             ),
-            format!("cd {TGT}/debug && ls deps | tail -n +3 | sed s/x/y/ | xargs rm"),
+            format!("ls {TGT}/debug/deps | tail -n +3 | sed s/x/y/ | xargs rm"),
         ] {
             assert!(decide_on(&c, "/home/nez/scratch", false).is_some(), "{c}");
         }
@@ -1491,5 +1615,118 @@ mod tests {
             let c = format!("LAGENT_BYPASS= LAGENT_BYPASS=ok {cmd}");
             assert!(decide_on(&c, cwd, is_mac).is_none(), "{c}");
         }
+    }
+    /// One command per rule, with the cwd and `is_mac` it needs: merge/push-to-main, kill, install,
+    /// cargo target.
+    fn four_rules() -> [(&'static str, &'static str, bool); 4] {
+        [
+            ("git push origin HEAD:main", LUCINA, false),
+            ("pkill -f x", "/home/nez/scratch", true),
+            (
+                "xcodebuild test -scheme Secretary -destination 'id=00008140-001225CE1A03801C'",
+                LUCINA,
+                false,
+            ),
+            (
+                "find target/debug/deps -type f -delete",
+                "/home/nez/scratch",
+                false,
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_bypass_value_is_read_as_a_shell_word() {
+        // Each of these is blank or unknown at run time: no bypass, the rule still denies.
+        let blanks = [
+            "LAGENT_BYPASS=;",
+            "LAGENT_BYPASS=|",
+            "LAGENT_BYPASS=) ",
+            "LAGENT_BYPASS=>x ",
+            "LAGENT_BYPASS=$(true) ",
+            "LAGENT_BYPASS=$() ",
+            "LAGENT_BYPASS=`true` ",
+            "LAGENT_BYPASS=\"${X}$(true)\" ",
+            "LAGENT_BYPASS=$'\\x20' ",
+            "LAGENT_BYPASS=$'\\t' ",
+            "LAGENT_BYPASS=\\  ",
+            "LAGENT_BYPASS=${X:-reason} ",
+            "LAGENT_BYPASS=\"\"\"\" ",
+        ];
+        for (cmd, cwd, is_mac) in four_rules() {
+            for b in blanks {
+                let c = format!("{b}{cmd}");
+                assert!(decide_on(&c, cwd, is_mac).is_some(), "{c}");
+            }
+            // The marker after the command is no bypass either when it is blank.
+            let c = format!("{cmd} LAGENT_BYPASS=\"\"");
+            assert!(decide_on(&c, cwd, is_mac).is_some(), "{c}");
+            // Quoted and bare pieces join into one value.
+            for b in [
+                "LAGENT_BYPASS=\"\"x ",
+                "LAGENT_BYPASS=x\"\" ",
+                "LAGENT_BYPASS=''x ",
+                "LAGENT_BYPASS=a\"b c\"d ",
+            ] {
+                let c = format!("{b}{cmd}");
+                assert!(decide_on(&c, cwd, is_mac).is_none(), "{c}");
+            }
+            // One valid marker among blank ones is enough; a marker inside a longer name is not one.
+            let c = format!("LAGENT_BYPASS= LAGENT_BYPASS=\"\" LAGENT_BYPASS=ok {cmd}");
+            assert!(decide_on(&c, cwd, is_mac).is_none(), "{c}");
+            let c = format!("FOO_LAGENT_BYPASS=x {cmd}");
+            assert!(decide_on(&c, cwd, is_mac).is_some(), "{c}");
+        }
+    }
+
+    #[test]
+    fn many_blank_markers_do_not_hang() {
+        let (cmd, cwd, is_mac) = four_rules()[3];
+        let c = format!("{}{cmd}", "LAGENT_BYPASS=\"\" ".repeat(50_000));
+        assert!(decide_on(&c, cwd, is_mac).is_some());
+        let stages = format!("ls {TGT}/debug/deps{}| xargs rm", " | cat".repeat(5_000));
+        let _ = decide_on(&stages, "/home/nez/scratch", false);
+    }
+
+    #[test]
+    fn pipelines_across_delimiters_and_shells_still_count() {
+        let ls = format!("ls {TGT}/debug/deps");
+        for c in [
+            format!("{ls} |\nxargs rm"),
+            format!("{ls} | (xargs rm)"),
+            format!("{ls} |& xargs rm"),
+            format!("{ls} | {{ xargs rm; }}"),
+            format!("{ls} | sort | grep a | tail -n 3 | xargs rm"),
+            format!("{ls} | xargs sh -c 'rm {{}}'"),
+            format!("{ls} | xargs -I{{}} bash -c 'echo x; rm -f {{}}'"),
+            format!("{ls} | xargs -n 1 zsh -c 'rm \"$0\"'"),
+        ] {
+            assert!(decide_on(&c, "/home/nez/scratch", false).is_some(), "{c}");
+        }
+        for c in [
+            format!("{ls} || xargs rm"),
+            "ls ./logs | xargs sh -c 'rm {}'".to_string(),
+            "ls ./logs | tail -n +5 | xargs rm".to_string(),
+            "cat list.txt | sort | xargs rm -f".to_string(),
+            "rm -rf target/debug".to_string(),
+            "cargo clean".to_string(),
+        ] {
+            assert!(decide_on(&c, "/home/nez/scratch", false).is_none(), "{c}");
+        }
+    }
+
+    #[test]
+    fn the_bypass_log_line_is_one_bounded_line() {
+        let line = super::bypass_log_line(
+            "s\t1",
+            "/c\nwd",
+            true,
+            &format!("a\tb\rc\nd{}", "é".repeat(5_000)),
+        );
+        assert!(!line[..line.len() - 1].contains(['\n', '\r']));
+        assert_eq!(line.matches('\t').count(), 3);
+        assert!(line.chars().count() < 2_100, "{}", line.chars().count());
+        assert!(line.contains("\thonoured\t"));
+        assert!(super::bypass_log_line("s", "c", false, "x").contains("\tdenied\t"));
     }
 }

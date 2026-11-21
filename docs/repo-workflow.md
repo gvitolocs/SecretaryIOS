@@ -269,7 +269,7 @@ lagent device release iphone
   also inside `ssh host '…'` and `bash -c`. Reason (HOST-12, twice): cargo keeps the `.fingerprint` of a deleted
   dependency output, thinks it is fresh, and the next build breaks. Instead use `rm -rf <target>/<profile>` or
   `rm -rf <target>`, `cargo clean [-p <crate>]`, or LB's by-unit sweep. `$CARGO_TARGET_DIR` and `$(…)` paths are not
-  expanded, so they pass. `LAGENT_BYPASS=<reason>` still works, in every rule, but only with a non-blank reason (`LAGENT_BYPASS=""`, `=" "` and `=$EMPTY` do not bypass).
+  expanded, so they pass. Accepted limits: `ls target/…; xargs rm < file`, `xargs rm < <(ls target/…)` (the file list is not in a pipeline), a `LAGENT_BYPASS` marker anywhere in the text counts (it is textual), and `LAGENT_BYPASS=${REASON}` is refused (the guard cannot expand it). `LAGENT_BYPASS=<reason>` still works, in every rule, but only with a non-blank reason (`LAGENT_BYPASS=""`, `=" "` and `=$EMPTY` do not bypass).
   Known over-refusals: a non-cargo directory named `target` or `target-*`, and a whole-profile delete routed through
   `xargs rm -rf` (do `rm -rf <target>/<profile>` directly). The marker rule also fires for any ANCESTOR of the operand.
 
