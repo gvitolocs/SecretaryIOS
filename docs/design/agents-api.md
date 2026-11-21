@@ -87,7 +87,7 @@ The agent routes are agentd's routes, prefixed. The table below adds what phase 
 | POST | `/v1/agents/{id}/permissions/{requestId}` | answer (owner devices only) |
 | GET/POST | `/v1/agents/permissions[/{id}]` | the permission book; external requests |
 | … | `/v1/agents/projects`, `/v1/agents/workspaces/…`, `/v1/agents/clone` | phase 4 routes (`api/workspaces.rs`) |
-| GET | `/v1/agents/providers` | |
+| GET | `/v1/agents/providers` | provider infos, each with its `breaker`: `{"state":"closed"}` or `{"state":"open","reason","detail","since","until"?}` |
 | GET | `/v1/agents/stream` | SSE, see below |
 | PATCH | `/v1/agents/{id}` | **phase 7:** `{title}` (one line, up to 200): rename; the Mac mirror uses it |
 | POST | `/v1/agents/{id}/events` | **phase 7:** `{events: [StreamEvent]}` (up to 200; not `attention_required`): an external agent's owner device posts its session's events → `{agentId, applied}`; anyone else 403 `NOT_OWNER` |
