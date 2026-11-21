@@ -987,3 +987,51 @@ async fn a_merge_of_a_workspace_titled_error_is_refused_and_nothing_is_queued() 
     assert!(msg.contains("starts with \"Error:\""), "{msg}");
     assert!(m.pipeline().active_jobs().is_empty(), "nothing was queued");
 }
+
+#[tokio::test]
+async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Ids", "true");
+    let m = manager(&root);
+    let queue = |name: &str| {
+        let m = m.clone();
+        let workspace = name.to_string();
+        async move {
+            m.queue_merge(MergeRequest { workspace, ..MergeRequest::default() })
+                .await
+                .unwrap()
+        }
+    };
+
+    // Two commits with trailers (and a repeat), a third without any: every distinct id, once.
+    let wt = topic(&root, &repo, "Ids", "tagged");
+    commit(&wt, "t1.txt", "1\n", "one\n\nLead: LA\nChange: LA-C001");
+    commit(&wt, "t2.txt", "2\n", "two\n\nLead: PF\nChange: PF-C002");
+    commit(&wt, "t3.txt", "3\n", "three\n\nLead: LA\nChange: PF-C002");
+    commit(&wt, "t4.txt", "4\n", "four, no trailers");
+    let job = queue("tagged").await;
+    assert_eq!(job.spec.leads, ["LA", "PF"]);
+    assert_eq!(job.spec.changes, ["LA-C001", "PF-C002"]);
+    let done = run_until_done(&m, &job.job_id).await;
+    assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
+    let text = std::fs::read_to_string(
+        root.join("state/pipeline/jobs").join(&job.job_id).join("job.json"),
+    )
+    .unwrap();
+    assert!(text.contains(r#""leads":["LA","PF"]"#), "{text}");
+    assert!(text.contains(r#""changes":["LA-C001","PF-C002"]"#), "{text}");
+
+    // A branch with no trailers: nothing recorded, and `job.json` says nothing about it.
+    let plain = topic(&root, &repo, "Ids", "plain");
+    let job = queue("plain").await;
+    assert!(job.spec.leads.is_empty() && job.spec.changes.is_empty(), "{:?}", job.spec);
+    let _ = plain;
+    let done = run_until_done(&m, &job.job_id).await;
+    assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
+    let text = std::fs::read_to_string(
+        root.join("state/pipeline/jobs").join(&job.job_id).join("job.json"),
+    )
+    .unwrap();
+    assert!(!text.contains("leads") && !text.contains("changes"), "{text}");
+}

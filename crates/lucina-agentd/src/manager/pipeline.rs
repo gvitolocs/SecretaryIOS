@@ -217,6 +217,47 @@ pub(crate) fn poisoned_title(t: &str) -> bool {
     t.trim().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("error:"))
 }
 
+/// The `Lead:` and `Change:` trailer values of the commits a branch adds to its trunk (LA-C039), for the
+/// job list. Any git failure gives nothing: this never refuses or delays a queue.
+async fn landing_ids(dir: &Path, base_ref: &str, head: &str) -> (Vec<String>, Vec<String>) {
+    let Some(base) = git::read(dir, &["merge-base", base_ref, head]).await else {
+        return Default::default();
+    };
+    let range = format!("{base}..{head}");
+    let format = "--format=%(trailers:key=Lead,valueonly,unfold)%x1e%(trailers:key=Change,valueonly,unfold)%x1f";
+    match git::read(dir, &["log", "--reverse", format, &range]).await {
+        Some(out) => parse_landing_ids(&out),
+        None => Default::default(),
+    }
+}
+
+/// `<leads>\x1e<changes>\x1f` per commit, to the distinct values of each in first-seen order, cut at 8.
+fn parse_landing_ids(log: &str) -> (Vec<String>, Vec<String>) {
+    fn add(into: &mut Vec<String>, text: &str) {
+        for v in text.lines().map(str::trim).filter(|v| !v.is_empty()) {
+            if !into.iter().any(|x| x == v) {
+                into.push(v.to_string());
+            }
+        }
+    }
+    fn cut(mut v: Vec<String>) -> Vec<String> {
+        const MAX: usize = 8;
+        if v.len() > MAX {
+            let more = v.len() - MAX;
+            v.truncate(MAX);
+            v.push(format!("+{more} more"));
+        }
+        v
+    }
+    let (mut leads, mut changes) = (Vec::new(), Vec::new());
+    for commit in log.split('\x1f') {
+        let (l, c) = commit.split_once('\x1e').unwrap_or((commit, ""));
+        add(&mut leads, l);
+        add(&mut changes, c);
+    }
+    (cut(leads), cut(changes))
+}
+
 fn slug(title: &str) -> String {
     let s = lucina_agents::branch_slug::slugify(title);
     let s: String = s.chars().take(48).collect();
@@ -500,6 +541,7 @@ impl Manager {
                 })
                 .await;
         }
+        let (leads, changes) = landing_ids(&dir, &repo.base_ref(), &head).await;
         let id = pipeline::new_id("job");
         let spec = Spec {
             job_id: id.clone(),
@@ -532,6 +574,8 @@ impl Manager {
             full: req.full,
             ledger: Some(self.ledger_path()),
             requested_by: req.requested_by.clone(),
+            leads,
+            changes,
         };
         let job = Job {
             job_id: id.clone(),
@@ -612,6 +656,8 @@ impl Manager {
             full: false,
             ledger: Some(self.ledger_path()),
             requested_by: None,
+            leads: vec![],
+            changes: vec![],
         };
         let job = Job {
             job_id: id,
@@ -1529,5 +1575,20 @@ mod tests {
             verdict("not-a-rev", &["upstream-56"], None, false, false).unwrap_err(),
             "base not-a-rev is not a commit in LucinaNet-servo"
         );
+    }
+    /// LA-C039: trailer values per commit, distinct, in first-seen order, empties dropped, cut at 8.
+    #[test]
+    fn landing_ids_are_distinct_in_first_seen_order_and_cut_at_eight() {
+        let log = "LA\x1eLA-C001\n\x1f\x1e\x1f\x1ePF\nLA\x1ePF-C002\n\x1f \x1eLA-C001\n\x1f";
+        assert_eq!(
+            parse_landing_ids(log),
+            (vec!["LA".to_string(), "PF".into()], vec!["LA-C001".to_string(), "PF-C002".into()])
+        );
+        assert_eq!(parse_landing_ids(""), (vec![], vec![]));
+        let many: String = (1..=10).map(|i| format!("L{i}\x1eC{i}\x1f")).collect();
+        let (l, c) = parse_landing_ids(&many);
+        assert_eq!(l.len(), 9);
+        assert_eq!((l[7].as_str(), l[8].as_str()), ("L8", "+2 more"));
+        assert_eq!(c[8], "+2 more");
     }
 }
