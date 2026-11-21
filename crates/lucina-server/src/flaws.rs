@@ -4556,6 +4556,154 @@ mod tests {
         }
     }
 
+    // LA-C047 (DISP-12): the path "agentd's provider breaker refuses the create" end to end, through
+    // the real classification of the real text, and the notices it makes.
+
+    /// What agentd answers a create for a tripped provider, as `Manager::check_breaker` formats it
+    /// (crates/lucina-agentd/src/manager/breaker.rs) behind the status and message the create route
+    /// gives (`503`, code `PROVIDER_TRIPPED`) and the dispatcher's client prints (`agentd {status}: {message}`).
+    const AGENTD_REFUSAL: &str = "agentd 503: Provider claude is unavailable: its last turn failed on authentication (Failed to authenticate: OAuth session expired and could not be refreshed), since 2026-11-19T00:40:12.345Z. New agents for it are refused so they don't pile up. It clears by itself after the first successful turn of an agent with this provider. Clear it by hand with `lagent providers clear claude`.";
+
+    fn lane_opens(s: &Flaws, lane: &str) -> i64 {
+        s.lanes()
+            .unwrap()
+            .into_iter()
+            .find(|b| b.lane == lane)
+            .map_or(0, |b| b.opens)
+    }
+
+    #[test]
+    fn the_real_agentd_refusal_is_a_lane_failure_of_the_sign_in_class() {
+        assert!(create_lane_failure(AGENTD_REFUSAL));
+        assert_eq!(lane_reason(AGENTD_REFUSAL), Some("sign-in refused"));
+        // A refusal for a quota trip reads "quota" and is classed by it.
+        let quota = AGENTD_REFUSAL.replace("authentication (Failed to authenticate: OAuth session expired and could not be refreshed)", "quota (You have hit your limit)");
+        assert!(create_lane_failure(&quota));
+        assert_eq!(lane_reason(&quota), Some("out of quota"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_create_gives_one_notice_per_opening_and_one_on_close() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        let clock = with_clock(&s);
+        let f = due(&s, "emoji MARKER_TITLE_47", Platform::Web, None);
+        *h.create_error.lock().unwrap() = Some(AGENTD_REFUSAL.into());
+        let tries = |h: &Fake| h.tasks.lock().unwrap().len();
+        let flaw_is_queued = |s: &Flaws| {
+            let t = target(s, &f.id, Platform::Web);
+            (t.status, t.attempts, t.agent.clone())
+        };
+
+        // Tick 1: the create is refused; the lane opens, no attempt is charged, one notice.
+        tick(&s, &p, &h).await;
+        assert_eq!(tries(&h), 1, "one create tried");
+        assert!(h.agents.lock().unwrap().is_empty());
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+        assert_eq!(lane_opens(&s, "claude-sonnet"), 1);
+        assert_eq!(flaw_is_queued(&s), (TargetStatus::Affected, 0, None));
+        assert_eq!(s.task_failures(&f.id, Platform::Web).unwrap(), 0);
+        assert_eq!(notices(&h), [OPENED], "phase 1: one notice");
+        assert_eq!(
+            h.notices.lock().unwrap()[0].0,
+            "lane-breaker:claude-sonnet:open:1"
+        );
+
+        // Ticks 2 to 4: the lane's probe says it is out, so nothing is tried and nothing is told.
+        for _ in 0..3 {
+            clock.fetch_add(1, Ordering::SeqCst);
+            tick(&s, &p, &h).await;
+        }
+        assert_eq!(tries(&h), 1, "no second create while the lane is open");
+        assert_eq!(notices(&h), [OPENED], "still one notice");
+        assert_eq!(flaw_is_queued(&s), (TargetStatus::Affected, 0, None));
+
+        // The probe passes (it is not agentd's provider breaker) while the provider still refuses:
+        // the half-open trial creates once, is refused, and the lane opens again with a back-off of
+        // 5 minutes. That is a new opening, so a second notice (the time of its retry in it).
+        h.lanes_out.lock().unwrap().clear();
+        *h.ignore_step_out.lock().unwrap() = true;
+        clock.fetch_add(1, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        assert_eq!(tries(&h), 2, "the trial made one create");
+        assert_eq!(lane_opens(&s, "claude-sonnet"), 2);
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Open);
+        assert_eq!(flaw_is_queued(&s), (TargetStatus::Affected, 0, None));
+        assert_eq!(
+            notices(&h),
+            [
+                OPENED.to_owned(),
+                "Lane claude-sonnet breaker OPEN (sign-in refused): no new agents on it until 00:52Z."
+                    .to_owned()
+            ],
+            "phase 3a: the failed trial is a second opening, a second notice"
+        );
+
+        // Inside the 5 minutes, with the probe ready: no create, no notice.
+        for _ in 0..4 {
+            clock.fetch_add(1, Ordering::SeqCst);
+            tick(&s, &p, &h).await;
+        }
+        assert_eq!(tries(&h), 2, "no create inside the back-off");
+        assert_eq!(notices(&h).len(), 2, "no notice inside the back-off");
+
+        // The back-off ends and the provider still refuses: the next trial, 10 minutes of back-off.
+        clock.fetch_add(1, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        assert_eq!(tries(&h), 3);
+        assert_eq!(lane_opens(&s, "claude-sonnet"), 3);
+        assert_eq!(
+            notices(&h).last().unwrap(),
+            "Lane claude-sonnet breaker OPEN (sign-in refused): no new agents on it until 01:02Z."
+        );
+        assert_eq!(
+            notices(&h).len(),
+            3,
+            "phase 3b: one notice per back-off cycle"
+        );
+        // The third lane failure of the flaw inside 24 h needs a lead (LANE_FAILURES_BEFORE_LEAD): it
+        // is blocked, still with no attempt charged. Nothing else is due, so no trial can start
+        // until another flaw is: a second one reports.
+        assert_eq!(flaw_is_queued(&s), (TargetStatus::Blocked, 0, None));
+        let f2 = due(&s, "second MARKER_TITLE_48", Platform::Web, None);
+
+        // The provider recovers: after the back-off the trial creates, its first turn works, the
+        // lane closes, and he is told once.
+        *h.create_error.lock().unwrap() = None;
+        clock.fetch_add(10, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 1, "the trial agent");
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::HalfOpen);
+        assert_eq!(notices(&h).len(), 3, "half-open says nothing");
+        h.worked.lock().unwrap().insert("ag0".into());
+        clock.fetch_add(1, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Closed);
+        assert_eq!(target(&s, &f2.id, Platform::Web).attempts, 1);
+        let all = notices(&h);
+        assert_eq!(all.len(), 4, "{all:?}");
+        assert_eq!(all[3], CLOSED);
+        assert_eq!(all.iter().filter(|n| n.contains("CLOSED")).count(), 1);
+
+        // The one outcome told is the blocked flaw (it names the flaw by design); the breaker
+        // notices carry no flaw title or id, nor the agent text.
+        assert_eq!(h.told.lock().unwrap().len(), 1, "{:?}", h.told);
+        assert!(h.told.lock().unwrap()[0].contains("needs a lead"));
+        for t in &all {
+            for marker in [
+                "MARKER_TITLE_47",
+                "MARKER_TITLE_48",
+                f.id.as_str(),
+                f2.id.as_str(),
+                "OAuth",
+                "agentd",
+                "lagent providers",
+            ] {
+                assert!(!t.contains(marker), "{marker} leaked into {t:?}");
+            }
+        }
+    }
+
     #[test]
     fn a_far_retry_after_carries_its_date() {
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-19T00:43:00Z")
