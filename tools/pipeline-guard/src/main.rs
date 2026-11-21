@@ -69,88 +69,98 @@ pub fn without_heredocs(command: &str) -> String {
 /// expand them; a default such as `${X:-reason}` is unknown too, so it counts as nothing). `$(`,
 /// `$((`, a backtick, `$'` and a backslash make the value unknown: `None`, which is no bypass.
 fn bypass_value(after: &str) -> (Option<String>, &str) {
-    let ch: Vec<(usize, char)> = after.char_indices().collect();
+    // The value is read lazily and at most 4096 characters long: a longer word is unknown.
+    const CAP: usize = 4096;
+    let mut it = after.char_indices().peekable();
     let mut lit = String::new();
     let mut known = true;
-    let mut i = 0;
-    let end_of = |i: usize| ch.get(i).map_or(after.len(), |&(b, _)| b);
-    while i < ch.len() {
-        let c = ch[i].1;
-        let next = ch.get(i + 1).map(|&(_, n)| n);
+    let mut seen = 0usize;
+    let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    'word: while let Some(&(_, c)) = it.peek() {
+        if c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')') {
+            break;
+        }
+        it.next();
+        seen += 1;
+        if seen > CAP {
+            known = false;
+            break;
+        }
         match c {
-            c if c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')') => break,
             '\'' => {
-                i += 1;
-                while i < ch.len() && ch[i].1 != '\'' {
-                    lit.push(ch[i].1);
-                    i += 1;
+                for (_, q) in it.by_ref() {
+                    seen += 1;
+                    if q == '\'' {
+                        break;
+                    }
+                    if seen > CAP {
+                        known = false;
+                        break 'word;
+                    }
+                    lit.push(q);
                 }
-                i += 1;
             }
             '"' => {
-                i += 1;
-                while i < ch.len() && ch[i].1 != '"' {
-                    let c = ch[i].1;
-                    let next = ch.get(i + 1).map(|&(_, n)| n);
-                    match (c, next) {
-                        ('\\', _) | ('`', _) | ('$', Some('(' | '\'')) => known = false,
-                        ('$', Some('{')) => {
-                            while i < ch.len() && ch[i].1 != '}' {
-                                i += 1;
-                            }
-                        }
-                        ('$', Some(n)) if n.is_ascii_alphanumeric() || n == '_' => {
-                            while ch
-                                .get(i + 1)
-                                .is_some_and(|&(_, n)| n.is_ascii_alphanumeric() || n == '_')
-                            {
-                                i += 1;
-                            }
-                        }
-                        _ => lit.push(c),
+                while let Some((_, q)) = it.next() {
+                    seen += 1;
+                    if seen > CAP {
+                        known = false;
+                        break 'word;
                     }
-                    i += 1;
+                    match q {
+                        '"' => break,
+                        '\\' | '`' => known = false,
+                        '$' => match it.peek().map(|&(_, n)| n) {
+                            Some('(' | '\'') => known = false,
+                            Some('{') => {
+                                for (_, n) in it.by_ref() {
+                                    seen += 1;
+                                    if n == '}' || seen > CAP {
+                                        break;
+                                    }
+                                }
+                            }
+                            Some(n) if n.is_ascii_alphabetic() || n == '_' => {
+                                while it.next_if(|&(_, n)| is_name(n)).is_some() {
+                                    seen += 1;
+                                }
+                            }
+                            // `$@ $* $! $? $# $$ $-` and `$1`: unknown, counts as nothing.
+                            Some(n) if n.is_ascii_digit() || "@*#?!$-".contains(n) => {
+                                it.next();
+                            }
+                            _ => lit.push('$'),
+                        },
+                        q => lit.push(q),
+                    }
                 }
-                i += 1;
             }
-            '\\' | '`' => {
-                known = false;
-                i += 1;
-            }
-            '$' => match next {
-                Some('(' | '\'' | '"') => {
-                    known = false;
-                    i += 1;
-                }
+            '\\' | '`' => known = false,
+            '$' => match it.peek().map(|&(_, n)| n) {
+                Some('(' | '\'' | '"') => known = false,
                 Some('{') => {
-                    while i < ch.len() && ch[i].1 != '}' {
-                        i += 1;
+                    for (_, n) in it.by_ref() {
+                        seen += 1;
+                        if n == '}' || seen > CAP {
+                            break;
+                        }
                     }
-                    i += 1;
                 }
                 Some(n) if n.is_ascii_alphabetic() || n == '_' => {
-                    i += 1;
-                    while ch
-                        .get(i)
-                        .is_some_and(|&(_, n)| n.is_ascii_alphanumeric() || n == '_')
-                    {
-                        i += 1;
+                    while it.next_if(|&(_, n)| is_name(n)).is_some() {
+                        seen += 1;
                     }
                 }
-                Some(n) if n.is_ascii_digit() || "@*#?!$-".contains(n) => i += 2,
-                _ => {
-                    lit.push('$');
-                    i += 1;
+                Some(n) if n.is_ascii_digit() || "@*#?!$-".contains(n) => {
+                    it.next();
                 }
+                _ => lit.push('$'),
             },
-            c => {
-                lit.push(c);
-                i += 1;
-            }
+            c => lit.push(c),
         }
     }
-    let i = i.min(ch.len());
-    (known.then_some(lit), &after[end_of(i)..])
+    let end = it.peek().map_or(after.len(), |&(b, _)| b);
+    (known.then_some(lit), &after[end..])
 }
 
 /// Whether `command` carries a real bypass: some `LAGENT_BYPASS=<reason>` whose value (read by
@@ -181,12 +191,17 @@ fn bypass_given(command: &str) -> bool {
 
 /// What a command does that the pipeline does instead, if anything.
 pub fn verdict(command: &str, cwd: &str) -> Option<String> {
+    verdict_with(command, cwd, bypass_given(command))
+}
+
+/// `verdict`, with the bypass answer for the whole command already known.
+fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
     let command = &without_heredocs(command);
     let scope = Regex::new(SCOPE).ok()?;
     if !scope.is_match(command) && !scope.is_match(cwd) {
         return None;
     }
-    if bypass_given(command) {
+    if bypass && bypass_given(command) {
         return None;
     }
     // One shell segment at a time (`;`, `&&`, `||`, `|`, newlines, quotes of ssh commands).
@@ -324,16 +339,21 @@ pub fn decide(command: &str, cwd: &str) -> Option<String> {
 
 /// The same as `decide`, with the platform given: on the Mac, local pattern kills are denied in every session.
 fn decide_on(command: &str, cwd: &str, is_mac: bool) -> Option<String> {
-    if let Some(r) = mac_kill_verdict(command, is_mac) {
+    decide_with(command, cwd, is_mac, bypass_given(command))
+}
+
+/// `decide_on`, with the bypass answer computed once by the caller and used by every rule.
+fn decide_with(command: &str, cwd: &str, is_mac: bool, bypass: bool) -> Option<String> {
+    if let Some(r) = mac_kill_verdict(command, is_mac, bypass) {
         return Some(r);
     }
-    if let Some(r) = target_verdict(command, cwd, !is_mac) {
+    if let Some(r) = target_verdict(command, cwd, !is_mac, bypass) {
         return Some(r);
     }
-    if let Some(r) = verdict(command, cwd) {
+    if let Some(r) = verdict_with(command, cwd, bypass) {
         return Some(r);
     }
-    if bypass_given(command) || single_ios_install(command) {
+    if bypass || single_ios_install(command) {
         return None;
     }
     if in_scope(command) || in_scope(cwd) {
@@ -711,30 +731,22 @@ fn local_kill_in(text: &str, depth: usize) -> Option<String> {
                 let rest = args.get(j..).unwrap_or_default();
                 program(rest).and_then(|q| {
                     let target = basename(&rest[q].val);
-                    matches!(target, "kill" | "pkill" | "killall")
-                        .then(|| kill_reason(&format!("xargs {target}")))
+                    if matches!(target, "kill" | "pkill" | "killall") {
+                        return Some(kill_reason(&format!("xargs {target}")));
+                    }
+                    // `xargs sh -c 'pkill …'`
+                    if matches!(target, "bash" | "sh" | "zsh") {
+                        return shell_script(&rest[q + 1..])
+                            .and_then(|s| local_kill_in(s, depth + 1));
+                    }
+                    None
                 })
             }
             "kill" => args
                 .iter()
                 .any(|a| a.subst)
                 .then(|| kill_reason("kill $(…)")),
-            "bash" | "sh" | "zsh" => {
-                let mut script = None;
-                let mut j = 0;
-                while let Some(w) = args.get(j) {
-                    if w.val.starts_with('-') && !w.val.starts_with("--") {
-                        if w.val.contains('c') {
-                            script = args.get(j + 1).map(|s| s.val.as_str());
-                            break;
-                        }
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                script.and_then(|s| local_kill_in(s, depth + 1))
-            }
+            "bash" | "sh" | "zsh" => shell_script(args).and_then(|s| local_kill_in(s, depth + 1)),
             // Remote text is not local: ssh, scp and rsync arguments are not read.
             _ => None,
         };
@@ -785,8 +797,8 @@ pub fn local_kill(command: &str) -> Option<String> {
 }
 
 /// The pattern-kill check as wired in: on the Mac only, every session, bypassable like the rest.
-fn mac_kill_verdict(command: &str, is_mac: bool) -> Option<String> {
-    if !is_mac || bypass_given(command) {
+fn mac_kill_verdict(command: &str, is_mac: bool, bypass: bool) -> Option<String> {
+    if !is_mac || bypass {
         return None;
     }
     local_kill(command)
@@ -931,6 +943,29 @@ fn remote_text(args: &[Word]) -> Option<Vec<String>> {
     ])
 }
 
+/// Whether `text` runs `rm`, also inside `sh -c '…'` and `$( )`.
+fn runs_rm(text: &str, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    let sc = scan(text);
+    sc.cmds.iter().any(|w| {
+        program(w).is_some_and(|p| {
+            let name = basename(&w[p].val);
+            name == "rm"
+                || (matches!(name, "bash" | "sh" | "zsh")
+                    && shell_script(&w[p + 1..]).is_some_and(|s| runs_rm(s, depth + 1)))
+        })
+    }) || sc.nested.iter().any(|n| runs_rm(n, depth + 1))
+}
+
+/// A path word with a component that names a cargo target, judged by its text alone (no stat).
+fn textual_target(word: &str) -> bool {
+    word.split('/').any(|c| {
+        matches!(c, "target" | "cargo-target" | "lucina-check-target") || c.starts_with("target-")
+    })
+}
+
 /// The script of `sh -c '…'` (after the shell's own short options), if the arguments have one.
 fn shell_script(args: &[Word]) -> Option<&str> {
     let mut j = 0;
@@ -1035,36 +1070,50 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
                     };
                 }
                 let rest = args.get(j..).unwrap_or_default();
-                program(rest)
-                    .filter(|&q| {
-                        let prog = basename(&rest[q].val);
-                        // `xargs rm`, or `xargs sh -c '… rm …'`.
-                        prog == "rm"
-                            || (matches!(prog, "bash" | "sh" | "zsh")
-                                && shell_script(&rest[q + 1..]).is_some_and(|s| {
-                                    scan(s).cmds.iter().any(|w| {
-                                        program(w).is_some_and(|p| basename(&w[p].val) == "rm")
-                                    })
-                                }))
-                    })
-                    .and_then(|q| {
-                        // The files come down the pipe: any earlier stage of this pipeline (at most 64; past
-                        // that the walk stops, so only a path already seen counts), the directory, or its
-                        // own operands.
-                        let mut k = idx;
-                        let mut stages: Vec<&Word> = Vec::new();
-                        while k > 0 && sc.piped[k] && idx - k < 64 {
-                            k -= 1;
-                            stages.extend(sc.cmds[k].iter().skip(1));
+                program(rest).and_then(|q| {
+                    let prog = basename(&rest[q].val);
+                    let script = shell_script(&rest[q + 1..])
+                        .filter(|_| matches!(prog, "bash" | "sh" | "zsh"));
+                    // `xargs rm`, or `xargs sh -c '… rm …'`.
+                    let is_rm = prog == "rm" || script.is_some_and(|s| runs_rm(s, 0));
+                    if !is_rm && script.is_none() {
+                        return None;
+                    }
+                    // The files come down the pipe: any earlier stage of this pipeline, the directory, or
+                    // its own operands. The first 64 stages are classified as paths (that may stat); the
+                    // stages before them are read textually, and the walk stops after 10 000 stages.
+                    let mut k = idx;
+                    let mut near: Vec<&Word> = Vec::new();
+                    let mut far: Vec<&Word> = Vec::new();
+                    while k > 0 && sc.piped[k] && idx - k < 10_000 {
+                        k -= 1;
+                        let stage = sc.cmds[k].iter().skip(1);
+                        if idx - k <= 64 {
+                            near.extend(stage);
+                        } else {
+                            far.extend(stage);
                         }
-                        stages
-                            .into_iter()
-                            .chain(rest[q + 1..].iter())
-                            .filter(|w| !w.val.starts_with('-'))
-                            .find_map(|w| hit(&w.val, &dir))
-                            .or_else(|| hit(".", &dir))
-                            .map(|path| target_reason("… | xargs rm", &path))
+                    }
+                    let stage_hit = near
+                        .into_iter()
+                        .chain(rest[q + 1..].iter())
+                        .filter(|w| !w.val.starts_with('-'))
+                        .find_map(|w| hit(&w.val, &dir))
+                        .or_else(|| {
+                            far.into_iter()
+                                .filter(|w| !w.val.starts_with('-'))
+                                .find(|w| textual_target(&w.val))
+                                .map(|w| w.val.clone())
+                        })
+                        .or_else(|| hit(".", &dir));
+                    if is_rm {
+                        return stage_hit.map(|path| target_reason("… | xargs rm", &path));
+                    }
+                    // A script that deletes on its own: read it from the stage's target path, if there is one.
+                    script.and_then(|s| {
+                        target_deletion(s, stage_hit.as_deref().unwrap_or(&dir), on_host, depth + 1)
                     })
+                })
             }
             "bash" | "sh" | "zsh" => {
                 shell_script(args).and_then(|s| target_deletion(s, &dir, on_host, depth + 1))
@@ -1085,8 +1134,8 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
 }
 
 /// The cargo-target deletion check as wired in: every session, bypassable like the rest.
-fn target_verdict(command: &str, cwd: &str, on_host: bool) -> Option<String> {
-    if bypass_given(command) {
+fn target_verdict(command: &str, cwd: &str, on_host: bool, bypass: bool) -> Option<String> {
+    if bypass {
         return None;
     }
     target_deletion(command, cwd, on_host, 0)
@@ -1099,7 +1148,13 @@ fn bypass_log_line(session: &str, cwd: &str, honoured: bool, command: &str) -> S
     let clean = |s: &str| -> String {
         s.chars()
             .take(2000)
-            .map(|c| if c.is_control() { ' ' } else { c })
+            .map(|c| {
+                if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                    ' '
+                } else {
+                    c
+                }
+            })
             .collect()
     };
     format!(
@@ -1109,6 +1164,16 @@ fn bypass_log_line(session: &str, cwd: &str, honoured: bool, command: &str) -> S
         if honoured { "honoured" } else { "denied" },
         clean(command)
     )
+}
+
+/// Rotates `bypass.log` once it is over 1 MiB: it becomes `bypass.log.1` (the old `.1` is replaced)
+/// and the next line starts a new file. Any failure is ignored: it never changes a verdict.
+fn rotate_log(path: &std::path::Path) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > 1 << 20) {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        let _ = std::fs::rename(path, old);
+    }
 }
 
 fn main() {
@@ -1124,10 +1189,12 @@ fn main() {
     };
     let command = v["tool_input"]["command"].as_str().unwrap_or_default();
     let cwd = v["cwd"].as_str().unwrap_or_default();
+    let bypass = bypass_given(command);
     if command.contains("LAGENT_BYPASS=") {
         let home = std::env::var("HOME").unwrap_or_default();
         let dir = format!("{home}/.local/state/pipeline-guard");
         if std::fs::create_dir_all(&dir).is_ok() {
+            rotate_log(&std::path::Path::new(&dir).join("bypass.log"));
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -1138,7 +1205,7 @@ fn main() {
                     bypass_log_line(
                         v["session_id"].as_str().unwrap_or("?"),
                         cwd,
-                        bypass_given(command),
+                        bypass,
                         command,
                     )
                     .as_bytes(),
@@ -1146,7 +1213,7 @@ fn main() {
             }
         }
     }
-    if let Some(reason) = decide(command, cwd) {
+    if let Some(reason) = decide_with(command, cwd, cfg!(target_os = "macos"), bypass) {
         let out = json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -1557,6 +1624,7 @@ mod tests {
             format!(
                 "ls {TGT}/debug/deps | sort | grep rlib | awk '{{print $1}}' | xargs -n 10 rm -f"
             ),
+            format!("cd {TGT}/debug && ls deps | tail -n +3 | sed s/x/y/ | xargs rm"),
             format!("ls {TGT}/debug/deps | tail -n +3 | sed s/x/y/ | xargs rm"),
         ] {
             assert!(decide_on(&c, "/home/nez/scratch", false).is_some(), "{c}");
@@ -1685,7 +1753,9 @@ mod tests {
         let c = format!("{}{cmd}", "LAGENT_BYPASS=\"\" ".repeat(50_000));
         assert!(decide_on(&c, cwd, is_mac).is_some());
         let stages = format!("ls {TGT}/debug/deps{}| xargs rm", " | cat".repeat(5_000));
-        let _ = decide_on(&stages, "/home/nez/scratch", false);
+        assert!(decide_on(&stages, "/home/nez/scratch", false).is_some());
+        let stages = format!("ls ./logs{}| xargs rm", " | cat".repeat(5_000));
+        assert!(decide_on(&stages, "/home/nez/scratch", false).is_none());
     }
 
     #[test]
@@ -1728,5 +1798,102 @@ mod tests {
         assert!(line.chars().count() < 2_100, "{}", line.chars().count());
         assert!(line.contains("\thonoured\t"));
         assert!(super::bypass_log_line("s", "c", false, "x").contains("\tdenied\t"));
+    }
+    #[test]
+    fn special_parameters_in_quotes_are_no_bypass() {
+        for (cmd, cwd, is_mac) in four_rules() {
+            for b in [
+                "LAGENT_BYPASS=\"$@\" ",
+                "LAGENT_BYPASS=\"$*\" ",
+                "LAGENT_BYPASS=\"$!\" ",
+                "LAGENT_BYPASS=\"$1\" ",
+                "LAGENT_BYPASS=\"$?\" ",
+                "LAGENT_BYPASS=\"$$\" ",
+                "LAGENT_BYPASS=\"$#\" ",
+                "LAGENT_BYPASS=\"$-\" ",
+            ] {
+                let c = format!("{b}{cmd}");
+                assert!(decide_on(&c, cwd, is_mac).is_some(), "{c}");
+            }
+            // Single quotes keep the text: `$X` is the reason.
+            let c = format!("LAGENT_BYPASS='$X' {cmd}");
+            assert!(decide_on(&c, cwd, is_mac).is_none(), "{c}");
+        }
+    }
+
+    #[test]
+    fn xargs_with_a_shell_script_is_read_for_deletes_and_kills() {
+        let ls = format!("ls {TGT}/debug/deps");
+        for c in [
+            format!("{ls} | xargs sh -c 'find {{}} -type f -delete'"),
+            format!("echo x | xargs sh -c 'find {TGT}/debug/deps -delete'"),
+            format!("{ls} | xargs bash -c 'bash -c \"rm {{}}\"'"),
+            format!("{ls} | sort | xargs -I{{}} sh -c 'find {{}} -exec rm {{}} +'"),
+        ] {
+            assert!(decide_on(&c, "/home/nez/scratch", false).is_some(), "{c}");
+        }
+        for c in [
+            "ls | xargs sh -c 'pkill -f x'",
+            "ps | xargs -n1 bash -c 'kill $(pgrep x); pkill y'",
+        ] {
+            assert!(decide_on(c, "/home/nez/scratch", true).is_some(), "{c}");
+        }
+        for c in [
+            "ls ./logs | xargs sh -c 'echo hi'",
+            "ls ./logs | xargs sh -c 'rm {}'",
+            "ls ./logs | xargs sh -c 'find {} -delete'",
+        ] {
+            for is_mac in [true, false] {
+                assert!(decide_on(c, "/home/nez/scratch", is_mac).is_none(), "{c}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_pipeline_is_read_textually_past_the_stage_cap() {
+        let cats = " | cat".repeat(70);
+        let c = format!("ls target/debug/deps{cats} | xargs rm");
+        assert!(decide_on(&c, "/home/nez/scratch", false).is_some(), "{c}");
+        let c = format!("ls ./logs{cats} | xargs rm");
+        assert!(decide_on(&c, "/home/nez/scratch", false).is_none(), "{c}");
+    }
+
+    #[test]
+    fn long_text_after_blank_markers_is_cheap_and_a_long_value_is_unknown() {
+        let (cmd, cwd, is_mac) = four_rules()[3];
+        let big = "x".repeat(300_000);
+        let c = format!(
+            "{}{cmd}",
+            format!("LAGENT_BYPASS=\"\" echo {big}; ").repeat(32)
+        );
+        assert!(decide_on(&c, cwd, is_mac).is_some());
+        let c = format!("LAGENT_BYPASS={} {cmd}", "a".repeat(5_000));
+        assert!(
+            decide_on(&c, cwd, is_mac).is_some(),
+            "a value word over 4096 chars is unknown"
+        );
+        let c = format!("LAGENT_BYPASS={} {cmd}", "a".repeat(4_000));
+        assert!(decide_on(&c, cwd, is_mac).is_none());
+    }
+
+    #[test]
+    fn the_bypass_log_is_rotated_and_lines_have_no_unicode_breaks() {
+        let line = super::bypass_log_line("s", "c", true, "a\u{2028}b\u{2029}c\u{85}d");
+        assert!(
+            !line.contains(['\u{2028}', '\u{2029}', '\u{85}']),
+            "{line:?}"
+        );
+        let dir = std::env::temp_dir().join(format!("pipeline-guard-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("bypass.log");
+        std::fs::write(&log, vec![b'x'; 1_100_000]).unwrap();
+        std::fs::write(dir.join("bypass.log.1"), "old").unwrap();
+        super::rotate_log(&log);
+        let moved = std::fs::metadata(dir.join("bypass.log.1")).map(|m| m.len());
+        let left = log.exists();
+        super::rotate_log(&dir.join("missing.log"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(moved.unwrap(), 1_100_000);
+        assert!(!left);
     }
 }
