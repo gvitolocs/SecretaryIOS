@@ -1313,18 +1313,27 @@ fn lane_reason(error: &str) -> Option<&'static str> {
 /// The notice of a breaker event (LA-C042). Built from the lane key, the new state, the class
 /// word of the stored failure and the retry time, and nothing else: the stored text carries
 /// agent output, so only the static class word of [`lane_reason`] is taken from it.
-fn lane_notice(e: &lucina_flaws::LaneEvent) -> String {
+fn lane_notice(e: &lucina_flaws::LaneEvent, now: chrono::DateTime<Utc>) -> String {
     if e.state != LaneState::Open {
         return format!("Lane {} breaker CLOSED: dispatch can use it again.", e.lane);
     }
     let class = e.reason.as_deref().and_then(lane_reason);
+    // The time of day; a retry-after more than 20 hours ahead carries its date.
     let until = e
         .until
         .as_deref()
         .and_then(|u| chrono::DateTime::parse_from_rfc3339(u).ok())
         .map_or_else(
             || "its probe passes".to_owned(),
-            |u| u.with_timezone(&Utc).format("%H:%MZ").to_string(),
+            |u| {
+                let u = u.with_timezone(&Utc);
+                let fmt = if u - now > chrono::Duration::hours(20) {
+                    "%Y-%m-%d %H:%MZ"
+                } else {
+                    "%H:%MZ"
+                };
+                u.format(fmt).to_string()
+            },
         );
     match class {
         Some(c) => format!(
@@ -2050,7 +2059,7 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
 async fn tell_lane_events(flaws: &Flaws, hands: &dyn Hands) {
     for e in flaws.lane_events_untold().unwrap_or_default() {
         let key = format!("lane-breaker:{}:{}", e.lane, e.event);
-        let text = lane_notice(&e);
+        let text = lane_notice(&e, flaws.clock_now());
         match within(hands.limits().record, hands.tell_keyed(&key, &text)).await {
             Some(true) => {
                 let _ = flaws.lane_mark_told(&e.lane, &e.event);
@@ -2700,7 +2709,10 @@ mod tests {
         merged: Mutex<HashMap<String, String>>,
         stopped: Mutex<Vec<String>>,
         told: Mutex<Vec<String>>,
-        /// The breaker notices told, with their dedup keys (`tell_keyed`).
+        /// The breaker notices told, with their dedup keys (`tell_keyed`). Kept apart from `told`
+        /// (the flaw outcomes) on purpose: several older tests assert that `told` is empty while a
+        /// lane's breaker opens, and they mean "no flaw outcome was sent". A breaker notice is
+        /// sent by `tell_keyed`, so it lands here and `told` keeps meaning outcomes only.
         notices: Mutex<Vec<(String, String)>>,
         /// `tell_keyed` answers false (the push did not go out), and tells nothing.
         tell_fails: Mutex<bool>,
@@ -4540,6 +4552,28 @@ mod tests {
                 assert!(!t.contains(marker), "{marker} leaked into {t:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_far_retry_after_carries_its_date() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-19T00:43:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ev = |until: &str| lucina_flaws::LaneEvent {
+            lane: "claude".into(),
+            state: LaneState::Open,
+            event: "open:2".into(),
+            reason: Some("sign-in refused: x".into()),
+            until: Some(until.into()),
+        };
+        assert_eq!(
+            lane_notice(&ev("2026-11-19T02:43:00Z"), now),
+            "Lane claude breaker OPEN (sign-in refused): no new agents on it until 02:43Z."
+        );
+        assert_eq!(
+            lane_notice(&ev("2026-11-20T21:44:00Z"), now),
+            "Lane claude breaker OPEN (sign-in refused): no new agents on it until 2026-11-20 21:44Z."
+        );
     }
 
     #[tokio::test]

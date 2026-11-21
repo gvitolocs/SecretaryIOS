@@ -624,18 +624,31 @@ fn migrate(c: &Connection) -> Result<()> {
     add_column(c, "lane_breakers", "trial", "TEXT")?;
     // What the owner was last told of the breaker (LA-C042): `open:<opens>` or `closed:<opens>`.
     // A database from before already has its states: they are marked told, so the first tick
-    // after the upgrade says nothing about breakers that were there already.
-    let had_told = c
-        .prepare("SELECT 1 FROM pragma_table_info('lane_breakers') WHERE name = 'told'")?
-        .exists([])?;
-    add_column(c, "lane_breakers", "told", "TEXT")?;
-    if !had_told {
-        c.execute(
-            "UPDATE lane_breakers SET told = CASE
-                 WHEN state IN ('open', 'half_open') THEN 'open:' || opens
-                 WHEN opens > 0 THEN 'closed:' || opens END",
-            [],
-        )?;
+    // after the upgrade says nothing about breakers that were there already. The column and the
+    // backfill are one transaction (SQLite DDL is transactional): a process that dies between
+    // them leaves neither, so no start finds the column without its backfill.
+    c.execute_batch("BEGIN IMMEDIATE")?;
+    let done = (|| -> Result<()> {
+        let had_told = c
+            .prepare("SELECT 1 FROM pragma_table_info('lane_breakers') WHERE name = 'told'")?
+            .exists([])?;
+        if !had_told {
+            c.execute("ALTER TABLE lane_breakers ADD COLUMN told TEXT", [])?;
+            c.execute(
+                "UPDATE lane_breakers SET told = CASE
+                     WHEN state IN ('open', 'half_open') THEN 'open:' || opens
+                     WHEN opens > 0 THEN 'closed:' || opens END",
+                [],
+            )?;
+        }
+        Ok(())
+    })();
+    match done {
+        Ok(()) => c.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = c.execute_batch("ROLLBACK");
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -2758,6 +2771,39 @@ CREATE TABLE flaw_events (
         s.lane_half_open("qoder").unwrap();
         s.lane_close("qoder").unwrap();
         assert!(events(&s).contains(&("qoder".into(), LaneState::Closed, "closed:1".into())));
+    }
+
+    #[test]
+    fn a_migration_that_dies_after_the_alter_leaves_no_column_without_its_backfill() {
+        // The backfill fails (a trigger refuses the update): the ALTER must go with it. Were the
+        // column kept, the next start would find it, skip the backfill and tell the old states.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("flaws.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE lane_breakers (lane TEXT PRIMARY KEY, state TEXT NOT NULL, opened_at TEXT,
+                    reason TEXT, until TEXT, fails INTEGER NOT NULL DEFAULT 0,
+                    opens INTEGER NOT NULL DEFAULT 0, trial TEXT);
+                 INSERT INTO lane_breakers (lane, state, opens) VALUES ('a', 'open', 1);
+                 CREATE TRIGGER stop BEFORE UPDATE ON lane_breakers
+                    BEGIN SELECT RAISE(ABORT, 'dies here'); END;",
+            )
+            .unwrap();
+        }
+        assert!(Flaws::open(&p).is_err(), "the migration failed");
+        let has_told = |c: &Connection| {
+            c.prepare("SELECT 1 FROM pragma_table_info('lane_breakers') WHERE name = 'told'")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        };
+        let c = Connection::open(&p).unwrap();
+        assert!(!has_told(&c), "the ALTER was rolled back with the backfill");
+        c.execute_batch("DROP TRIGGER stop").unwrap();
+        drop(c);
+        let s = Flaws::open(&p).unwrap();
+        assert!(events(&s).is_empty(), "nothing replayed: {:?}", events(&s));
     }
 
     #[test]
