@@ -1579,7 +1579,7 @@ mod tests {
     /// LA-C039: trailer values per commit, distinct, in first-seen order, empties dropped, cut at 8.
     #[test]
     fn landing_ids_are_distinct_in_first_seen_order_and_cut_at_eight() {
-        let log = "LA\x1eLA-C001\n\x1f\x1e\x1f\x1ePF\nLA\x1ePF-C002\n\x1f \x1eLA-C001\n\x1f";
+        let log = "LA\x1eLA-C001\n\x1f\x1e\x1fPF\nLA\x1ePF-C002\n\x1f \x1eLA-C001\n\x1f";
         assert_eq!(
             parse_landing_ids(log),
             (vec!["LA".to_string(), "PF".into()], vec!["LA-C001".to_string(), "PF-C002".into()])
