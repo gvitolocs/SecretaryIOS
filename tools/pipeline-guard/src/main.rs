@@ -1211,6 +1211,251 @@ fn rotate_log(path: &std::path::Path) {
     }
 }
 
+/// Phase switch for the coordinator-only bypass. `false` (phase 1): an honoured override by a session that
+/// is not a listed coordinator, or by a subagent, is only recorded as `would-refuse:…` in the ledger.
+/// `true` (phase 2, the coordinator's word): it is denied after the ledger line is written.
+const ENFORCE_IDENTITY: bool = false;
+
+/// Control characters (tab, CR, newline, U+0085) and U+2028/2029 become spaces; cut by characters.
+fn plain(s: &str, max: usize) -> String {
+    s.chars()
+        .take(max)
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{85}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// `plain`, with `-` for an empty field.
+fn field(s: &str, max: usize) -> String {
+    let t = plain(s, max);
+    if t.is_empty() {
+        "-".to_string()
+    } else {
+        t
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for seconds since the Unix epoch (civil-from-days, no dependency).
+fn utc_stamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// The literal value of the first honoured `LAGENT_BYPASS=` marker, read by the same word reader and
+/// with the same rules as `bypass_given` (so it is `Some` exactly when `bypass_given` is true).
+fn bypass_reason(command: &str) -> Option<String> {
+    const KEY: &str = "LAGENT_BYPASS=";
+    let mut rest = command;
+    for _ in 0..32 {
+        let at = rest.find(KEY)?;
+        let inside_name = rest[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let (value, tail) = bypass_value(&rest[at + KEY.len()..]);
+        rest = tail;
+        if let Some(v) = value {
+            if !inside_name && v.chars().any(|c| !c.is_whitespace()) {
+                return Some(v.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The columns of one `bypass-ledger.tsv` line.
+struct Entry<'a> {
+    time: &'a str,
+    host: &'a str,
+    session: &'a str,
+    app: &'a str,
+    agent: &'a str,
+    status: &'a str,
+    reason: &'a str,
+    command: &'a str,
+}
+
+/// One ledger line: time, host, session id, app id, agent id, identity status, reason (200 characters),
+/// command (120 characters). Every field is one line of plain text; empty ones are `-`.
+fn ledger_line(e: &Entry) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        field(e.time, 40),
+        field(e.host, 20),
+        field(e.session, 200),
+        field(e.app, 200),
+        field(e.agent, 200),
+        field(e.status, 40),
+        field(e.reason, 200),
+        field(e.command, 120)
+    )
+}
+
+/// The coordinator list: one id per line, `#` comments and blank lines ignored. A missing, unreadable or
+/// oversized-garbage file is an empty list. The guard never writes this file.
+fn read_coordinators(dir: &std::path::Path) -> Vec<String> {
+    let Ok(f) = std::fs::File::open(dir.join("coordinators")) else {
+        return Vec::new();
+    };
+    let mut text = String::new();
+    if f.take(64 * 1024).read_to_string(&mut text).is_err() {
+        return Vec::new();
+    }
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// `coordinator`, `would-refuse:subagent` (an `agent_id` is set, even under a listed parent) or
+/// `would-refuse:not-listed`.
+fn identity_status(list: &[String], session: &str, app: Option<&str>, agent: &str) -> &'static str {
+    if !agent.is_empty() {
+        return "would-refuse:subagent";
+    }
+    let listed = |id: &str| !id.is_empty() && list.iter().any(|l| l == id);
+    if listed(session) || app.is_some_and(listed) {
+        "coordinator"
+    } else {
+        "would-refuse:not-listed"
+    }
+}
+
+/// Appends one whole line to `dir/name` (created 0600, `O_APPEND`, one `write_all`, then `sync_all`).
+fn append_line(dir: &std::path::Path, name: &str, line: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(dir)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(dir.join(name))?;
+    f.write_all(line.as_bytes())?;
+    f.sync_all()
+}
+
+/// What the verdict needs besides the command: the state directory, the clock, the platform, the app id
+/// (`CLAUDE_CODE_HOST_SESSION_ID`) and whether identity is enforced.
+struct Ctx<'a> {
+    dir: &'a std::path::Path,
+    now: u64,
+    is_mac: bool,
+    app_id: Option<&'a str>,
+    enforce: bool,
+}
+
+fn rule_denial(reason: &str) -> String {
+    format!("pipeline-guard: {reason} (Owner-approved exception: put LAGENT_BYPASS=<reason> in the command.)")
+}
+
+/// The full deny text for a hook call, or `None` to allow. A rule's own verdict (bypass honoured by the
+/// rule or not) is exactly as before. A bypass that flips a verdict (the verdict with the answer forced
+/// to false is a denial, the real one is not) is an honoured override: one ledger line first (a failed
+/// write denies), then allowed, or denied when `enforce` and the identity would be refused.
+fn judge(v: &Value, command: &str, cwd: &str, ctx: &Ctx) -> Option<String> {
+    let bypass = bypass_given(command);
+    if let Some(reason) = decide_with(command, cwd, ctx.is_mac, bypass) {
+        return Some(rule_denial(&reason));
+    }
+    if !bypass || decide_with(command, cwd, ctx.is_mac, false).is_none() {
+        return None;
+    }
+    let session = v["session_id"].as_str().unwrap_or_default();
+    let agent = v["agent_id"].as_str().unwrap_or_default();
+    let list = read_coordinators(ctx.dir);
+    let status = identity_status(&list, session, ctx.app_id, agent);
+    let time = utc_stamp(ctx.now);
+    let reason = bypass_reason(command).unwrap_or_default();
+    let line = ledger_line(&Entry {
+        time: &time,
+        host: if ctx.is_mac { "mac" } else { "nezopt" },
+        session,
+        app: ctx.app_id.unwrap_or_default(),
+        agent,
+        status,
+        reason: &reason,
+        command,
+    });
+    if let Err(e) = append_line(ctx.dir, "bypass-ledger.tsv", &line) {
+        return Some(format!(
+            "pipeline-guard: bypass not recorded ({}): the ledger could not be written, so the override is refused; tell the coordinator",
+            e.kind()
+        ));
+    }
+    if ctx.enforce && status != "coordinator" {
+        let who = if status == "would-refuse:subagent" {
+            "a subagent may not bypass"
+        } else {
+            "this session is not on the coordinator list"
+        };
+        return Some(format!(
+            "pipeline-guard: LAGENT_BYPASS is for the coordinator only: {who}. Ask the coordinator to run the command (or to add the session to ~/.local/state/pipeline-guard/coordinators)."
+        ));
+    }
+    None
+}
+
+/// Per class (`agent_id=present`, `agent_id=absent`) at most this many capture lines are written.
+const CAPTURE_CLASS_MAX: usize = 50;
+
+/// Appends one line to `payload-keys.tsv` for a PreToolUse payload: time, the sorted top-level key names,
+/// and whether `agent_id` is a non-empty string. Never a value, never a nested key. Writes nothing once
+/// the class has its 50 lines or the file is over 64 KiB. A failure changes nothing else.
+fn capture_keys(dir: &std::path::Path, now: u64, v: &Value) {
+    let _ = try_capture(dir, now, v);
+}
+
+fn try_capture(dir: &std::path::Path, now: u64, v: &Value) -> Option<()> {
+    match v["hook_event_name"].as_str() {
+        None | Some("PreToolUse") => {}
+        Some(_) => return None,
+    }
+    let obj = v.as_object()?;
+    let tag = if v["agent_id"].as_str().is_some_and(|a| !a.is_empty()) {
+        "agent_id=present"
+    } else {
+        "agent_id=absent"
+    };
+    let path = dir.join("payload-keys.tsv");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 64 * 1024) {
+        return None;
+    }
+    let seen = std::fs::read(&path).unwrap_or_default();
+    let seen = String::from_utf8_lossy(&seen);
+    if seen.lines().filter(|l| l.ends_with(tag)).count() >= CAPTURE_CLASS_MAX {
+        return None;
+    }
+    let mut keys: Vec<String> = obj.keys().map(|k| plain(k, 64)).collect();
+    keys.sort();
+    let line = format!(
+        "{}\t{}\t{tag}\n",
+        utc_stamp(now),
+        field(&keys.join(","), 1000)
+    );
+    append_line(dir, "payload-keys.tsv", &line).ok()
+}
+
 fn main() {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -1225,35 +1470,45 @@ fn main() {
     let command = v["tool_input"]["command"].as_str().unwrap_or_default();
     let cwd = v["cwd"].as_str().unwrap_or_default();
     let bypass = bypass_given(command);
-    if command.contains("LAGENT_BYPASS=") {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let dir = format!("{home}/.local/state/pipeline-guard");
-        if std::fs::create_dir_all(&dir).is_ok() {
-            rotate_log(&std::path::Path::new(&dir).join("bypass.log"));
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(format!("{dir}/bypass.log"))
-            {
-                // Every occurrence is logged, honoured or denied, so a blank attempt leaves a record too.
-                let _ = f.write_all(
-                    bypass_log_line(
-                        v["session_id"].as_str().unwrap_or("?"),
-                        cwd,
-                        bypass,
-                        command,
-                    )
-                    .as_bytes(),
-                );
-            }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = format!("{home}/.local/state/pipeline-guard");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    capture_keys(std::path::Path::new(&dir), now, &v);
+    if command.contains("LAGENT_BYPASS=") && std::fs::create_dir_all(&dir).is_ok() {
+        rotate_log(&std::path::Path::new(&dir).join("bypass.log"));
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("{dir}/bypass.log"))
+        {
+            // Every occurrence is logged, honoured or denied, so a blank attempt leaves a record too.
+            let _ = f.write_all(
+                bypass_log_line(
+                    v["session_id"].as_str().unwrap_or("?"),
+                    cwd,
+                    bypass,
+                    command,
+                )
+                .as_bytes(),
+            );
         }
     }
-    if let Some(reason) = decide_with(command, cwd, cfg!(target_os = "macos"), bypass) {
+    let app_id = std::env::var("CLAUDE_CODE_HOST_SESSION_ID").ok();
+    let ctx = Ctx {
+        dir: std::path::Path::new(&dir),
+        now,
+        is_mac: cfg!(target_os = "macos"),
+        app_id: app_id.as_deref(),
+        enforce: ENFORCE_IDENTITY,
+    };
+    if let Some(text) = judge(&v, command, cwd, &ctx) {
         let out = json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": format!("pipeline-guard: {reason} (Owner-approved exception: put LAGENT_BYPASS=<reason> in the command.)"),
+                "permissionDecisionReason": text,
             }
         });
         println!("{out}");
@@ -1611,7 +1866,7 @@ mod tests {
     /// 12 lines, then `la-c040-acceptance-2.jsonl`, 9 lines): the command, and whether it must be refused.
     #[test]
     fn the_recorded_acceptance_cases() {
-        let cases: [(&str, bool); 21] = [
+        let cases: [(&str, bool); 29] = [
             // la-c040-acceptance.jsonl, lines 1-12
             ("find /home/nez/.cache/cargo-target/secretaryios/debug/deps -type f -mtime +2 -delete", true),
             ("ssh nezopt 'find ~/.cache/cargo-target/secretaryios/debug/deps -type f -mtime +2 -delete'", true),
@@ -1635,6 +1890,15 @@ mod tests {
             ("timeout 60 find target/debug/deps -type f -delete", true),
             ("nice -n 10 find target/debug/deps -type f -delete", true),
             ("cd /home/nez/.cache/cargo-target/secretaryios && FOO=1 rm -f debug/deps/*.rlib", true),
+            // la-c040-acceptance-3.jsonl, lines 1-8: five refused, then three that pass
+            ("ls -t target/debug/deps | grep rlib | head -100 | xargs -r rm -f", true),
+            ("LAGENT_BYPASS=\" \" find target/debug/deps -type f -delete", true),
+            ("find target/debug/build -mindepth 1 -mtime +1 -print0 | sort -z | xargs -0 rm -rf", true),
+            ("ssh nezopt \"cd ~/.cache/lucina-check-target/debug && ls -t deps | tail -n +200 | xargs rm -f\"", true),
+            ("LAGENT_BYPASS='' rm -f /home/nez/.cache/cargo-target/public-sync/release/deps/*.rlib", true),
+            ("rm -rf target", false),
+            ("cd /home/nez/Projects/Lucina/LucinaOS && cargo clean", false),
+            ("grep -rn target_deletion tools/pipeline-guard/src | head", false),
         ];
         let mut wrong = Vec::new();
         for (n, (c, refused)) in cases.into_iter().enumerate() {
@@ -1986,5 +2250,406 @@ mod tests {
         ] {
             assert!(decide_on(c, "/home/nez/scratch", false).is_none(), "{c}");
         }
+    }
+
+    // ---- LA-C044: the bypass ledger, the coordinator list, the payload-key capture ----
+
+    /// A directory under the host temp dir, removed on every path, a panic included.
+    struct Tmp(std::path::PathBuf);
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn tmp(name: &str) -> Tmp {
+        let d = std::env::temp_dir().join(format!("pipeline-guard-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        Tmp(d)
+    }
+
+    /// A command the target rule denies without a bypass.
+    const DENIED: &str = "rm -f target/release/deps/*.rmeta";
+    const CWD: &str = "/home/nez/scratch";
+
+    fn ctx<'a>(dir: &'a std::path::Path, app: Option<&'a str>, enforce: bool) -> super::Ctx<'a> {
+        super::Ctx {
+            dir,
+            now: 1_700_000_000,
+            is_mac: false,
+            app_id: app,
+            enforce,
+        }
+    }
+
+    fn ledger(dir: &std::path::Path) -> String {
+        std::fs::read_to_string(dir.join("bypass-ledger.tsv")).unwrap_or_default()
+    }
+
+    #[test]
+    fn the_utc_stamp_is_civil_time() {
+        assert_eq!(super::utc_stamp(0), "1970-01-01T00:00:00Z");
+        assert_eq!(super::utc_stamp(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(super::utc_stamp(1_700_000_000), "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn a_ledger_line_has_eight_clean_columns() {
+        let long = "é".repeat(300);
+        let e = super::Entry {
+            time: "2023-11-14T22:13:20Z",
+            host: "nezopt",
+            session: "",
+            app: "",
+            agent: "",
+            status: "coordinator",
+            reason: &format!("a\tb\rc\nd\u{2028}e\u{2029}f\u{85}g{long}"),
+            command: &format!("x\ty\nz\r\u{2028}{}", "ü".repeat(300)),
+        };
+        let line = super::ledger_line(&e);
+        assert!(line.ends_with('\n'));
+        assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+        assert!(
+            !line.contains(['\r', '\u{2028}', '\u{2029}', '\u{85}']),
+            "{line:?}"
+        );
+        let cols: Vec<&str> = line.trim_end_matches('\n').split('\t').collect();
+        assert_eq!(cols.len(), 8, "{line:?}");
+        assert_eq!(&cols[..2], ["2023-11-14T22:13:20Z", "nezopt"]);
+        assert_eq!(&cols[2..5], ["-", "-", "-"]);
+        assert_eq!(cols[5], "coordinator");
+        assert_eq!(cols[6].chars().count(), 200, "{}", cols[6]);
+        assert!(cols[6].starts_with("a b c d e f g"));
+        assert_eq!(cols[7].chars().count(), 120, "{}", cols[7]);
+        assert!(cols[7].starts_with("x y z"));
+    }
+
+    #[test]
+    fn the_reason_is_the_first_honoured_marker() {
+        use super::bypass_reason as r;
+        assert_eq!(r("LAGENT_BYPASS=because rm x").as_deref(), Some("because"));
+        assert_eq!(
+            r("LAGENT_BYPASS=\"two words\" rm x").as_deref(),
+            Some("two words")
+        );
+        assert_eq!(
+            r("LAGENT_BYPASS='' LAGENT_BYPASS=ok rm x").as_deref(),
+            Some("ok")
+        );
+        assert_eq!(r("FOO_LAGENT_BYPASS=x rm y"), None);
+        assert_eq!(r("LAGENT_BYPASS=\" \" rm y"), None);
+        assert_eq!(r("rm y"), None);
+    }
+
+    #[test]
+    fn an_honoured_override_leaves_one_ledger_line() {
+        let t = tmp("honoured");
+        let c = format!("LAGENT_BYPASS=\"cleanup of mine\" {DENIED}");
+        let v = serde_json::json!({"session_id": "sess-1", "hook_event_name": "PreToolUse"});
+        let got = super::judge(&v, &c, CWD, &ctx(&t.0, Some("local_abc"), false));
+        assert_eq!(got, None, "allowed");
+        let text = ledger(&t.0);
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        let cols: Vec<&str> = text.trim_end().split('\t').collect();
+        assert_eq!(cols.len(), 8, "{text:?}");
+        assert_eq!(cols[0], "2023-11-14T22:13:20Z");
+        assert_eq!(cols[1], "nezopt");
+        assert_eq!(&cols[2..5], ["sess-1", "local_abc", "-"]);
+        assert_eq!(cols[5], "would-refuse:not-listed");
+        assert_eq!(cols[6], "cleanup of mine");
+        assert!(cols[7].starts_with("LAGENT_BYPASS="), "{}", cols[7]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(t.0.join("bypass-ledger.tsv"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A second override appends.
+        assert_eq!(super::judge(&v, &c, CWD, &ctx(&t.0, None, false)), None);
+        assert_eq!(ledger(&t.0).lines().count(), 2);
+    }
+
+    #[test]
+    fn only_a_flipped_verdict_is_an_override() {
+        let t = tmp("flipped");
+        let v = serde_json::json!({"session_id": "s"});
+        // No bypass: denied as before, no line.
+        let d = super::judge(&v, DENIED, CWD, &ctx(&t.0, None, false)).expect("denied");
+        assert!(d.starts_with("pipeline-guard: "), "{d}");
+        assert!(d.contains("LAGENT_BYPASS=<reason>"), "{d}");
+        // A blank bypass: denied, no line.
+        for b in [
+            "LAGENT_BYPASS=",
+            "LAGENT_BYPASS=\"\"",
+            "LAGENT_BYPASS=\" \"",
+        ] {
+            let c = format!("{b} {DENIED}");
+            assert!(
+                super::judge(&v, &c, CWD, &ctx(&t.0, None, false)).is_some(),
+                "{c}"
+            );
+        }
+        assert_eq!(ledger(&t.0), "");
+        // A marker in a command no rule denies: allowed, no line.
+        for c in [
+            "echo LAGENT_BYPASS=why done",
+            "LAGENT_BYPASS=why ls -la",
+            "cat <<'EOF'\nLAGENT_BYPASS=why\nEOF",
+        ] {
+            assert_eq!(
+                super::judge(&v, c, CWD, &ctx(&t.0, None, false)),
+                None,
+                "{c}"
+            );
+        }
+        assert_eq!(ledger(&t.0), "");
+        assert!(!t.0.join("bypass-ledger.tsv").exists());
+    }
+
+    #[test]
+    fn a_failed_ledger_write_denies_the_override() {
+        let t = tmp("unwritable");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let blocker = t.0.join("blocker");
+        std::fs::write(&blocker, "a regular file").unwrap();
+        let dir = blocker.join("state");
+        let c = format!("LAGENT_BYPASS=why {DENIED}");
+        let v = serde_json::json!({"session_id": "s"});
+        let d = super::judge(&v, &c, CWD, &ctx(&dir, None, false)).expect("refused");
+        assert!(d.contains("bypass not recorded ("), "{d}");
+        assert!(d.contains("tell the coordinator"), "{d}");
+        // The same command without a bypass still carries the rule's text.
+        assert!(super::judge(&v, DENIED, CWD, &ctx(&dir, None, false)).is_some());
+        // A command that is no override never touches the ledger, so it is not refused.
+        assert_eq!(
+            super::judge(&v, "echo LAGENT_BYPASS=x", CWD, &ctx(&dir, None, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_identity_status_follows_the_coordinator_list() {
+        use super::{identity_status as st, read_coordinators};
+        let t = tmp("identity");
+        std::fs::create_dir_all(&t.0).unwrap();
+        // Missing file: nobody is listed.
+        assert!(read_coordinators(&t.0).is_empty());
+        assert_eq!(
+            st(&[], "s1", Some("local_a"), ""),
+            "would-refuse:not-listed"
+        );
+        std::fs::write(t.0.join("coordinators"), "").unwrap();
+        assert!(read_coordinators(&t.0).is_empty());
+        std::fs::write(
+            t.0.join("coordinators"),
+            "# the coordinators\n\n  sess-1  \nlocal_app-9\n   # indented comment\n\n",
+        )
+        .unwrap();
+        let list = read_coordinators(&t.0);
+        assert_eq!(list, ["sess-1", "local_app-9"]);
+        assert_eq!(st(&list, "sess-1", None, ""), "coordinator");
+        assert_eq!(st(&list, "other", Some("local_app-9"), ""), "coordinator");
+        assert_eq!(
+            st(&list, "other", Some("local_x"), ""),
+            "would-refuse:not-listed"
+        );
+        assert_eq!(st(&list, "other", None, ""), "would-refuse:not-listed");
+        assert_eq!(st(&list, "", None, ""), "would-refuse:not-listed");
+        assert_eq!(
+            st(&list, "sess-1", None, "agent-7"),
+            "would-refuse:subagent"
+        );
+        assert_eq!(
+            st(&list, "sess-1", Some("local_app-9"), "agent-7"),
+            "would-refuse:subagent"
+        );
+        assert_eq!(st(&list, "other", None, "agent-7"), "would-refuse:subagent");
+        // A comment line is never an id.
+        assert_eq!(
+            st(&list, "# the coordinators", None, ""),
+            "would-refuse:not-listed"
+        );
+    }
+
+    #[test]
+    fn the_ledger_records_the_status_and_enforcement_denies_it() {
+        let t = tmp("enforce");
+        std::fs::create_dir_all(&t.0).unwrap();
+        std::fs::write(t.0.join("coordinators"), "# c\nsess-1\nlocal_app-9\n").unwrap();
+        let c = format!("LAGENT_BYPASS=why {DENIED}");
+        let last =
+            |t: &Tmp| -> String { ledger(&t.0).lines().last().unwrap_or_default().to_string() };
+        let cases = [
+            // (payload, app id, status, enforce-denial text)
+            (
+                serde_json::json!({"session_id": "sess-1"}),
+                None,
+                "coordinator",
+                None,
+            ),
+            (
+                serde_json::json!({"session_id": "x"}),
+                Some("local_app-9"),
+                "coordinator",
+                None,
+            ),
+            (
+                serde_json::json!({"session_id": "x"}),
+                Some("local_zzz"),
+                "would-refuse:not-listed",
+                Some("this session is not on the coordinator list"),
+            ),
+            (
+                serde_json::json!({"session_id": "sess-1", "agent_id": "ag-1"}),
+                None,
+                "would-refuse:subagent",
+                Some("a subagent may not bypass"),
+            ),
+            (
+                serde_json::json!({"session_id": "sess-1", "agent_id": ""}),
+                None,
+                "coordinator",
+                None,
+            ),
+        ];
+        for (v, app, status, deny) in cases {
+            // Phase 1: log only, always allowed.
+            let before = ledger(&t.0).lines().count();
+            assert_eq!(
+                super::judge(&v, &c, CWD, &ctx(&t.0, app, false)),
+                None,
+                "{v}"
+            );
+            assert_eq!(ledger(&t.0).lines().count(), before + 1);
+            assert!(last(&t).contains(&format!("\t{status}\t")), "{}", last(&t));
+            // Phase 2: the would-refuse ones are denied, after their ledger line.
+            let got = super::judge(&v, &c, CWD, &ctx(&t.0, app, true));
+            assert_eq!(ledger(&t.0).lines().count(), before + 2, "{v}");
+            assert!(last(&t).contains(&format!("\t{status}\t")), "{}", last(&t));
+            match deny {
+                None => assert_eq!(got, None, "{v}"),
+                Some(who) => {
+                    let g = got.expect("denied");
+                    assert!(
+                        g.contains(&format!(
+                            "LAGENT_BYPASS is for the coordinator only: {who}."
+                        )),
+                        "{g}"
+                    );
+                    assert!(
+                        g.contains("~/.local/state/pipeline-guard/coordinators"),
+                        "{g}"
+                    );
+                }
+            }
+        }
+        // The shipped constant is phase 1.
+        const { assert!(!super::ENFORCE_IDENTITY) };
+    }
+
+    fn keys_file(dir: &std::path::Path) -> String {
+        std::fs::read_to_string(dir.join("payload-keys.tsv")).unwrap_or_default()
+    }
+
+    #[test]
+    fn the_capture_records_key_names_only() {
+        let t = tmp("capture");
+        let v = serde_json::json!({
+            "session_id": "VALUE-ONE",
+            "tool_name": "Bash",
+            "hook_event_name": "PreToolUse",
+            "cwd": "VALUE-TWO",
+            "tool_input": {"command": "VALUE-THREE", "nested_key": {"deeper": 1}},
+        });
+        super::capture_keys(&t.0, 1_700_000_000, &v);
+        let text = keys_file(&t.0);
+        assert_eq!(
+            text,
+            "2023-11-14T22:13:20Z\tcwd,hook_event_name,session_id,tool_input,tool_name\tagent_id=absent\n"
+        );
+        for no in ["VALUE", "nested_key", "deeper", "command"] {
+            assert!(!text.contains(no), "{text}");
+        }
+        let w = serde_json::json!({"agent_id": "AGENT-VALUE", "session_id": "x"});
+        super::capture_keys(&t.0, 1_700_000_001, &w);
+        let text = keys_file(&t.0);
+        assert!(
+            text.ends_with("2023-11-14T22:13:21Z\tagent_id,session_id\tagent_id=present\n"),
+            "{text}"
+        );
+        assert!(!text.contains("AGENT-VALUE"));
+        // An empty or non-string agent_id counts as absent.
+        for a in [
+            serde_json::json!(""),
+            serde_json::json!(7),
+            serde_json::json!(null),
+        ] {
+            let before = keys_file(&t.0).lines().count();
+            super::capture_keys(&t.0, 1, &serde_json::json!({"agent_id": a}));
+            assert!(keys_file(&t.0)
+                .lines()
+                .nth(before)
+                .unwrap()
+                .ends_with("agent_id=absent"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(t.0.join("payload-keys.tsv"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn the_capture_covers_pretooluse_payloads_only() {
+        let t = tmp("capture-events");
+        super::capture_keys(
+            &t.0,
+            1,
+            &serde_json::json!({"hook_event_name": "PostToolUse", "a": 1}),
+        );
+        super::capture_keys(&t.0, 1, &serde_json::json!({"hook_event_name": "Stop"}));
+        super::capture_keys(&t.0, 1, &serde_json::json!(["not", "an", "object"]));
+        assert!(!t.0.join("payload-keys.tsv").exists());
+        super::capture_keys(&t.0, 1, &serde_json::json!({"a": 1}));
+        assert_eq!(keys_file(&t.0).lines().count(), 1);
+    }
+
+    #[test]
+    fn the_capture_stops_at_fifty_per_class_and_at_64_kib() {
+        let t = tmp("capture-cap");
+        let absent = serde_json::json!({"session_id": "s"});
+        let present = serde_json::json!({"session_id": "s", "agent_id": "a"});
+        for _ in 0..60 {
+            super::capture_keys(&t.0, 1, &absent);
+        }
+        let text = keys_file(&t.0);
+        assert_eq!(text.matches("agent_id=absent").count(), 50);
+        // The other class still has its room.
+        for _ in 0..60 {
+            super::capture_keys(&t.0, 1, &present);
+        }
+        let text = keys_file(&t.0);
+        assert_eq!(text.matches("agent_id=absent").count(), 50);
+        assert_eq!(text.matches("agent_id=present").count(), 50);
+        super::capture_keys(&t.0, 1, &absent);
+        super::capture_keys(&t.0, 1, &present);
+        assert_eq!(keys_file(&t.0).lines().count(), 100);
+        // A file over 64 KiB gets nothing.
+        let big = tmp("capture-big");
+        std::fs::create_dir_all(&big.0).unwrap();
+        std::fs::write(big.0.join("payload-keys.tsv"), vec![b'x'; 70_000]).unwrap();
+        super::capture_keys(&big.0, 1, &absent);
+        assert_eq!(
+            std::fs::metadata(big.0.join("payload-keys.tsv"))
+                .unwrap()
+                .len(),
+            70_000
+        );
     }
 }
