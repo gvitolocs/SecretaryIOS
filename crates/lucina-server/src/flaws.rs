@@ -2712,7 +2712,9 @@ mod tests {
         /// The breaker notices told, with their dedup keys (`tell_keyed`). Kept apart from `told`
         /// (the flaw outcomes) on purpose: several older tests assert that `told` is empty while a
         /// lane's breaker opens, and they mean "no flaw outcome was sent". A breaker notice is
-        /// sent by `tell_keyed`, so it lands here and `told` keeps meaning outcomes only.
+        /// sent by `tell_keyed`, so it lands here and `told` keeps meaning outcomes only. (This is
+        /// the fake's doing: the trait default of `tell_keyed` calls `tell`, so a `Hands` that does
+        /// not override it would put the notices into its `told`.)
         notices: Mutex<Vec<(String, String)>>,
         /// `tell_keyed` answers false (the push did not go out), and tells nothing.
         tell_fails: Mutex<bool>,

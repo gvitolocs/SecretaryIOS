@@ -627,27 +627,36 @@ fn migrate(c: &Connection) -> Result<()> {
     // after the upgrade says nothing about breakers that were there already. The column and the
     // backfill are one transaction (SQLite DDL is transactional): a process that dies between
     // them leaves neither, so no start finds the column without its backfill.
-    c.execute_batch("BEGIN IMMEDIATE")?;
-    let done = (|| -> Result<()> {
-        let had_told = c
-            .prepare("SELECT 1 FROM pragma_table_info('lane_breakers') WHERE name = 'told'")?
-            .exists([])?;
-        if !had_told {
-            c.execute("ALTER TABLE lane_breakers ADD COLUMN told TEXT", [])?;
-            c.execute(
-                "UPDATE lane_breakers SET told = CASE
-                     WHEN state IN ('open', 'half_open') THEN 'open:' || opens
-                     WHEN opens > 0 THEN 'closed:' || opens END",
-                [],
-            )?;
-        }
-        Ok(())
-    })();
-    match done {
-        Ok(()) => c.execute_batch("COMMIT")?,
-        Err(e) => {
-            let _ = c.execute_batch("ROLLBACK");
-            return Err(e);
+    let has_told = |c: &Connection| -> Result<bool> {
+        Ok(
+            c.prepare("SELECT 1 FROM pragma_table_info('lane_breakers') WHERE name = 'told'")?
+                .exists([])?,
+        )
+    };
+    // An up-to-date database is only read: no write lock, so a start never waits on a writer.
+    // (`migrate` has only a `&Connection`, so the transaction is begun by hand, not with
+    // `transaction_with_behavior`.)
+    if !has_told(c)? {
+        c.execute_batch("BEGIN IMMEDIATE")?;
+        let done = (|| -> Result<()> {
+            // A process that raced us may have added it while we waited for the lock.
+            if !has_told(c)? {
+                c.execute("ALTER TABLE lane_breakers ADD COLUMN told TEXT", [])?;
+                c.execute(
+                    "UPDATE lane_breakers SET told = CASE
+                         WHEN state IN ('open', 'half_open') THEN 'open:' || opens
+                         WHEN opens > 0 THEN 'closed:' || opens END",
+                    [],
+                )?;
+            }
+            Ok(())
+        })();
+        match done {
+            Ok(()) => c.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = c.execute_batch("ROLLBACK");
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -2771,6 +2780,24 @@ CREATE TABLE flaw_events (
         s.lane_half_open("qoder").unwrap();
         s.lane_close("qoder").unwrap();
         assert!(events(&s).contains(&("qoder".into(), LaneState::Closed, "closed:1".into())));
+    }
+
+    #[test]
+    fn opening_an_up_to_date_database_takes_no_write_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("flaws.db");
+        drop(Flaws::open(&p).unwrap());
+        // Another process holds the write lock: a start that only reads still gets in.
+        let w = Connection::open(&p).unwrap();
+        w.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let t = std::time::Instant::now();
+        let s = Flaws::open(&p).expect("an up-to-date database opens with a writer active");
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "it did not wait"
+        );
+        assert!(events(&s).is_empty());
+        w.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]
