@@ -270,6 +270,8 @@ lagent device release iphone
   dependency output, thinks it is fresh, and the next build breaks. Instead use `rm -rf <target>/<profile>` or
   `rm -rf <target>`, `cargo clean [-p <crate>]`, or LB's by-unit sweep. `$CARGO_TARGET_DIR` and `$(…)` paths are not
   expanded, so they pass. `LAGENT_BYPASS=<reason>` still works.
+  Known over-refusals: a non-cargo directory named `target` or `target-*`, and a whole-profile delete routed through
+  `xargs rm -rf` (do `rm -rf <target>/<profile>` directly). The marker rule also fires for any ANCESTOR of the operand.
 
 ## Standalone crates
 
