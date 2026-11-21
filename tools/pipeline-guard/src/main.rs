@@ -1918,17 +1918,14 @@ mod tests {
             !line.contains(['\u{2028}', '\u{2029}', '\u{85}']),
             "{line:?}"
         );
-        // Under the scratch tree, never /tmp; removed on every path, a panic included.
+        // Under the host temp dir (nezopt: $HOME/scratch/tmp); removed on every path, a panic included.
         struct Cleanup(std::path::PathBuf);
         impl Drop for Cleanup {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-        let dir = std::path::PathBuf::from(format!(
-            "/home/nez/scratch/pipeline-guard-log-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("pipeline-guard-log-{}", std::process::id()));
         let _cleanup = Cleanup(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("bypass.log");
