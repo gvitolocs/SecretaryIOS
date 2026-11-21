@@ -319,6 +319,20 @@ pub struct LaneBreaker {
     pub trial: Option<String>,
 }
 
+/// A breaker event the owner has not been told yet (see [`Flaws::lane_events_untold`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneEvent {
+    pub lane: String,
+    /// `Open` or `Closed`, never half-open.
+    pub state: LaneState,
+    /// `open:<opens>` or `closed:<opens>`: what is stored once it is told.
+    pub event: String,
+    /// The stored failure text. It carries agent output: only a notice's class word may be read
+    /// from it, never the text itself.
+    pub reason: Option<String>,
+    pub until: Option<String>,
+}
+
 /// Lane failures of one target inside the window after which it is `blocked` for a lead. A lane
 /// failure still costs no attempt: the second backs the target off 5 minutes, the third needs a
 /// lead.
@@ -608,6 +622,21 @@ fn migrate(c: &Connection) -> Result<()> {
     add_column(c, "lane_breakers", "fails", "INTEGER NOT NULL DEFAULT 0")?;
     add_column(c, "lane_breakers", "opens", "INTEGER NOT NULL DEFAULT 0")?;
     add_column(c, "lane_breakers", "trial", "TEXT")?;
+    // What the owner was last told of the breaker (LA-C042): `open:<opens>` or `closed:<opens>`.
+    // A database from before already has its states: they are marked told, so the first tick
+    // after the upgrade says nothing about breakers that were there already.
+    let had_told = c
+        .prepare("SELECT 1 FROM pragma_table_info('lane_breakers') WHERE name = 'told'")?
+        .exists([])?;
+    add_column(c, "lane_breakers", "told", "TEXT")?;
+    if !had_told {
+        c.execute(
+            "UPDATE lane_breakers SET told = CASE
+                 WHEN state IN ('open', 'half_open') THEN 'open:' || opens
+                 WHEN opens > 0 THEN 'closed:' || opens END",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -1476,6 +1505,55 @@ impl Flaws {
             )
             .optional()?;
         Ok(t.flatten())
+    }
+
+    /// The breaker events the owner has not been told (LA-C042): a lane's current event is
+    /// `open:<opens>` while open, `closed:<opens>` when closed after it opened, and none while
+    /// half-open (that keeps what was told before) or when it never opened. At most one per lane.
+    pub fn lane_events_untold(&self) -> Result<Vec<LaneEvent>> {
+        let c = self.lock();
+        let mut s = c.prepare(
+            "SELECT lane, state, reason, until, opens, told FROM lane_breakers ORDER BY lane",
+        )?;
+        let rows = s
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(lane, state, reason, until, opens, told)| {
+                let state = LaneState::parse(&state);
+                let event = match state {
+                    LaneState::Open => format!("open:{opens}"),
+                    LaneState::Closed if opens > 0 => format!("closed:{opens}"),
+                    _ => return None,
+                };
+                (told.as_deref() != Some(event.as_str())).then_some(LaneEvent {
+                    lane,
+                    state,
+                    event,
+                    reason,
+                    until,
+                })
+            })
+            .collect())
+    }
+
+    /// The owner has been told this event of the lane. `true`: it was not marked yet.
+    pub fn lane_mark_told(&self, lane: &str, event: &str) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE lane_breakers SET told = ?1 WHERE lane = ?2 AND told IS NOT ?1",
+            params![event, lane],
+        )?;
+        Ok(n > 0)
     }
 
     /// `lagent merge` landed: the commit, and `fixed` if it was being worked on. Repeats are fine.
@@ -2638,6 +2716,76 @@ CREATE TABLE flaw_events (
         assert!(s.lane_half_open("claude-sonnet").unwrap());
         assert!(s.lane_open("claude-sonnet", "failed the trial").unwrap());
         assert!(s.lane_close("claude-sonnet").unwrap());
+    }
+
+    fn events(s: &Flaws) -> Vec<(String, LaneState, String)> {
+        s.lane_events_untold()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.lane, e.state, e.event))
+            .collect()
+    }
+
+    #[test]
+    fn a_breaker_event_is_untold_until_marked_and_half_open_has_none() {
+        let s = Flaws::in_memory().unwrap();
+        assert!(events(&s).is_empty(), "no row: no event");
+        s.lane_open("claude", "Failed to authenticate").unwrap();
+        assert_eq!(
+            events(&s),
+            [("claude".into(), LaneState::Open, "open:1".into())]
+        );
+        assert!(s.lane_mark_told("claude", "open:1").unwrap());
+        assert!(!s.lane_mark_told("claude", "open:1").unwrap(), "once");
+        assert!(events(&s).is_empty());
+        // Half-open keeps what was told and has no event of its own.
+        s.lane_half_open("claude").unwrap();
+        assert!(events(&s).is_empty());
+        s.lane_close("claude").unwrap();
+        assert_eq!(
+            events(&s),
+            [("claude".into(), LaneState::Closed, "closed:1".into())]
+        );
+        assert!(s.lane_mark_told("claude", "closed:1").unwrap());
+        // Open again: a new opening, a new event.
+        s.lane_open("claude", "again").unwrap();
+        assert_eq!(
+            events(&s),
+            [("claude".into(), LaneState::Open, "open:2".into())]
+        );
+        // A lane that opened and closed before anyone looked has the closed event only.
+        s.lane_open("qoder", "x").unwrap();
+        s.lane_half_open("qoder").unwrap();
+        s.lane_close("qoder").unwrap();
+        assert!(events(&s).contains(&("qoder".into(), LaneState::Closed, "closed:1".into())));
+    }
+
+    #[test]
+    fn a_database_from_before_the_notice_marks_its_breakers_told() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("flaws.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE lane_breakers (lane TEXT PRIMARY KEY, state TEXT NOT NULL, opened_at TEXT,
+                    reason TEXT, until TEXT, fails INTEGER NOT NULL DEFAULT 0,
+                    opens INTEGER NOT NULL DEFAULT 0, trial TEXT);
+                 INSERT INTO lane_breakers (lane, state, opens) VALUES ('a', 'open', 1);
+                 INSERT INTO lane_breakers (lane, state, opens) VALUES ('b', 'closed', 2);
+                 INSERT INTO lane_breakers (lane, state, opens) VALUES ('c', 'half_open', 3);",
+            )
+            .unwrap();
+        }
+        let s = Flaws::open(&p).unwrap();
+        assert!(events(&s).is_empty(), "nothing replayed: {:?}", events(&s));
+        drop(s);
+        // Opened again: the column is there and the second open is not filled over.
+        let s = Flaws::open(&p).unwrap();
+        s.lane_open("b", "x").unwrap();
+        assert_eq!(events(&s), [("b".into(), LaneState::Open, "open:3".into())]);
+        s.lane_half_open("c").unwrap();
+        s.lane_close("c").unwrap();
+        assert!(events(&s).contains(&("c".into(), LaneState::Closed, "closed:3".into())));
     }
 
     #[test]

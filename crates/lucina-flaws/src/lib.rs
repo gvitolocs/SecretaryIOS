@@ -16,8 +16,8 @@ pub mod store;
 pub use policy::{Pick, Policy, Step, Verdict};
 pub use store::{
     backoff_minutes, BlockedLook, ClaimCaps, ClaimRef, Detail, Event, Failure, Flaw, FlawPatch,
-    Flaws, LaneBreaker, LaneState, ListQuery, NewFlaw, Outcome, Reported, Target, TargetUpdate,
-    FAILURE_WINDOW_HOURS, LANE_FAILURES_BEFORE_LEAD,
+    Flaws, LaneBreaker, LaneEvent, LaneState, ListQuery, NewFlaw, Outcome, Reported, Target,
+    TargetUpdate, FAILURE_WINDOW_HOURS, LANE_FAILURES_BEFORE_LEAD,
 };
 
 #[derive(Debug, thiserror::Error)]
