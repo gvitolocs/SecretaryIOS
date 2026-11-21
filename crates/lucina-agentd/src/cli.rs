@@ -676,6 +676,19 @@ fn s(v: &Value) -> String {
     }
 }
 
+/// The BREAKER column of `lagent providers` from a provider's `breaker` (see
+/// `manager/breaker.rs`): a provider the daemon reports no breaker for reads as closed.
+fn breaker_cell(b: &Value) -> String {
+    if b["state"] != "open" {
+        return "closed".into();
+    }
+    let mut out = format!("open: {} since {}", s(&b["reason"]), s(&b["since"]));
+    if b["until"] != Value::Null {
+        out.push_str(&format!(" until {}", s(&b["until"])));
+    }
+    out
+}
+
 fn single(v: Value, keys: &[&str]) -> Output {
     let rows: Vec<Vec<String>> = vec![keys.iter().map(|k| s(&v[*k])).collect()];
     let headers: Vec<String> = keys.iter().map(|k| upper_snake(k)).collect();
@@ -1432,10 +1445,17 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let list = v.as_array().cloned().unwrap_or_default();
             let rows: Vec<Vec<String>> = list
                 .iter()
-                .map(|p| vec![s(&p["id"]), s(&p["label"]), s(&p["defaultModeId"])])
+                .map(|p| {
+                    vec![
+                        s(&p["id"]),
+                        s(&p["label"]),
+                        s(&p["defaultModeId"]),
+                        breaker_cell(&p["breaker"]),
+                    ]
+                })
                 .collect();
             Ok(Output {
-                text: table(&["PROVIDER", "LABEL", "DEFAULT MODE"], &rows),
+                text: table(&["PROVIDER", "LABEL", "DEFAULT MODE", "BREAKER"], &rows),
                 json: Some(Value::Array(list)),
             })
         }
@@ -1669,5 +1689,45 @@ pub fn render(cli: &Cli, result: Result<Output, CmdError>) -> i32 {
             }
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::breaker_cell;
+    use serde_json::json;
+
+    #[test]
+    fn the_breaker_column_reads_closed_or_names_the_trip() {
+        assert_eq!(breaker_cell(&json!({"state": "closed"})), "closed");
+        // A daemon that answers no breaker (an older one) reads as closed too.
+        assert_eq!(breaker_cell(&serde_json::Value::Null), "closed");
+        assert_eq!(
+            breaker_cell(&json!({
+                "state": "open",
+                "reason": "authentication",
+                "detail": "Failed to authenticate",
+                "since": "2026-11-19T10:00:00Z",
+            })),
+            "open: authentication since 2026-11-19T10:00:00Z"
+        );
+        assert_eq!(
+            breaker_cell(&json!({
+                "state": "open",
+                "reason": "quota",
+                "detail": "You've hit your usage limit",
+                "since": "2026-11-19T10:00:00Z",
+                "until": "2026-11-19T11:00:00Z",
+            })),
+            "open: quota since 2026-11-19T10:00:00Z until 2026-11-19T11:00:00Z"
+        );
+        // The provider's error text (`detail`) never reaches the table.
+        let cell = breaker_cell(&json!({
+            "state": "open",
+            "reason": "quota",
+            "detail": "SECRET-ERROR-TEXT",
+            "since": "2026-11-19T10:00:00Z",
+        }));
+        assert!(!cell.contains("SECRET-ERROR-TEXT"), "{cell}");
     }
 }

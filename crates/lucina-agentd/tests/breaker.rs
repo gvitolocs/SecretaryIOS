@@ -26,6 +26,7 @@ use lucina_agentd::provider::{
 use lucina_agentd::store::Store;
 use lucina_agents::types::{Capabilities, PersistenceHandle, RuntimeInfo};
 use lucina_agents::{AgentStatus, PermissionResponse, StreamEvent};
+use serde_json::{json, Value};
 
 /// What a fake provider's next turn does: `None` completes, `Some((error, code))` fails.
 type Failure = Arc<Mutex<Option<(String, Option<String>)>>>;
@@ -712,6 +713,166 @@ fn providers_clear_reopens_a_provider_after_a_login_failure_through_the_daemon()
     assert_eq!(code, Some(0), "{out} {err}");
     let (code, took, out, err) = fast("mock")(&d, &cwd);
     assert_eq!(code, Some(0), "{took:?} {out} {err}");
+}
+
+/// LA-C037 (AGENT-08): `GET /providers` carries each provider's breaker, so the owner
+/// sees a tripped one.
+#[test]
+fn get_providers_shows_the_breaker_state_of_every_provider() {
+    let d = common::Daemon::start();
+    let work = git_dir();
+    let cwd = work.path().display().to_string();
+
+    // Every provider starts out closed.
+    let list = get_providers(&d.socket());
+    assert_eq!(provider(&list, "mock")["breaker"]["state"], "closed");
+
+    let (code, took, out, err) = lagent_within(
+        &d,
+        &[
+            "run",
+            "--provider",
+            "mock",
+            "--cwd",
+            &cwd,
+            "emit synthetic auth failure",
+        ],
+        Duration::from_secs(20),
+    );
+    assert!(
+        code.is_some() && took < Duration::from_secs(20),
+        "the failing run did not return: {took:?} {out} {err}"
+    );
+
+    let list = get_providers(&d.socket());
+    let mock = provider(&list, "mock");
+    assert_eq!(mock["breaker"]["state"], "open", "{mock}");
+    assert_eq!(mock["breaker"]["reason"], "authentication", "{mock}");
+    assert!(
+        mock["breaker"]["detail"]
+            .as_str()
+            .is_some_and(|s| s.contains("Failed to authenticate")),
+        "{mock}"
+    );
+    assert!(
+        mock["breaker"]["since"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "{mock}"
+    );
+    assert_eq!(
+        mock["breaker"]["until"],
+        Value::Null,
+        "a login failure has no reset time: {mock}"
+    );
+    // The fields a JSON client reads are where they were.
+    assert_eq!(mock["id"], "mock");
+    assert!(mock["label"].is_string(), "{mock}");
+    assert!(mock.get("defaultModeId").is_some(), "{mock}");
+
+    // A provider nobody tripped stays closed.
+    assert_eq!(
+        provider(&list, "mock-alt")["breaker"],
+        json!({"state": "closed"})
+    );
+}
+
+/// LA-C037 (AGENT-08): `lagent providers` shows the tripped breaker in its BREAKER
+/// column, and `--json` passes the API's objects through.
+#[test]
+fn lagent_providers_shows_the_breaker_column() {
+    let d = common::Daemon::start();
+    let work = git_dir();
+    let cwd = work.path().display().to_string();
+
+    let (code, took, out, err) = lagent_within(
+        &d,
+        &[
+            "run",
+            "--provider",
+            "mock",
+            "--cwd",
+            &cwd,
+            "emit synthetic auth failure",
+        ],
+        Duration::from_secs(20),
+    );
+    assert!(
+        code.is_some() && took < Duration::from_secs(20),
+        "the failing run did not return: {took:?} {out} {err}"
+    );
+
+    let r = d.lagent(&["providers"]);
+    assert_eq!(r.code, 0, "{} {}", r.stdout, r.stderr);
+    let header = r.stdout.lines().next().unwrap_or_default().to_string();
+    assert!(header.contains("BREAKER"), "{header}");
+    let row = |id: &str| -> String {
+        r.stdout
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(id))
+            .unwrap_or_else(|| panic!("{id} in the table: {}", r.stdout))
+            .to_string()
+    };
+    let since = provider(&get_providers(&d.socket()), "mock")["breaker"]["since"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let mock_row = row("mock");
+    assert!(
+        mock_row.contains(&format!("open: authentication since {since}")),
+        "{mock_row}"
+    );
+    assert!(
+        !mock_row.contains("until"),
+        "a login trip has no reset time: {mock_row}"
+    );
+    assert!(row("mock-alt").ends_with("closed"), "{}", row("mock-alt"));
+    // The provider's error text is in the API, never in the table.
+    assert!(
+        !r.stdout.contains("Failed to authenticate"),
+        "the table leaks the error text: {}",
+        r.stdout
+    );
+
+    let passthrough = d.json(&["providers"]);
+    let list = passthrough.as_array().cloned().unwrap_or_default();
+    assert_eq!(provider(&list, "mock")["breaker"]["state"], "open");
+    assert_eq!(provider(&list, "mock-alt")["breaker"]["state"], "closed");
+
+    // `lagent providers clear` is unchanged, and the column goes back to closed.
+    let (code, _, out, err) =
+        lagent_within(&d, &["providers", "clear", "mock"], Duration::from_secs(10));
+    assert_eq!(code, Some(0), "{out} {err}");
+    let after = d.lagent(&["providers"]);
+    let mock_row = after
+        .stdout
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some("mock"))
+        .unwrap_or_default();
+    assert!(mock_row.ends_with("closed"), "{mock_row}");
+    assert_eq!(
+        provider(&get_providers(&d.socket()), "mock")["breaker"],
+        json!({"state": "closed"})
+    );
+}
+
+/// `GET /providers`, parsed.
+fn get_providers(socket: &Path) -> Vec<Value> {
+    let out = common::run(std::process::Command::new("curl").args([
+        "-s",
+        "--unix-socket",
+        &socket.display().to_string(),
+        "http://x/providers",
+    ]));
+    assert_eq!(out.code, 0, "curl: {}", out.stderr);
+    serde_json::from_str(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", out.stdout))
+}
+
+fn provider(list: &[Value], id: &str) -> Value {
+    list.iter()
+        .find(|p| p["id"] == id)
+        .unwrap_or_else(|| panic!("no provider {id}: {list:?}"))
+        .clone()
 }
 
 fn owner() -> Caller {

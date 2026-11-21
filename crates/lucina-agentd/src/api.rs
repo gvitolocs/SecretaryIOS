@@ -4,7 +4,7 @@
 //! | Method | Path | Body / query | Returns |
 //! |---|---|---|---|
 //! | GET | `/health` | | `{ok, version}` |
-//! | GET | `/providers` | | provider infos |
+//! | GET | `/providers` | | provider infos, each with its breaker state |
 //! | POST | `/agents` | create request | snapshot |
 //! | GET | `/agents` | `?archived=true` | `{agents: [snapshot]}` |
 //! | GET | `/agents/items` | `?archived=true` | `{agents: [list item]}` |
@@ -64,7 +64,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use lucina_agents::external::EventsBody;
 use lucina_agents::stream::Resume;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -76,9 +76,10 @@ use lucina_agents::PermissionResponse;
 use crate::journal::{Sequenced, Subscription};
 use crate::manager::{
     ActiveTurnBehavior, Caller, CreateRequest, ExternalRequest, Manager, ManagerError,
-    SubagentDirection,
+    SubagentDirection, Trip,
 };
 use crate::peer::{self, origin, Peer};
+use crate::provider::ProviderInfo;
 use crate::workspaces::WsError;
 
 mod catalog;
@@ -215,8 +216,42 @@ async fn health() -> Json<Value> {
     Json(json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}))
 }
 
+/// A provider as `GET /providers` answers it: its info, plus the state of its breaker.
+#[derive(Serialize)]
+struct ProviderEntry<'a> {
+    #[serde(flatten)]
+    info: &'a ProviderInfo,
+    breaker: Value,
+}
+
+/// The breaker of one provider (`manager/breaker.rs`): open while it is tripped.
+fn breaker_state(trip: Option<&Trip>) -> Value {
+    let Some(t) = trip else {
+        return json!({ "state": "closed" });
+    };
+    let mut v = json!({
+        "state": "open",
+        "reason": t.reason,
+        "detail": t.detail,
+        "since": t.since,
+    });
+    if let Some(u) = &t.until {
+        v["until"] = json!(u);
+    }
+    v
+}
+
 async fn providers(State(m): State<Manager>) -> ApiResult {
-    to_json(m.providers())
+    let trips = m.tripped_providers();
+    to_json(
+        m.providers()
+            .iter()
+            .map(|p| ProviderEntry {
+                info: p,
+                breaker: breaker_state(trips.get(&p.id)),
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// `POST /providers/{id}/clear` (`lagent providers clear <provider>`): the owner lets agents start
@@ -741,5 +776,33 @@ async fn pump(m: Manager, sub: Subscription, device: Option<String>, tx: Frames)
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_breaker_state_is_closed_or_open_with_its_reason_since_and_reset_time() {
+        assert_eq!(breaker_state(None), json!({"state": "closed"}));
+        let auth = Trip {
+            reason: "authentication".into(),
+            detail: "Failed to authenticate".into(),
+            since: "2026-11-19T10:00:00Z".into(),
+            until: None,
+        };
+        let v = breaker_state(Some(&auth));
+        assert_eq!(v["state"], "open");
+        assert_eq!(v["reason"], "authentication");
+        assert_eq!(v["detail"], "Failed to authenticate");
+        assert_eq!(v["since"], "2026-11-19T10:00:00Z");
+        assert!(v.get("until").is_none(), "{v}");
+        let quota = Trip {
+            reason: "quota".into(),
+            until: Some("2026-11-19T11:00:00Z".into()),
+            ..auth
+        };
+        assert_eq!(breaker_state(Some(&quota))["until"], "2026-11-19T11:00:00Z");
     }
 }
