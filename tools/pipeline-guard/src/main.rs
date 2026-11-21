@@ -773,8 +773,14 @@ fn remote_text(args: &[Word]) -> Option<Vec<String>> {
     };
     // ssh joins its words with spaces and the remote shell parses them again; read both that and the words as given.
     Some(vec![
-        rest.iter().map(|w| w.val.as_str()).collect::<Vec<_>>().join(" "),
-        rest.iter().map(|w| quote(&w.val)).collect::<Vec<_>>().join(" "),
+        rest.iter()
+            .map(|w| w.val.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        rest.iter()
+            .map(|w| quote(&w.val))
+            .collect::<Vec<_>>()
+            .join(" "),
     ])
 }
 
@@ -813,15 +819,18 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
                 None
             }
             "find" => {
-                let how = args.iter().enumerate().find_map(|(i, a)| match a.val.as_str() {
-                    "-delete" => Some("find … -delete"),
-                    "-exec" | "-execdir" | "-ok" | "-okdir"
-                        if args.get(i + 1).is_some_and(|n| basename(&n.val) == "rm") =>
-                    {
-                        Some("find … -exec rm")
-                    }
-                    _ => None,
-                });
+                let how = args
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, a)| match a.val.as_str() {
+                        "-delete" => Some("find … -delete"),
+                        "-exec" | "-execdir" | "-ok" | "-okdir"
+                            if args.get(i + 1).is_some_and(|n| basename(&n.val) == "rm") =>
+                        {
+                            Some("find … -exec rm")
+                        }
+                        _ => None,
+                    });
                 how.and_then(|how| {
                     let mut j = 0;
                     while args
@@ -832,7 +841,9 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
                     }
                     let roots: Vec<&str> = args[j..]
                         .iter()
-                        .take_while(|w| !w.val.starts_with('-') && !matches!(w.val.as_str(), "!" | "("))
+                        .take_while(|w| {
+                            !w.val.starts_with('-') && !matches!(w.val.as_str(), "!" | "(")
+                        })
                         .map(|w| w.val.as_str())
                         .collect();
                     let roots = if roots.is_empty() { vec!["."] } else { roots };
@@ -915,7 +926,6 @@ fn target_verdict(command: &str, cwd: &str, on_host: bool) -> Option<String> {
     }
     target_deletion(command, cwd, on_host, 0)
 }
-
 
 fn main() {
     let mut input = String::new();
@@ -1272,16 +1282,30 @@ mod tests {
                 );
             }
         }
-        assert!(decide_on(&format!("LAGENT_BYPASS= find {TGT} -delete"), "/home/nez/scratch", true).is_some());
+        assert!(decide_on(
+            &format!("LAGENT_BYPASS= find {TGT} -delete"),
+            "/home/nez/scratch",
+            true
+        )
+        .is_some());
         // Unexpanded variables fail open.
-        assert!(decide_on("rm $CARGO_TARGET_DIR/debug/deps/*.rlib", "/home/nez/scratch", true).is_none());
+        assert!(decide_on(
+            "rm $CARGO_TARGET_DIR/debug/deps/*.rlib",
+            "/home/nez/scratch",
+            true
+        )
+        .is_none());
     }
 
     #[test]
     fn a_cargo_marker_directory_counts_only_on_its_host() {
         let dir = std::env::temp_dir().join(format!("pipeline-guard-tgt-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("probe/deps")).unwrap();
-        std::fs::write(dir.join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n").unwrap();
+        std::fs::write(
+            dir.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
         std::fs::write(dir.join(".rustc_info.json"), "{}").unwrap();
         let c = format!("find {}/probe/deps -type f -delete", dir.display());
         let on_host = decide_on(&c, "/home/nez/scratch", false).is_some();
