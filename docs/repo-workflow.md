@@ -273,6 +273,21 @@ lagent device release iphone
   Known over-refusals: a non-cargo directory named `target` or `target-*` (and `cargo-target` or `lucina-check-target`: these four names count on their own anywhere in a path), and a whole-profile delete routed through
   `xargs rm -rf` (do `rm -rf <target>/<profile>` directly). The marker rule also fires for any ANCESTOR of the operand.
 
+- **Bypass ledger (LA-C044, HOST-17).** Every `LAGENT_BYPASS=<reason>` that actually flips a verdict (the command
+  would have been denied without it) is an honoured override. The hook appends one line to
+  `~/.local/state/pipeline-guard/bypass-ledger.tsv` (mode 0600, append-only, synced): UTC time, host, session id, app
+  id (`CLAUDE_CODE_HOST_SESSION_ID`), `agent_id`, identity status, the literal reason (200 characters) and the first
+  120 characters of the command. A marker in a command nothing would deny (an echo, a heredoc) leaves no line. **If the
+  ledger cannot be written, the override is refused** ("bypass not recorded"); tell the coordinator. The coordinator
+  list is `~/.local/state/pipeline-guard/coordinators` (one session id or `local_<uuid>` per line, `#` comments); the
+  coordinator keeps it, the hook never writes it. Status: `coordinator` (no `agent_id`, session or app id listed),
+  `would-refuse:subagent` (`agent_id` set) or `would-refuse:not-listed`. Phase 1 only logs: nothing is refused by
+  identity yet (`ENFORCE_IDENTITY` in `tools/pipeline-guard/src/main.rs`, flipped on the coordinator's word).
+  `bypass.log` still lists every attempt, blank ones too. `payload-keys.tsv` holds the top-level key names (no values)
+  of the first 50 PreToolUse payloads with and 50 without `agent_id`, to prove that subagent detection works.
+  Honest limits: a process of the same user can edit these files, so this is accountability, not a boundary; subagent
+  detection relies on `agent_id` being on PreToolUse payloads, which `payload-keys.tsv` shows.
+
 ## Standalone crates
 
 The workspace is the root `Cargo.toml`. These crates stay outside it on purpose, each with its own

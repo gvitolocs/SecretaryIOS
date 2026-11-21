@@ -38,6 +38,8 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
   denies deleting single files under a cargo target directory (`find … -delete`, `find … -exec rm`, `… | xargs rm`,
   `rm` with a glob, also inside `ssh host '…'`; HOST-12) and names the allowed forms: `rm -rf <target>/<profile>`,
   `cargo clean`, LB's by-unit sweep.
+  An honoured `LAGENT_BYPASS` override also leaves a line in `~/.local/state/pipeline-guard/bypass-ledger.tsv` (a failed
+  write refuses it; coordinator list and identity status, phase 1 logs only; HOST-17, LA-C044).
 
 ## 2. The merge queue
 
