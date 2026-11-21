@@ -291,7 +291,7 @@ fn checkout_branch_errors_projects_and_clone() {
     assert_eq!(renamed["title"], "My title");
     // A leading "Error:" (a failed command substituted into the title) is refused; the word elsewhere is fine (AGENT-10).
     let r = e.d.lagent(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "Error: refs: no id", "--json"]);
-    assert!(r.stderr.contains("starts with \"Error:\""), "{}", r.stderr);
+    assert!(r.stderr.contains("WORKSPACE_RENAME_FAILED") && r.stderr.contains("is refused"), "{}", r.stderr);
     assert_eq!(e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "My title"])["title"], "My title", "the refused rename changed nothing");
     assert_eq!(e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "Fix Error: handling"])["title"], "Fix Error: handling");
     e.d.json(&["workspace", "rename", w["workspaceId"].as_str().unwrap(), "My title"]);
