@@ -19,6 +19,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod common;
+
 /// The rules the step forwards, read from the real list: the list is data, and a rule added to it is forwarded by the
 /// same code these tests exercise.
 const FORWARD_LIST: &str = "tools/ci/merge-waiver-rules.txt";
@@ -286,6 +288,9 @@ fn counted_rules() -> Vec<String> {
 /// output says nothing about waivers.
 #[test]
 fn no_waivers_file_leaves_the_diffgate_step_exactly_as_it_was() {
+    if common::skip_without_scope("no_waivers_file_leaves_the_diffgate_step_exactly_as_it_was") {
+        return;
+    }
     let c = Case::setup("unset", None);
     let out = c.run(None);
     assert_eq!(
@@ -308,6 +313,11 @@ fn no_waivers_file_leaves_the_diffgate_step_exactly_as_it_was() {
 /// of the attribute and the semicolons of the reason are diffgate's to read, not the shell's.
 #[test]
 fn a_counted_waiver_of_a_listed_rule_reaches_diffgate_byte_for_byte() {
+    if common::skip_without_scope(
+        "a_counted_waiver_of_a_listed_rule_reaches_diffgate_byte_for_byte",
+    ) {
+        return;
+    }
     let c = Case::setup("counted", None);
     let reason = "7:seven tests are #[ignore = \"slow\"]; see a/b";
     c.write_lines(&[wline("skipped-test", reason)]);
@@ -331,6 +341,11 @@ fn a_counted_waiver_of_a_listed_rule_reaches_diffgate_byte_for_byte() {
 /// command line unchanged. Its list here is the test's own, so the test holds whatever the repository's list names.
 #[test]
 fn a_counted_reason_of_colons_and_parentheses_reaches_diffgate_byte_for_byte() {
+    if common::skip_without_scope(
+        "a_counted_reason_of_colons_and_parentheses_reaches_diffgate_byte_for_byte",
+    ) {
+        return;
+    }
     let reason = "7:seven sandbox test lines name /tmp on purpose (six assert it is refused or unused, one writes inside \
                   the fence private tmpfs); coordinator allow 2026-11-17";
     let c = Case::setup("counted-colons", Some(&["tmp-write"][..]));
@@ -357,6 +372,10 @@ fn a_counted_reason_of_colons_and_parentheses_reaches_diffgate_byte_for_byte() {
 /// The uncounted reason of the merge that failed, line 9 of job_4ee819df2427, forwarded as it stands.
 #[test]
 fn an_uncounted_waiver_of_a_listed_rule_reaches_diffgate_unchanged() {
+    if common::skip_without_scope("an_uncounted_waiver_of_a_listed_rule_reaches_diffgate_unchanged")
+    {
+        return;
+    }
     let c = Case::setup("uncounted", None);
     c.write_lines(&[wline("skipped-test", GAL_REASON)]);
     let out = c.run(Some(&c.waivers));
@@ -376,6 +395,10 @@ fn an_uncounted_waiver_of_a_listed_rule_reaches_diffgate_unchanged() {
 /// shell's instructions.
 #[test]
 fn a_reason_holding_quotes_and_a_command_is_one_unchanged_argument() {
+    if common::skip_without_scope("a_reason_holding_quotes_and_a_command_is_one_unchanged_argument")
+    {
+        return;
+    }
     let c = Case::setup("quoted", None);
     let marker = c.d.join("it-ran");
     let reason = format!(
@@ -401,6 +424,9 @@ fn a_reason_holding_quotes_and_a_command_is_one_unchanged_argument() {
 /// change when the owner adds a name to it.
 #[test]
 fn every_rule_of_the_forwarding_list_is_forwarded_to_diffgate() {
+    if common::skip_without_scope("every_rule_of_the_forwarding_list_is_forwarded_to_diffgate") {
+        return;
+    }
     let list = the_list();
     assert!(
         list.iter().any(|r| r == "skipped-test"),
@@ -433,6 +459,9 @@ fn every_rule_of_the_forwarding_list_is_forwarded_to_diffgate() {
 /// the whole call with "--allow: unknown rule", so they stay out of the command and the line says they were left.
 #[test]
 fn the_merge_tool_s_own_rules_are_not_forwarded() {
+    if common::skip_without_scope("the_merge_tool_s_own_rules_are_not_forwarded") {
+        return;
+    }
     let c = Case::setup("not-forwarded", None);
     c.write_lines(&[
         wline("gate-change", "tools/ci/ of this merge; coordinator allow"),
@@ -494,6 +523,9 @@ fn assert_refused(tag: &str, content: &str, says: &str) {
 
 #[test]
 fn a_waivers_file_that_cannot_be_read_fails_the_step() {
+    if common::skip_without_scope("a_waivers_file_that_cannot_be_read_fails_the_step") {
+        return;
+    }
     let c = Case::setup("missing", None);
     let gone = c.d.join("no-such-dir").join("waivers.jsonl");
     let out = c.run(Some(&gone));
@@ -513,11 +545,17 @@ fn a_waivers_file_that_cannot_be_read_fails_the_step() {
 
 #[test]
 fn an_empty_waivers_file_fails_the_step() {
+    if common::skip_without_scope("an_empty_waivers_file_fails_the_step") {
+        return;
+    }
     assert_refused("empty", "", "holds no waiver line");
 }
 
 #[test]
 fn a_line_that_is_not_json_fails_the_step() {
+    if common::skip_without_scope("a_line_that_is_not_json_fails_the_step") {
+        return;
+    }
     assert_refused(
         "not-json",
         "the reason was written without braces\n",
@@ -527,6 +565,9 @@ fn a_line_that_is_not_json_fails_the_step() {
 
 #[test]
 fn a_line_missing_one_of_the_four_fields_fails_the_step() {
+    if common::skip_without_scope("a_line_missing_one_of_the_four_fields_fails_the_step") {
+        return;
+    }
     assert_refused(
         "no-field",
         "{\"rule\":\"skipped-test\",\"reason\":\"why\",\"by\":\"nez@nez_opt\"}\n",
@@ -536,6 +577,9 @@ fn a_line_missing_one_of_the_four_fields_fails_the_step() {
 
 #[test]
 fn a_field_that_is_not_a_string_fails_the_step() {
+    if common::skip_without_scope("a_field_that_is_not_a_string_fails_the_step") {
+        return;
+    }
     assert_refused(
         "not-a-string",
         "{\"rule\":\"skipped-test\",\"reason\":7,\"by\":\"nez@nez_opt\",\"job\":\"job_4ee819df2427\"}\n",
@@ -545,6 +589,9 @@ fn a_field_that_is_not_a_string_fails_the_step() {
 
 #[test]
 fn an_extra_field_fails_the_step() {
+    if common::skip_without_scope("an_extra_field_fails_the_step") {
+        return;
+    }
     assert_refused(
         "extra-field",
         "{\"rule\":\"skipped-test\",\"reason\":\"why\",\"by\":\"nez@nez_opt\",\"job\":\"job_1\",\"who\":\"me\"}\n",
@@ -554,6 +601,9 @@ fn an_extra_field_fails_the_step() {
 
 #[test]
 fn a_blank_reason_fails_the_step() {
+    if common::skip_without_scope("a_blank_reason_fails_the_step") {
+        return;
+    }
     assert_refused(
         "blank-reason",
         "{\"rule\":\"skipped-test\",\"reason\":\"   \",\"by\":\"nez@nez_opt\",\"job\":\"job_1\"}\n",
@@ -566,6 +616,9 @@ fn a_blank_reason_fails_the_step() {
 /// difference between this merge and the one that failed.
 #[test]
 fn one_bad_line_waives_nothing_even_beside_a_good_one() {
+    if common::skip_without_scope("one_bad_line_waives_nothing_even_beside_a_good_one") {
+        return;
+    }
     let c = Case::setup("half-bad", None);
     c.write_lines(&[
         wline("skipped-test", GAL_REASON),
@@ -586,6 +639,9 @@ fn one_bad_line_waives_nothing_even_beside_a_good_one() {
 /// own line and shown under it.
 #[test]
 fn a_forwarded_waiver_is_counted_on_the_step_line() {
+    if common::skip_without_scope("a_forwarded_waiver_is_counted_on_the_step_line") {
+        return;
+    }
     let c = Case::setup("counted-line", None);
     c.write_lines(&[wline("skipped-test", "3:three #[ignore] variants; WM-C004")]);
     let out = c.run(Some(&c.waivers));
@@ -605,6 +661,9 @@ fn a_forwarded_waiver_is_counted_on_the_step_line() {
 /// reports itself failed on a diff this merge was allowed to pass.
 #[test]
 fn a_rule_both_sources_name_reaches_diffgate_once() {
+    if common::skip_without_scope("a_rule_both_sources_name_reaches_diffgate_once") {
+        return;
+    }
     let c = Case::setup("both-sources", None);
     let reason = "7:seven #[ignore] variants; coordinator allow";
     c.write_lines(&[wline("skipped-test", reason)]);
@@ -631,6 +690,9 @@ fn a_rule_both_sources_name_reaches_diffgate_once() {
 /// A rule only the file names, beside a rule only the variable names: both travel, in the order the step puts them.
 #[test]
 fn the_two_sources_of_a_waiver_travel_together() {
+    if common::skip_without_scope("the_two_sources_of_a_waiver_travel_together") {
+        return;
+    }
     let c = Case::setup("two-sources", None);
     c.write_lines(&[wline("skipped-test", "3:three variants; WM-C004")]);
     let out = c.run_with(Some(&c.waivers), "guard-deleted=the lead checked it");
@@ -674,6 +736,9 @@ fn outside_the_merge_gate_the_waivers_file_is_ignored_and_says_so() {
 /// parentheses included. This is the entry of `tools/ci/merge-waiver-rules.txt` itself, so the case runs the real list.
 #[test]
 fn tmp_write_is_on_the_list_and_travels_as_the_list_holds_it() {
+    if common::skip_without_scope("tmp_write_is_on_the_list_and_travels_as_the_list_holds_it") {
+        return;
+    }
     let list = the_list();
     assert!(
         list.iter().any(|r| r == "tmp-write"),
@@ -701,6 +766,11 @@ fn tmp_write_is_on_the_list_and_travels_as_the_list_holds_it() {
 /// waiver that waives nothing cannot slip past on the strength of the other entries.
 #[test]
 fn an_uncounted_waiver_of_a_counted_rule_fails_the_step_and_diffgate_does_not_run() {
+    if common::skip_without_scope(
+        "an_uncounted_waiver_of_a_counted_rule_fails_the_step_and_diffgate_does_not_run",
+    ) {
+        return;
+    }
     let c = Case::setup("uncounted-counted-rule", None);
     c.write_lines(&[wline(
         "tmp-write",
@@ -728,6 +798,9 @@ fn an_uncounted_waiver_of_a_counted_rule_fails_the_step_and_diffgate_does_not_ru
 /// form the coordinator ruled out, and its counted entry would crowd the file's out (one allow per rule).
 #[test]
 fn an_uncounted_lead_waiver_of_a_counted_rule_fails_the_step_too() {
+    if common::skip_without_scope("an_uncounted_lead_waiver_of_a_counted_rule_fails_the_step_too") {
+        return;
+    }
     let c = Case::setup("allow-uncounted", None);
     let out = c.run_with(None, "tmp-write=seven sandbox test lines name /tmp");
     assert!(
@@ -745,6 +818,9 @@ fn an_uncounted_lead_waiver_of_a_counted_rule_fails_the_step_too() {
 /// The counted form of the lead's typed entry travels, as the plain rules' does.
 #[test]
 fn a_counted_lead_waiver_of_a_counted_rule_travels() {
+    if common::skip_without_scope("a_counted_lead_waiver_of_a_counted_rule_travels") {
+        return;
+    }
     let reason = "7:seven sandbox test lines name /tmp on purpose; coordinator allow 2026-11-18";
     let c = Case::setup("allow-counted", None);
     let out = c.run_with(None, &format!("tmp-write={reason}"));
@@ -759,6 +835,11 @@ fn a_counted_lead_waiver_of_a_counted_rule_travels() {
 /// than run diffgate with the entry it liked.
 #[test]
 fn one_uncounted_waiver_stops_a_counted_rule_from_running_diffgate_at_all() {
+    if common::skip_without_scope(
+        "one_uncounted_waiver_stops_a_counted_rule_from_running_diffgate_at_all",
+    ) {
+        return;
+    }
     let c = Case::setup("counted-and-uncounted", None);
     c.write_lines(&[
         wline(
@@ -780,6 +861,9 @@ fn one_uncounted_waiver_stops_a_counted_rule_from_running_diffgate_at_all() {
 /// (job_4ee819df2427) and a counted one, each unchanged.
 #[test]
 fn a_rule_the_list_leaves_plain_travels_in_both_forms() {
+    if common::skip_without_scope("a_rule_the_list_leaves_plain_travels_in_both_forms") {
+        return;
+    }
     let marked = counted_rules();
     assert!(
         !marked.iter().any(|r| r == "skipped-test"),
@@ -804,6 +888,9 @@ fn a_rule_the_list_leaves_plain_travels_in_both_forms() {
 /// rather than silently forwarding a rule the lead meant to restrict.
 #[test]
 fn an_unknown_marker_on_a_list_line_fails_the_step() {
+    if common::skip_without_scope("an_unknown_marker_on_a_list_line_fails_the_step") {
+        return;
+    }
     let c = Case::setup("unknown-marker", None);
     fs::write(
         c.repo.join(FORWARD_LIST),
@@ -834,6 +921,11 @@ fn an_unknown_marker_on_a_list_line_fails_the_step() {
 /// the reason text is printed in the gate log.
 #[test]
 fn test_removed_is_on_the_list_as_counted_and_travels_with_its_reason() {
+    if common::skip_without_scope(
+        "test_removed_is_on_the_list_as_counted_and_travels_with_its_reason",
+    ) {
+        return;
+    }
     assert!(
         counted_rules().iter().any(|r| r == "test-removed"),
         "{FORWARD_LIST} does not hold test-removed as a counted rule: {:?}",
@@ -861,6 +953,9 @@ fn test_removed_is_on_the_list_as_counted_and_travels_with_its_reason() {
 /// step and diffgate never runs.
 #[test]
 fn an_uncounted_test_removed_waiver_fails_the_step() {
+    if common::skip_without_scope("an_uncounted_test_removed_waiver_fails_the_step") {
+        return;
+    }
     let msg = "diffgate waivers: test-removed is forwarded in counted form only: write --allow test-removed=N:<reason> with N the exact number of refusals";
     let c = Case::setup("test-removed-uncounted-file", None);
     c.write_lines(&[wline("test-removed", "two obsolete tests deleted")]);

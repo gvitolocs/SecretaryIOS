@@ -11,6 +11,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod common;
+
 /// The memory cap the spawned `check-fast` asks for: the tests judge what diffgate is handed, not the
 /// machine's RAM, so they ask for a cap every runner holds (`runner::budget`).
 const MEM_CAP_GIB: &str = "1";
@@ -175,6 +177,10 @@ fn diffgate_line(out: &str) -> String {
 
 #[test]
 fn the_merge_gate_hands_the_lead_waiver_to_diffgate_and_counts_it() {
+    if common::skip_without_scope("the_merge_gate_hands_the_lead_waiver_to_diffgate_and_counts_it")
+    {
+        return;
+    }
     let f = Fixture::new("waived", &["guard-deleted"]);
     let (_code, out) = f.check_fast(true, "guard-deleted=a reason; with spaces");
     let argv = f.argv();
@@ -197,6 +203,10 @@ fn the_merge_gate_hands_the_lead_waiver_to_diffgate_and_counts_it() {
 
 #[test]
 fn outside_the_merge_gate_the_variable_waives_nothing_and_says_so() {
+    if common::skip_without_scope("outside_the_merge_gate_the_variable_waives_nothing_and_says_so")
+    {
+        return;
+    }
     let f = Fixture::new("ignored", &["guard-deleted"]);
     let (code, out) = f.check_fast(false, "guard-deleted=a reason; with spaces");
     assert_ne!(code, 0, "the stand-in refuses an unwaived rule: {out}");
@@ -217,6 +227,11 @@ fn outside_the_merge_gate_the_variable_waives_nothing_and_says_so() {
 
 #[test]
 fn a_rule_the_variable_does_not_name_still_refuses_at_the_merge_gate() {
+    if common::skip_without_scope(
+        "a_rule_the_variable_does_not_name_still_refuses_at_the_merge_gate",
+    ) {
+        return;
+    }
     let f = Fixture::new("one-of-two", &["guard-deleted", "never-waived"]);
     let (code, out) = f.check_fast(true, "guard-deleted=the lead checked it");
     assert_ne!(code, 0, "the other rule is not waived: {out}");
@@ -250,6 +265,9 @@ fn a_malformed_entry_fails_the_step_and_names_the_entry() {
 
 #[test]
 fn lagent_own_rules_in_the_variable_are_not_diffgate_waivers() {
+    if common::skip_without_scope("lagent_own_rules_in_the_variable_are_not_diffgate_waivers") {
+        return;
+    }
     let f = Fixture::new("not-diffgate", &[]);
     let (_code, out) = f.check_fast(
         true,

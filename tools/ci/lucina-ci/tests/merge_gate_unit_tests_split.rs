@@ -14,6 +14,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod common;
+
 /// The memory cap the spawned `check-fast` asks for: these tests judge the time limit, not the machine's RAM, so they ask for
 /// a cap every runner holds (`runner::budget`).
 const MEM_CAP_GIB: &str = "1";
@@ -194,6 +196,11 @@ fn loadavg_1min() -> f64 {
 /// since the run no longer carries the build with it; the 480 s of `clippy` (GATE-13) is a different row.
 #[test]
 fn merge_gate_builds_the_tests_and_runs_them_as_two_steps_with_two_limits() {
+    if common::skip_without_scope(
+        "merge_gate_builds_the_tests_and_runs_them_as_two_steps_with_two_limits",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("split", "exit 0", "exit 0");
     let (_code, out) = run(&repo, &bin, None);
     let built = step_line(&out, "unit-tests-build");
@@ -226,6 +233,11 @@ fn merge_gate_builds_the_tests_and_runs_them_as_two_steps_with_two_limits() {
 /// the machine's load and not as a test verdict, because no test of the change ran at all.
 #[test]
 fn merge_gate_a_build_past_its_cap_says_build_too_slow_with_the_load_and_still_fails() {
+    if common::skip_without_scope(
+        "merge_gate_a_build_past_its_cap_says_build_too_slow_with_the_load_and_still_fails",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("slowbuild", "sleep 6", "exit 0");
     let before = loadavg_1min();
     let (code, out) = run(&repo, &bin, Some("unit-tests-build=2"));
@@ -272,6 +284,10 @@ fn merge_gate_a_build_past_its_cap_says_build_too_slow_with_the_load_and_still_f
 /// last lines that name a test.
 #[test]
 fn merge_gate_a_run_past_its_limit_prints_the_tests_it_was_cut_in() {
+    if common::skip_without_scope("merge_gate_a_run_past_its_limit_prints_the_tests_it_was_cut_in")
+    {
+        return;
+    }
     let build_tail = (1..=40)
         .map(|i| format!("echo 'note: unrelated output line {i}'"))
         .collect::<Vec<_>>()
@@ -327,6 +343,11 @@ sleep 9"#
 /// not as a build that was merely slow.
 #[test]
 fn merge_gate_a_compile_error_fails_as_the_build_step_and_not_as_a_slow_build() {
+    if common::skip_without_scope(
+        "merge_gate_a_compile_error_fails_as_the_build_step_and_not_as_a_slow_build",
+    ) {
+        return;
+    }
     let (repo, bin) = setup(
         "broken",
         r#"echo 'error[E0308]: mismatched types'

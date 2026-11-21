@@ -17,6 +17,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod common;
+
 /// The memory cap the spawned `check-fast` asks for: these tests judge the time limit, not the machine's RAM, so they ask for
 /// a cap every runner holds (`runner::budget`).
 const MEM_CAP_GIB: &str = "1";
@@ -194,6 +196,11 @@ const STEPS: [&str; 10] = [
 /// never above the step's own timeout.
 #[test]
 fn merge_gate_prints_each_step_s_own_limit_and_keeps_180_for_the_rest() {
+    if common::skip_without_scope(
+        "merge_gate_prints_each_step_s_own_limit_and_keeps_180_for_the_rest",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("limits", "0.2", "0.2", "0.2");
     let (_code, out) = run(&repo, &bin, None);
     for (name, limit, own) in [
@@ -258,6 +265,11 @@ fn merge_gate_prints_each_step_s_own_limit_and_keeps_180_for_the_rest() {
 /// `a_merge_limit_cuts_a_step_s_own_timeout_and_never_lifts_it` in `src/main.rs`).
 #[test]
 fn merge_gate_a_step_with_a_larger_limit_passes_where_the_default_cuts_it() {
+    if common::skip_without_scope(
+        "merge_gate_a_step_with_a_larger_limit_passes_where_the_default_cuts_it",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("bigger", "1.5", "1.5", "1.5");
     let (code, out) = run(&repo, &bin, Some("1,clippy=3,unit-tests=3"));
     assert_ne!(code, 0, "two steps timed out: {out}");
@@ -293,6 +305,11 @@ fn merge_gate_a_step_with_a_larger_limit_passes_where_the_default_cuts_it() {
 /// rather than from a merge that failed.
 #[test]
 fn merge_gate_a_step_past_eighty_percent_of_its_limit_prints_near_limit() {
+    if common::skip_without_scope(
+        "merge_gate_a_step_past_eighty_percent_of_its_limit_prints_near_limit",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("near", "0.2", "4.2", "0.2");
     let (_code, out) = run(&repo, &bin, Some("8,clippy=5"));
     let line = step_line(&out, "clippy");

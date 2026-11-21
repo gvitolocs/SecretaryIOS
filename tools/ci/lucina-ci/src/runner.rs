@@ -849,6 +849,34 @@ pub fn inner(args: &[String]) -> i32 {
     outcome.exit_code()
 }
 
+/// How long the probe for a systemd user manager may take. `systemctl --user` waits on a bus that may never answer
+/// (a runner with no user session), and a probe that waits there stops the whole check with it.
+const PROBE_LIMIT_S: u64 = 5;
+
+/// Runs `cmd` and says whether it ended with success within `secs` seconds. One still running then is killed.
+fn succeeds_within(cmd: &mut Command, secs: u64) -> bool {
+    let Ok(mut child) = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let end = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) => return s.success(),
+            Ok(None) if Instant::now() < end => sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 /// How to get a scope with a memory cap on this machine.
 fn scope_prefix() -> Result<Vec<String>, String> {
     let base = ["--scope", "--quiet", "--collect"];
@@ -860,17 +888,15 @@ fn scope_prefix() -> Result<Vec<String>, String> {
     if uid == "0" {
         v.push("systemd-run".into());
     } else {
-        let user_bus = Command::new("systemctl")
-            .args(["--user", "show-environment"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
+        let user_bus = succeeds_within(
+            Command::new("systemctl").args(["--user", "show-environment"]),
+            PROBE_LIMIT_S,
+        );
         if user_bus {
             v.extend(["systemd-run".to_string(), "--user".to_string()]);
         } else {
             return Err(
-                "no systemd user manager (`systemctl --user show-environment` fails)".into(),
+                "no systemd user manager (`systemctl --user show-environment` fails or does not answer in 5 s)".into(),
             );
         }
     }
@@ -978,6 +1004,21 @@ pub fn report_field(json: &str, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    /// The probe for a user manager is bounded: a command that does not answer is a "no", and does not stop the check.
+    #[test]
+    fn a_probe_that_does_not_answer_is_a_no_inside_its_limit() {
+        let t = Instant::now();
+        assert!(!succeeds_within(Command::new("sleep").arg("30"), 1));
+        assert!(
+            t.elapsed() < Duration::from_secs(10),
+            "the probe waited {:?} for a command that never answers",
+            t.elapsed()
+        );
+        assert!(succeeds_within(&mut Command::new("true"), 5));
+        assert!(!succeeds_within(&mut Command::new("false"), 5));
+        assert!(!succeeds_within(&mut Command::new("/nonexistent/probe"), 5));
+    }
 
     fn test_spec() -> Spec {
         Spec {

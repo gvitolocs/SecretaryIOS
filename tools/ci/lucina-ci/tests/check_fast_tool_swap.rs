@@ -34,6 +34,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+mod common;
+
 /// The memory cap a spawned `check-fast` asks for, as in the other merge-gate tests: these tests judge which binary a step is
 /// started from and not the machine's RAM, so they ask for a cap every runner holds (`runner::budget`).
 const MEM_CAP_GIB: &str = "1";
@@ -520,6 +522,11 @@ fn find_self_copy(dir: &Path) -> Option<PathBuf> {
 /// run made of itself at its start, and the check passes.
 #[test]
 fn a_check_fast_run_keeps_the_tool_it_started_with_when_the_shared_one_is_replaced() {
+    if common::skip_without_scope(
+        "a_check_fast_run_keeps_the_tool_it_started_with_when_the_shared_one_is_replaced",
+    ) {
+        return;
+    }
     let mut s = Scratch::new("swap");
     let tool = s.install_tool();
     stubs(&s, "exit 0");
@@ -599,6 +606,9 @@ fn a_check_fast_run_keeps_the_tool_it_started_with_when_the_shared_one_is_replac
 /// half way — the shape of exit GATE-07 left behind.
 #[test]
 fn the_per_run_directory_holds_the_run_and_leaves_nothing_behind() {
+    if common::skip_without_scope("the_per_run_directory_holds_the_run_and_leaves_nothing_behind") {
+        return;
+    }
     for (tag, proofs, cargo_body, want) in [
         ("clean", false, "exit 0", 0),
         (
@@ -787,6 +797,10 @@ exit 101
 /// at keeps its bytes, the link is left as it was, and what is installed is the new build, a plain file.
 #[test]
 fn a_symlink_planted_at_the_old_install_temp_name_is_not_followed() {
+    if common::skip_without_scope("a_symlink_planted_at_the_old_install_temp_name_is_not_followed")
+    {
+        return;
+    }
     let s = Scratch::new("tmplink");
     write_exec(&s.bin().join("df"), "#!/usr/bin/env bash\necho '  999G'\n");
     write_exec(&s.bin().join("cargo"), BUILD_STUB);

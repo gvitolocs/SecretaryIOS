@@ -5,6 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
 fn git(d: &Path, args: &[&str]) {
     let mut c = Command::new("git");
     c.args([
@@ -106,6 +108,10 @@ fn run_over(tag: &str, crates: &[(&str, &str)], with_tests: bool) -> String {
 
 #[test]
 fn a_touched_crate_with_integration_tests_is_named_after_the_steps() {
+    if common::skip_without_scope("a_touched_crate_with_integration_tests_is_named_after_the_steps")
+    {
+        return;
+    }
     let out = run_over(
         "with",
         &[("crates/tested", "tested"), ("crates/plain", "plain")],
@@ -139,6 +145,9 @@ fn a_touched_crate_with_integration_tests_is_named_after_the_steps() {
 
 #[test]
 fn a_touched_crate_without_tests_dir_gets_no_line() {
+    if common::skip_without_scope("a_touched_crate_without_tests_dir_gets_no_line") {
+        return;
+    }
     let out = run_over("without", &[("crates/plain", "plain")], false);
     assert!(
         !out.contains("integration tests of touched crates"),

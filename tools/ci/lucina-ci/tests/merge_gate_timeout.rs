@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
 /// The memory cap the spawned `check-fast` asks for. The binary refuses to start on a runner that cannot hold its cap plus a reserve
 /// (the default 8 GiB cap needs 10 GiB; a private repository's 8 GB runner has 7.7), and these tests judge the time limit, not the
 /// machine's RAM, so they ask for a cap every runner holds (`runner::budget`).
@@ -103,6 +105,11 @@ fn run(repo: &Path, bin: &Path, cap: &str) -> (i32, String) {
 
 #[test]
 fn merge_gate_step_past_its_limit_fails_the_merge_and_is_never_a_skip() {
+    if common::skip_without_scope(
+        "merge_gate_step_past_its_limit_fails_the_merge_and_is_never_a_skip",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("late", 30);
     let (code, out) = run(&repo, &bin, "1");
     assert_ne!(code, 0, "a timed-out step fails the merge: {out}");
@@ -121,6 +128,11 @@ fn merge_gate_step_past_its_limit_fails_the_merge_and_is_never_a_skip() {
 
 #[test]
 fn merge_gate_step_within_its_limit_passes_without_the_late_message() {
+    if common::skip_without_scope(
+        "merge_gate_step_within_its_limit_passes_without_the_late_message",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("ontime", 2);
     let (_code, out) = run(&repo, &bin, "20");
     assert!(out.lines().any(|l| l.starts_with("ok   diffgate")), "{out}");
@@ -130,6 +142,11 @@ fn merge_gate_step_within_its_limit_passes_without_the_late_message() {
 
 #[test]
 fn a_step_past_its_limit_outside_the_merge_gate_is_the_plain_failure_it_was() {
+    if common::skip_without_scope(
+        "a_step_past_its_limit_outside_the_merge_gate_is_the_plain_failure_it_was",
+    ) {
+        return;
+    }
     let (repo, bin) = setup("dev", 5);
     let path = format!(
         "{}:{}",

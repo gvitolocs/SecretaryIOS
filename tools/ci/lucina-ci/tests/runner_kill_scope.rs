@@ -29,6 +29,8 @@ use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
+mod common;
+
 /// `runner::KILL_GRACE_S`: the time a step gets to leave on its own after the deadline's SIGTERM.
 const GRACE_S: f64 = 5.0;
 /// `runner::KILL_SLACK_S`: how long the rounds of SIGKILL keep coming before the step is reported anyway.
@@ -507,6 +509,9 @@ fn assert_stopped(out: &str, sleepers: &[String], what: &str) {
 /// start, and all of it is gone inside the bound.
 #[test]
 fn a_step_that_ignores_sigterm_is_gone_at_its_deadline() {
+    if common::skip_without_scope("a_step_that_ignores_sigterm_is_gone_at_its_deadline") {
+        return;
+    }
     let s = sleeper(1);
     let _markers = Markers(vec![s.clone()]);
     let counts = counted(&s, 2);
@@ -613,6 +618,9 @@ fn no_source_of_lucina_ci_builds_a_sudo_argv() {
 /// own work and not the kill machinery, and the straggler it leaves behind is taken when the step ends.
 #[test]
 fn a_step_that_ends_in_time_is_untouched() {
+    if common::skip_without_scope("a_step_that_ends_in_time_is_untouched") {
+        return;
+    }
     let s = sleeper(3);
     let _markers = Markers(vec![s.clone()]);
     // `exit 0` before the script's `wait`: the step is meant to end at once and leave a straggler standing, which is what
@@ -644,6 +652,9 @@ fn a_step_that_ends_in_time_is_untouched() {
 /// deadline reaches it with — and nothing else here does.
 #[test]
 fn work_handed_to_a_nested_scope_is_gone_at_its_deadline() {
+    if common::skip_without_scope("work_handed_to_a_nested_scope_is_gone_at_its_deadline") {
+        return;
+    }
     let (nested, plain) = (sleeper(4), sleeper(5));
     let _markers = Markers(vec![nested.clone(), plain.clone()]);
     let counts = format!("{}\n{}", counted(&nested, 1), counted(&plain, 1));
@@ -694,6 +705,9 @@ fn work_handed_to_a_nested_scope_is_gone_at_its_deadline() {
 /// this is the case only the cgroup route takes. A run where that process never appeared is a failure, not a skip.
 #[test]
 fn work_handed_to_a_new_session_is_gone_at_its_deadline() {
+    if common::skip_without_scope("work_handed_to_a_new_session_is_gone_at_its_deadline") {
+        return;
+    }
     let (detached, plain) = (sleeper(6), sleeper(7));
     let _markers = Markers(vec![detached.clone(), plain.clone()]);
     let counts = format!("{}\n{}", counted(&detached, 1), counted(&plain, 1));
@@ -747,6 +761,11 @@ fn work_handed_to_a_new_session_is_gone_at_its_deadline() {
 /// sibling, and judges both. The kill is `kill(2)` now: a system call takes no task slot.
 #[test]
 fn a_step_that_has_taken_every_task_slot_is_still_gone_at_its_deadline() {
+    if common::skip_without_scope(
+        "a_step_that_has_taken_every_task_slot_is_still_gone_at_its_deadline",
+    ) {
+        return;
+    }
     let (nested, plain) = (sleeper(8), sleeper(9));
     let _markers = Markers(vec![nested.clone(), plain.clone()]);
     let case = setup("tasksfull", &fill_body(&nested, &plain));
