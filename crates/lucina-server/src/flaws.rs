@@ -2055,9 +2055,22 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
 
 /// One notice per lane whose breaker opened or closed since the owner was told (LA-C042), after
 /// the dispatch lock is let go. A send that fails or is too slow leaves the event untold and the
-/// breaker as it is; the next tick sends it again.
+/// breaker as it is; the next tick sends it again. One OPEN and one CLOSED (LA-C048): an opening
+/// is told only when the last event told for the lane was a close, or none. A lane that opens
+/// again after a failed trial (the last told event is an `open:`) is marked told with nothing
+/// sent. The decision reads only what is stored, so a restart changes nothing.
 async fn tell_lane_events(flaws: &Flaws, hands: &dyn Hands) {
     for e in flaws.lane_events_untold().unwrap_or_default() {
+        if e.state == LaneState::Open
+            && flaws
+                .lane_told(&e.lane)
+                .ok()
+                .flatten()
+                .is_some_and(|t| t.starts_with("open:"))
+        {
+            let _ = flaws.lane_mark_told(&e.lane, &e.event);
+            continue;
+        }
         let key = format!("lane-breaker:{}:{}", e.lane, e.event);
         let text = lane_notice(&e, flaws.clock_now());
         match within(hands.limits().record, hands.tell_keyed(&key, &text)).await {
@@ -4489,7 +4502,8 @@ mod tests {
         // Opens again, a second time: a new notice.
         s.lane_open("claude-sonnet", SIGN_IN).unwrap();
         tick(&s, &p, &h).await;
-        // Half-open and fails its trial: it opens a third time, with a back-off of 5 minutes.
+        // Half-open and fails its trial: it opens a third time, with a back-off of 5 minutes. LA-C048:
+        // a re-open after an open he was told of says nothing.
         s.lane_half_open("claude-sonnet").unwrap();
         s.lane_open("claude-sonnet", SIGN_IN).unwrap();
         tick(&s, &p, &h).await;
@@ -4505,8 +4519,6 @@ mod tests {
                 OPENED.to_owned(),
                 CLOSED.to_owned(),
                 OPENED.to_owned(),
-                "Lane claude-sonnet breaker OPEN (sign-in refused): no new agents on it until 00:48Z."
-                    .to_owned(),
                 CLOSED.to_owned(),
             ]
         );
@@ -4619,7 +4631,8 @@ mod tests {
 
         // The probe passes (it is not agentd's provider breaker) while the provider still refuses:
         // the half-open trial creates once, is refused, and the lane opens again with a back-off of
-        // 5 minutes. That is a new opening, so a second notice (the time of its retry in it).
+        // 5 minutes. That is a new opening of a lane he was told is out: LA-C048 says nothing, but
+        // the event is marked told.
         h.lanes_out.lock().unwrap().clear();
         *h.ignore_step_out.lock().unwrap() = true;
         clock.fetch_add(1, Ordering::SeqCst);
@@ -4630,12 +4643,12 @@ mod tests {
         assert_eq!(flaw_is_queued(&s), (TargetStatus::Affected, 0, None));
         assert_eq!(
             notices(&h),
-            [
-                OPENED.to_owned(),
-                "Lane claude-sonnet breaker OPEN (sign-in refused): no new agents on it until 00:52Z."
-                    .to_owned()
-            ],
-            "phase 3a: the failed trial is a second opening, a second notice"
+            [OPENED],
+            "phase 3a: the failed trial re-opens the lane, no new notice"
+        );
+        assert!(
+            s.lane_events_untold().unwrap().is_empty(),
+            "the silent re-open is marked told"
         );
 
         // Inside the 5 minutes, with the probe ready: no create, no notice.
@@ -4644,63 +4657,222 @@ mod tests {
             tick(&s, &p, &h).await;
         }
         assert_eq!(tries(&h), 2, "no create inside the back-off");
-        assert_eq!(notices(&h).len(), 2, "no notice inside the back-off");
+        assert_eq!(notices(&h).len(), 1, "no notice inside the back-off");
 
         // The back-off ends and the provider still refuses: the next trial, 10 minutes of back-off.
         clock.fetch_add(1, Ordering::SeqCst);
         tick(&s, &p, &h).await;
         assert_eq!(tries(&h), 3);
         assert_eq!(lane_opens(&s, "claude-sonnet"), 3);
-        assert_eq!(
-            notices(&h).last().unwrap(),
-            "Lane claude-sonnet breaker OPEN (sign-in refused): no new agents on it until 01:02Z."
-        );
-        assert_eq!(
-            notices(&h).len(),
-            3,
-            "phase 3b: one notice per back-off cycle"
-        );
-        // The third lane failure of the flaw inside 24 h needs a lead (LANE_FAILURES_BEFORE_LEAD): it
-        // is blocked, still with no attempt charged. Nothing else is due, so no trial can start
-        // until another flaw is: a second one reports.
-        assert_eq!(flaw_is_queued(&s), (TargetStatus::Blocked, 0, None));
-        let f2 = due(&s, "second MARKER_TITLE_48", Platform::Web, None);
+        assert_eq!(notices(&h), [OPENED], "phase 3b: still the one notice");
+        // The third lane failure of the flaw inside 24 h blocks nothing (LA-C048): it is still
+        // affected, due, with no attempt charged.
+        assert_eq!(flaw_is_queued(&s), (TargetStatus::Affected, 0, None));
+        assert!(target(&s, &f.id, Platform::Web).next_try_at.is_none());
 
-        // The provider recovers: after the back-off the trial creates, its first turn works, the
-        // lane closes, and he is told once.
+        // The provider recovers: after the back-off the trial creates (on the same flaw), its
+        // first turn works, the lane closes, and he is told once.
         *h.create_error.lock().unwrap() = None;
         clock.fetch_add(10, Ordering::SeqCst);
         tick(&s, &p, &h).await;
         assert_eq!(h.agents.lock().unwrap().len(), 1, "the trial agent");
         assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::HalfOpen);
-        assert_eq!(notices(&h).len(), 3, "half-open says nothing");
+        assert_eq!(notices(&h).len(), 1, "half-open says nothing");
         h.worked.lock().unwrap().insert("ag0".into());
         clock.fetch_add(1, Ordering::SeqCst);
         tick(&s, &p, &h).await;
         tick(&s, &p, &h).await;
         assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Closed);
-        assert_eq!(target(&s, &f2.id, Platform::Web).attempts, 1);
+        assert_eq!(target(&s, &f.id, Platform::Web).attempts, 1);
         let all = notices(&h);
-        assert_eq!(all.len(), 4, "{all:?}");
-        assert_eq!(all[3], CLOSED);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(all[1], CLOSED);
         assert_eq!(all.iter().filter(|n| n.contains("CLOSED")).count(), 1);
 
-        // The one outcome told is the blocked flaw (it names the flaw by design); the breaker
-        // notices carry no flaw title or id, nor the agent text.
-        assert_eq!(h.told.lock().unwrap().len(), 1, "{:?}", h.told);
-        assert!(h.told.lock().unwrap()[0].contains("needs a lead"));
+        // No outcome is told: nothing was blocked. The breaker notices carry no flaw title or
+        // id, nor the agent text.
+        assert!(h.told.lock().unwrap().is_empty(), "{:?}", h.told);
         for t in &all {
             for marker in [
                 "MARKER_TITLE_47",
-                "MARKER_TITLE_48",
                 f.id.as_str(),
-                f2.id.as_str(),
                 "OAuth",
                 "agentd",
                 "lagent providers",
             ] {
                 assert!(!t.contains(marker), "{marker} leaked into {t:?}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn three_flaws_under_a_refusing_provider_are_never_blocked_and_give_one_open_and_one_close(
+    ) {
+        // LA-C048: the CO's test. Every create is refused (the real agentd text). Over many
+        // back-off cycles no flaw is blocked or told about, there is exactly one OPEN notice and
+        // no create inside a back-off; when the provider recovers the trial runs on a due flaw
+        // and one CLOSED follows.
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), one_lane());
+        let clock = with_clock(&s);
+        let fs: Vec<Flaw> = (0..3)
+            .map(|i| due(&s, &format!("flaw MARKER_TITLE_{i}"), Platform::Web, None))
+            .collect();
+        *h.create_error.lock().unwrap() = Some(AGENTD_REFUSAL.into());
+        let tries = |h: &Fake| h.tasks.lock().unwrap().len();
+        let all_due = |s: &Flaws| {
+            fs.iter().all(|f| {
+                let t = target(s, &f.id, Platform::Web);
+                t.status == TargetStatus::Affected && t.attempts == 0 && t.next_try_at.is_none()
+            })
+        };
+        tick(&s, &p, &h).await;
+        assert_eq!(tries(&h), 1);
+        assert_eq!(notices(&h), [OPENED]);
+        // The probe passes while the provider still refuses: one trial per back-off cycle.
+        h.lanes_out.lock().unwrap().clear();
+        *h.ignore_step_out.lock().unwrap() = true;
+        let mut cycles = 0;
+        for _ in 0..90 {
+            clock.fetch_add(1, Ordering::SeqCst);
+            let before = tries(&h);
+            let until = s
+                .lanes()
+                .unwrap()
+                .into_iter()
+                .find(|b| b.lane == "claude-sonnet")
+                .and_then(|b| b.until);
+            tick(&s, &p, &h).await;
+            if tries(&h) > before {
+                cycles += 1;
+                // The first opening has no back-off yet: its trial is due as soon as the probe passes.
+                if let Some(u) = until {
+                    let u = chrono::DateTime::parse_from_rfc3339(&u).unwrap();
+                    assert!(u <= s.clock_now(), "a create inside the back-off ({u})");
+                }
+            }
+            assert!(all_due(&s), "no flaw is blocked, charged or delayed");
+        }
+        assert!(
+            cycles >= 4,
+            "{cycles} cycles: 5, 10, 20, 40 minutes of back-off"
+        );
+        assert!(
+            tries(&h) <= 1 + cycles,
+            "one create per trial: {} creates",
+            tries(&h)
+        );
+        assert_eq!(notices(&h), [OPENED], "exactly one OPEN in total");
+        assert!(
+            h.told.lock().unwrap().is_empty(),
+            "no outcome told: {:?}",
+            h.told
+        );
+        assert!(s.lane_events_untold().unwrap().is_empty());
+
+        // The provider recovers; the back-off ends. The trial runs on a due flaw.
+        *h.create_error.lock().unwrap() = None;
+        clock.fetch_add(130, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        assert_eq!(h.agents.lock().unwrap().len(), 1, "the trial agent");
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::HalfOpen);
+        h.worked.lock().unwrap().insert("ag0".into());
+        clock.fetch_add(1, Ordering::SeqCst);
+        tick(&s, &p, &h).await;
+        tick(&s, &p, &h).await;
+        assert_eq!(s.lane_state("claude-sonnet").unwrap(), LaneState::Closed);
+        assert_eq!(notices(&h).len(), 2, "{:?}", notices(&h));
+        assert_eq!(notices(&h)[1], CLOSED);
+        let with_agent = fs
+            .iter()
+            .filter(|f| target(&s, &f.id, Platform::Web).agent.is_some())
+            .count();
+        assert_eq!(with_agent, 1, "the trial flaw has its agent");
+        for f in &fs {
+            let t = target(&s, &f.id, Platform::Web);
+            assert!(
+                t.agent.is_some()
+                    || (t.status == TargetStatus::Affected && t.next_try_at.is_none()),
+                "the others are still affected and due: {:?}",
+                t.status
+            );
+        }
+        assert!(h.told.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_breaker_notice_rule_open_after_close_told_reopen_silent_close_told_once_across_restarts(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("flaws.db");
+        let p = one_lane();
+        // closed -> open: told.
+        {
+            let (s, h) = (Flaws::open(&db).unwrap(), Fake::default());
+            open_and_out(&s, &h);
+            tick(&s, &p, &h).await;
+            assert_eq!(notices(&h), [OPENED]);
+            assert_eq!(
+                s.lane_told("claude-sonnet").unwrap().as_deref(),
+                Some("open:1")
+            );
+        }
+        // After a restart: open -> half-open -> open (a failed trial) is silent, and `told`
+        // advances so that nothing is pending.
+        {
+            let (s, h) = (Flaws::open(&db).unwrap(), Fake::default());
+            let clock = with_clock(&s);
+            *h.out.lock().unwrap() = true;
+            assert!(s.lane_half_open("claude-sonnet").unwrap());
+            assert!(s.lane_open("claude-sonnet", SIGN_IN).unwrap());
+            assert_eq!(
+                s.lane_events_untold().unwrap().len(),
+                1,
+                "open:2 is pending"
+            );
+            tick(&s, &p, &h).await;
+            assert!(
+                notices(&h).is_empty(),
+                "a re-open says nothing: {:?}",
+                notices(&h)
+            );
+            assert_eq!(
+                s.lane_told("claude-sonnet").unwrap().as_deref(),
+                Some("open:2")
+            );
+            assert!(s.lane_events_untold().unwrap().is_empty());
+            clock.fetch_add(10, Ordering::SeqCst);
+            // open -> half-open -> closed, and the server stops before it tells.
+            assert!(s.lane_half_open("claude-sonnet").unwrap());
+            assert!(s.lane_close("claude-sonnet").unwrap());
+        }
+        // The pending close is not lost by the restart, and is told once.
+        {
+            let (s, h) = (Flaws::open(&db).unwrap(), Fake::default());
+            tick(&s, &p, &h).await;
+            tick(&s, &p, &h).await;
+            assert_eq!(notices(&h), [CLOSED]);
+            assert_eq!(
+                h.notices.lock().unwrap()[0].0,
+                "lane-breaker:claude-sonnet:closed:2"
+            );
+            assert_eq!(
+                s.lane_told("claude-sonnet").unwrap().as_deref(),
+                Some("closed:2")
+            );
+        }
+        // And a restart after it tells nothing again; a new opening is told (closed -> open).
+        {
+            let (s, h) = (Flaws::open(&db).unwrap(), Fake::default());
+            *h.out.lock().unwrap() = true;
+            tick(&s, &p, &h).await;
+            assert!(notices(&h).is_empty());
+            assert!(s.lane_open("claude-sonnet", SIGN_IN).unwrap());
+            tick(&s, &p, &h).await;
+            assert_eq!(notices(&h), [OPENED]);
+            assert_eq!(
+                s.lane_told("claude-sonnet").unwrap().as_deref(),
+                Some("open:3")
+            );
         }
     }
 
@@ -6133,10 +6305,12 @@ mod tests {
             ops <= agents,
             "one incident per opening: {ops} for {agents}"
         );
+        // LA-C048: bounded by the breaker alone; a lane failure never blocks the flaw (before it,
+        // the one that kept failing needed a lead).
         assert!(
             fs.iter()
-                .any(|f| target(&s, &f.id, Platform::Web).status == TargetStatus::Blocked),
-            "the flaw that kept failing needs a lead"
+                .all(|f| target(&s, &f.id, Platform::Web).status != TargetStatus::Blocked),
+            "no flaw is blocked by a lane failure"
         );
         assert!(
             fs.iter()
@@ -6367,29 +6541,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_flaw_blocked_by_lane_failures_is_told_why_not_after_0_tries() {
+    async fn a_flaw_whose_agents_end_on_lane_failures_is_never_blocked_or_told_about_it() {
         let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
         let clock = with_clock(&s);
         let f = due(&s, "emoji", Platform::Web, None);
-        for _ in 0..3 {
+        for _ in 0..5 {
             let t = s.claim(&f.id, Platform::Web, "/r", "d").unwrap();
             s.give_back_if(&f.id, Platform::Web, &t.claim_ref(), SIGN_IN, true, "d")
                 .unwrap();
             clock.fetch_add(6, Ordering::SeqCst);
         }
-        assert_eq!(
-            target(&s, &f.id, Platform::Web).status,
-            TargetStatus::Blocked
-        );
+        // LA-C048: a lane failure is not the flaw's failure: it stays affected, due, with no
+        // attempt charged, and nothing is told about it.
+        let t = target(&s, &f.id, Platform::Web);
+        assert_eq!((t.status, t.attempts), (TargetStatus::Affected, 0));
+        assert!(t.next_try_at.is_none());
         tick(&s, &p, &h).await;
-        let told = h.told.lock().unwrap().clone();
-        assert_eq!(told.len(), 1, "{told:?}");
-        assert!(
-            !told[0].contains("after 0 tries")
-                && told[0].contains("lane")
-                && told[0].contains("needs a lead"),
-            "{told:?}"
-        );
+        assert!(h.told.lock().unwrap().is_empty(), "{:?}", h.told);
     }
 
     #[tokio::test]
