@@ -221,20 +221,28 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
 /// Behaviour is the same as before the answer was passed down.
 fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
     let command = &without_heredocs(command);
-    let scope = Regex::new(SCOPE).ok()?;
-    if !scope.is_match(command) && !scope.is_match(cwd) {
-        return None;
-    }
     if bypass && bypass_given(command) {
         return None;
     }
+    // LA-C045 (HOST-18): a guarded call is in scope when the directory it acts on, or a literal repo path in its own
+    // words, is a Lucina repo or worktree: not when the session merely sits in the group folder (`guarded_calls`).
+    // The old whole-text answer stays as the fallback for calls the scan cannot place.
+    let old_scope = Regex::new(SCOPE).ok()?;
+    let old_scope = old_scope.is_match(command) || old_scope.is_match(cwd);
+    let mut calls = Vec::new();
+    guarded_calls(command, cwd, 0, &mut calls);
     // One shell segment at a time (`;`, `&&`, `||`, `|`, newlines, quotes of ssh commands).
     let worktree = Regex::new(r"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*worktree\s+add\b").ok()?;
     let wt = Regex::new(r#"(^|[\s;&|('"])(~/\.local/bin/)?wt\s+add\b"#).ok()?;
     let push = Regex::new(r#"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*push\b([^;&|\n'"]*)"#).ok()?;
     let to_main = Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)").ok()?;
     let detached = Regex::new(r#"\bworktree\s+add\b[^;&|\n'"]*\s(--detach|-d)\b"#).ok()?;
-    if (worktree.is_match(command) && !detached.is_match(command)) || wt.is_match(command) {
+    let start_hits = if detached.is_match(command) {
+        0
+    } else {
+        worktree.find_iter(command).count()
+    } + wt.find_iter(command).count();
+    if rule_fires(&calls, Kind::Start, start_hits, old_scope) {
         return Some(
             "Lucina repos: start work with `lagent task start \"<title>\" [--repo <path>] [--branch <name>]` on nezopt \
              (Mac: ~/.local/bin/lagent forwards). It fetches, makes the worktree from origin/main and registers it with \
@@ -250,19 +258,195 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
                 .into(),
         );
     }
-    for c in push.captures_iter(command) {
-        let args = c.get(2).map(|m| m.as_str()).unwrap_or_default();
-        if to_main.is_match(args) && !args.contains("--dry-run") {
-            return Some(
-                "Lucina repos: main moves only through the merge queue. Commit in your workspace, then run \
-                 `lagent merge <workspace id | path>`: it merges into origin/main with a merge commit, runs the repo's gates (cargo test of \
-                 the touched crates, diffgate, ...), pushes and archives the workspace, one merge at a time. \
-                 Deploys: `lagent deploy <runtime>`."
-                    .into(),
-            );
-        }
+    let push_hits = push
+        .captures_iter(command)
+        .filter(|c| {
+            let args = c.get(2).map(|m| m.as_str()).unwrap_or_default();
+            to_main.is_match(args) && !args.contains("--dry-run")
+        })
+        .count();
+    if rule_fires(&calls, Kind::Push, push_hits, old_scope) {
+        return Some(
+            "Lucina repos: main moves only through the merge queue. Commit in your workspace, then run \
+             `lagent merge <workspace id | path>`: it merges into origin/main with a merge commit, runs the repo's gates (cargo test of \
+             the touched crates, diffgate, ...), pushes and archives the workspace, one merge at a time. \
+             Deploys: `lagent deploy <runtime>`."
+                .into(),
+        );
     }
     None
+}
+
+/// A directory INSIDE a Lucina repo or worktree: `…/Projects/Lucina/<Repo>` or `…/.worktrees/<Repo>`, with a
+/// non-empty repo name. The bare group folder `…/Projects/Lucina` (where the lead sessions sit) is no repo.
+const REPO_DIR: &str = r"(?i)((^|/)Projects/Lucina/[^/]+(/|$)|(^|/)\.worktrees/[^/]+(/|$))";
+
+/// The repo part of `SCOPE`: a literal repo path or name in a shell command's own words. The group
+/// folder alone (`Projects/Lucina`) is not here.
+const REPO_NAME: &str = r"(?i)(Projects/Lucina/[A-Za-z0-9_.-]+|\.worktrees/[A-Za-z0-9_.-]+|SecretaryIOS|\blucinaos\b|LucinaAndroidOS|lucina-rs\b)";
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// `git worktree add`, `wt add`.
+    Start,
+    /// `git push`.
+    Push,
+}
+
+/// One guarded git/`wt` call found in a command: whether it breaks the rule (`hits`: not a detached
+/// worktree, a push to main without `--dry-run`) and whether it acts on a Lucina repo (`in_scope`).
+struct Call {
+    kind: Kind,
+    hits: bool,
+    in_scope: bool,
+}
+
+/// Whether `word` names its path without a variable or substitution (a leading `$HOME` is fine).
+fn literal_path(word: &str) -> bool {
+    let t = word.replace("${HOME}", "").replace("$HOME", "");
+    !t.contains(['$', '`'])
+}
+
+/// The guarded calls in `text`, one shell command at a time (`scan`: quotes, `ssh host '…'`, `bash -c '…'`, a
+/// here-string, `eval`, `$( )`). The effective directory starts at `start` and follows a `cd <literal path>`;
+/// `git -C <literal path>` acts on that path for its call. A variable or substitution in a path leaves the
+/// directory as it was.
+///
+/// Accepted fail-opens (LA-C045, HOST-18): with the session in the group folder, a repo path held in a
+/// variable or substitution (`git -C $R worktree add`), `cd $VAR`, a symlink from scratch to a repo, a script
+/// file run by `bash script.sh` (not read), an alias or a function. A `cd` inside a `( … )` group carries to
+/// the commands after the group.
+fn guarded_calls(text: &str, start: &str, depth: usize, out: &mut Vec<Call>) {
+    if depth > 8 {
+        return;
+    }
+    let (Ok(repo_dir), Ok(repo_name), Ok(to_main)) = (
+        Regex::new(REPO_DIR),
+        Regex::new(REPO_NAME),
+        Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)"),
+    ) else {
+        return;
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let sc = scan(text);
+    let mut dir = start.to_string();
+    for words in &sc.cmds {
+        let Some(p) = program(words) else { continue };
+        let name = basename(&words[p].val);
+        let args = &words[p + 1..];
+        let named = words[p..].iter().any(|w| repo_name.is_match(&w.val));
+        match name {
+            "cd" | "pushd" => {
+                if let Some(a) = args.iter().find(|a| !a.val.starts_with('-')) {
+                    if literal_path(&a.val) {
+                        dir = resolve_path(&a.val, &dir, &home);
+                    }
+                }
+            }
+            "git" => {
+                let mut at = dir.clone();
+                let mut i = 0;
+                while let Some(w) = args.get(i) {
+                    match w.val.as_str() {
+                        "-C" => {
+                            if let Some(d) = args.get(i + 1).filter(|d| literal_path(&d.val)) {
+                                at = resolve_path(&d.val, &at, &home);
+                            }
+                            i += 2;
+                        }
+                        "-c" => i += 2,
+                        v if v.starts_with('-') => i += 1,
+                        _ => break,
+                    }
+                }
+                let Some(sub) = args.get(i) else { continue };
+                let rest = args.get(i + 1..).unwrap_or_default();
+                let in_scope = repo_dir.is_match(&at) || named;
+                if sub.val == "worktree" && rest.first().is_some_and(|w| w.val == "add") {
+                    let detached = rest
+                        .iter()
+                        .any(|w| matches!(w.val.as_str(), "--detach" | "-d"));
+                    out.push(Call {
+                        kind: Kind::Start,
+                        hits: !detached,
+                        in_scope,
+                    });
+                } else if sub.val == "push" {
+                    let joined = rest
+                        .iter()
+                        .map(|w| w.val.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    out.push(Call {
+                        kind: Kind::Push,
+                        hits: to_main.is_match(&joined) && !joined.contains("--dry-run"),
+                        in_scope,
+                    });
+                }
+            }
+            "wt" => {
+                if args
+                    .iter()
+                    .find(|a| !a.val.starts_with('-'))
+                    .is_some_and(|a| a.val == "add")
+                {
+                    out.push(Call {
+                        kind: Kind::Start,
+                        hits: true,
+                        in_scope: repo_dir.is_match(&dir) || named,
+                    });
+                }
+            }
+            "ssh" => {
+                for t in remote_text(args).unwrap_or_default() {
+                    guarded_calls(&t, &dir, depth + 1, out);
+                }
+            }
+            "bash" | "sh" | "zsh" => {
+                if let Some(s) = shell_script(args) {
+                    guarded_calls(s, &dir, depth + 1, out);
+                } else {
+                    // A here-string: `bash <<< '…'`.
+                    for (j, w) in args.iter().enumerate() {
+                        if let Some(rest) = w.val.strip_prefix("<<<") {
+                            let s = if rest.is_empty() {
+                                args.get(j + 1).map(|n| n.val.as_str())
+                            } else {
+                                Some(rest)
+                            };
+                            if let Some(s) = s {
+                                guarded_calls(s, &dir, depth + 1, out);
+                            }
+                        }
+                    }
+                }
+            }
+            "eval" => {
+                let s = args
+                    .iter()
+                    .map(|w| w.val.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                guarded_calls(&s, &dir, depth + 1, out);
+            }
+            _ => {}
+        }
+    }
+    for inner in &sc.nested {
+        guarded_calls(inner, &dir, depth + 1, out);
+    }
+}
+
+/// Whether a rule of kind `kind` fires. `old_hits` is how many calls the old whole-text patterns saw; `old_scope`
+/// the old whole-text scope answer. A call the scan found counts when it acts on a Lucina repo. Calls the scan could
+/// not place (a wrapper it does not know, `xargs git …`, a mention) fall back to the old whole-text scope, so the
+/// deny side never shrinks for a call it cannot read.
+fn rule_fires(calls: &[Call], kind: Kind, old_hits: usize, old_scope: bool) -> bool {
+    if old_hits == 0 {
+        return false;
+    }
+    let mine = || calls.iter().filter(|c| c.kind == kind && c.hits);
+    mine().any(|c| c.in_scope) || (mine().count() < old_hits && old_scope)
 }
 
 /// The owner's iPhone: its ids, and destinations that name it.
@@ -1760,6 +1944,106 @@ mod tests {
         assert!(verdict("git merge-base --is-ancestor a b", android).is_none());
         assert!(verdict("git merge --abort", android).is_none());
         assert!(verdict("git log main", android).is_none());
+    }
+
+    /// The lead sessions' cwd: the group folder (Mac mount, nezopt, trailing slash).
+    const GROUPS: [&str; 3] = [
+        "/Users/giuseppe/mnt/nezopt/Projects/Lucina",
+        "/home/nez/Projects/Lucina",
+        "/home/nez/Projects/Lucina/",
+    ];
+
+    #[test]
+    fn scratch_repos_are_not_lucina_repos() {
+        // LA-C045 (HOST-18): a guarded call acting on a scratch directory is none of the pipeline's business,
+        // even when the session sits in the group folder.
+        let cmds = [
+            "ssh nezopt 'R=$HOME/scratch/tmp/t1; mkdir -p $R && git init -q $R/main && git -C $R/main worktree add -q $R/wt1'",
+            r#"ssh nezopt "R=$HOME/scratch/tmp/t2; mkdir -p $R && git init -q $R/main && git -C $R/main worktree add -q $R/wt2""#,
+            "bash -c 'R=$HOME/scratch/tmp/t3; git init -q $R/main && git -C $R/main worktree add -q $R/wt3'",
+            r#"sh -c "R=$HOME/scratch/tmp/t4; git init -q $R/main && git -C $R/main worktree add -q $R/wt4""#,
+            "bash <<< 'R=$HOME/scratch/tmp/t5; git init -q $R/main && git -C $R/main worktree add -q $R/wt5'",
+            "cd $HOME/scratch/x && git worktree add ../y",
+            "git -C /home/nez/scratch/a worktree add /home/nez/scratch/b",
+            "cd ~/scratch/a && wt add b",
+            "cd ~/scratch/bare-test && git push origin main",
+            "git init -q ~/scratch/n && cd ~/scratch/n && git commit -q --allow-empty -m init && git worktree add ../n2",
+            r#"echo "notes about SecretaryIOS"; git -C ~/scratch/z worktree add ../zz"#,
+            r#"cd ~/scratch/z && git commit -q -m "mentions Projects/Lucina/SecretaryIOS" && git push origin main"#,
+            "cd ~/scratch/x && git merge x",
+            "ssh -o ConnectTimeout=8 nezopt 'cd ~/scratch/q && git worktree add ../q2'",
+            "cd /home/nez/scratch/m && git worktree add -b topic ../m2 origin/main",
+            "ssh nezopt 'cd $HOME/scratch/tmp/r && git push origin HEAD:main'",
+            "cd ~/scratch/a && git -C ../b push origin main",
+            "sh -c 'cd /home/nez/scratch/w && wt add v'",
+            "cd ~/scratch/a ; wt add b ; cd ~/scratch/c ; git push origin main",
+            // Accepted fail-opens: the directory is held in a variable or a substitution.
+            "R=/home/nez/scratch/k; git -C $R worktree add ../k2",
+            "cd $DIR && git worktree add ../x",
+            r#"git -C "$(mktemp -d)" worktree add ../x"#,
+        ];
+        for cwd in GROUPS {
+            for c in cmds {
+                assert_eq!(verdict(c, cwd), None, "{cwd}: {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_real_lucina_repo_is_still_guarded_from_the_group_folder() {
+        let cmds = [
+            "cd /home/nez/Projects/Lucina/SecretaryIOS && git worktree add ../x",
+            "ssh nezopt 'cd /home/nez/Projects/Lucina/SecretaryIOS && git worktree add ../x'",
+            r#"ssh -o ConnectTimeout=8 nezopt "cd /home/nez/Projects/Lucina/SecretaryIOS && git worktree add ../x""#,
+            "bash -c 'cd /home/nez/Projects/Lucina/SecretaryIOS && git worktree add ../x'",
+            r#"sh -c "cd /home/nez/Projects/Lucina/SecretaryIOS && git worktree add ../x""#,
+            "git -C /home/nez/Projects/Lucina/SecretaryIOS worktree add ../x",
+            "git -C ~/Projects/Lucina/LucinaOS push origin HEAD:main",
+            "git -C /Users/giuseppe/mnt/nezopt/Projects/Lucina/SecretaryIOS worktree add ../x",
+            "cd /Users/giuseppe/mnt/nezopt/Projects/Lucina/SecretaryIOS && wt add x",
+            "cd ~/Projects/Lucina/SecretaryIOS && git merge x",
+            "git worktree add /home/nez/Projects/.worktrees/SecretaryIOS/x",
+            "git -C '/home/nez/Projects/Lucina/SecretaryIOS' worktree add ../x",
+            "git worktree add '/home/nez/Projects/.worktrees/SecretaryIOS/x'",
+            "cd '~/Projects/Lucina/lucinaos' && git push origin HEAD:main",
+            "ssh nezopt 'git -C ~/Projects/Lucina/SecretaryIOS push origin HEAD:main'",
+            "cd ~/Projects/.worktrees/SecretaryIOS/a && git push origin main",
+            // A call the scan cannot place falls back to the old whole-text rule.
+            "echo x | xargs git worktree add ../x # SecretaryIOS",
+        ];
+        for cwd in GROUPS {
+            for c in cmds {
+                assert!(verdict(c, cwd).is_some(), "{cwd}: {c}");
+            }
+        }
+        // Inside a repo or a worktree the cwd decides, also for a path held in a variable.
+        let inside = "/home/nez/Projects/Lucina/SecretaryIOS";
+        let tree = "/home/nez/Projects/.worktrees/SecretaryIOS/foo";
+        for (c, cwd) in [
+            ("git worktree add ../y", inside),
+            ("wt add z", tree),
+            ("git -C $R worktree add ../y", inside),
+            ("cd $DIR && git worktree add ../y", inside),
+            ("ssh nezopt 'git push origin main'", inside),
+            ("git push origin main", inside),
+            ("git push origin main", tree),
+            ("git -C $(pwd)/x push origin HEAD:main", tree),
+        ] {
+            assert!(verdict(c, cwd).is_some(), "{cwd}: {c}");
+        }
+    }
+
+    #[test]
+    fn a_session_inside_a_repo_follows_its_own_cd_and_dash_c() {
+        let inside = "/home/nez/Projects/Lucina/SecretaryIOS";
+        assert_eq!(
+            verdict("cd ~/scratch/a && git worktree add ../b", inside),
+            None
+        );
+        assert_eq!(
+            verdict("git -C ~/scratch/a worktree add ../b", inside),
+            None
+        );
     }
 
     #[test]
