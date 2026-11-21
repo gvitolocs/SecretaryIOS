@@ -10,7 +10,8 @@
 //! silent mismatch.
 //!
 //! What it sees: the text of the files it is given (every `git ls-files` entry when none are named). What it cannot see:
-//! a key assembled at run time from parts, compressed or binary files (a NUL in the first 8 KiB, skipped and named),
+//! a key assembled at run time from parts, a line that costs more than the per-line step budget (the file fails with
+//! exit 2), compressed or binary files (a NUL in the first 8 KiB, skipped and named),
 //! files over 4 MiB (skipped and named), a symlink (skipped and named, never followed), a file named on the command
 //! line that cannot be read (named, exit 2),
 //! untracked files, and history.
@@ -390,23 +391,29 @@ pub fn find_all(p: &Pattern, line: &[char]) -> Result<Vec<(usize, usize)>, Strin
     Ok(hits)
 }
 
-/// The hits in one text, as (kind, 1-based line, first four characters of the key). `Err` names the line and the kind
-/// of the first pattern that went over its step budget.
-pub fn scan_text(pats: &[Pattern], text: &str) -> Result<Vec<(String, usize, String)>, String> {
+/// The hits in one text, as (kind, 1-based line, first four characters of the key), and, when a line went over its step
+/// budget, what names the line and the pattern. The scan stops at that line; the hits found before it are kept, so a
+/// refused file still says what was already seen.
+pub fn scan_text(pats: &[Pattern], text: &str) -> (Vec<(String, usize, String)>, Option<String>) {
     let mut out = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         for p in pats {
-            for (a, _) in find_all(p, &chars).map_err(|e| format!("line {}: {e}", n + 1))? {
-                out.push((
-                    p.kind.clone(),
-                    n + 1,
-                    chars[a..(a + 4).min(chars.len())].iter().collect(),
-                ));
+            match find_all(p, &chars) {
+                Ok(found) => {
+                    for (a, _) in found {
+                        out.push((
+                            p.kind.clone(),
+                            n + 1,
+                            chars[a..(a + 4).min(chars.len())].iter().collect(),
+                        ));
+                    }
+                }
+                Err(e) => return (out, Some(format!("line {}: {e}", n + 1))),
             }
         }
     }
-    Ok(out)
+    (out, None)
 }
 
 enum Got {
@@ -444,20 +451,35 @@ fn read_text(path: &Path) -> Got {
     Got::Text(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn tracked(root: &Path) -> Result<Vec<String>, String> {
+/// The names of a NUL-separated list (`git ... -z`). A name that is not valid UTF-8 is an error naming it with its
+/// bytes escaped: a lossy conversion would turn it into a path that does not exist, which is then taken for a deleted
+/// file and never scanned.
+pub fn split_z(bytes: &[u8]) -> Result<Vec<String>, String> {
+    bytes
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            String::from_utf8(s.to_vec())
+                .map_err(|_| format!("a touched path is not valid UTF-8: {}", s.escape_ascii()))
+        })
+        .collect()
+}
+
+/// `git <args>` in `root`, whose output is a `-z` list of names.
+pub fn git_z(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
     let o = Command::new("git")
-        .args(["ls-files", "-z"])
+        .args(args)
         .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;
     if !o.status.success() {
-        return Err("git ls-files failed".into());
+        return Err(format!("git {} failed", args.join(" ")));
     }
-    Ok(String::from_utf8_lossy(&o.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect())
+    split_z(&o.stdout)
+}
+
+fn tracked(root: &Path) -> Result<Vec<String>, String> {
+    git_z(root, &["ls-files", "-z"])
 }
 
 /// Whether a touched path is gone from the work tree. A path that cannot be told apart from absent because it cannot be
@@ -492,17 +514,69 @@ fn quote(p: &str) -> String {
 }
 
 /// The shell command of the `secrets` step: `key-scan` over `files` first (`--` ends its options, so a file called
-/// `--root` is a file), then, when `gitleaks` is given as (config option, files), the gitleaks pass.
-pub fn secrets_command(exe: &str, files: &[String], gitleaks: Option<(&str, &[String])>) -> String {
+/// `--root` is a file), then, when `gitleaks` is given as (config option, files), the gitleaks pass, whose `--` does the
+/// same. `None` for an empty list: a `--` with nothing after it would be read as "scan every tracked file". The
+/// launcher is quoted: it is one path.
+pub fn secrets_command(
+    exe: &str,
+    files: &[String],
+    gitleaks: Option<(&str, &[String])>,
+) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
     let list = files.iter().map(|p| quote(p)).collect::<Vec<_>>().join(" ");
-    let mut cmd = format!("{exe} key-scan --root . -- {list}");
-    if let Some((config, files)) = gitleaks {
+    let mut cmd = format!("{} key-scan --root . -- {list}", quote(exe));
+    if let Some((config, files)) = gitleaks.filter(|(_, f)| !f.is_empty()) {
         let list = files.iter().map(|p| quote(p)).collect::<Vec<_>>().join(" ");
         cmd.push_str(&format!(
-            " && for f in {list}; do gitleaks dir --no-banner --redact {config} \"$f\" || exit 1; done"
+            " && for f in {list}; do gitleaks dir --no-banner --redact {config} -- \"$f\" || exit 1; done"
         ));
     }
-    cmd
+    Some(cmd)
+}
+
+/// What the `secrets` step does for the touched paths that exist (`existing`): the command, if there is anything to
+/// hand over, the line to print about what was not handed over, and the note for a step that has nothing to scan.
+pub struct SecretsPlan {
+    pub command: Option<String>,
+    pub count_line: Option<String>,
+    pub skip_note: Option<String>,
+}
+
+pub fn secrets_plan(
+    root: &Path,
+    changed_len: usize,
+    existing: &[String],
+    exe: &str,
+    gitleaks_config: Option<&str>,
+) -> SecretsPlan {
+    let gone = changed_len - existing.len();
+    let handover = hand_over(root, existing);
+    let count_line = (gone > 0 || handover.directories > 0).then(|| {
+        format!(
+            "check-fast: secrets: {gone} deleted file(s) and {} directory path(s) not handed to key-scan",
+            handover.directories
+        )
+    });
+    let skip_note = (handover.files.is_empty() && !existing.is_empty()).then(|| {
+        "secret scan: every touched path is a directory (a submodule): nothing to hand to key-scan or gitleaks"
+            .to_string()
+    });
+    let gitleaks_files: Vec<String> = existing
+        .iter()
+        .filter(|p| !p.starts_with("third_party/"))
+        .cloned()
+        .collect();
+    SecretsPlan {
+        command: secrets_command(
+            exe,
+            &handover.files,
+            gitleaks_config.map(|c| (c, &gitleaks_files[..])),
+        ),
+        count_line,
+        skip_note,
+    }
 }
 
 /// `args` are what follows `key-scan`:`--root DIR` and file names. Exit 0 clean, 1 a match, 2 an error.
@@ -533,16 +607,15 @@ pub fn cmd(args: &[String]) -> Result<i32, String> {
     for f in &files {
         match read_text(&root.join(f)) {
             Got::Text(t) => {
-                scanned += 1;
-                match scan_text(&pats, &t) {
-                    Ok(found) => {
-                        for (kind, line, head) in found {
-                            hits += 1;
-                            println!("key-scan: {kind} at {f}:{line} (redacted: {head}...)");
-                        }
-                    }
-                    Err(why) => {
-                        // Not scanned to the end: an error, never a clean file.
+                let (found, overrun) = scan_text(&pats, &t);
+                for (kind, line, head) in found {
+                    hits += 1;
+                    println!("key-scan: {kind} at {f}:{line} (redacted: {head}...)");
+                }
+                match overrun {
+                    None => scanned += 1,
+                    Some(why) => {
+                        // Not scanned to the end: an error, never a clean file, and not counted as scanned.
                         unreadable += 1;
                         println!("key-scan: {f}: too costly to scan, {why}");
                     }
@@ -607,7 +680,7 @@ mod tests {
     #[test]
     fn the_table_holds_no_key_shaped_literal() {
         let pats = load().unwrap();
-        assert!(scan_text(&pats, PATTERNS).unwrap().is_empty());
+        assert!(scan_text(&pats, PATTERNS).0.is_empty());
     }
 
     #[test]
@@ -790,6 +863,20 @@ mod tests {
         assert_eq!(h.files, want);
     }
 
+    /// An executable script, written by a child that is reaped before anything execs it (the test thread keeping the
+    /// file open while another thread forks gives ETXTBSY).
+    fn write_exec(path: &Path, text: &str) {
+        use std::io::Write;
+        let mut c = Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 0755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        assert!(c.wait().unwrap().success());
+    }
+
     #[test]
     fn the_secrets_command_hands_every_name_over_as_one_argument() {
         let d = tree("cmd");
@@ -798,8 +885,15 @@ mod tests {
             .filter(|p| !is_absent(&d.0, p))
             .collect();
         let h = hand_over(&d.0, &existing);
-        // `printf` in the place of the launcher prints each argument it was handed, as the shell split it.
-        let cmd = secrets_command("printf '[%s]\\n'", &h.files, None);
+        // A launcher in a directory whose name holds a space prints each argument it was handed, as the shell split it:
+        // the launcher is one quoted word.
+        fs::create_dir_all(d.0.join("tool dir")).unwrap();
+        let exe = d.0.join("tool dir/launcher");
+        write_exec(
+            &exe,
+            "#!/bin/sh\nfor a in \"$@\"; do printf '[%s]\\n' \"$a\"; done\n",
+        );
+        let cmd = secrets_command(exe.to_str().unwrap(), &h.files, None).unwrap();
         let out = Command::new("sh").args(["-c", &cmd]).output().unwrap();
         let got = String::from_utf8_lossy(&out.stdout);
         let mut want = vec![
@@ -815,15 +909,151 @@ mod tests {
             want.push("[locked/secret.txt]");
         }
         assert_eq!(got.lines().collect::<Vec<_>>(), want, "{cmd}");
-        // The gitleaks pass follows with the same quoting.
+        // The gitleaks pass follows with the same quoting, and its own `--`.
         let both = secrets_command(
             "lucina-ci",
             &["it's.txt".to_string()],
             Some(("--config .gitleaks.toml", &["has space.txt".to_string()])),
         );
         assert_eq!(
-            both,
-            "lucina-ci key-scan --root . -- 'it'\\''s.txt' && for f in 'has space.txt'; do gitleaks dir --no-banner --redact --config .gitleaks.toml \"$f\" || exit 1; done"
+            both.as_deref(),
+            Some(
+                "'lucina-ci' key-scan --root . -- 'it'\\''s.txt' && for f in 'has space.txt'; do gitleaks dir --no-banner --redact --config .gitleaks.toml -- \"$f\" || exit 1; done"
+            )
+        );
+    }
+
+    #[test]
+    fn an_empty_list_builds_no_command_because_a_bare_double_dash_means_the_whole_tree() {
+        assert_eq!(secrets_command("lucina-ci", &[], None), None);
+        assert_eq!(
+            secrets_command("lucina-ci", &[], Some(("", &["a.rs".to_string()]))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_plan_hands_the_handover_list_to_the_command_and_guards_the_step() {
+        let d = tree("plan");
+        let exist =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|s| s.to_string()).collect() };
+        // A file and a directory: only the file is handed over; the directory and the deleted one are counted.
+        let existing = exist(&["has space.txt", "adir"]);
+        let p = secrets_plan(&d.0, 3, &existing, "lucina-ci", None);
+        let cmd = p.command.unwrap();
+        assert!(cmd.ends_with("-- 'has space.txt'"), "{cmd}");
+        assert!(!cmd.contains("adir"), "{cmd}");
+        assert_eq!(
+            p.count_line.as_deref(),
+            Some(
+                "check-fast: secrets: 1 deleted file(s) and 1 directory path(s) not handed to key-scan"
+            )
+        );
+        assert_eq!(p.skip_note, None);
+        // Only a directory: no command, and the log says why.
+        let p = secrets_plan(&d.0, 1, &exist(&["adir"]), "lucina-ci", None);
+        assert_eq!(p.command, None);
+        assert!(
+            p.skip_note
+                .unwrap()
+                .contains("every touched path is a directory")
+        );
+        // Only deleted paths: no command, no directory note.
+        let p = secrets_plan(&d.0, 2, &[], "lucina-ci", None);
+        assert_eq!(p.command, None);
+        assert_eq!(p.skip_note, None);
+        assert!(p.count_line.unwrap().contains("2 deleted file(s)"));
+        // third_party is for key-scan but not for gitleaks, as before.
+        let p = secrets_plan(
+            &d.0,
+            2,
+            &exist(&["has space.txt", "it's.txt"]),
+            "lucina-ci",
+            Some("--config c.toml"),
+        );
+        assert!(
+            p.command
+                .unwrap()
+                .contains("for f in 'has space.txt' 'it'\\''s.txt';")
+        );
+    }
+
+    #[test]
+    fn a_name_is_split_as_bytes_and_a_name_that_is_not_utf8_fails_loudly_naming_it() {
+        assert_eq!(
+            split_z(b"a\0b\nc\0\0d e\0").unwrap(),
+            vec!["a", "b\nc", "d e"]
+        );
+        let e = split_z(b"ok\0bad\xff\xfename\0").unwrap_err();
+        assert!(e.contains("not valid UTF-8"), "{e}");
+        assert!(e.contains("bad\\xff\\xfename"), "{e}");
+    }
+
+    fn git(d: &Path, args: &[&str]) {
+        let mut c = Command::new("git");
+        c.args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(d);
+        for n in ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] {
+            c.env_remove(n);
+        }
+        let o = c.output().unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    #[test]
+    fn the_z_readers_return_a_name_with_a_newline_and_the_new_name_of_a_rename() {
+        let d = Dir::new("zreaders");
+        git(&d.0, &["init", "-q"]);
+        fs::write(
+            d.0.join("old\nname.txt"),
+            "some text that is long enough to be a rename\n".repeat(5),
+        )
+        .unwrap();
+        git(&d.0, &["add", "-A"]);
+        git(&d.0, &["commit", "-q", "-m", "one"]);
+        git(&d.0, &["mv", "old\nname.txt", "new name.txt"]);
+        git(&d.0, &["commit", "-q", "-m", "two"]);
+        assert_eq!(
+            git_z(&d.0, &["diff", "--name-only", "-z", "HEAD~1", "HEAD"]).unwrap(),
+            vec!["new name.txt"]
+        );
+        fs::write(d.0.join("un\ntracked.txt"), "x\n").unwrap();
+        assert_eq!(
+            git_z(&d.0, &["ls-files", "-z", "-o", "--exclude-standard"]).unwrap(),
+            vec!["un\ntracked.txt"]
+        );
+        assert_eq!(tracked(&d.0).unwrap(), vec!["new name.txt"]);
+    }
+
+    #[test]
+    fn a_touched_name_that_is_not_utf8_is_an_error_not_a_deleted_file() {
+        use std::os::unix::ffi::OsStrExt;
+        let d = Dir::new("nonutf8");
+        git(&d.0, &["init", "-q"]);
+        fs::write(d.0.join("fine.txt"), "x\n").unwrap();
+        git(&d.0, &["add", "-A"]);
+        git(&d.0, &["commit", "-q", "-m", "one"]);
+        fs::write(
+            d.0.join(std::ffi::OsStr::from_bytes(b"bad\xffname.txt")),
+            "x\n",
+        )
+        .unwrap();
+        let e = git_z(&d.0, &["ls-files", "-z", "-o", "--exclude-standard"]).unwrap_err();
+        assert!(
+            e.contains("not valid UTF-8") && e.contains("bad\\xffname.txt"),
+            "{e}"
         );
     }
 
@@ -842,7 +1072,8 @@ mod tests {
         let key = format!("{}{}", "AIza", "q".repeat(35));
         let line = format!("{} {key}", "x ".repeat(100_000));
         let pats = load().unwrap();
-        let found = scan_text(&pats, &line).unwrap();
+        let (found, over) = scan_text(&pats, &line);
+        assert_eq!(over, None);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, "google-api-key");
     }

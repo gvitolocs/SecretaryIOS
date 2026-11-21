@@ -129,19 +129,8 @@ fn proof_unit(units: &[Unit], branch: &str) -> Option<Vec<Unit>> {
 }
 
 fn changed_between(root: &Path, a: &str, b: &str) -> Result<Vec<String>, String> {
-    let o = Command::new("git")
-        .args(["diff", "--name-only", "-z", a, b])
-        .current_dir(root)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !o.status.success() {
-        return Err(format!("git diff {a} {b} failed"));
-    }
-    Ok(String::from_utf8_lossy(&o.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect())
+    // Names are read as NUL-separated bytes; a name that is not valid UTF-8 fails the check, naming it (keyscan::split_z).
+    keyscan::git_z(root, &["diff", "--name-only", "-z", a, b])
 }
 
 fn merge_base(root: &Path, a: &str, b: &str) -> Option<String> {
@@ -1641,21 +1630,14 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         .ok_or_else(|| format!("no merge base with {base_ref}"))?;
     let mut changed: BTreeSet<String> =
         changed_between(&root, &base, "HEAD")?.into_iter().collect();
-    let git_lines = |args: &[&str]| -> Vec<String> {
-        Command::new("git")
-            .args(args)
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .split('\0')
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    changed.extend(git_lines(&["diff", "--name-only", "-z", "HEAD"]));
-    changed.extend(git_lines(&["ls-files", "-z", "-o", "--exclude-standard"]));
+    changed.extend(keyscan::git_z(
+        &root,
+        &["diff", "--name-only", "-z", "HEAD"],
+    )?);
+    changed.extend(keyscan::git_z(
+        &root,
+        &["ls-files", "-z", "-o", "--exclude-standard"],
+    )?);
     let existing: Vec<String> = changed
         .iter()
         .filter(|p| !keyscan::is_absent(&root, p))
@@ -1881,45 +1863,35 @@ fn cmd_check_fast(a: &Args) -> Result<i32, String> {
         )?;
     }
     // The key formats of tools/ci/key-patterns.txt fail on any touched file, with no allowlist and without gitleaks: the
-    // gitleaks pass after it is the second line, not the first (docs/ci/SHIFT-LEFT.md).
-    // A deleted path is not handed over, and a directory path (a submodule) is not either, because key-scan treats a named
-    // path it cannot read as an error; both are counted in the line below. A path that cannot be statted is not "deleted":
-    // it is handed over and key-scan fails on it. The command is built in keyscan.rs, where it is tested.
-    let gone = changed.len() - existing.len();
-    let handover = keyscan::hand_over(&root, &existing);
-    if gone > 0 || handover.directories > 0 {
-        println!(
-            "check-fast: secrets: {gone} deleted file(s) and {} directory path(s) not handed to key-scan",
-            handover.directories
-        );
-    }
-    if handover.files.is_empty() && !existing.is_empty() {
-        skipped.push(
-            "secret scan: every touched path is a directory (a submodule): nothing to hand to key-scan or gitleaks".into(),
-        );
-    }
-    let gitleaks_files: Vec<String> = existing
-        .iter()
-        .filter(|p| !p.starts_with("third_party/"))
-        .cloned()
-        .collect();
-    let gitleaks = if tool_exists("gitleaks") {
-        let config = if root.join(".gitleaks.toml").exists() {
+    // gitleaks pass after it is the second line, not the first (docs/ci/SHIFT-LEFT.md). What is handed over, counted and
+    // skipped, and the command itself, are decided in keyscan.rs, where they are tested.
+    let gitleaks_config = if tool_exists("gitleaks") {
+        Some(if root.join(".gitleaks.toml").exists() {
             "--config .gitleaks.toml"
         } else {
             ""
-        };
-        Some((config, &gitleaks_files[..])).filter(|(_, l)| !l.is_empty())
+        })
     } else {
         skipped.push("secret scan: gitleaks not installed here (key-scan still ran)".into());
         None
     };
-    let secrets_cmd =
-        keyscan::secrets_command(&own_copy.display().to_string(), &handover.files, gitleaks);
-    if !handover.files.is_empty() {
+    let plan = keyscan::secrets_plan(
+        &root,
+        changed.len(),
+        &existing,
+        &own_copy.display().to_string(),
+        gitleaks_config,
+    );
+    if let Some(line) = &plan.count_line {
+        println!("{line}");
+    }
+    if let Some(note) = plan.skip_note {
+        skipped.push(note);
+    }
+    if let Some(secrets_cmd) = &plan.command {
         step(
             "secrets",
-            &secrets_cmd,
+            secrets_cmd,
             "script",
             SECRETS_STEP_TIMEOUT_S,
             &none,

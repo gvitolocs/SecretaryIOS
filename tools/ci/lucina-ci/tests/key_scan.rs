@@ -356,3 +356,27 @@ fn a_long_adversarial_line_is_refused_fast_and_never_counted_clean() {
         "{out}"
     );
 }
+
+#[test]
+fn a_refused_file_still_names_the_match_found_before_the_refusal() {
+    let t = Tree::new();
+    let key = &samples()[0].1;
+    t.put(
+        "min.js",
+        format!("const k = \"{key}\";\n{}\n", "-eyJ".repeat(50_000)).as_bytes(),
+    );
+    let (code, out) = t.scan(&["min.js"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("key-scan: google-api-key at min.js:1 (redacted: "),
+        "{out}"
+    );
+    assert!(
+        out.contains("key-scan: min.js: too costly to scan, line 2"),
+        "{out}"
+    );
+    assert!(
+        out.contains("0 file(s) scanned, 0 skipped, 1 match(es)"),
+        "{out}"
+    );
+}
