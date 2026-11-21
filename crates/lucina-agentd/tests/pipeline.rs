@@ -1059,3 +1059,37 @@ async fn a_merge_job_records_the_lead_and_change_ids_of_the_commits_it_lands() {
         "{text}"
     );
 }
+
+#[tokio::test]
+async fn a_workspace_cannot_be_renamed_to_a_title_that_starts_with_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let repo = repo_with_gate(&root, "Renamed", "true");
+    let wt = topic(&root, &repo, "Renamed", "named");
+    let m = manager(&root);
+    let (_, w) = m
+        .adopt_task(AdoptTask {
+            path: wt.display().to_string(),
+            title: Some("My title".into()),
+            ..AdoptTask::default()
+        })
+        .await
+        .unwrap();
+    let id = w.workspace_id.as_str();
+    // A leading "Error:" (a failed command substituted into the title) is refused (AGENT-10) and
+    // changes nothing; the word elsewhere is fine.
+    let e = m
+        .workspaces()
+        .rename(id, Some("Error: refs: no id".into()))
+        .expect_err("a poisoned title is refused");
+    assert!(e.to_string().contains("\"Error:\" is refused"), "{e}");
+    assert_eq!(
+        m.workspaces().get(id).unwrap().title.as_deref(),
+        Some("My title")
+    );
+    let ok = m
+        .workspaces()
+        .rename(id, Some("Fix Error: handling".into()))
+        .unwrap();
+    assert_eq!(ok.title.as_deref(), Some("Fix Error: handling"));
+}
