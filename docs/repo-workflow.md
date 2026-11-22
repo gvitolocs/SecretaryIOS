@@ -265,11 +265,15 @@ lagent device release iphone
   (`SecretaryIOS`, `lucinaos`, `LucinaAndroidOS`, `lucina-rs`). The bare group folder `…/Projects/Lucina`, where the lead
   sessions sit, no longer puts every command in scope, and a mention in another command, an `echo` or a commit message
   does not either. So scratch repos (`git init` then a worktree under `~/scratch`) need no `LAGENT_BYPASS`. A call
-  the hook cannot place (`xargs git …`, an unknown wrapper) keeps the old whole-text rule. Accepted fail-opens: with the
-  session in the group folder, a repo path held in a variable or substitution (`git -C $R …`, `cd $DIR`), a
-  symlink from scratch to a repo, a script file run by `bash script.sh` (not read for these rules), an alias or a function;
-  a `cd` inside a `( … )` group also carries to the commands after it. A session whose cwd is inside a repo or worktree
-  stays in scope for a call with an unresolved variable path. The iPhone, kill and cargo-target rules are unchanged.
+  the hook cannot place (`xargs git …`, an unknown wrapper) keeps the old whole-text rule. A call whose directory is
+  unknown (a variable, a substitution, a `for` variable, `$'…'` quoting, the home of a remote host, a bare `cd`, `cd -`,
+  `popd`) counts as in a repo when the session sits inside a repo or worktree or a repo path or name occurs anywhere in
+  the command; `cd` ends with a `( … )` group; `env -C`, `GIT_DIR=`, `GIT_WORK_TREE=`, `--git-dir` and `--work-tree`
+  name the directory like `-C`. The worktree folders that count are those of the Lucina repos (`.worktrees/SecretaryIOS`,
+  `lucina…`, `LucinaAndroidOS`), not every `.worktrees/*`. Accepted fail-opens, ONLY with the session in the group
+  folder: a repo path that appears nowhere in the command text (held in the environment, built by a substitution or
+  read from a file); a symlink from scratch to a repo; a script file run by `bash script.sh` (not read for these rules);
+  an alias or a function. The iPhone, kill and cargo-target rules are unchanged.
 
 - On the owner's Mac, in every session (Lucina or not), the same hook also denies pattern-based process kills run
   locally: `pkill`, `killall`, `xargs kill` and `kill $(pgrep …)` (also inside `$( )`, backticks, groups and `bash -c`).

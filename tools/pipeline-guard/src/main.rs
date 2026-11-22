@@ -229,20 +229,27 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
     // The old whole-text answer stays as the fallback for calls the scan cannot place.
     let old_scope = Regex::new(SCOPE).ok()?;
     let old_scope = old_scope.is_match(command) || old_scope.is_match(cwd);
+    let g = Guard::new()?;
+    // The session directory, normalised (`..`, `.`, `//`, a trailing slash).
+    let start = (!cwd.is_empty()).then(|| resolve_path(cwd, "/", &g.home));
+    // A call whose directory is unknown counts when the session sits inside a repo or the text names one.
+    let closed =
+        start.as_deref().is_some_and(|d| g.repo_dir.is_match(d)) || g.repo_name.is_match(command);
     let mut calls = Vec::new();
-    guarded_calls(command, cwd, 0, &mut calls);
+    guarded_calls(&g, command, start, 0, &mut calls);
     // One shell segment at a time (`;`, `&&`, `||`, `|`, newlines, quotes of ssh commands).
     let worktree = Regex::new(r"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*worktree\s+add\b").ok()?;
     let wt = Regex::new(r#"(^|[\s;&|('"])(~/\.local/bin/)?wt\s+add\b"#).ok()?;
     let push = Regex::new(r#"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*push\b([^;&|\n'"]*)"#).ok()?;
     let to_main = Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)").ok()?;
     let detached = Regex::new(r#"\bworktree\s+add\b[^;&|\n'"]*\s(--detach|-d)\b"#).ok()?;
+    // One `--detach` anywhere in the text exempts every `worktree add` in it (the old rule, kept as it was).
     let start_hits = if detached.is_match(command) {
         0
     } else {
         worktree.find_iter(command).count()
     } + wt.find_iter(command).count();
-    if rule_fires(&calls, Kind::Start, start_hits, old_scope) {
+    if rule_fires(&calls, Kind::Start, start_hits, old_scope, closed) {
         return Some(
             "Lucina repos: start work with `lagent task start \"<title>\" [--repo <path>] [--branch <name>]` on nezopt \
              (Mac: ~/.local/bin/lagent forwards). It fetches, makes the worktree from origin/main and registers it with \
@@ -265,7 +272,7 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
             to_main.is_match(args) && !args.contains("--dry-run")
         })
         .count();
-    if rule_fires(&calls, Kind::Push, push_hits, old_scope) {
+    if rule_fires(&calls, Kind::Push, push_hits, old_scope, closed) {
         return Some(
             "Lucina repos: main moves only through the merge queue. Commit in your workspace, then run \
              `lagent merge <workspace id | path>`: it merges into origin/main with a merge commit, runs the repo's gates (cargo test of \
@@ -279,97 +286,158 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
 
 /// A directory INSIDE a Lucina repo or worktree: `…/Projects/Lucina/<Repo>` or `…/.worktrees/<Repo>`, with a
 /// non-empty repo name. The bare group folder `…/Projects/Lucina` (where the lead sessions sit) is no repo.
-const REPO_DIR: &str = r"(?i)((^|/)Projects/Lucina/[^/]+(/|$)|(^|/)\.worktrees/[^/]+(/|$))";
+/// The worktree names are the ones the old `SCOPE` listed (`lucina…` covers lucinaos and lucina-rs), not any
+/// `.worktrees/*`: that folder also holds the trees of non-Lucina repos.
+const REPO_DIR: &str = r"(?i)((^|/)Projects/Lucina/[^/]+(/|$)|(^|/)\.worktrees/(SecretaryIOS|lucina[A-Za-z0-9_.-]*|LucinaAndroidOS)(/|$))";
 
-/// The repo part of `SCOPE`: a literal repo path or name in a shell command's own words. The group
+/// The repo part of `SCOPE`: a literal repo path or name in a shell command's words. The group
 /// folder alone (`Projects/Lucina`) is not here.
-const REPO_NAME: &str = r"(?i)(Projects/Lucina/[A-Za-z0-9_.-]+|\.worktrees/[A-Za-z0-9_.-]+|SecretaryIOS|\blucinaos\b|LucinaAndroidOS|lucina-rs\b)";
+const REPO_NAME: &str = r"(?i)(Projects/Lucina/[A-Za-z0-9_.-]+|\.worktrees/(SecretaryIOS|lucina|LucinaAndroidOS)|SecretaryIOS|\blucinaos\b|LucinaAndroidOS|lucina-rs\b)";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     /// `git worktree add`, `wt add`.
     Start,
-    /// `git push`.
+    /// `git push … main`.
     Push,
 }
 
-/// One guarded git/`wt` call found in a command: whether it breaks the rule (`hits`: not a detached
-/// worktree, a push to main without `--dry-run`) and whether it acts on a Lucina repo (`in_scope`).
+/// One guarded git/`wt` call found in a command. `scope` is `Some(answer)` when the directory the call acts on
+/// was resolved to a literal path (a repo or not) or the call's own words name a repo, and `None` when the
+/// directory is unknown (a variable, a substitution, a `for` variable, `ANSI-C` quoting, a remote home).
 struct Call {
     kind: Kind,
-    hits: bool,
-    in_scope: bool,
+    scope: Option<bool>,
 }
 
-/// Whether `word` names its path without a variable or substitution (a leading `$HOME` is fine).
-fn literal_path(word: &str) -> bool {
-    let t = word.replace("${HOME}", "").replace("$HOME", "");
-    !t.contains(['$', '`'])
+/// What `guarded_calls` needs besides the text: compiled once per verdict.
+struct Guard {
+    repo_dir: Regex,
+    repo_name: Regex,
+    to_main: Regex,
+    home: String,
+}
+
+impl Guard {
+    fn new() -> Option<Guard> {
+        Some(Guard {
+            repo_dir: Regex::new(REPO_DIR).ok()?,
+            repo_name: Regex::new(REPO_NAME).ok()?,
+            to_main: Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)").ok()?,
+            home: std::env::var("HOME").unwrap_or_default(),
+        })
+    }
+
+    /// `word` as an absolute normalised path, or `None` when it holds a variable (other than a leading
+    /// `$HOME`) or a substitution, or is relative to a directory that is unknown.
+    fn path(&self, word: &str, base: &Option<String>) -> Option<String> {
+        let t = word.replace("${HOME}", "").replace("$HOME", "");
+        if t.contains(['$', '`']) || t.starts_with('~') && !t.starts_with("~/") && t != "~" {
+            return None;
+        }
+        if word.starts_with('/')
+            || word.starts_with('~')
+            || word.starts_with("$HOME")
+            || word.starts_with("${HOME}")
+        {
+            return Some(resolve_path(word, "/", &self.home));
+        }
+        base.as_ref().map(|b| resolve_path(word, b, &self.home))
+    }
+
+    /// The scope of a call acting on `at`: a resolved directory is a repo or not; a name of a repo in the
+    /// call's own words counts either way; an unknown directory is decided later (`rule_fires`).
+    fn place(&self, at: &Option<String>, named: bool) -> Option<bool> {
+        match at {
+            _ if named => Some(true),
+            Some(p) => Some(self.repo_dir.is_match(p)),
+            None => None,
+        }
+    }
 }
 
 /// The guarded calls in `text`, one shell command at a time (`scan`: quotes, `ssh host '…'`, `bash -c '…'`, a
-/// here-string, `eval`, `$( )`). The effective directory starts at `start` and follows a `cd <literal path>`;
-/// `git -C <literal path>` acts on that path for its call. A variable or substitution in a path leaves the
-/// directory as it was.
+/// here-string, `eval`, `$( )`). The effective directory starts at `start` and follows `cd`/`pushd` to a literal
+/// path; `git -C`, `--git-dir`, `--work-tree`, `env -C`, `GIT_DIR=` and `GIT_WORK_TREE=` name the directory of
+/// their call. A `cd` inside `( … )` ends with the group. A variable or substitution in a path, a bare `cd`,
+/// `cd -` and `popd` make the directory unknown (`None`), and so does the home of a remote host.
 ///
-/// Accepted fail-opens (LA-C045, HOST-18): with the session in the group folder, a repo path held in a
-/// variable or substitution (`git -C $R worktree add`), `cd $VAR`, a symlink from scratch to a repo, a script
-/// file run by `bash script.sh` (not read), an alias or a function. A `cd` inside a `( … )` group carries to
-/// the commands after the group.
-fn guarded_calls(text: &str, start: &str, depth: usize, out: &mut Vec<Call>) {
+/// Accepted fail-opens (LA-C045, HOST-18): only with the session in the group folder and NO repo literal
+/// anywhere in the command text: a repo path held in the environment or built by a substitution or read from a
+/// file, a symlink from scratch to a repo, a script file run by `bash script.sh` (not read), an alias or a function.
+fn guarded_calls(g: &Guard, text: &str, start: Option<String>, depth: usize, out: &mut Vec<Call>) {
     if depth > 8 {
         return;
     }
-    let (Ok(repo_dir), Ok(repo_name), Ok(to_main)) = (
-        Regex::new(REPO_DIR),
-        Regex::new(REPO_NAME),
-        Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)"),
-    ) else {
-        return;
-    };
-    let home = std::env::var("HOME").unwrap_or_default();
     let sc = scan(text);
-    let mut dir = start.to_string();
-    for words in &sc.cmds {
+    let mut dir = start;
+    let mut stack: Vec<Option<String>> = Vec::new();
+    for (idx, words) in sc.cmds.iter().enumerate() {
+        for _ in 0..sc.closes[idx] {
+            if let Some(d) = stack.pop() {
+                dir = d;
+            }
+        }
+        for _ in 0..sc.opens[idx] {
+            stack.push(dir.clone());
+        }
         let Some(p) = program(words) else { continue };
         let name = basename(&words[p].val);
         let args = &words[p + 1..];
-        let named = words[p..].iter().any(|w| repo_name.is_match(&w.val));
+        let named = words.iter().any(|w| g.repo_name.is_match(&w.val));
+        // The directory the wrapper words before the program name set: `env -C <dir>`, `--chdir=<dir>`,
+        // `GIT_DIR=<path>`, `GIT_WORK_TREE=<path>`.
+        let mut base = dir.clone();
+        for (k, w) in words[..p].iter().enumerate() {
+            let v = w.val.as_str();
+            if v == "-C" {
+                base = words.get(k + 1).and_then(|d| g.path(&d.val, &base));
+            } else if let Some(d) = v.strip_prefix("--chdir=") {
+                base = g.path(d, &base);
+            } else if let Some(d) = v
+                .strip_prefix("GIT_DIR=")
+                .or_else(|| v.strip_prefix("GIT_WORK_TREE="))
+            {
+                base = g.path(d, &base);
+            }
+        }
         match name {
             "cd" | "pushd" => {
-                if let Some(a) = args.iter().find(|a| !a.val.starts_with('-')) {
-                    if literal_path(&a.val) {
-                        dir = resolve_path(&a.val, &dir, &home);
-                    }
-                }
+                dir = args
+                    .iter()
+                    .find(|a| !a.val.starts_with('-'))
+                    .and_then(|a| g.path(&a.val, &dir));
             }
+            "popd" => dir = None,
             "git" => {
-                let mut at = dir.clone();
+                let mut at = base;
                 let mut i = 0;
                 while let Some(w) = args.get(i) {
-                    match w.val.as_str() {
-                        "-C" => {
-                            if let Some(d) = args.get(i + 1).filter(|d| literal_path(&d.val)) {
-                                at = resolve_path(&d.val, &at, &home);
-                            }
-                            i += 2;
-                        }
-                        "-c" => i += 2,
-                        v if v.starts_with('-') => i += 1,
-                        _ => break,
+                    let v = w.val.as_str();
+                    if v == "-C" || v == "--git-dir" || v == "--work-tree" {
+                        at = args.get(i + 1).and_then(|d| g.path(&d.val, &at));
+                        i += 2;
+                    } else if let Some(d) = v
+                        .strip_prefix("--git-dir=")
+                        .or_else(|| v.strip_prefix("--work-tree="))
+                    {
+                        at = g.path(d, &at);
+                        i += 1;
+                    } else if v == "-c" {
+                        i += 2;
+                    } else if v.starts_with('-') {
+                        i += 1;
+                    } else {
+                        break;
                     }
                 }
                 let Some(sub) = args.get(i) else { continue };
                 let rest = args.get(i + 1..).unwrap_or_default();
-                let in_scope = repo_dir.is_match(&at) || named;
+                let scope = g.place(&at, named);
                 if sub.val == "worktree" && rest.first().is_some_and(|w| w.val == "add") {
-                    let detached = rest
-                        .iter()
-                        .any(|w| matches!(w.val.as_str(), "--detach" | "-d"));
                     out.push(Call {
                         kind: Kind::Start,
-                        hits: !detached,
-                        in_scope,
+                        scope,
                     });
                 } else if sub.val == "push" {
                     let joined = rest
@@ -377,11 +445,12 @@ fn guarded_calls(text: &str, start: &str, depth: usize, out: &mut Vec<Call>) {
                         .map(|w| w.val.as_str())
                         .collect::<Vec<_>>()
                         .join(" ");
-                    out.push(Call {
-                        kind: Kind::Push,
-                        hits: to_main.is_match(&joined) && !joined.contains("--dry-run"),
-                        in_scope,
-                    });
+                    if g.to_main.is_match(&joined) && !joined.contains("--dry-run") {
+                        out.push(Call {
+                            kind: Kind::Push,
+                            scope,
+                        });
+                    }
                 }
             }
             "wt" => {
@@ -392,19 +461,19 @@ fn guarded_calls(text: &str, start: &str, depth: usize, out: &mut Vec<Call>) {
                 {
                     out.push(Call {
                         kind: Kind::Start,
-                        hits: true,
-                        in_scope: repo_dir.is_match(&dir) || named,
+                        scope: g.place(&base, named),
                     });
                 }
             }
+            // The remote shell starts in the remote home: unknown to this hook.
             "ssh" => {
                 for t in remote_text(args).unwrap_or_default() {
-                    guarded_calls(&t, &dir, depth + 1, out);
+                    guarded_calls(g, &t, None, depth + 1, out);
                 }
             }
             "bash" | "sh" | "zsh" => {
                 if let Some(s) = shell_script(args) {
-                    guarded_calls(s, &dir, depth + 1, out);
+                    guarded_calls(g, s, dir.clone(), depth + 1, out);
                 } else {
                     // A here-string: `bash <<< '…'`.
                     for (j, w) in args.iter().enumerate() {
@@ -415,7 +484,7 @@ fn guarded_calls(text: &str, start: &str, depth: usize, out: &mut Vec<Call>) {
                                 Some(rest)
                             };
                             if let Some(s) = s {
-                                guarded_calls(s, &dir, depth + 1, out);
+                                guarded_calls(g, s, dir.clone(), depth + 1, out);
                             }
                         }
                     }
@@ -427,26 +496,28 @@ fn guarded_calls(text: &str, start: &str, depth: usize, out: &mut Vec<Call>) {
                     .map(|w| w.val.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                guarded_calls(&s, &dir, depth + 1, out);
+                guarded_calls(g, &s, dir.clone(), depth + 1, out);
             }
             _ => {}
         }
     }
     for inner in &sc.nested {
-        guarded_calls(inner, &dir, depth + 1, out);
+        guarded_calls(g, inner, dir.clone(), depth + 1, out);
     }
 }
 
 /// Whether a rule of kind `kind` fires. `old_hits` is how many calls the old whole-text patterns saw; `old_scope`
-/// the old whole-text scope answer. A call the scan found counts when it acts on a Lucina repo. Calls the scan could
-/// not place (a wrapper it does not know, `xargs git …`, a mention) fall back to the old whole-text scope, so the
-/// deny side never shrinks for a call it cannot read.
-fn rule_fires(calls: &[Call], kind: Kind, old_hits: usize, old_scope: bool) -> bool {
+/// the old whole-text scope answer; `closed` whether a call with an unknown directory counts (the session sits inside
+/// a repo, or a repo literal occurs anywhere in the command). A call is out of scope only when its directory was
+/// resolved to a path that is no repo, or when it is unknown and nothing in the session or the text names a repo.
+/// Calls the scan could not place (a wrapper it does not know, `xargs git …`, a mention) fall back to the old
+/// whole-text scope, so the deny side never shrinks for a call it cannot read.
+fn rule_fires(calls: &[Call], kind: Kind, old_hits: usize, old_scope: bool, closed: bool) -> bool {
     if old_hits == 0 {
         return false;
     }
-    let mine = || calls.iter().filter(|c| c.kind == kind && c.hits);
-    mine().any(|c| c.in_scope) || (mine().count() < old_hits && old_scope)
+    let mine = || calls.iter().filter(|c| c.kind == kind);
+    mine().any(|c| c.scope.unwrap_or(closed)) || (mine().count() < old_hits && old_scope)
 }
 
 /// The owner's iPhone: its ids, and destinations that name it.
@@ -628,6 +699,11 @@ struct Scan {
     /// `piped[k]`: command `k` reads the output of command `k - 1` (a single `|` came before it).
     piped: Vec<bool>,
     pipe_next: bool,
+    /// `opens[k]` / `closes[k]`: the `(` and `)` that came right before command `k` (a subshell begins or ends).
+    opens: Vec<u32>,
+    closes: Vec<u32>,
+    pend_open: u32,
+    pend_close: u32,
     nested: Vec<String>,
     cmd: Vec<Word>,
     cur: String,
@@ -653,6 +729,8 @@ impl Scan {
         if !self.cmd.is_empty() {
             let cmd = std::mem::take(&mut self.cmd);
             self.piped.push(std::mem::take(&mut self.pipe_next));
+            self.opens.push(std::mem::take(&mut self.pend_open));
+            self.closes.push(std::mem::take(&mut self.pend_close));
             self.cmds.push(cmd);
         }
     }
@@ -788,6 +866,11 @@ fn scan(s: &str) -> Scan {
                 // leaves the pipe flag alone; `||` is no pipe.
                 let had = !sc.cmd.is_empty() || sc.in_word;
                 sc.end_cmd();
+                if c == '(' {
+                    sc.pend_open += 1;
+                } else if c == ')' {
+                    sc.pend_close += 1;
+                }
                 if c == '|' {
                     sc.pipe_next = ch.get(i + 1) != Some(&'|') && (i == 0 || ch[i - 1] != '|');
                 } else if had {
@@ -2044,6 +2127,121 @@ mod tests {
             verdict("git -C ~/scratch/a worktree add ../b", inside),
             None
         );
+    }
+
+    /// One command in the four forms the lead sessions use: bare, `ssh nezopt '…'`,
+    /// `ssh -o ConnectTimeout=8 nezopt "…"` and `bash -c '…'`. `inner` holds no quote character.
+    fn four_forms(inner: &str) -> [String; 4] {
+        [
+            inner.to_string(),
+            format!("ssh nezopt '{inner}'"),
+            format!("ssh -o ConnectTimeout=8 nezopt \"{inner}\""),
+            format!("bash -c '{inner}'"),
+        ]
+    }
+
+    #[test]
+    fn a_repo_named_in_the_text_is_refused_whatever_holds_the_directory() {
+        // LA-C045 round 2: a directory that cannot be resolved counts as a repo when a repo literal
+        // appears anywhere in the command.
+        let inner = [
+            // a variable bound to a repo path earlier in the same text
+            "R=/home/nez/Projects/Lucina/SecretaryIOS; git -C $R worktree add ../x",
+            "REPO=/home/nez/Projects/Lucina/SecretaryIOS && cd $REPO && git push origin HEAD:refs/heads/main",
+            // a `for` variable bound to repo names
+            "for d in SecretaryIOS lucinaos; do cd $d; git worktree add ../x; done",
+            "for r in SecretaryIOS lucinaos; do git -C $r push origin main; done",
+            // a subshell `cd` does not leak, and it counts inside the group
+            "(cd /home/nez/Projects/Lucina/SecretaryIOS; git worktree add ../x)",
+            "(cd ~/scratch/a); git -C ~/Projects/Lucina/SecretaryIOS worktree add ../x",
+            "(cd ~/scratch/a); cd ~/Projects/Lucina/SecretaryIOS; git worktree add ../x",
+            // env -C, git --git-dir, GIT_DIR and GIT_WORK_TREE name the directory
+            "env -C SecretaryIOS git worktree add ../x",
+            "env -C /home/nez/Projects/Lucina/SecretaryIOS git worktree add ../x",
+            "GIT_DIR=/home/nez/Projects/Lucina/SecretaryIOS/.git git worktree add ../x",
+            "GIT_WORK_TREE=/home/nez/Projects/Lucina/SecretaryIOS git worktree add ../x",
+            "git --git-dir=/home/nez/Projects/Lucina/SecretaryIOS/.git worktree add ../x",
+            "git --git-dir /home/nez/Projects/Lucina/SecretaryIOS/.git worktree add ../x",
+            "env GIT_DIR=/home/nez/Projects/Lucina/SecretaryIOS/.git git push origin main",
+            // $HOME spellings
+            "cd $HOME/Projects/Lucina/SecretaryIOS; git worktree add ../x",
+            "cd ${HOME}/Projects/Lucina/SecretaryIOS; git worktree add ../x",
+            "cd ~/Projects/Lucina/SecretaryIOS/../LucinaOS; git worktree add ../x",
+        ];
+        for cwd in GROUPS {
+            for i in inner {
+                for c in four_forms(i) {
+                    assert!(verdict(&c, cwd).is_some(), "{cwd}: {c}");
+                }
+            }
+            for c in [
+                "cd $'/home/nez/Projects/Lucina/SecretaryIOS'; git worktree add ../x",
+                "cd \"$HOME/Projects/Lucina/SecretaryIOS\"; git worktree add ../x",
+                "echo SecretaryIOS | ssh nezopt git worktree add ../x",
+                "echo SecretaryIOS | ssh nezopt wt add x",
+            ] {
+                assert!(verdict(c, cwd).is_some(), "{cwd}: {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_session_directory_is_normalised_and_kept_after_a_bare_cd() {
+        let bare = "git worktree add ../x";
+        for cwd in [
+            "/home/nez/Projects/Lucina//SecretaryIOS/",
+            "/home/nez/Projects/Lucina/./SecretaryIOS",
+            "/home/nez/projects/lucina/secretaryios",
+            "/home/nez/Projects/Lucina/SecretaryIOS/../LucinaOS",
+            "/home/nez/Projects/.worktrees/SecretaryIOS/a/./b/",
+        ] {
+            assert!(verdict(bare, cwd).is_some(), "{cwd}");
+        }
+        // ... and leaving the repo by `..` lands in the group folder, which is no repo.
+        for cwd in [
+            "/home/nez/Projects/Lucina/SecretaryIOS/..",
+            "/home/nez/Projects/Lucina/SecretaryIOS/../",
+            "/home/nez/Projects/Lucina//",
+        ] {
+            assert_eq!(verdict(bare, cwd), None, "{cwd}");
+        }
+        let inside = "/home/nez/Projects/Lucina/SecretaryIOS";
+        for c in [
+            "(cd ~/scratch/a); git worktree add ../x",
+            "cd ~/scratch/a; cd; git worktree add ../x",
+            "cd ~/scratch/a; cd -; git worktree add ../x",
+            "pushd ~/scratch/a; popd; git worktree add ../x",
+            "cd $DIR; git worktree add ../x",
+        ] {
+            assert!(verdict(c, inside).is_some(), "{c}");
+        }
+        // The cases the change exists for.
+        for cwd in GROUPS {
+            assert_eq!(verdict(bare, cwd), None, "{cwd}");
+            assert_eq!(verdict("wt add x", cwd), None, "{cwd}");
+            assert_eq!(verdict("git push origin main", cwd), None, "{cwd}");
+            assert_eq!(
+                verdict("env -C /home/nez/scratch/a git worktree add ../x", cwd),
+                None,
+                "{cwd}"
+            );
+            assert_eq!(
+                verdict(
+                    "GIT_DIR=/home/nez/scratch/a/.git git worktree add ../x",
+                    cwd
+                ),
+                None,
+                "{cwd}"
+            );
+            assert_eq!(
+                verdict(
+                    "(cd ~/Projects/Lucina/SecretaryIOS); git -C ~/scratch/a worktree add ../x",
+                    cwd
+                ),
+                None,
+                "{cwd}"
+            );
+        }
     }
 
     #[test]
