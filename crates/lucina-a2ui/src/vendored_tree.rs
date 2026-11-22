@@ -317,11 +317,11 @@ fn vendored_tree_holds_only_regular_files() {
 fn pin_is_recorded_everywhere() {
     let readme = read(&root().join("third_party/a2ui/README.md"));
     assert!(
-        readme.contains(lucina_a2ui::UPSTREAM_COMMIT),
+        readme.contains(crate::UPSTREAM_COMMIT),
         "third_party/a2ui/README.md does not name the upstream commit {}",
-        lucina_a2ui::UPSTREAM_COMMIT
+        crate::UPSTREAM_COMMIT
     );
-    let pin = format!("pin = {:?}", lucina_a2ui::UPSTREAM_COMMIT);
+    let pin = format!("pin = {:?}", crate::UPSTREAM_COMMIT);
     assert!(
         has_line(&registry_block(), &pin),
         "the a2ui block of docs/upstreams.toml has no line {pin}"
@@ -350,13 +350,13 @@ fn licence_is_recorded() {
 #[test]
 fn the_readme_records_a_secret_scan_of_the_pin() {
     let readme = read(&root().join("third_party/a2ui/README.md"));
-    let scanned = readme.lines().find(|line| {
-        line.contains(lucina_a2ui::UPSTREAM_COMMIT) && line.contains("no leaks found")
-    });
+    let scanned = readme
+        .lines()
+        .find(|line| line.contains(crate::UPSTREAM_COMMIT) && line.contains("no leaks found"));
     assert!(
         scanned.is_some(),
         "third_party/a2ui/README.md records no secret scan of pin {}",
-        lucina_a2ui::UPSTREAM_COMMIT
+        crate::UPSTREAM_COMMIT
     );
 }
 

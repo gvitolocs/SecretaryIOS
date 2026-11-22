@@ -16,7 +16,7 @@ v1.0 specification — vendored. They are the oracle of the port: the behaviour
 `specification/inference_formats/`, `specification/versions.json`, and `LICENSE`.
 
 `MANIFEST.sha256` lists every file as `<sha256>  ./<path>`, the way `sha256sum` prints, sorted.
-`crates/lucina-a2ui/tests/vendored_tree.rs` checks `upstream/` against that manifest, that no
+`crates/lucina-a2ui/src/vendored_tree.rs` checks `upstream/` against that manifest, that no
 Python file and no symlink came in, and that the pin and the licence are recorded.
 
 ## The rule
