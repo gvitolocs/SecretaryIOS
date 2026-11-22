@@ -89,13 +89,24 @@ components on the web (Android shows them through its WebView), SwiftUI views on
 | Step | Content | State |
 |---|---|---|
 | 1 | Upstream row, vendored oracle, this record | in work |
-| 2 | Rust core in the original's build order: data model and expressions; catalogue and schemas; validator and message processor; functions and actions | not started |
+| 2 | Rust core in the original's build order: data model and expressions; catalogue and schemas; validator and message processor; functions and actions | in work: data model, path resolution and expression parser done |
 | 3 | Web: layouts and display components, gallery of the 43 examples, a surface carried in a reply | not started |
 | 4 | Forms: inputs, binding, validation, actions back; the Rust builder | not started |
 | 5 | Cards that update in place | not started |
 | 6 | Lucina composes surfaces herself | not started |
 | 7 | iPhone renderer | not started |
 | 8 | Streaming build-up, charts, accessibility pass, two-way function calls | not started |
+
+## Conformance status
+
+What `cargo test -p lucina-a2ui` asserts of the suites step 2a answers — the data model, the scope
+path and the expression template parser. The counts are the tests' own, not a note beside them.
+
+| suite | cases | passed | skipped (reason) |
+|---|---|---|---|
+| `core/data_model.yaml` | 52 | 52 | 0 |
+| `core/data_context.yaml` | 11 | 11 | 0 |
+| `core/expressions.yaml` | 98 | 92 | 6 — `UNSUPPORTED["validate"]`: message processor: step 2b |
 
 ## Conformance cases we do not meet
 
