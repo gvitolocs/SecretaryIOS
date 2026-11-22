@@ -541,7 +541,9 @@ fn handle_resolve_path(case: &Case) -> Result<(), String> {
         context = "/".to_string();
     }
 
-    let resolved = ScopePath::new(&context).resolve(&path);
+    let resolved = ScopePath::new(&context)
+        .resolve(&path)
+        .map_err(|error| format!("{}: resolution raised {error}", case.id))?;
     // A case may state its expectation as `{result: ...}` as well as plain.
     let expected = expected
         .as_object()

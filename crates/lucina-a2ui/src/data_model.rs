@@ -25,6 +25,16 @@ pub const MAX_ARRAY_INDEX: u64 = 10_000;
 /// implementation. The original's `FORBIDDEN_KEYS`.
 pub const FORBIDDEN_SEGMENTS: [&str; 3] = ["__proto__", "constructor", "prototype"];
 
+/// The cap on depth, which the original has no need for and a port cannot do without.
+///
+/// A pointer of any number of segments and a value of any nesting make a model the port walks,
+/// clones and drops with recursion, so a payload could name a depth that overflows the stack
+/// instead of being refused. 128 is the nesting limit `serde_json`'s own parser works to: a value
+/// the model can hold is a value it can read back from a message, and no pointer the model
+/// addresses is deeper. The same cap covers [`crate::data_context`], whose resolved pointers are
+/// addressed here.
+pub const MAX_DEPTH: usize = 128;
+
 /// A handle to one observer registration.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WatchId(u64);
@@ -101,8 +111,8 @@ impl DataModel {
     /// or past the end of a list is nothing.
     ///
     /// # Errors
-    /// A `DataError` for a segment the model refuses to address, which is what a forbidden
-    /// segment is.
+    /// A `DataError` for a segment the model refuses to address, which is what a forbidden segment
+    /// is, and for a pointer with more segments than [`MAX_DEPTH`].
     pub fn get(&self, path: &str) -> Result<Option<&Value>, Error> {
         Ok(find(&self.data, &parse_pointer(path)?))
     }
@@ -122,13 +132,21 @@ impl DataModel {
     /// it addresses without lengthening the list. Writing at the root replaces the whole model.
     ///
     /// # Errors
-    /// A `DataError` for a forbidden segment, a non-numeric segment on an array, an index past
+    /// A `DataError` for a forbidden segment, a pointer with more segments than [`MAX_DEPTH`], a
+    /// value that nests deeper than [`MAX_DEPTH`], a non-numeric segment on an array, an index past
     /// [`MAX_ARRAY_INDEX`], or a write that would go through a primitive. Nothing is rolled back:
     /// the original raises from the same point of its own walk, containers it already built stay.
+    /// A refusal of a path or a value that is too deep happens before anything is built.
     pub fn set(&mut self, path: &str, value: Value) -> Result<(), Error> {
         let tokens = parse_pointer(path)?;
         if value.is_null() && find(&self.data, &tokens).is_none() {
             return Ok(());
+        }
+        let depth = value_depth(&value);
+        if depth > MAX_DEPTH {
+            return Err(Error::data(format!(
+                "Cannot set path '{path}': the value nests {depth} levels, more than the {MAX_DEPTH} the model holds."
+            )));
         }
         let before = self.snapshot(&tokens);
 
@@ -287,12 +305,18 @@ fn speaks_for(watched: &[String], written: &[String]) -> bool {
 }
 
 /// The segments of a parsed JSON Pointer, escapes resolved, or a `DataError` naming the path when
-/// a segment is one the model never addresses.
+/// a segment is one the model refuses to address.
 ///
 /// Empty segments are not segments, so `/foo/`, `//foo` and `/foo` are one path, as the suite's
 /// `test_data_model_normalizes_empty_path_segments` states. A lone `/` or an empty path is the
-/// root.
+/// root. More segments than [`MAX_DEPTH`] is a pointer the model does not address at all.
 fn parse_pointer(path: &str) -> Result<Vec<String>, Error> {
+    let depth = depth_of(path);
+    if depth > MAX_DEPTH {
+        return Err(Error::data(format!(
+            "Path '{path}' names {depth} segments, more than the {MAX_DEPTH} the model addresses."
+        )));
+    }
     let tokens: Vec<String> = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -306,6 +330,16 @@ fn parse_pointer(path: &str) -> Result<Vec<String>, Error> {
         }
     }
     Ok(tokens)
+}
+
+/// The number of segments a pointer names. Empty segments are not segments, which is the same
+/// count [`parse_pointer`] splits into tokens and the unit the cap on [`MAX_DEPTH`] is measured
+/// in. A scope joins pointers before the model is asked to address them, and counts them here.
+pub(crate) fn depth_of(pointer: &str) -> usize {
+    pointer
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .count()
 }
 
 /// The value the model holds at `segments`, or `None` when it holds nothing there. A stored
@@ -398,6 +432,27 @@ fn exact_integer(number: &Number) -> Option<i128> {
         .as_i64()
         .map(i128::from)
         .or_else(|| number.as_u64().map(i128::from))
+}
+
+/// The levels a value nests: none for a scalar, one more for each array or object around it.
+///
+/// Counted with a stack of its own rather than by recursion, so that the check that keeps the
+/// stack safe is not the thing that overflows it. The walk is the same order of work as the
+/// original's `copy.deepcopy` of the value it writes at the same point
+/// (`state/data_model.py:172`), so it costs nothing the original was not already paying.
+fn value_depth(value: &Value) -> usize {
+    let mut deepest = 0;
+    let mut stack = Vec::with_capacity(8);
+    stack.push((value, 0usize));
+    while let Some((node, level)) = stack.pop() {
+        deepest = deepest.max(level);
+        match node {
+            Value::Array(items) => stack.extend(items.iter().map(|item| (item, level + 1))),
+            Value::Object(entries) => stack.extend(entries.values().map(|item| (item, level + 1))),
+            _ => {}
+        }
+    }
+    deepest
 }
 
 /// Whether a segment is a canonical array index: `0`, or digits with no leading zero. Anything

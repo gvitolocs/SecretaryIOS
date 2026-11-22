@@ -9,6 +9,13 @@
 //! `conformance/core/data_context.yaml`. The rest of the original's `DataContext` — bindings,
 //! function calls, actions — is built with the message processor; what lives here is the scope,
 //! which needs none of it.
+//!
+//! What comes out of here is a pointer the data model is asked to address, so the model's cap on
+//! depth is checked on the way out: a scope that joins past [`crate::data_model::MAX_DEPTH`] is
+//! refused here, in the same `DataError` shape the model refuses it in.
+
+use crate::data_model::{depth_of, MAX_DEPTH};
+use crate::error::Error;
 
 /// The data path one scope of a surface reads relative pointers against.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,18 +44,77 @@ impl ScopePath {
     /// `"."` are the scope itself; anything else hangs under the scope, however many segments it
     /// has. A trailing slash of the scope is not part of the scope: `/user/` and `/user` are the
     /// same one.
-    pub fn resolve(&self, relative: &str) -> String {
-        if relative.starts_with('/') {
-            return relative.to_string();
-        }
-        let base = self.path.trim_end_matches('/');
-        if relative.is_empty() || relative == "." {
-            return if base.is_empty() {
-                "/".to_string()
+    ///
+    /// # Errors
+    /// A `DataError` when the pointer that comes out names more segments than
+    /// [`MAX_DEPTH`], which is a pointer no part of the port can address.
+    pub fn resolve(&self, relative: &str) -> Result<String, Error> {
+        let resolved = if relative.starts_with('/') {
+            relative.to_string()
+        } else {
+            let base = self.path.trim_end_matches('/');
+            if relative.is_empty() || relative == "." {
+                if base.is_empty() {
+                    "/".to_string()
+                } else {
+                    base.to_string()
+                }
             } else {
-                base.to_string()
-            };
+                format!("{base}/{relative}")
+            }
+        };
+        let depth = depth_of(&resolved);
+        if depth > MAX_DEPTH {
+            return Err(Error::data(format!(
+                "Cannot resolve '{relative}' against '{}': the pointer names {depth} segments, more than the {MAX_DEPTH} the model addresses.",
+                self.path
+            )));
         }
-        format!("{base}/{relative}")
+        Ok(resolved)
+    }
+}
+
+/// The cap is what the suites do not reach: `data_context.yaml` resolves short paths and says
+/// nothing about depth, and the refusal has to be here rather than at the write because a resolved
+/// pointer is passed around as the address of a binding.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ErrorCategory;
+
+    /// A pointer of `segments` segments: `/s0/s1/…`.
+    fn pointer(segments: usize) -> String {
+        let mut path = String::with_capacity(segments * 4);
+        for index in 0..segments {
+            path.push('/');
+            path.push('s');
+            path.push_str(&index.to_string());
+        }
+        path
+    }
+
+    #[test]
+    fn a_scope_that_joins_past_the_cap_is_refused() {
+        let scope = ScopePath::new("/people/2");
+        assert_eq!(scope.resolve("name").as_deref(), Ok("/people/2/name"));
+        assert_eq!(scope.resolve(".").as_deref(), Ok("/people/2"));
+
+        // A scope of the deepest addressable size, one segment short of it, still joins.
+        let joined = ScopePath::new(&pointer(MAX_DEPTH - 1))
+            .resolve("last")
+            .expect("a pointer of exactly the deepest size");
+        assert_eq!(depth_of(&joined), MAX_DEPTH);
+
+        for problem in [
+            ScopePath::new(&pointer(MAX_DEPTH)).resolve("one_more"),
+            ScopePath::new("/").resolve(&pointer(MAX_DEPTH + 1)),
+        ] {
+            assert_eq!(
+                problem
+                    .expect_err("a pointer of more segments than the model addresses")
+                    .category(),
+                ErrorCategory::DataError
+            );
+        }
     }
 }
