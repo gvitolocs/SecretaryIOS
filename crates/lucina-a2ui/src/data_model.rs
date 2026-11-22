@@ -10,6 +10,12 @@
 //! `&str`), no caller-owned value to defend against (`set` takes the value by moving it in), and
 //! notifications the host delivers instead of callbacks the store invokes — a callback handed a
 //! borrow of the model would have to borrow the model it is busy changing.
+//!
+//! The host drains the queue with [`DataModel::take_notifications`] right after each write, and
+//! that drain is the moment a notification is handed out: an observer detached between the write
+//! and the drain hears nothing, which is what the original does by re-reading its live listener
+//! list as each path fires (`state/data_model.py:342`). [`DataModel::dispose`] drops whatever was
+//! not yet handed out.
 
 use std::collections::HashMap;
 
@@ -75,8 +81,8 @@ pub struct DataModel {
     /// Which path each live observer is on. An observer detached with `unsubscribe` leaves it, so
     /// this is also the answer to "is this observer still there".
     registered: HashMap<WatchId, usize>,
-    /// The notifications the writes since the last call produced, oldest first, one entry per
-    /// observer that fired.
+    /// The notifications the writes since the last drain produced, oldest first, one entry per
+    /// observer that fired. What an observer that is gone by then was told is dropped at the drain.
     pending: Vec<(WatchId, Value)>,
     next_id: u64,
 }
@@ -219,7 +225,9 @@ impl DataModel {
         Ok(Watch { id, initial })
     }
 
-    /// Detaches one observer. Detaching one that is gone already does nothing.
+    /// Detaches one observer. Detaching one that is gone already does nothing. A notification the
+    /// observer was owed and has not been handed out yet goes with it: the original re-reads its
+    /// live listener list as each path fires (`state/data_model.py:342`).
     pub fn unsubscribe(&mut self, id: WatchId) {
         let Some(at) = self.registered.remove(&id) else {
             return;
@@ -227,13 +235,20 @@ impl DataModel {
         self.watched[at].ids.retain(|watcher| *watcher != id);
     }
 
-    /// The notifications the writes since the last call produced, oldest first, one entry per
-    /// observer that fired.
+    /// The notifications the writes since the last drain produced, oldest first, one entry per
+    /// observer that fired and is still subscribed. The host calls this right after each write.
     pub fn take_notifications(&mut self) -> Vec<(WatchId, Value)> {
-        std::mem::take(&mut self.pending)
+        let DataModel {
+            registered,
+            pending,
+            ..
+        } = self;
+        pending.retain(|(id, _)| registered.contains_key(id));
+        std::mem::take(pending)
     }
 
-    /// Detaches every observer, leaving the data where it is.
+    /// Detaches every observer, leaving the data where it is. What was not yet handed out is
+    /// dropped with them.
     pub fn dispose(&mut self) {
         self.watched.clear();
         self.paths.clear();
