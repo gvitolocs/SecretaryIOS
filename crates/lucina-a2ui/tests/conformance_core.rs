@@ -248,8 +248,9 @@ fn handle_data_model(case: &Case) -> Result<(), String> {
             &case.id,
         )?;
         let expected_error = expectation(step, &case.id)?;
+        let path = string_of(step, "path", &case.id, &format!("steps[{index}]"))?;
 
-        let outcome = apply_step(&mut model, step, op, &mut last_set);
+        let outcome = apply_step(&mut model, step, op, &path, &mut last_set);
         if let Some(expected) = expected_error {
             expect_failure(&case.id, expected, outcome.map(drop))?;
             let _ = model.take_notifications();
@@ -261,7 +262,7 @@ fn handle_data_model(case: &Case) -> Result<(), String> {
         deliver(&mut model, &mut observers);
 
         if let Outcome::Read(read) = outcome {
-            check_get(step, &case.id, index, read)?;
+            check_get(step, &case.id, index, &path, read)?;
         }
         check_notified(step, &case.id, index, &observers)?;
         check_values(step, &case.id, index, &observers)?;
@@ -299,9 +300,9 @@ fn apply_step(
     model: &mut DataModel,
     step: &Value,
     op: Op,
+    path: &str,
     last_set: &mut Option<Value>,
 ) -> Result<Outcome, Error> {
-    let path = step.get("path").and_then(Value::as_str).unwrap_or("");
     Ok(match op {
         Op::Get => Outcome::Read(model.get(path)?.cloned()),
         Op::Set => {
@@ -338,17 +339,33 @@ fn deliver(model: &mut DataModel, observers: &mut [Observer]) {
     }
 }
 
+/// The keys that make a `get` step state an expectation. The original's
+/// `_DATA_MODEL_GET_EXPECT_KEYS`.
+const GET_EXPECTATION_KEYS: &[&str] = &[
+    "expect",
+    "expect_absent",
+    "expect_type",
+    "expect_notified",
+    "expect_values",
+    "expect_error",
+];
+
 /// What a `get` step asked for: absence, a container of a kind, a whole value.
-fn check_get(step: &Value, id: &str, index: usize, read: Option<Value>) -> Result<(), String> {
-    if step.get("expect").is_none()
-        && step.get("expect_absent").is_none()
-        && step.get("expect_type").is_none()
+fn check_get(
+    step: &Value,
+    id: &str,
+    index: usize,
+    path: &str,
+    read: Option<Value>,
+) -> Result<(), String> {
+    if !GET_EXPECTATION_KEYS
+        .iter()
+        .any(|key| step.get(*key).is_some())
     {
         return Err(format!(
             "{id}: steps[{index}] is a 'get' with no expectation"
         ));
     }
-    let path = step.get("path").and_then(Value::as_str).unwrap_or("");
     // The suite's own words for absence: the original's `get` answers a stored `null` and a
     // missing key with the same `None`, and `data_model.yaml:38-41` says the distinction between
     // them is left out of the suite on purpose, because languages without `undefined` cannot
@@ -516,11 +533,14 @@ fn handle_resolve_path(case: &Case) -> Result<(), String> {
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
     assert_known_keys(&args, RESOLVE_PATH_ARGS_KEYS, "args key", &case.id)?;
 
-    let path = textual(&args, "path").unwrap_or_default();
-    let context = textual(&args, "contextPath")
-        .or_else(|| textual(&args, "context_path"))
-        .filter(|context| !context.is_empty())
-        .unwrap_or_else(|| "/".to_string());
+    let path = string_of(&args, "path", &case.id, "args")?;
+    let mut context = string_of(&args, "contextPath", &case.id, "args")?;
+    if context.is_empty() {
+        context = string_of(&args, "context_path", &case.id, "args")?;
+    }
+    if context.is_empty() {
+        context = "/".to_string();
+    }
 
     let resolved = ScopePath::new(&context).resolve(&path);
     // A case may state its expectation as `{result: ...}` as well as plain.
@@ -548,14 +568,31 @@ fn handle_parse_expression_template(case: &Case) -> Result<(), String> {
             case.id
         ));
     }
-    let input = textual(&case.json, "input").unwrap_or_default();
+    let input = string_of(&case.json, "input", &case.id, "the case")?;
     if let Some(expected) = expected_error {
-        return expect_failure(&case.id, expected, parse_template(&input).map(drop));
+        // A case of this action that names no category expects `ParseError`: that is what the
+        // original's harness defaults it to (`test_conformance.py:3360`), because a template that
+        // does not parse raises the expression error the guide maps to `ParseError`.
+        let expected = named_category(expected, "ParseError");
+        return expect_failure(&case.id, &expected, parse_template(&input).map(drop));
     }
     let parts = parse_template(&input)
         .map_err(|error| format!("{}: the template raised {error}", case.id))?;
     compare(case.require("expect")?, &Value::Array(joined_parts(&parts)))
         .map_err(|problem| format!("{}: parsed parts: {problem}", case.id))
+}
+
+/// The same expectation with `category` filled in, when the case left it out.
+fn named_category(expected: &Value, category: &str) -> Value {
+    let Some(object) = expected.as_object() else {
+        return expected.clone();
+    };
+    if object.contains_key("category") {
+        return expected.clone();
+    }
+    let mut filled = object.clone();
+    filled.insert("category".to_string(), Value::String(category.to_string()));
+    Value::Object(filled)
 }
 
 /// The guide, 3: "Join adjacent literal parts and drop empty ones before comparing, so
@@ -573,7 +610,17 @@ fn joined_parts(parts: &[TemplatePart]) -> Vec<Value> {
     joined
 }
 
-/// A case's key as the string it holds, or nothing when it holds no such key.
-fn textual(holder: &Value, key: &str) -> Option<String> {
-    holder.get(key).and_then(Value::as_str).map(str::to_string)
+/// A case's or a step's `key` as the string it holds.
+///
+/// An absent key is the original's empty string; a key that holds anything but a string is a case
+/// this harness cannot run, and says so rather than reading it as nothing.
+fn string_of(holder: &Value, key: &str, id: &str, at: &str) -> Result<String, String> {
+    match holder.get(key) {
+        None => Ok(String::new()),
+        Some(Value::String(found)) => Ok(found.clone()),
+        Some(found) => Err(format!(
+            "{id}: {at} '{key}' is not a string, it is {}",
+            kind(found)
+        )),
+    }
 }
