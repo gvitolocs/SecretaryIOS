@@ -72,8 +72,8 @@ ADOPT = used as is. ADAPT = behaviour reimplemented our way, Rust first. REFEREN
   agent only when the catalogue says so; the agent sees a surface's data only for surfaces it created and only with an
   action; the regex dialect's limits; catalogue references are never fetched.
 - Ours stay: media and image sources only from our own API or our own domain (the original has no rule for Image, Video
-  and AudioPlayer URLs); the link rules of format v1; no raw HTML ever; hard caps on tree size and depth; a secret is never
-  typed into a form field (the secret sheet stays the only way).
+  and AudioPlayer URLs); the link rules of format v1; no raw HTML ever; hard caps on tree size and depth, and paths and
+  written values are capped at 128 levels; a secret is never typed into a form field (the secret sheet stays the only way).
 - Every surface also carries a plain-text form, so Telegram, Discord, voice and old app versions keep working. The
   original has none.
 - The vendored original under `third_party/a2ui/` is not scanned file by file by the merge gate; it was scanned in one
@@ -110,6 +110,42 @@ path and the expression template parser. The counts are the tests' own, not a no
 | `core/data_model.yaml` | 52 | 52 | 0 |
 | `core/data_context.yaml` | 11 | 11 | 0 |
 | `core/expressions.yaml` | 98 | 92 | 6 — `UNSUPPORTED["validate"]`: message processor: step 2b |
+
+## Deliberate differences from the original
+
+Where the port does something the originals do not, decided and stated here rather than found later. Each line: what we
+do, and what each original does.
+
+- A float literal worth zero is written `0`, sign and all. TypeScript and the harness guide normalise `-0` the same way;
+  Python keeps `-0.0`.
+- Whitespace inside an expression is Unicode `White_Space`. Python's `isspace` also takes U+001C–U+001F, and JavaScript's
+  `\s` takes U+FEFF but not U+0085. No case of any suite holds one of those characters.
+- A JSON Pointer array index is ASCII digits only. Python also accepts a trailing newline there, because `re.match`
+  anchors and `int()` strips.
+- An integer literal is exact up to `u64::MAX` and a double beyond it. Python is exact at any size; TypeScript is a
+  double from 2^53.
+- A boolean never equals a number: `true` and `1` are different values here. Python's `==` says they are the same;
+  TypeScript's `===` and `Object.is` say they are not.
+- A notification is queued by a write and handed out when the host drains, not delivered by callback inside the write;
+  the original calls its listeners from the write itself, on a live list (`state/data_model.py:342`). Draining skips an
+  observer that is gone by then, which the original's live list also does.
+- A pointer of more than 128 segments, or a value nesting deeper than 128, is refused. Neither original refuses it; the
+  cap is serde_json's own parsing limit, taken over so that a structure the model can hold is one the wire can deliver.
+- `DataModel.resolve_path` is ported as `DataModel::resolve_path`, the join a caller hands a path to
+  rather than a second scope resolution, and it keeps its three differences from
+  `DataContext.resolve_path`: no trailing-slash stripping, no `.` case, and an empty context joined
+  as `"/" + path` instead of answered as the root.
+
+## Not yet ported
+
+What the suites of step 2a do not reach and the crate therefore does not have yet. Each of these is a line of the oracle,
+not a rejection.
+
+- The fields of the original's errors beyond a category and a message (`exceptions.py:22-205`): `details`, `code`, `path`,
+  `surface_id` and `function_call_id`, the default code each class carries, `A2uiExpressionError.expression`,
+  `RpcErrorCode` and `A2uiRpcError`. They arrive with the message processor and the function calls, steps 2b and 2c.
+- The executed-case manifest the harness guide asks for: a record of which cases ran, per run, beside the counts. The
+  suites of step 2a run the loader's own count of passed and skipped; the manifest comes when the runner does.
 
 ## Conformance cases we do not meet
 

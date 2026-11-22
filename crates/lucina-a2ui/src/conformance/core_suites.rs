@@ -9,8 +9,8 @@
 //! Protocol versions: every case of `core/data_model.yaml` (`data_model.yaml:49` and its 51
 //! siblings) and of `core/data_context.yaml` (`data_context.yaml:23` and its 10 siblings) declares
 //! `v0.9`, and this crate implements `1.0`. Those cases run here; they are not filtered out,
-//! because in the original there is one data model and one path resolution for every version and
-//! neither reads a version:
+//! because the Python core has one data model and one path resolution for every version and reads
+//! no version in either:
 //!
 //! - `python/a2ui_core/src/a2ui/core/state/data_model.py:33-351` is the whole `DataModel` class.
 //!   Its constructor takes data and nothing else, and no method of it branches on a protocol
@@ -18,11 +18,17 @@
 //! - `python/a2ui_core/src/a2ui/core/resolution/data_context.py:640-647` is
 //!   `DataContext.resolve_path`, three joins and no version in sight.
 //! - The TypeScript core keeps one copy of each too: `typescript/core/web_core/src/state/
-//!   data-model.ts:84-495` and `typescript/core/web_core/src/resolution/data-context.ts:1737-1751`.
-//!   Its `v0_8/`, `v0_9/` and `v1_0/` directories hold schemas, catalogues and message shapes, not
+//!   data-model.ts:84-495` and `typescript/core/web_core/src/resolution/data-context.ts:1737-1751`;
+//!   its `v0_8/`, `v0_9/` and `v1_0/` directories hold schemas, catalogues and message shapes, not
 //!   a second data model or a second resolver — only the pre-blueprint
 //!   `typescript/core/web_core/src/v0_8/data/model-processor.ts:215-227` has an old `resolvePath`
-//!   of its own, and no case of these two suites is labelled v0.8.
+//!   of its own, and no case of these two suites is labelled v0.8. It is not version-blind the way
+//!   Python is, though: `DataModel.set` takes a caller-driven `preserveNull`
+//!   (`state/data-model.ts:137,151`) that a `DataContext` computes from the protocol version of
+//!   the surface it belongs to (`resolution/data-context.ts:505-511`), because a pre-1.0 data
+//!   model stores a `null` where v1.0 removes the entry. Nothing of these two suites reaches that
+//!   flag, so nothing here follows it: the port removes the entry, which is the v1.0 answer and
+//!   the Python answer, and what a pre-1.0 surface does is for step 2b to decide.
 //!
 //! The version filter of the guide therefore starts with the actions that read a message
 //! envelope, which is step 2b.

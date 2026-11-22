@@ -437,9 +437,9 @@ fn parse_number_literal(scanner: &mut Scanner) -> Result<Expression, Error> {
     }
     let as_number = Number::from_f64(as_float).ok_or_else(|| out_of_range(&text))?;
     if text.contains('.') || text.contains('e') || text.contains('E') {
-        // A literal worth zero is written as zero, sign and all: the original's TypeScript
-        // answers `0` for `-0` and its Python never carries the sign, so a port that kept `-0.0`
-        // would print `-0` where the protocol says `0`.
+        // A literal worth zero is written as zero, sign and all. The original's TypeScript answers
+        // `0` for `-0` and its Python keeps `-0.0` here; the two that normalise are followed,
+        // because a port that kept the sign would print `-0` where the protocol says `0`.
         if as_float == 0.0 {
             return Ok(Expression::Literal(Value::Number(
                 Number::from_f64(0.0).ok_or_else(|| out_of_range(&text))?,
@@ -448,8 +448,9 @@ fn parse_number_literal(scanner: &mut Scanner) -> Result<Expression, Error> {
         return Ok(Expression::Literal(Value::Number(as_number)));
     }
     // Within the integers a JSON number carries, exactly; past them, the double the original's
-    // TypeScript engine would have held. Python keeps such an integer at any size and Swift to
-    // 2^63-1, which is the port's one number type talking.
+    // TypeScript engine would have held. Neither original does exactly this: Python is exact at
+    // any size (its integers have none) and TypeScript is a double from 2^53. The cap here is
+    // u64::MAX, which is the port's one number type talking.
     let integer = text.parse::<i64>().ok().map(Number::from).or_else(|| {
         if text.starts_with('-') {
             None
