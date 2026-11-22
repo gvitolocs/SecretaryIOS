@@ -272,8 +272,12 @@ lagent device release iphone
   name the directory like `-C`. The worktree folders that count are those of the Lucina repos (`.worktrees/SecretaryIOS`,
   `lucina…`, `LucinaAndroidOS`), not every `.worktrees/*`. Accepted fail-opens, ONLY with the session in the group
   folder: a repo path that appears nowhere in the command text (held in the environment, built by a substitution or
-  read from a file); a symlink from scratch to a repo; a script file run by `bash script.sh` (not read for these rules);
-  an alias or a function. The iPhone, kill and cargo-target rules are unchanged.
+  read from a file); a symlink from scratch to a repo (a scratch clone of a Lucina repo carries its `origin` too); a script file run
+  by `bash script.sh` (not read for these rules); an alias or a function. A call behind `xargs`, `find -exec` or an
+  unknown wrapper is a call with an unknown directory. A call acts on every directory its options name (`-C`,
+  `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`): one repo among them is enough. The hook reads at most
+  4 million characters per command, nested `ssh`, `bash -c` and `$( )` levels included, and 8 levels deep; the
+  rest counts as an unknown call, so it refuses when the text names a repo. The iPhone, kill and cargo-target rules are unchanged.
 
 - On the owner's Mac, in every session (Lucina or not), the same hook also denies pattern-based process kills run
   locally: `pkill`, `killall`, `xargs kill` and `kill $(pgrep …)` (also inside `$( )`, backticks, groups and `bash -c`).
