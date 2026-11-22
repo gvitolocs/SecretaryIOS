@@ -31,18 +31,24 @@ impl ScopePath {
         }
     }
 
-    /// The scope itself, in the original's spelling.
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
     /// The absolute pointer `relative` addresses in this scope.
     ///
     /// A pointer that starts with `/` is absolute already and is returned as it stands; `""` and
     /// `"."` are the scope itself; anything else hangs under the scope, however many segments it
-    /// has.
+    /// has. A trailing slash of the scope is not part of the scope: `/user/` and `/user` are the
+    /// same one.
     pub fn resolve(&self, relative: &str) -> String {
-        let _ = (&self.path, relative);
-        String::new()
+        if relative.starts_with('/') {
+            return relative.to_string();
+        }
+        let base = self.path.trim_end_matches('/');
+        if relative.is_empty() || relative == "." {
+            return if base.is_empty() {
+                "/".to_string()
+            } else {
+                base.to_string()
+            };
+        }
+        format!("{base}/{relative}")
     }
 }
