@@ -26,7 +26,7 @@
 //! - the create carries an idempotency key, and an error on it looks agentd up before it gives
 //!   anything back.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -319,7 +319,7 @@ pub trait Hands: Send + Sync {
         cwd: &str,
         prompt: &str,
         title: &str,
-        labels: Value,
+        labels: BTreeMap<String, String>,
         key: Option<&str>,
     ) -> Result<String, String>;
     /// The agent's status; `Ok(None)`: it no longer exists; `Err`: agentd can't say now.
@@ -982,7 +982,7 @@ pub async fn start_fix(
             .ok_or_else(|| (None, late("worktree create")))?
             .map_err(|e| (None, e))?;
         let prompt = policy.brief(pick_flaw, &claimed, &cwd);
-        let labels = json!({"from": "lucina", "flaw": id, "platform": p, "flaw_lane": lane, "lucina.handoff-off": "1"});
+        let labels = fix_labels(id, p, &lane);
         let agent = within(
             lim.create,
             hands.start_agent(policy, step, &cwd, &prompt, &title, labels, Some(&key)),
@@ -1842,7 +1842,7 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, probes: &
                     &cwd,
                     &policy.triage_brief(&flaw, &cwd),
                     &title,
-                    json!({"from": "lucina", "flaw": flaw.id, "triage": "1", "flaw_lane": lane, "lucina.handoff-off": "1"}),
+                    triage_labels(&flaw.id, &lane),
                     None,
                 ),
             )
@@ -2147,6 +2147,57 @@ impl StateHands {
     }
 }
 
+/// agentd reads every label value as a string, so labels are made this way and nowhere else: a
+/// boolean or a number does not compile (LA-C049).
+fn string_labels<const N: usize>(items: [(&str, &str); N]) -> BTreeMap<String, String> {
+    items.map(|(k, v)| (k.to_owned(), v.to_owned())).into()
+}
+
+/// The labels a fix run carries: the tracker and agentd's list look it up by them, so every key
+/// and its text is part of what the store and the dispatcher already read back.
+pub fn fix_labels(flaw: &str, platform: Platform, lane: &str) -> BTreeMap<String, String> {
+    string_labels([
+        ("from", "lucina"),
+        ("flaw", flaw),
+        ("platform", platform.as_str()),
+        ("flaw_lane", lane),
+        ("lucina.handoff-off", "1"),
+    ])
+}
+
+/// The labels a triage run carries: same as [`fix_labels`], with `triage` on instead of a platform.
+pub fn triage_labels(flaw: &str, lane: &str) -> BTreeMap<String, String> {
+    string_labels([
+        ("from", "lucina"),
+        ("flaw", flaw),
+        ("triage", "1"),
+        ("flaw_lane", lane),
+        ("lucina.handoff-off", "1"),
+    ])
+}
+
+/// What [`Hands::start_agent`] sends agentd: the step's provider and model, the policy's effort
+/// and mode, and the labels the dispatcher tracks the run by. Pure, so the contract test can read
+/// it back as agentd's own request type.
+pub fn agent_body(
+    policy: &Policy,
+    step: &Step,
+    cwd: &str,
+    prompt: &str,
+    title: &str,
+    labels: BTreeMap<String, String>,
+    key: Option<&str>,
+) -> Value {
+    let mut body = json!({
+        "provider": step.provider, "model": step.model, "thinkingOptionId": policy.effort,
+        "modeId": policy.mode, "cwd": cwd, "prompt": prompt, "title": clip(title, 80), "labels": labels,
+    });
+    if let Some(key) = key {
+        body["idempotencyKey"] = json!(key);
+    }
+    body
+}
+
 #[async_trait::async_trait]
 impl Hands for StateHands {
     async fn start_task(
@@ -2177,16 +2228,10 @@ impl Hands for StateHands {
         cwd: &str,
         prompt: &str,
         title: &str,
-        labels: Value,
+        labels: BTreeMap<String, String>,
         key: Option<&str>,
     ) -> Result<String, String> {
-        let mut body = json!({
-            "provider": step.provider, "model": step.model, "thinkingOptionId": policy.effort,
-            "modeId": policy.mode, "cwd": cwd, "prompt": prompt, "title": clip(title, 80), "labels": labels,
-        });
-        if let Some(key) = key {
-            body["idempotencyKey"] = json!(key);
-        }
+        let body = agent_body(policy, step, cwd, prompt, title, labels, key);
         let v = self.agentd("POST", "/agents", Some(&body)).await?;
         v["id"]
             .as_str()
@@ -2743,7 +2788,7 @@ mod tests {
         /// What started: the worktree it works in and the chain step it runs on.
         agents: Mutex<Vec<(String, String)>>,
         /// The labels each agent started with, in `agents` order: `ag{n}` is index n.
-        labels: Mutex<Vec<Value>>,
+        labels: Mutex<Vec<BTreeMap<String, String>>>,
         /// agentd's quota hand-off: the agent it continued a run on to, `from -> to`.
         continued: Mutex<HashMap<String, String>>,
         /// The agents put away through `archive_agent`.
@@ -2881,7 +2926,7 @@ mod tests {
             cwd: &str,
             prompt: &str,
             _t: &str,
-            l: Value,
+            l: BTreeMap<String, String>,
             key: Option<&str>,
         ) -> Result<String, String> {
             self.at("start_agent").await;
@@ -2950,9 +2995,9 @@ mod tests {
             Ok((0..labels.len())
                 .filter(|i| {
                     let l = &labels[*i];
-                    l["flaw"] == flaw
-                        && l["platform"] == p.as_str()
-                        && l["triage"] != "1"
+                    l.get("flaw").map(String::as_str) == Some(flaw)
+                        && l.get("platform").map(String::as_str) == Some(p.as_str())
+                        && l.get("triage").map(String::as_str) != Some("1")
                         && !archived.contains(&format!("ag{i}"))
                 })
                 .map(|i| format!("ag{i}"))
@@ -2969,15 +3014,15 @@ mod tests {
                 .into_iter()
                 .filter_map(|id| {
                     let l = &labels[id.trim_start_matches("ag").parse::<usize>().ok()?];
-                    l["flaw"].as_str()?;
+                    l.get("flaw")?;
                     let idle =
                         self.status.lock().unwrap().get(&id).map(String::as_str) == Some("idle");
                     Some(Alive {
                         id,
-                        lane: l["flaw_lane"].as_str().map(str::to_owned),
-                        flaw: l["flaw"].as_str().map(str::to_owned),
-                        platform: l["platform"].as_str().map(str::to_owned),
-                        triage: l["triage"] == "1",
+                        lane: l.get("flaw_lane").cloned(),
+                        flaw: l.get("flaw").cloned(),
+                        platform: l.get("platform").cloned(),
+                        triage: l.get("triage").map(String::as_str) == Some("1"),
                         idle,
                     })
                 })
@@ -3001,7 +3046,9 @@ mod tests {
             let mut out: Vec<String> = Vec::new();
             for i in 0..labels.len().min(agents.len()) {
                 let l = &labels[i];
-                if l["flaw"] != flaw || l["triage"] != "1" {
+                if l.get("flaw").map(String::as_str) != Some(flaw)
+                    || l.get("triage").map(String::as_str) != Some("1")
+                {
                     continue;
                 }
                 // The hand-off continuation inherits the flaw and triage labels, so agentd answers
@@ -4085,11 +4132,15 @@ mod tests {
         let labels = h.labels.lock().unwrap();
         assert_eq!(labels.len(), 2, "the fix, and one triage");
         for l in labels.iter() {
-            assert_eq!(l["lucina.handoff-off"].as_str(), Some("1"), "{l}");
+            assert_eq!(
+                l.get("lucina.handoff-off").map(String::as_str),
+                Some("1"),
+                "{l:?}"
+            );
         }
-        assert_eq!(labels[0]["flaw"].as_str(), Some(f.id.as_str()));
-        assert_eq!(labels[1]["flaw"].as_str(), Some(g.id.as_str()));
-        assert_eq!(labels[1]["triage"].as_str(), Some("1"));
+        assert_eq!(labels[0].get("flaw").map(String::as_str), Some(f.id.as_str()));
+        assert_eq!(labels[1].get("flaw").map(String::as_str), Some(g.id.as_str()));
+        assert_eq!(labels[1].get("triage").map(String::as_str), Some("1"));
     }
 
     #[tokio::test]
@@ -4217,7 +4268,9 @@ mod tests {
         assert_eq!(h.agents.lock().unwrap().len(), 1);
         assert_eq!(h.ran(), vec!["opencode:opencode/big-pickle"]);
         assert_eq!(
-            h.labels.lock().unwrap()[0]["lucina.handoff-off"].as_str(),
+            h.labels.lock().unwrap()[0]
+                .get("lucina.handoff-off")
+                .map(String::as_str),
             Some("1"),
             "and it is opted out of the hand-off like any other"
         );
@@ -5335,8 +5388,12 @@ mod tests {
             s.claim(&f.id, Platform::Web, "/r", "t").unwrap();
         }
         let step = p.chain[0].clone();
-        let labels =
-            json!({"from": "lucina", "flaw": a.id, "platform": "web", "lucina.handoff-off": "1"});
+        let labels = string_labels([
+            ("from", "lucina"),
+            ("flaw", a.id.as_str()),
+            ("platform", "web"),
+            ("lucina.handoff-off", "1"),
+        ]);
         let made = h
             .start_agent(&p, &step, "/w/x", "<owner_words>", "t", labels, None)
             .await
@@ -5655,7 +5712,7 @@ mod tests {
                 "/w",
                 "<owner_words>",
                 "t",
-                json!({}),
+                BTreeMap::new(),
                 Some(&key),
             )
             .await
@@ -6383,7 +6440,11 @@ mod tests {
                 "lookup" => *h.late_error.lock().unwrap() = Some("timed out".into()),
                 // An agent nobody tracks already works on the target.
                 "stop" | "archive" => {
-                    let labels = json!({"from": "lucina", "flaw": f.id, "platform": "web"});
+                    let labels = string_labels([
+                        ("from", "lucina"),
+                        ("flaw", f.id.as_str()),
+                        ("platform", "web"),
+                    ]);
                     h.start_agent(&p, &p.chain[0], "/w", "<owner_words>", "t", labels, None)
                         .await
                         .unwrap();
@@ -6508,7 +6569,12 @@ mod tests {
                 "t",
             )
             .unwrap();
-        let labels = json!({"from": "lucina", "flaw": a.id, "platform": "web", "flaw_lane": lane0});
+        let labels = string_labels([
+            ("from", "lucina"),
+            ("flaw", a.id.as_str()),
+            ("platform", "web"),
+            ("flaw_lane", lane0.as_str()),
+        ]);
         let id = h
             .start_agent(&p, &p.chain[0], "/w", "<owner_words>", "t", labels, None)
             .await
@@ -6804,7 +6870,7 @@ mod tests {
         }
         let labels = h.labels.lock().unwrap().clone();
         assert!(
-            labels.iter().all(|l| l["triage"] != "1"),
+            labels.iter().all(|l| l.get("triage").map(String::as_str) != Some("1")),
             "with it off no triage agent starts: {labels:?}"
         );
         assert!(s.triage_due().unwrap().iter().any(|x| x.id == f.id));
@@ -6821,6 +6887,11 @@ mod tests {
         let (s2, h2) = (Flaws::in_memory().unwrap(), Fake::default());
         report(&s2, "another untriaged report");
         tick(&s2, &on, &h2).await;
-        assert!(h2.labels.lock().unwrap().iter().any(|l| l["triage"] == "1"));
+        assert!(h2
+            .labels
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.get("triage").map(String::as_str) == Some("1")));
     }
 }

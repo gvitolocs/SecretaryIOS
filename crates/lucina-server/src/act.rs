@@ -9,6 +9,7 @@
 //!   and a mode that doesn't ask, never the flaw dispatcher's Claude policy.
 //! - [`Hands`]: what [`run`] does to the world, so a test can stand in for agentd.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use lucina_tools::tools::reach::{agentd_request, allowed_model};
@@ -24,8 +25,23 @@ const POLL: Duration = Duration::from_secs(5);
 /// Failed status reads in a row before the run is given up.
 const MAX_STATUS_ERRORS: u32 = 6;
 
+/// The labels of every act run: who started it, and that it is an act run. agentd reads every
+/// label value as a string, so `act` is the text `"true"` and never a boolean (LA-C049).
+pub fn labels() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("from".to_owned(), "lucina".to_owned()),
+        ("act".to_owned(), "true".to_owned()),
+    ])
+}
+
 /// What [`AgentdHands::start_agent`] sends agentd: only the keys the settings carry.
-pub fn agentd_body(act: &ActConfig, cwd: &str, prompt: &str, title: &str, labels: Value) -> Value {
+pub fn agentd_body(
+    act: &ActConfig,
+    cwd: &str,
+    prompt: &str,
+    title: &str,
+    labels: BTreeMap<String, String>,
+) -> Value {
     let mut body = json!({
         "provider": act.provider,
         "model": act.model,
@@ -53,7 +69,7 @@ pub trait Hands: Send + Sync {
         cwd: &str,
         prompt: &str,
         title: &str,
-        labels: Value,
+        labels: BTreeMap<String, String>,
     ) -> Result<String, String>;
     /// The agent's status; `Ok(None)`: it no longer exists; `Err`: agentd can't say now.
     async fn agent_status(&self, id: &str) -> Result<Option<String>, String>;
@@ -83,6 +99,27 @@ impl AgentdHands {
     }
 }
 
+/// The statuses agentd gives a run that is still working: everything else ended it.
+pub const WORKING: [&str; 2] = ["running", "initializing"];
+
+/// What agentd's `GET /agents/{id}` says the run's status is; `None`: the answer names none.
+pub fn status_of(v: &Value) -> Option<String> {
+    v["status"].as_str().map(str::to_owned)
+}
+
+/// What agentd's `POST /agents/{id}/wait` answer left of the run: its last message, and the error
+/// it ended on if it ended on one.
+pub fn answer_of(v: &Value) -> Answer {
+    Answer {
+        text: v["lastMessage"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        error: v["error"].as_str().map(str::to_owned),
+    }
+}
+
 #[async_trait::async_trait]
 impl Hands for AgentdHands {
     async fn start_agent(
@@ -91,7 +128,7 @@ impl Hands for AgentdHands {
         cwd: &str,
         prompt: &str,
         title: &str,
-        labels: Value,
+        labels: BTreeMap<String, String>,
     ) -> Result<String, String> {
         let body = agentd_body(act, cwd, prompt, title, labels);
         let v = self.agentd("POST", "/agents", Some(&body)).await?;
@@ -104,7 +141,7 @@ impl Hands for AgentdHands {
 
     async fn agent_status(&self, id: &str) -> Result<Option<String>, String> {
         match self.agentd("GET", &format!("/agents/{id}"), None).await {
-            Ok(v) => Ok(v["status"].as_str().map(str::to_owned)),
+            Ok(v) => Ok(status_of(&v)),
             Err(e) if e.starts_with("agentd 404") => Ok(None),
             Err(e) => Err(e),
         }
@@ -119,14 +156,7 @@ impl Hands for AgentdHands {
                 Some(&json!({})),
             )
             .await?;
-        Ok(Answer {
-            text: v["lastMessage"]
-                .as_str()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned),
-            error: v["error"].as_str().map(str::to_owned),
-        })
+        Ok(answer_of(&v))
     }
 
     async fn stop_agent(&self, id: &str) {
@@ -207,22 +237,14 @@ where
         .await
         .map_err(|e| format!("no working directory for the agent: {e}"))?;
     let cwd = cwd.display().to_string();
-    let id = hands
-        .start_agent(
-            act,
-            &cwd,
-            prompt,
-            title,
-            json!({"from": "lucina", "act": true}),
-        )
-        .await?;
+    let id = hands.start_agent(act, &cwd, prompt, title, labels()).await?;
     tracing::info!(agent = %id, "act: agent started");
     let started = Instant::now();
     let mut errors = 0u32;
     loop {
         tokio::time::sleep(timing.poll).await;
         match hands.agent_status(&id).await {
-            Ok(Some(s)) if s == "running" || s == "initializing" => errors = 0,
+            Ok(Some(s)) if WORKING.contains(&s.as_str()) => errors = 0,
             Ok(Some(_)) => break,
             Ok(None) => return Err("the agent is gone: Lucina Agents no longer knows it".into()),
             Err(e) => {
@@ -325,7 +347,7 @@ mod tests {
             cwd: &str,
             prompt: &str,
             title: &str,
-            labels: Value,
+            labels: BTreeMap<String, String>,
         ) -> Result<String, String> {
             if self.down {
                 return Err("Lucina Agents (agentd) is not reachable: no such file".into());
