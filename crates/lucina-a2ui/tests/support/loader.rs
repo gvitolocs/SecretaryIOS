@@ -38,16 +38,6 @@ pub struct Case {
 }
 
 impl Case {
-    /// The suite the case came from, as `conformance_schema.json` paths name it.
-    pub fn suite(&self) -> &str {
-        self.id.split('#').next().unwrap_or(&self.id)
-    }
-
-    /// The case's `name`.
-    pub fn name(&self) -> &str {
-        self.id.split_once('#').map(|(_, name)| name).unwrap_or("")
-    }
-
     /// The case's `action`, which is what the dispatcher routes on.
     pub fn action(&self) -> Option<&str> {
         self.json.get("action").and_then(Value::as_str)

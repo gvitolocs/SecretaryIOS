@@ -216,7 +216,10 @@ fn the_three_core_suites_load() {
                 "{}: odd id",
                 case.id
             );
-            assert!(!case.name().is_empty(), "{suite}: a case without a name");
+            assert!(
+                case.id.starts_with(&format!("{suite}#")) && case.id.len() > suite.len() + 1,
+                "{suite}: a case without a name"
+            );
             assert!(case.json.is_object(), "{}: not an object", case.id);
         }
     }
@@ -340,6 +343,5 @@ fn a_case_without_an_action_fails_and_is_named() {
         json: Value::Object(serde_json::Map::new()),
     };
     assert_eq!(case.action(), None);
-    assert_eq!(case.suite(), "core/x.yaml");
-    assert_eq!(case.name(), "test_n");
+    assert_eq!(case.id, "core/x.yaml#test_n");
 }

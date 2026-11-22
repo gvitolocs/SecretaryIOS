@@ -36,7 +36,9 @@ use lucina_a2ui::Error;
 use serde_json::{json, Value};
 use support::expect::kind;
 use support::loader::Case;
-use support::{assert_known_keys, compare, expect_failure, expectation, run_suite};
+use support::{
+    assert_known_case_keys, assert_known_keys, compare, expect_failure, expectation, run_suite,
+};
 
 const DATA_MODEL: &str = "core/data_model.yaml";
 const DATA_CONTEXT: &str = "core/data_context.yaml";
@@ -73,19 +75,9 @@ fn expressions_suite() {
 
 // ------------------------------------------------------------------ data_model
 
-/// The keys the `data_model` action states, the metadata of the guide's rule 2.1 first. The
-/// original's `_DATA_MODEL_CASE_KEYS`.
-const DATA_MODEL_CASE_KEYS: &[&str] = &[
-    "name",
-    "description",
-    "features",
-    "action",
-    "catalog",
-    "expect",
-    "initial",
-    "steps",
-    "watch",
-];
+/// The keys the `data_model` action states, beside the metadata the runner accepts for every
+/// case. The original's `_DATA_MODEL_CASE_KEYS`.
+const DATA_MODEL_CASE_KEYS: &[&str] = &["action", "catalog", "expect", "initial", "steps", "watch"];
 
 /// The keys of a `get` step. The original's `_DATA_MODEL_STEP_KEYS_BY_OP["get"]`.
 const GET_STEP_KEYS: &[&str] = &[
@@ -190,7 +182,7 @@ struct Observer {
 }
 
 fn handle_data_model(case: &Case) -> Result<(), String> {
-    assert_known_keys(&case.json, DATA_MODEL_CASE_KEYS, "case key", &case.id)?;
+    assert_known_case_keys(case, DATA_MODEL_CASE_KEYS)?;
     let mut model = match case.get("initial") {
         Some(initial) => DataModel::with_initial(initial.clone()),
         None => DataModel::new(),
@@ -263,8 +255,9 @@ fn handle_data_model(case: &Case) -> Result<(), String> {
             let _ = model.take_notifications();
             continue;
         }
-        let outcome = outcome
-            .map_err(|error| format!("{}: step {index} ({named}) raised {error}", case.id))?;
+        let outcome = outcome.map_err(|error| {
+            format!("{}: step {index} ({}) raised {error}", case.id, op.as_str())
+        })?;
         deliver(&mut model, &mut observers);
 
         if let Outcome::Read(read) = outcome {
@@ -356,7 +349,12 @@ fn check_get(step: &Value, id: &str, index: usize, read: Option<Value>) -> Resul
         ));
     }
     let path = step.get("path").and_then(Value::as_str).unwrap_or("");
-    if step.get("expect_absent") == Some(&json!(true)) && read.is_some() {
+    // The suite's own words for absence: the original's `get` answers a stored `null` and a
+    // missing key with the same `None`, and `data_model.yaml:38-41` says the distinction between
+    // them is left out of the suite on purpose, because languages without `undefined` cannot
+    // express it.
+    let holds = read.as_ref().is_some_and(|value| !value.is_null());
+    if step.get("expect_absent") == Some(&json!(true)) && holds {
         return Err(format!(
             "{id}: steps[{index}] expected path '{path}' to be absent, found {}",
             read.clone().unwrap_or(Value::Null)
@@ -485,7 +483,7 @@ fn mutate_in_place(target: &mut Value, path: &str, value: &Value) {
     }
     match current {
         Value::Array(items) => {
-            if let Some(index) = last.parse::<usize>().ok() {
+            if let Ok(index) = last.parse::<usize>() {
                 while items.len() <= index {
                     items.push(Value::Null);
                 }
@@ -501,23 +499,16 @@ fn mutate_in_place(target: &mut Value, path: &str, value: &Value) {
 
 // ------------------------------------------------------------------ resolve_path
 
-/// The keys the `resolve_path` action states. The original's `_RESOLVE_PATH_CASE_KEYS`.
-const RESOLVE_PATH_CASE_KEYS: &[&str] = &[
-    "name",
-    "description",
-    "features",
-    "action",
-    "args",
-    "catalog",
-    "expect",
-];
+/// The keys the `resolve_path` action states, beside the metadata the runner accepts for every
+/// case. The original's `_RESOLVE_PATH_CASE_KEYS`.
+const RESOLVE_PATH_CASE_KEYS: &[&str] = &["action", "args", "catalog", "expect"];
 
 /// The keys of `resolve_path`'s `args`. The original's `_RESOLVE_PATH_ARGS_KEYS`, which takes both
 /// spellings of the context path.
 const RESOLVE_PATH_ARGS_KEYS: &[&str] = &["context_path", "contextPath", "path"];
 
 fn handle_resolve_path(case: &Case) -> Result<(), String> {
-    assert_known_keys(&case.json, RESOLVE_PATH_CASE_KEYS, "case key", &case.id)?;
+    assert_known_case_keys(case, RESOLVE_PATH_CASE_KEYS)?;
     let expected = case.require("expect")?;
     let args = case
         .get("args")
@@ -543,21 +534,13 @@ fn handle_resolve_path(case: &Case) -> Result<(), String> {
 
 // ------------------------------------------------------------------ parse_expression_template
 
-/// The keys the `parse_expression_template` action states. The original's
-/// `_PARSE_EXPRESSION_TEMPLATE_CASE_KEYS`.
-const PARSE_EXPRESSION_CASE_KEYS: &[&str] = &[
-    "name",
-    "description",
-    "features",
-    "action",
-    "expect",
-    "expect_error",
-    "expectError",
-    "input",
-];
+/// The keys the `parse_expression_template` action states, beside the metadata the runner accepts
+/// for every case. The original's `_PARSE_EXPRESSION_TEMPLATE_CASE_KEYS`.
+const PARSE_EXPRESSION_CASE_KEYS: &[&str] =
+    &["action", "expect", "expect_error", "expectError", "input"];
 
 fn handle_parse_expression_template(case: &Case) -> Result<(), String> {
-    assert_known_keys(&case.json, PARSE_EXPRESSION_CASE_KEYS, "case key", &case.id)?;
+    assert_known_case_keys(case, PARSE_EXPRESSION_CASE_KEYS)?;
     let expected_error = expectation(&case.json, &case.id)?;
     if case.get("expect").is_none() && expected_error.is_none() {
         return Err(format!(

@@ -6,6 +6,11 @@
 //! that fails is fixed in `src/` or reported to the lead — the oracle under
 //! `tests/conformance/a2ui/upstream/` is never edited, reformatted or skipped by editing it.
 
+// The plumbing is shared by every suite binary of this crate, and no one binary calls all of it:
+// what this suite does not reach, a later one does. Without this, every new suite would have to
+// call every helper to prove it exists.
+#![allow(dead_code)]
+
 pub mod expect;
 pub mod loader;
 
@@ -44,6 +49,14 @@ pub fn assert_known_keys(
         }
     }
     Ok(())
+}
+
+/// The keys of a case: the ones its action declares, plus the metadata of the guide's rule 2.1
+/// which is accepted for every case of every suite.
+pub fn assert_known_case_keys(case: &Case, declared: &[&str]) -> Result<(), String> {
+    let mut allowed = METADATA_KEYS.to_vec();
+    allowed.extend_from_slice(declared);
+    assert_known_keys(&case.json, &allowed, "case key", &case.id)
 }
 
 /// `UNSUPPORTED`: the one escape the guide's rule 2.2.3 allows, from `"<action>"` or
