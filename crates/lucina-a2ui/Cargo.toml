@@ -1,0 +1,9 @@
+[package]
+name = "lucina-a2ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A2UI v1.0 core for Lucina: messages, validation, data model, functions (port of a2ui-project/a2ui)"
+
+[dev-dependencies]
+sha2.workspace = true

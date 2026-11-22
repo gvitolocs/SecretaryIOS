@@ -1658,3 +1658,27 @@ relation = "reference"
 confidence = "confirmed"
 rely_on = ["locale negotiation core (locale/utils.rs resolve_locale, lookup_matching_locale_by_prefix/by_best_fit, validate_extension)", "Service/ServicePreferences preference algebra (intl/mod.rs)", "NumberFormat rounding and digit-option mapping (number_format/options.rs)", "DateTimeFormat option-to-fieldset tables (date_time_format/options.rs)", "Collator sensitivity and ignorePunctuation mappings", "icu_decimal 2.2+ CompactDecimalFormatter as evidence for compact on the stable crate", "test262_config.toml intl402 exclusion list as a failure prediction"]
 notes = "Read 2026-11-12 for the ECMA-402 layer only; review in LucinaNet-js docs/lucinajs-intl-boa-review.md. Per-builtin: adapt - Intl core getCanonicalLocales, locale negotiation, Collator option tables, NumberFormat decimal/percent rounding core, PluralRules digit-option sharing, DateTimeFormat fieldset tables, ListFormat, Segmenter iterator-state; reference - DateTimeFormat time-zone spine (same timezone_provider choice we made, but the default zone is hardcoded UTC) and Intl.Locale getters; reject - formatter-in-GC-object layout (our heap has no finalizers), unsafe_empty_trace on DateTimeFormat's GC fields, NumberFormat scientific/engineering accepted but formatted as standard, RoundingIncrement::to_u16 (wrong above 9, number_format/options.rs:1004), localeCompare rebuilding a Collator per call, parts collector that drops non-datetime categories. Absent there: RelativeTimeFormat, DisplayNames, DurationFormat, supportedValuesOf, Locale-info getters, ServiceProvider/LocaleInfo. No intl402 pass-rate stated in-tree. Pin is the local lucinanet branch HEAD (host patches; intl tree read as upstream code); re-pin to upstream main when the weekly watcher next fetches. MIT notice must be added per port site: no per-file headers upstream. Carries a non-Intl host-patch set this entry does not watch."
+
+# ───────────────────────── Lucina chat: A2UI ─────────────────────────
+
+[[upstream]]
+id = "a2ui"
+name = "A2UI (Agent-to-User Interface)"
+url = "https://github.com/a2ui-project/a2ui"
+source = "github"
+repo = "a2ui-project/a2ui"
+branch = "main"
+track = "commits"
+pin = "5ff1b05f02d39f969b52a942e78e864ef3ac01fa"
+pin_date = "2026-11-20"
+paths = ["specification/v1_0", "specification/versions.json", "specification/inference_formats", "catalogs", "conformance", "typescript/core/web_core", "swift/core", "swift/swiftui", "python/a2ui_core", "python/a2ui_agent"]
+ours = [
+  { repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-a2ui" },
+  { repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "third_party/a2ui" },
+]
+licence_upstream = "Apache-2.0"
+licence_ours = "MIT"
+relation = "port"
+confidence = "confirmed"
+rely_on = ["protocol v1.0 messages", "basic catalogue v1", "data model and binding", "functions and expressions", "actions", "conformance suite", "Express and Direct JSON notations", "security rules"]
+notes = "Port record: docs/design/a2ui-port.md. LICENSE read at the pin: Apache-2.0. The conformance suite, the catalogues and the v1.0 specification are vendored unmodified under third_party/a2ui/upstream (notice kept) and are the oracle of the port; crates/lucina-a2ui/src/vendored_tree.rs checks the copy against its manifest and the pin. The original has no Rust implementation: crates/lucina-a2ui reimplements the behaviour. Clone for reading on nezopt: ~/Projects/Lucina/a2ui-upstream."
