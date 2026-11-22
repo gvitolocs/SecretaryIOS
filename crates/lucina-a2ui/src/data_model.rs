@@ -204,7 +204,7 @@ impl DataModel {
             }
             seen.push(Sighted {
                 segments: observer.segments.clone(),
-                value: find(&self.data, &observer.segments).cloned(),
+                value: observed(&self.data, &observer.segments),
             });
         }
         seen
@@ -217,7 +217,7 @@ impl DataModel {
             if !speaks_for(&sighted.segments, written) {
                 continue;
             }
-            let now = find(&self.data, &sighted.segments).cloned();
+            let now = observed(&self.data, &sighted.segments);
             if now == sighted.value {
                 continue;
             }
@@ -292,6 +292,19 @@ fn find<'a>(data: &'a Value, segments: &[String]) -> Option<&'a Value> {
         };
     }
     Some(current)
+}
+
+/// The value an observer of `segments` would be told about, for the change comparison of a
+/// notification.
+///
+/// Not `find`: the original compares through its own `get`, which answers `None` both for an absent
+/// key and for a stored `null`, so a write that removes a key that already held null is no change
+/// and notifies nobody. Comparing through `find` here would fire an observer over a value that
+/// never differed.
+fn observed(data: &Value, segments: &[String]) -> Option<Value> {
+    find(data, segments)
+        .filter(|value| !value.is_null())
+        .cloned()
 }
 
 /// Whether a segment is a canonical array index: `0`, or digits with no leading zero. Anything
@@ -439,4 +452,56 @@ fn too_high(segment: &str, path: &str) -> Error {
     Error::data(format!(
         "Cannot set path '{path}': array index '{segment}' exceeds maximum supported index ({MAX_ARRAY_INDEX})."
     ))
+}
+
+/// The suite states neither of these: `data_model.yaml` detaches observers only by `dispose`, and
+/// its header says the difference between an absent key and a stored `null` is left out on purpose
+/// because not every language can express it. A port can, and later steps read it, so it is pinned
+/// here.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unsubscribing_one_observer_leaves_the_others() {
+        let mut model = DataModel::with_initial(json!({"a": 1}));
+        let first = model.subscribe("/a").expect("a watched path");
+        let second = model.subscribe("/a").expect("a watched path");
+        model.unsubscribe(first.id);
+        model
+            .set("/a", json!(2))
+            .expect("a write to a watched path");
+        let fired = model.take_notifications();
+        assert_eq!(fired, vec![(second.id, json!(2))]);
+    }
+
+    /// `has_path` is the answer to "is the key there", `get` to "what is there": a stored null is a
+    /// value for one and nothing for the other, which is what makes a write of `Value::Null` to an
+    /// existing null a change and to an absent key a no-op.
+    #[test]
+    fn a_stored_null_exists_without_being_a_value() {
+        let mut model = DataModel::with_initial(json!({"held": null}));
+        assert!(model.has_path("/held").expect("a well formed pointer"));
+        assert_eq!(model.get("/held").expect("a read"), Some(&Value::Null));
+        assert!(!model.has_path("/absent").expect("a well formed pointer"));
+
+        model.set("/held", Value::Null).expect("a removal");
+        assert_eq!(
+            model.get("/").expect("a read").cloned(),
+            Some(json!({})),
+            "the key went"
+        );
+
+        let mut watched = DataModel::with_initial(json!({"held": null}));
+        let observer = watched.subscribe("/held").expect("a watched path");
+        watched
+            .set("/held", Value::Null)
+            .expect("a removal of a stored null");
+        assert!(
+            watched.take_notifications().is_empty(),
+            "a null written over a null changed nothing the observer holds"
+        );
+        assert_eq!(observer.initial, Some(Value::Null));
+    }
 }
