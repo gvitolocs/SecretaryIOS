@@ -30,8 +30,15 @@ its reason — the oracle is never moved to make a test pass.
 One change moves it. Copy the same paths from the new upstream commit over `upstream/`, run from
 the repository root
 
-`(cd tests/conformance/a2ui/upstream && find . -type f | LC_ALL=C sort | xargs -d '\n' sha256sum) > tests/conformance/a2ui/MANIFEST.sha256`
+`(cd third_party/a2ui/upstream && find . -type f | LC_ALL=C sort | xargs -d '\n' sha256sum) > third_party/a2ui/MANIFEST.sha256`
 
 then change `UPSTREAM_COMMIT` in `crates/lucina-a2ui/src/lib.rs`, the commit id above, and `pin`
 and `pin_date` in the `a2ui` block of `docs/upstreams.toml`. `cargo test -p lucina-a2ui` says
 whether the copy is complete.
+
+## Secret scan
+
+The merge gate does not scan `third_party/` file by file. The scan is done once per copy, by hand, with the same
+scanner in one invocation, and its result is recorded here. A pin move repeats it and replaces the line below.
+
+- 2026-11-22, pin `5ff1b05f02d39f969b52a942e78e864ef3ac01fa`: `gitleaks dir --no-banner --redact third_party/a2ui/upstream` scanned 3.96 MB, no leaks found.

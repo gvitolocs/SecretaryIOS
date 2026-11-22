@@ -8,7 +8,7 @@ what is done, what is left and what was rejected.
   Pin and licence are in `docs/upstreams.toml` (id `a2ui`).
 - Specification ported: v1.0 (`specification/v1_0/`), the version the original marks current.
 - Oracle: the original's conformance suite, catalogues and v1.0 specification, vendored unmodified under
-  `tests/conformance/a2ui/upstream/` (see `tests/conformance/a2ui/README.md`). A case is never edited, deleted or
+  `third_party/a2ui/upstream/` (see `third_party/a2ui/README.md`). A case is never edited, deleted or
   skipped to make a change pass. A case we cannot meet is listed below with its reason.
 
 ## Where we started
@@ -76,6 +76,9 @@ ADOPT = used as is. ADAPT = behaviour reimplemented our way, Rust first. REFEREN
   typed into a form field (the secret sheet stays the only way).
 - Every surface also carries a plain-text form, so Telegram, Discord, voice and old app versions keep working. The
   original has none.
+- The vendored original under `third_party/a2ui/` is not scanned file by file by the merge gate; it was scanned in one
+  invocation at vendoring (2026-11-22: 3.96 MB, no leaks found) and the scan is repeated and recorded in
+  `third_party/a2ui/README.md` at every pin move.
 
 ## Shape of the port
 

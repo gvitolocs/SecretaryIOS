@@ -20,7 +20,7 @@ fn root() -> &'static Path {
 }
 
 fn upstream_dir() -> PathBuf {
-    root().join("tests/conformance/a2ui/upstream")
+    root().join("third_party/a2ui/upstream")
 }
 
 fn read(path: &Path) -> String {
@@ -180,7 +180,7 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
 }
 
 fn manifest() -> Manifest {
-    let path = root().join("tests/conformance/a2ui/MANIFEST.sha256");
+    let path = root().join("third_party/a2ui/MANIFEST.sha256");
     parse_manifest(&read(&path)).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
@@ -315,10 +315,10 @@ fn vendored_tree_holds_only_regular_files() {
 
 #[test]
 fn pin_is_recorded_everywhere() {
-    let readme = read(&root().join("tests/conformance/a2ui/README.md"));
+    let readme = read(&root().join("third_party/a2ui/README.md"));
     assert!(
         readme.contains(lucina_a2ui::UPSTREAM_COMMIT),
-        "tests/conformance/a2ui/README.md does not name the upstream commit {}",
+        "third_party/a2ui/README.md does not name the upstream commit {}",
         lucina_a2ui::UPSTREAM_COMMIT
     );
     let pin = format!("pin = {:?}", lucina_a2ui::UPSTREAM_COMMIT);

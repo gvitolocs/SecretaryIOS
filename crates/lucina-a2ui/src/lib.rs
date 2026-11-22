@@ -6,7 +6,7 @@
 //! verdicts and the state of the steps — is `docs/design/a2ui-port.md`.
 //!
 //! The oracle is the original's own conformance suite, its catalogues and its v1.0 specification,
-//! vendored unmodified under `tests/conformance/a2ui/upstream/` at the commit named by
+//! vendored unmodified under `third_party/a2ui/upstream/` at the commit named by
 //! [`UPSTREAM_COMMIT`]. `crates/lucina-a2ui/tests/vendored_tree.rs` checks that copy against its
 //! manifest; a file under `upstream/` is never edited.
 
