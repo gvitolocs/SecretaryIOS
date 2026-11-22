@@ -4,8 +4,9 @@
 //! regard to object key order, and an expected error is matched through the narrowest category
 //! mapping with its `message` taken as a regular expression.
 
+use crate::data_model::numbers_equal;
 use crate::{Error, ErrorCategory};
-use serde_json::{Number, Value};
+use serde_json::Value;
 
 /// The keys of an `expectError` / `expect_error` object this harness checks.
 ///
@@ -126,7 +127,9 @@ pub fn compare(expected: &Value, actual: &Value) -> Result<(), String> {
 }
 
 /// The first difference between an expected and an actual value, located in the expectation, or
-/// `None` when the two are the same.
+/// `None` when the two are the same. Object keys are compared without regard to their order, and
+/// numbers by value through [`crate::data_model::numbers_equal`] — the model's own rule, so that
+/// one number written two ways is one number to the harness and to the change comparison alike.
 pub fn first_difference(expected: &Value, actual: &Value, path: &str) -> Option<String> {
     match (expected, actual) {
         (Value::Number(one), Value::Number(other)) if numbers_equal(one, other) => None,
@@ -166,29 +169,6 @@ pub fn first_difference(expected: &Value, actual: &Value, path: &str) -> Option<
         (Value::Null, Value::Null) => None,
         (one, other) => Some(located(path, &one.to_string(), &other.to_string())),
     }
-}
-
-/// Numbers are compared by value, not by how each side happens to be written.
-///
-/// The original's Python and TypeScript each hold one number type, so a `${2.5E+4}` that evaluates
-/// to `25000.0` satisfies an expectation written `25000`; `expressions.yaml` relies on this in
-/// `test_expr_exponential_notation_capital_e`, `test_expr_number_with_trailing_point` and
-/// `test_expr_exponent_underflow_is_zero`. A port has two representations where the original has
-/// one, which is why the comparison, not the parser, is where they are made equal.
-fn numbers_equal(one: &Number, other: &Number) -> bool {
-    match (exact_integer(one), exact_integer(other)) {
-        (Some(one), Some(other)) => one == other,
-        _ => one.as_f64() == other.as_f64(),
-    }
-}
-
-/// The value of a number written without a fraction, which is the part the two representations
-/// agree on exactly.
-fn exact_integer(number: &Number) -> Option<i128> {
-    number
-        .as_i64()
-        .map(i128::from)
-        .or_else(|| number.as_u64().map(i128::from))
 }
 
 fn located(path: &str, expected: &str, actual: &str) -> String {

@@ -11,7 +11,7 @@
 //! notifications the host delivers instead of callbacks the store invokes — a callback handed a
 //! borrow of the model would have to borrow the model it is busy changing.
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 
 use crate::error::Error;
 
@@ -218,7 +218,7 @@ impl DataModel {
                 continue;
             }
             let now = observed(&self.data, &sighted.segments);
-            if now == sighted.value {
+            if same_value(&now, &sighted.value) {
                 continue;
             }
             let value = now.unwrap_or(Value::Null);
@@ -305,6 +305,71 @@ fn observed(data: &Value, segments: &[String]) -> Option<Value> {
     find(data, segments)
         .filter(|value| !value.is_null())
         .cloned()
+}
+
+/// Whether what the path holds now is what the observer holds, which is what decides whether it
+/// hears about the write.
+///
+/// Numbers are compared by value at every depth, because the original has one number type in each
+/// of its languages: `state/data_model.py:341` compares the snapshot with Python's `==`, and a
+/// JavaScript number holds an integer and a fraction in the one type. A port has two
+/// representations where the original has one, so writing `1.0` over `1` changed nothing the
+/// observer holds. A boolean is never a number, which is the TypeScript answer: Python's
+/// `1 == True` is not followed, because a boolean where the observer last saw a number is a change
+/// the surface has to redraw.
+fn same_value(before: &Option<Value>, now: &Option<Value>) -> bool {
+    match (before, now) {
+        (Some(before), Some(now)) => values_equal(before, now),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// The same value written another way, as far as an observer of a path is concerned.
+fn values_equal(before: &Value, now: &Value) -> bool {
+    match (before, now) {
+        (Value::Number(before), Value::Number(now)) => numbers_equal(before, now),
+        (Value::Array(before), Value::Array(now)) => {
+            before.len() == now.len()
+                && before
+                    .iter()
+                    .zip(now)
+                    .all(|(before, now)| values_equal(before, now))
+        }
+        (Value::Object(before), Value::Object(now)) => {
+            before.len() == now.len()
+                && before.iter().all(|(key, value)| {
+                    now.get(key).is_some_and(|held| values_equal(value, held))
+                })
+        }
+        (before, now) => before == now,
+    }
+}
+
+/// Whether two JSON numbers are the same number, whichever way each of them is written.
+///
+/// `serde_json`'s own comparison answers by representation, which would make `25000` and `25000.0`
+/// two values. Integers are compared exactly, within the width a machine holds; a number that is
+/// not an integer on both sides is compared as a double, which is the widest thing the original's
+/// two languages both agree on.
+///
+/// The conformance harness compares an expectation and an answer with this same rule, which is what
+/// lets `expressions.yaml` hold `test_expr_exponential_notation_capital_e`,
+/// `test_expr_number_with_trailing_point` and `test_expr_exponent_underflow_is_zero`.
+pub(crate) fn numbers_equal(before: &Number, now: &Number) -> bool {
+    match (exact_integer(before), exact_integer(now)) {
+        (Some(before), Some(now)) => before == now,
+        _ => before.as_f64() == now.as_f64(),
+    }
+}
+
+/// The value of a number written without a fraction, which is the part both representations agree
+/// on exactly.
+fn exact_integer(number: &Number) -> Option<i128> {
+    number
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| number.as_u64().map(i128::from))
 }
 
 /// Whether a segment is a canonical array index: `0`, or digits with no leading zero. Anything

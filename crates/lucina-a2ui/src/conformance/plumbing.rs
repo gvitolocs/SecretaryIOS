@@ -71,7 +71,7 @@ fn object_key_order_does_not_matter() {
 }
 
 /// The same value written as an integer and as a float is one value to the original: its Python
-/// and TypeScript each hold one number type. See `expect::numbers_equal`.
+/// and TypeScript each hold one number type. See `crate::data_model::numbers_equal`.
 #[test]
 fn an_integer_equals_a_float_of_its_value() {
     compare(&json!(25_000), &json!(25_000.0)).unwrap();
