@@ -272,12 +272,22 @@ lagent device release iphone
   name the directory like `-C`. The worktree folders that count are those of the Lucina repos (`.worktrees/SecretaryIOS`,
   `lucina…`, `LucinaAndroidOS`), not every `.worktrees/*`. Accepted fail-opens, ONLY with the session in the group
   folder: a repo path that appears nowhere in the command text (held in the environment, built by a substitution or
-  read from a file); a symlink from scratch to a repo (a scratch clone of a Lucina repo carries its `origin` too); a script file run
-  by `bash script.sh` (not read for these rules); an alias or a function. A call behind `xargs`, `find -exec` or an
+  read from a file); a symlink from scratch to a repo; a script file run by `bash script.sh` (not read for these rules); an alias
+  or a function. A call behind `xargs`, `find -exec` or an
   unknown wrapper is a call with an unknown directory. A call acts on every directory its options name (`-C`,
   `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`): one repo among them is enough. The hook reads at most
   4 million characters per command, nested `ssh`, `bash -c` and `$( )` levels included, and 8 levels deep; the
-  rest counts as an unknown call, so it refuses when the text names a repo. The iPhone, kill and cargo-target rules are unchanged.
+  rest counts as an unknown call, so it refuses when the text names a repo. A push to `main` is also refused from ANY directory, scratch clones included, when the repository it pushes to has a
+  Lucina origin (LA-C045 round 4): the push names a Lucina URL or path itself; or the remote it pushes to (`origin`
+  unless the call names another) has a `url` or `pushurl` naming a Lucina repo (`SecretaryIOS`, `lucinaos`,
+  `LucinaAndroidOS`, `lucina-rs`, `Projects/Lucina/<Repo>`, `.worktrees/<Repo>`, also as `<owner>/SecretaryIOS.git`),
+  read from `.git/config` of the directory the call acts on (or its parents; a worktree through `commondir`) without
+  running git; or the command itself made the clone (`git clone <Lucina url> [dir]`, `git remote add|set-url <name>
+  <Lucina url>`) and pushes from that directory. Not covered: a config that is a symlink, a FIFO or over 64 KiB (read
+  to its first 64 KiB only), a symlinked `.git`, a bare repository, `branch.<name>.remote` and `remote.pushDefault`,
+  `includeIf` config files, URLs rewritten by a global `~/.gitconfig` `insteadOf`, a clone or remote made by a script
+  file or an earlier command, and any host where the directory does not exist (the Mac checks only paths it can see).
+  A clone into a directory the hook cannot resolve counts for pushes from any unresolved directory. The iPhone, kill and cargo-target rules are unchanged.
 
 - On the owner's Mac, in every session (Lucina or not), the same hook also denies pattern-based process kills run
   locally: `pkill`, `killall`, `xargs kill` and `kill $(pgrep …)` (also inside `$( )`, backticks, groups and `bash -c`).

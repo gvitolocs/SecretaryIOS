@@ -336,6 +336,9 @@ struct Call {
 /// and costs well under a second (measured by `a_deeply_nested_ssh_is_cut_by_the_work_budget`).
 const SCAN_BUDGET: usize = 4_000_000;
 
+/// The most bytes of a repository's git config the origin check reads (a longer one is read to this bound).
+const CONFIG_CAP: usize = 64 * 1024;
+
 /// What `guarded_calls` needs besides the text: compiled once per verdict.
 struct Guard {
     repo_dir: Regex,
@@ -346,6 +349,8 @@ struct Guard {
     left: std::cell::Cell<usize>,
     /// The budget or the nesting cap was hit: the rest was not read.
     exhausted: std::cell::Cell<bool>,
+    /// Lucina clones and remotes the command makes: (directory, remote name); the directory is `None` when unknown.
+    clones: std::cell::RefCell<Vec<(Option<String>, String)>>,
 }
 
 impl Guard {
@@ -357,6 +362,7 @@ impl Guard {
             home: std::env::var("HOME").unwrap_or_default(),
             left: std::cell::Cell::new(SCAN_BUDGET),
             exhausted: std::cell::Cell::new(false),
+            clones: std::cell::RefCell::new(Vec::new()),
         })
     }
 
@@ -395,6 +401,258 @@ impl Guard {
         }
     }
 
+    /// A remote URL or path naming a Lucina repo: the repo part of `SCOPE` (GitHub forms `<owner>/SecretaryIOS.git`
+    /// and the like included).
+    fn lucina_url(&self, url: &str) -> bool {
+        self.repo_name.is_match(url) || self.repo_dir.is_match(url)
+    }
+
+    /// A local path (no scheme, no `host:`) that is a Lucina repo directory, relative to `base`.
+    fn local_repo(&self, word: &str, base: &Option<String>) -> bool {
+        !word.contains([':', '@'])
+            && self
+                .path(word, base)
+                .is_some_and(|p| self.repo_dir.is_match(&p))
+    }
+
+    /// Up to `cap` bytes of the regular file at `path` (never a symlink, FIFO or directory), charged to the work
+    /// budget. `Err`: the budget is gone (the caller treats the answer as unknown); `Ok(None)`: not a regular file,
+    /// not readable. Bytes are read lossily, so a broken file cannot panic the parser.
+    fn read_bounded(&self, path: &std::path::Path, cap: usize) -> Result<Option<String>, ()> {
+        if self.left.get() < cap {
+            self.exhausted.set(true);
+            return Err(());
+        }
+        if !matches!(slot(path), Slot::Regular(_)) {
+            return Ok(None);
+        }
+        let Ok(f) = std::fs::File::open(path) else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        if f.take(cap as u64).read_to_end(&mut bytes).is_err() {
+            return Ok(None);
+        }
+        self.left
+            .set(self.left.get().saturating_sub(bytes.len() + 512));
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// The `config` of the repository holding `dir` (looked for in `dir` and at most 12 parents): `.git/config`, or,
+    /// when `.git` is a `gitdir:` file (a worktree), the `config` of the common dir. Nothing is run and no symlink
+    /// is followed (a symlinked `.git`, `commondir` or `config` is ignored).
+    fn config_of(&self, dir: &str) -> Result<Option<String>, ()> {
+        let mut d = std::path::PathBuf::from(dir);
+        for _ in 0..12 {
+            let dot = d.join(".git");
+            match std::fs::symlink_metadata(&dot) {
+                Ok(m) if m.file_type().is_symlink() => return Ok(None),
+                Ok(m) if m.is_dir() => return self.read_bounded(&dot.join("config"), CONFIG_CAP),
+                Ok(m) if m.is_file() => {
+                    let Some(txt) = self.read_bounded(&dot, 4096)? else {
+                        return Ok(None);
+                    };
+                    let Some(gd) = txt.lines().find_map(|l| l.strip_prefix("gitdir:")) else {
+                        return Ok(None);
+                    };
+                    let gitdir = d.join(gd.trim());
+                    let common = match self.read_bounded(&gitdir.join("commondir"), 4096)? {
+                        Some(c) => gitdir.join(c.trim()),
+                        None => gitdir,
+                    };
+                    return self.read_bounded(&common.join("config"), CONFIG_CAP);
+                }
+                _ => {}
+            }
+            if !d.pop() {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Every URL remote `name` has in git config text (`url` and `pushurl`), and each of them rewritten by the
+    /// `url.<base>.insteadOf` and `pushInsteadOf` prefixes.
+    fn config_remote_urls(cfg: &str, name: &str) -> Vec<String> {
+        enum Sec {
+            Other,
+            Remote(String),
+            Url(String),
+        }
+        let mut sec = Sec::Other;
+        let mut urls: Vec<String> = Vec::new();
+        let mut rewrites: Vec<(String, String)> = Vec::new();
+        for line in cfg.lines() {
+            let l = line.trim();
+            if let Some(h) = l.strip_prefix('[') {
+                let h = h.split(']').next().unwrap_or_default();
+                let (kind, arg) = match h.split_once(char::is_whitespace) {
+                    Some((k, a)) => (k.to_ascii_lowercase(), a.trim().trim_matches('"')),
+                    None => (h.trim().to_ascii_lowercase(), ""),
+                };
+                sec = match kind.as_str() {
+                    "remote" => Sec::Remote(arg.to_string()),
+                    "url" => Sec::Url(arg.to_string()),
+                    _ => Sec::Other,
+                };
+                continue;
+            }
+            let Some((k, v)) = l.split_once('=') else {
+                continue;
+            };
+            let k = k.trim().to_ascii_lowercase();
+            let v = v.trim().trim_matches('"');
+            match &sec {
+                Sec::Remote(n) if n == name && (k == "url" || k == "pushurl") => {
+                    urls.push(v.to_string());
+                }
+                Sec::Url(base) if k == "insteadof" || k == "pushinsteadof" => {
+                    rewrites.push((base.clone(), v.to_string()));
+                }
+                _ => {}
+            }
+        }
+        let mut more = Vec::new();
+        for u in &urls {
+            for (base, prefix) in &rewrites {
+                if !prefix.is_empty() && u.starts_with(prefix.as_str()) {
+                    more.push(format!("{base}{}", &u[prefix.len()..]));
+                }
+            }
+        }
+        urls.extend(more);
+        urls
+    }
+
+    /// Whether a push to `target` (a remote name, a URL or a path; `origin` when none) from a call acting on `dirs`
+    /// goes to a Lucina repo, whatever the directory is: a URL by its own text; a clone or `git remote add` made
+    /// earlier in the same command (`clones`); the remote's URLs in the config of the repository holding each
+    /// directory. `None`: the work budget ran out while reading.
+    fn push_goes_to_lucina(&self, dirs: &[Option<String>], target: Option<&str>) -> Option<bool> {
+        let first = dirs.iter().flatten().next().cloned();
+        let name = match target {
+            Some(t) if t.contains(['/', ':', '@']) || t.starts_with('.') => {
+                return Some(self.lucina_url(t) || self.local_repo(t, &first));
+            }
+            Some(t) => t,
+            None => "origin",
+        };
+        for (cdir, cname) in self.clones.borrow().iter() {
+            if cname != name {
+                continue;
+            }
+            let inside = |d: &Option<String>| match (cdir, d) {
+                (_, None) => true,
+                (None, Some(_)) => false,
+                (Some(c), Some(d)) => d == c || d.starts_with(&format!("{c}/")),
+            };
+            if dirs.iter().any(inside) {
+                return Some(true);
+            }
+        }
+        for d in dirs.iter().flatten() {
+            match self.config_of(d) {
+                Err(()) => return None,
+                Ok(Some(cfg)) => {
+                    if Self::config_remote_urls(&cfg, name)
+                        .iter()
+                        .any(|u| self.lucina_url(u))
+                    {
+                        return Some(true);
+                    }
+                }
+                Ok(None) => {}
+            }
+        }
+        Some(false)
+    }
+
+    /// `git clone <url> [dir]` of a Lucina repo: remember the directory (the given one, else the URL's last
+    /// component without `.git`, relative to `cwd`) and the remote name the clone gets.
+    fn note_clone(&self, rest: &[Word], cwd: &Option<String>) {
+        let mut pos: Vec<&str> = Vec::new();
+        let mut origin = "origin".to_string();
+        let mut i = 0;
+        while let Some(w) = rest.get(i) {
+            let v = w.val.as_str();
+            if v == "-o" || v == "--origin" {
+                if let Some(n) = rest.get(i + 1) {
+                    origin = n.val.clone();
+                }
+                i += 2;
+            } else if let Some(n) = v.strip_prefix("--origin=") {
+                origin = n.to_string();
+                i += 1;
+            } else if matches!(
+                v,
+                "-b" | "--branch"
+                    | "--depth"
+                    | "--reference"
+                    | "--reference-if-able"
+                    | "--template"
+                    | "-c"
+                    | "--config"
+                    | "--separate-git-dir"
+                    | "-j"
+                    | "--jobs"
+                    | "--filter"
+                    | "--upload-pack"
+                    | "-u"
+                    | "--shallow-since"
+                    | "--shallow-exclude"
+                    | "--server-option"
+            ) {
+                i += 2;
+            } else if v.starts_with('-') {
+                i += 1;
+            } else {
+                pos.push(v);
+                i += 1;
+            }
+        }
+        let Some(url) = pos.first() else { return };
+        if !self.lucina_url(url) && !self.local_repo(url, cwd) {
+            return;
+        }
+        let dir = match pos.get(1) {
+            Some(d) => self.path(d, cwd),
+            None => {
+                let n = url.trim_end_matches('/');
+                let n = n.rsplit(['/', ':']).next().unwrap_or(n);
+                self.path(n.strip_suffix(".git").unwrap_or(n), cwd)
+            }
+        };
+        self.clones.borrow_mut().push((dir, origin));
+    }
+
+    /// `git remote add <name> <url>` and `git remote set-url <name> <url>` with a Lucina URL, in `cwd`.
+    fn note_remote(&self, rest: &[Word], cwd: &Option<String>) {
+        let Some(verb) = rest.first() else { return };
+        if verb.val != "add" && verb.val != "set-url" {
+            return;
+        }
+        let mut pos: Vec<&str> = Vec::new();
+        let mut i = 1;
+        while let Some(w) = rest.get(i) {
+            let v = w.val.as_str();
+            if v == "-t" || v == "-m" {
+                i += 2;
+            } else if v.starts_with('-') {
+                i += 1;
+            } else {
+                pos.push(v);
+                i += 1;
+            }
+        }
+        if let [name, url, ..] = pos[..] {
+            if self.lucina_url(url) {
+                self.clones
+                    .borrow_mut()
+                    .push((cwd.clone(), name.to_string()));
+            }
+        }
+    }
+
     /// Whether the words of a `git push` after `push` push to main: a word `main`, `refs/heads/main`, `+main`,
     /// `HEAD:main`, `HEAD:refs/heads/main` (quotes are already off), and no `--dry-run`.
     fn pushes_main(&self, rest: &[Word]) -> bool {
@@ -405,14 +663,14 @@ impl Guard {
     }
 }
 
-/// The git call whose arguments (after the `git` word) are `args`, if it is a `worktree add` or a push to main:
-/// the kind, the directories its options name (`-C` chain, `--git-dir`, `--work-tree`; every one counts) and
-/// whether the options are only the ones the old patterns knew (`-C`, `-c`).
-fn git_call(
+/// The options before a git subcommand: the directories they name (`--git-dir`, `--work-tree`, and the `-C`
+/// chain, which is returned last and again as the call's working directory), whether they are only the ones the old
+/// patterns knew (`-C`, `-c`), and the index of the subcommand word.
+fn git_opts(
     g: &Guard,
     args: &[Word],
     base: &Option<String>,
-) -> Option<(Kind, Vec<Option<String>>, bool)> {
+) -> (Vec<Option<String>>, bool, usize, Option<String>) {
     let mut chain: Option<Option<String>> = None;
     let mut flagged: Vec<Option<String>> = Vec::new();
     let mut plain = true;
@@ -443,7 +701,20 @@ fn git_call(
             break;
         }
     }
+    let cwd = chain.clone().unwrap_or_else(|| base.clone());
     flagged.extend(chain);
+    (flagged, plain, i, cwd)
+}
+
+/// The git call whose arguments (after the `git` word) are `args`, if it is a `worktree add` or a push to main:
+/// the kind, the directories its options name (every one counts), whether the options are only the ones the old
+/// patterns knew, and the index of the subcommand word.
+fn git_call(
+    g: &Guard,
+    args: &[Word],
+    base: &Option<String>,
+) -> Option<(Kind, Vec<Option<String>>, bool, usize)> {
+    let (flagged, plain, i, _) = git_opts(g, args, base);
     let sub = args.get(i)?;
     let rest = args.get(i + 1..).unwrap_or_default();
     let kind = if sub.val == "worktree" && rest.first().is_some_and(|w| w.val == "add") {
@@ -453,7 +724,28 @@ fn git_call(
     } else {
         return None;
     };
-    Some((kind, flagged, plain))
+    Some((kind, flagged, plain, i))
+}
+
+/// The remote (a name or a URL) a `git push` names: its first word that is no option or option value.
+fn push_target(rest: &[Word]) -> Option<&str> {
+    let mut i = 0;
+    while let Some(w) = rest.get(i) {
+        let v = w.val.as_str();
+        if let Some(u) = v.strip_prefix("--repo=") {
+            return Some(u);
+        } else if matches!(
+            v,
+            "-o" | "--push-option" | "--receive-pack" | "--exec" | "--repo"
+        ) {
+            i += 2;
+        } else if v.starts_with('-') {
+            i += 1;
+        } else {
+            return Some(v);
+        }
+    }
+    None
 }
 
 /// A guarded call found as a plain word window in a command whose program is something else (`xargs git …`,
@@ -462,7 +754,7 @@ fn window_calls(g: &Guard, words: &[Word], count: bool, out: &mut Vec<Call>) {
     for (j, w) in words.iter().enumerate() {
         match basename(&w.val) {
             "git" => {
-                if let Some((kind, _, plain)) = git_call(g, &words[j + 1..], &None) {
+                if let Some((kind, _, plain, _)) = git_call(g, &words[j + 1..], &None) {
                     out.push(Call {
                         kind,
                         scope: None,
@@ -568,14 +860,29 @@ fn guarded_calls(
             }
             "popd" => dir = None,
             "git" => {
-                if let Some((kind, mut dirs, plain)) = git_call(g, args, &base) {
+                let (_, _, si, cwd) = git_opts(g, args, &base);
+                match args.get(si).map(|w| w.val.as_str()) {
+                    Some("clone") => g.note_clone(&args[si + 1..], &cwd),
+                    Some("remote") => g.note_remote(&args[si + 1..], &cwd),
+                    _ => {}
+                }
+                if let Some((kind, mut dirs, plain, si)) = git_call(g, args, &base) {
                     dirs.extend(env_dirs);
                     if dirs.is_empty() {
                         dirs.push(base);
                     }
+                    let mut scope = g.scope_of(&dirs, named);
+                    // A push to main whose repository has a Lucina origin is refused from any directory.
+                    if kind == Kind::Push && scope != Some(true) {
+                        match g.push_goes_to_lucina(&dirs, push_target(&args[si + 1..])) {
+                            Some(true) => scope = Some(true),
+                            None => scope = None,
+                            Some(false) => {}
+                        }
+                    }
                     out.push(Call {
                         kind,
-                        scope: g.scope_of(&dirs, named),
+                        scope,
                         old_shape: plain && count,
                         worktree_add: kind == Kind::Start,
                     });
@@ -2510,6 +2817,228 @@ mod tests {
             )
             .is_some());
             assert_eq!(verdict(&nested_ssh("git worktree add ../x", 10), cwd), None);
+        }
+    }
+
+    // ---- LA-C045 round 4: a push to main is refused when the repository's origin is a Lucina repo ----
+
+    /// `<root>/<name>/.git/config` with `config`; returns the repository directory.
+    fn origin_repo(root: &std::path::Path, name: &str, config: &str) -> String {
+        let d = root.join(name);
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git/config"), config).unwrap();
+        d.to_str().unwrap().to_string()
+    }
+
+    const LUCINA_ORIGIN: &str = "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = /home/nez/Projects/Lucina/SecretaryIOS\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n";
+    const OTHER_ORIGIN: &str =
+        "[remote \"origin\"]\n\turl = https://github.com/someone/other.git\n";
+
+    /// Every shape of one push to main in the directory `dir`: by `cd`, by `-C`, and as the session directory.
+    fn push_shapes(dir: &str, push: &str) -> Vec<(String, String)> {
+        let mut v = Vec::new();
+        for cwd in GROUPS.iter().copied().chain(["/home/nez/scratch"]) {
+            for c in four_forms(&format!("cd {dir} && git {push}")) {
+                v.push((c, cwd.to_string()));
+            }
+            for c in four_forms(&format!("git -C {dir} {push}")) {
+                v.push((c, cwd.to_string()));
+            }
+        }
+        // the directory as the session cwd: the remote home of an `ssh` form is not it
+        for c in [
+            format!("git {push}"),
+            format!("bash -c 'git {push}'"),
+            format!("sh -c \"git {push}\""),
+        ] {
+            v.push((c, dir.to_string()));
+        }
+        v
+    }
+
+    #[test]
+    fn a_push_to_main_is_refused_when_the_origin_is_a_lucina_repo() {
+        let t = tmp("origin");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let root = t.0.as_path();
+        let lucina = origin_repo(root, "a", LUCINA_ORIGIN);
+        let github = origin_repo(
+            root,
+            "b",
+            "[remote \"origin\"]\n\turl = git@github.com:someone/lucina-rs.git\n",
+        );
+        let plain = origin_repo(root, "c", OTHER_ORIGIN);
+        let none = origin_repo(root, "d", "[core]\n\tbare = false\n");
+        let insteadof = origin_repo(
+            root,
+            "i",
+            "[url \"https://github.com/o/SecretaryIOS/\"]\n\tinsteadOf = gl:\n[remote \"origin\"]\n\turl = gl:thing\n",
+        );
+        let pushurl = origin_repo(
+            root,
+            "p",
+            "[remote \"origin\"]\n\turl = https://x.example/other.git\n\tpushurl = ssh://h/Projects/Lucina/lucinaos\n",
+        );
+        let named = origin_repo(
+            root,
+            "n",
+            "[remote \"origin\"]\n\turl = https://x.example/other.git\n[remote \"up\"]\n\turl = /home/nez/Projects/Lucina/LucinaAndroidOS\n",
+        );
+        // a worktree: `.git` is a file, the common dir holds the config
+        let main = origin_repo(root, "m", LUCINA_ORIGIN);
+        std::fs::create_dir_all(format!("{main}/.git/worktrees/w")).unwrap();
+        std::fs::write(format!("{main}/.git/worktrees/w/commondir"), "../..\n").unwrap();
+        let wt = root.join("w");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {main}/.git/worktrees/w\n"),
+        )
+        .unwrap();
+        let wt = wt.to_str().unwrap().to_string();
+        // a subdirectory of a repository counts too
+        let sub = format!("{lucina}/src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        for d in [&lucina, &github, &insteadof, &pushurl, &wt, &sub] {
+            for push in [
+                "push origin main",
+                "push -q origin HEAD:main",
+                "push origin +main",
+            ] {
+                for (c, cwd) in push_shapes(d, push) {
+                    assert!(verdict(&c, &cwd).is_some(), "{cwd}: {c}");
+                }
+            }
+        }
+        for (c, cwd) in push_shapes(&named, "push up main") {
+            assert!(verdict(&c, &cwd).is_some(), "{cwd}: {c}");
+        }
+        // Allowed: a non-Lucina origin, no remote, another remote, a feature branch, a dry run.
+        for d in [&plain, &none] {
+            for (c, cwd) in push_shapes(d, "push origin main") {
+                assert_eq!(verdict(&c, &cwd), None, "{cwd}: {c}");
+            }
+        }
+        for (c, cwd) in push_shapes(&named, "push origin main") {
+            assert_eq!(verdict(&c, &cwd), None, "{cwd}: {c}");
+        }
+        for push in [
+            "push origin feature",
+            "push --dry-run origin main",
+            "push origin v1.2",
+        ] {
+            for (c, cwd) in push_shapes(&lucina, push) {
+                assert_eq!(verdict(&c, &cwd), None, "{cwd}: {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_origin_config_is_read_bounded_and_without_following_links() {
+        let t = tmp("origin-bounds");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let root = t.0.as_path();
+        let cmd = |d: &str| format!("cd {d} && git push origin main");
+        let group = GROUPS[1];
+        // a symlinked config is ignored
+        let target = root.join("elsewhere.cfg");
+        std::fs::write(&target, LUCINA_ORIGIN).unwrap();
+        let linked = origin_repo(root, "l", "");
+        std::fs::remove_file(format!("{linked}/.git/config")).unwrap();
+        std::os::unix::fs::symlink(&target, format!("{linked}/.git/config")).unwrap();
+        assert_eq!(verdict(&cmd(&linked), group), None);
+        // a symlinked `.git` is ignored
+        let dotlink = root.join("dl");
+        std::fs::create_dir_all(&dotlink).unwrap();
+        let real = origin_repo(root, "real", LUCINA_ORIGIN);
+        std::os::unix::fs::symlink(format!("{real}/.git"), dotlink.join(".git")).unwrap();
+        assert_eq!(verdict(&cmd(dotlink.to_str().unwrap()), group), None);
+        // a FIFO config is ignored, and the verdict returns
+        let fifo = origin_repo(root, "f", "");
+        std::fs::remove_file(format!("{fifo}/.git/config")).unwrap();
+        if mkfifo(&std::path::PathBuf::from(format!("{fifo}/.git/config"))) {
+            let c = cmd(&fifo);
+            assert_eq!(within_5s(move || verdict(&c, group)), Some(None));
+        }
+        // a 1 MB config: read to 64 KiB only
+        let pad = "# padding padding padding padding padding\n".repeat(25_000);
+        let early = origin_repo(root, "big1", &format!("{LUCINA_ORIGIN}{pad}"));
+        let late = origin_repo(root, "big2", &format!("{pad}{LUCINA_ORIGIN}"));
+        let c = cmd(&early);
+        let started = std::time::Instant::now();
+        assert!(verdict(&c, group).is_some());
+        assert_eq!(verdict(&cmd(&late), group), None);
+        assert!(started.elapsed().as_secs() < 5);
+        // a broken config (not UTF-8, cut headers) is no panic and no refusal
+        let broken = origin_repo(root, "br", "");
+        std::fs::write(
+            format!("{broken}/.git/config"),
+            b"[remote \"orig\xff\xfe\nurl = \xe2\x82\n[remote\n[\nurl\n= =\n",
+        )
+        .unwrap();
+        assert_eq!(verdict(&cmd(&broken), group), None);
+        // a repository that does not exist on this host: nothing new
+        assert_eq!(
+            verdict("cd /nonexistent-c045/x && git push origin main", group),
+            None
+        );
+    }
+
+    #[test]
+    fn a_push_url_on_the_command_line_is_refused_by_its_own_text() {
+        for cwd in GROUPS.iter().copied().chain(["/home/nez/scratch"]) {
+            for c in [
+                "git push https://github.com/o/SecretaryIOS.git main",
+                "git push /home/nez/Projects/Lucina/SecretaryIOS main",
+                "git push ssh://git@host/home/nez/Projects/Lucina/lucinaos HEAD:main",
+                "git push git@github.com:o/lucina-rs.git HEAD:refs/heads/main",
+                "cd ~/scratch/a && git push https://github.com/o/LucinaAndroidOS main",
+            ] {
+                for f in four_forms(c) {
+                    assert!(verdict(&f, cwd).is_some(), "{cwd}: {f}");
+                }
+            }
+            assert_eq!(
+                verdict("git push https://example.com/o/other.git main", cwd),
+                None,
+                "{cwd}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clone_made_in_the_command_keeps_its_lucina_origin() {
+        let refused = [
+            "git clone /home/nez/Projects/Lucina/SecretaryIOS ~/scratch/c && cd ~/scratch/c && git push origin main",
+            "git clone /home/nez/Projects/Lucina/SecretaryIOS ~/scratch/c && git -C ~/scratch/c push origin HEAD:main",
+            "git clone https://github.com/x/SecretaryIOS.git s && cd s && git push origin main",
+            "git clone https://github.com/x/SecretaryIOS.git && cd SecretaryIOS && git push origin main",
+            "git clone -q --depth 1 git@github.com:x/lucinaos.git d && git -C d push origin +main",
+            "git clone -o up https://github.com/x/SecretaryIOS.git d && cd d && git push up main",
+            "mkdir -p ~/scratch/r && cd ~/scratch/r && git init -q && git remote add up https://github.com/x/SecretaryIOS.git && git push up main",
+            "cd ~/scratch/r && git init -q && git remote add origin /home/nez/Projects/Lucina/LucinaAndroidOS && git push origin HEAD:main",
+            "cd ~/scratch/r && git remote set-url origin /home/nez/Projects/Lucina/SecretaryIOS && git push origin main",
+            "git clone https://github.com/x/SecretaryIOS.git $D; cd $D; git push origin main",
+        ];
+        for cwd in GROUPS.iter().copied().chain(["/home/nez/scratch"]) {
+            for c in refused {
+                assert!(verdict(c, cwd).is_some(), "{cwd}: {c}");
+            }
+        }
+        let allowed = [
+            "git clone https://github.com/x/other.git d && cd d && git push origin main",
+            "git clone /home/nez/scratch/base ~/scratch/c && cd ~/scratch/c && git push origin main",
+            "git clone https://github.com/x/SecretaryIOS.git s && cd ~/scratch/z && git push origin main",
+            "git clone https://github.com/x/SecretaryIOS.git s && cd s && git push origin feature",
+            "git clone https://github.com/x/SecretaryIOS.git s && cd s && git push --dry-run origin main",
+            "git clone https://github.com/x/SecretaryIOS.git s && cd s && git push up main",
+            "cd ~/scratch/r && git remote add up https://github.com/x/other.git && git push up main",
+        ];
+        for cwd in ["/home/nez/scratch"] {
+            for c in allowed {
+                assert_eq!(verdict(c, cwd), None, "{cwd}: {c}");
+            }
         }
     }
 
