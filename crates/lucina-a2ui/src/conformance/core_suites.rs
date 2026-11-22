@@ -3,8 +3,8 @@
 //!
 //! One test per suite file of the vendored oracle. Each prints a single summary line and fails
 //! with the case names and their first difference. The plumbing that reads the files and judges the
-//! answers is in `support/`; what is here is the three handlers, each with the table of keys it
-//! declares next to it, exactly as the guide's section "Core SDK harness" describes them.
+//! answers is in the module above; what is here is the three handlers, each with the table of keys
+//! it declares next to it, exactly as the guide's section "Core SDK harness" describes them.
 //!
 //! Protocol versions: every case of `core/data_model.yaml` (`data_model.yaml:49` and its 51
 //! siblings) and of `core/data_context.yaml` (`data_context.yaml:23` and its 10 siblings) declares
@@ -27,18 +27,17 @@
 //! The version filter of the guide therefore starts with the actions that read a message
 //! envelope, which is step 2b.
 
-mod support;
-
-use lucina_a2ui::data_context::ScopePath;
-use lucina_a2ui::data_model::{DataModel, WatchId};
-use lucina_a2ui::expression::{parse_template, TemplatePart};
-use lucina_a2ui::Error;
-use serde_json::{json, Value};
-use support::expect::kind;
-use support::loader::Case;
-use support::{
+use super::expect::kind;
+use super::loader::Case;
+use super::{
     assert_known_case_keys, assert_known_keys, compare, expect_failure, expectation, run_suite,
 };
+use crate::data_context::ScopePath;
+use crate::data_model::{DataModel, WatchId};
+use crate::expression::parse_template;
+use crate::expression::TemplatePart;
+use crate::Error;
+use serde_json::{json, Value};
 
 const DATA_MODEL: &str = "core/data_model.yaml";
 const DATA_CONTEXT: &str = "core/data_context.yaml";

@@ -2,17 +2,23 @@
 //! harness plumbing" states it.
 //!
 //! The harness is a thin adapter: it reads a suite of the vendored oracle, calls this crate's
-//! public entry points and compares the answers. Behaviour lives in `src/`, never here, and a case
-//! that fails is fixed in `src/` or reported to the lead — the oracle under
+//! public entry points and compares the answers. Behaviour lives in the rest of `src/`, never here,
+//! and a case that fails is fixed there or reported to the lead — the oracle under
 //! `third_party/a2ui/upstream/` is never edited, reformatted or skipped by editing it.
+//!
+//! This is a module of the library, not a file under `tests/`, and the whole tree is compiled only
+//! for tests: the merge gate runs `cargo test --lib` for a touched crate and never an integration
+//! test, so a harness that lives under `tests/` is a harness that does not run where it matters.
 
-// The plumbing is shared by every suite binary of this crate, and no one binary calls all of it:
-// what this suite does not reach, a later one does. Without this, every new suite would have to
-// call every helper to prove it exists.
+// The plumbing is shared by every suite of this crate, and no one suite calls all of it: what this
+// suite does not reach, a later one does. Without this, every new suite would have to call every
+// helper to prove it exists.
 #![allow(dead_code)]
 
-pub mod expect;
-pub mod loader;
+mod core_suites;
+mod expect;
+mod loader;
+mod plumbing;
 
 use serde_json::Value;
 

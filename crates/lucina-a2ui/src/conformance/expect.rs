@@ -4,7 +4,7 @@
 //! regard to object key order, and an expected error is matched through the narrowest category
 //! mapping with its `message` taken as a regular expression.
 
-use lucina_a2ui::{Error, ErrorCategory};
+use crate::{Error, ErrorCategory};
 use serde_json::{Number, Value};
 
 /// The keys of an `expectError` / `expect_error` object this harness checks.
@@ -29,7 +29,7 @@ pub fn expectation<'a>(holder: &'a Value, id: &str) -> Result<Option<&'a Value>,
     };
     match expected {
         Value::Object(_) => {
-            crate::support::assert_known_keys(expected, EXPECT_ERROR_KEYS, "expectError key", id)
+            super::assert_known_keys(expected, EXPECT_ERROR_KEYS, "expectError key", id)
         }
         Value::String(_) => Ok(()),
         _ => Err(format!(

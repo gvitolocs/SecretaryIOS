@@ -10,8 +10,8 @@
 //! `yaml-rust` is the parser. It resolves a plain scalar with the YAML 1.2 core schema
 //! (`yaml_rust::yaml::Yaml::from_str`): only `true` and `false` become booleans, only what Rust's
 //! `i64` and `f64` parsers accept become numbers, everything else stays a string. The tests in
-//! `tests/harness_plumbing.rs` pin that, because the suites are only trustworthy when the words
-//! they hold are the words that were written.
+//! `plumbing.rs` pin that, because the suites are only trustworthy when the words they hold are
+//! the words that were written.
 
 use std::path::PathBuf;
 
@@ -21,7 +21,7 @@ use yaml_rust::{Yaml, YamlLoader};
 use super::expect::kind;
 
 /// The vendored `conformance/` directory: the oracle's own root, checked by
-/// `tests/vendored_tree.rs` against its manifest.
+/// `src/vendored_tree.rs` against its manifest.
 pub fn conformance_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

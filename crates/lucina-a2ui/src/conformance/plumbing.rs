@@ -2,15 +2,13 @@
 //!
 //! These are the guide's section "Shared harness plumbing" 1 and 2: what a suite file means once it
 //! is loaded, what a key no handler declares does, how an expected error is matched and how an
-//! `UNSUPPORTED` entry is counted. The suites themselves are run in `conformance_core.rs`.
+//! `UNSUPPORTED` entry is counted. The suites themselves are run in `core_suites.rs`.
 
-mod support;
-
-use lucina_a2ui::Error;
+use super::expect::kind;
+use super::loader::{from_yaml, load_suite, Case};
+use super::{assert_known_keys, compare, expect_failure, expectation, run_suite, METADATA_KEYS};
+use crate::Error;
 use serde_json::{json, Value};
-use support::expect::kind;
-use support::loader::{from_yaml, load_suite, Case};
-use support::{assert_known_keys, compare, expect_failure, expectation, run_suite, METADATA_KEYS};
 
 /// The guide, 1: "Older YAML 1.1 parsers convert unquoted words such as `yes`, `no`, `on`, or `off`
 /// into booleans", which would corrupt the input a case states.
@@ -73,7 +71,7 @@ fn object_key_order_does_not_matter() {
 }
 
 /// The same value written as an integer and as a float is one value to the original: its Python
-/// and TypeScript each hold one number type. See `support::expect::numbers_equal`.
+/// and TypeScript each hold one number type. See `expect::numbers_equal`.
 #[test]
 fn an_integer_equals_a_float_of_its_value() {
     compare(&json!(25_000), &json!(25_000.0)).unwrap();
@@ -129,7 +127,7 @@ fn both_error_expectation_key_names_are_read() {
 /// The guide, 3: "Map each category to the narrowest class or classes that satisfy it."
 #[test]
 fn a_category_is_matched_through_the_narrowest_mapping() {
-    use lucina_a2ui::ErrorCategory;
+    use crate::ErrorCategory;
     let integrity = Error::new(ErrorCategory::IntegrityError, "Surface not found: main");
     let expression = Error::expression("Unclosed interpolation: missing '}'");
     let data = Error::data("Path '/a' is not a pointer");

@@ -26,6 +26,12 @@ pub const UPSTREAM_COMMIT: &str = "5ff1b05f02d39f969b52a942e78e864ef3ac01fa";
 /// The A2UI protocol version this crate implements.
 pub const PROTOCOL_VERSION: &str = "1.0";
 
+// The conformance harness of the vendored oracle: the plumbing, the three Core suites step 2a
+// answers, and the tests of the plumbing itself. A module of the library, like the checks below,
+// so that the merge gate runs it.
+#[cfg(test)]
+mod conformance;
+
 // The merge gate runs `cargo test --lib` for a touched crate and no integration tests, so the
 // checks on the vendored oracle are a module of the library, not a file under tests/.
 #[cfg(test)]
