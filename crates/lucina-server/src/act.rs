@@ -237,7 +237,9 @@ where
         .await
         .map_err(|e| format!("no working directory for the agent: {e}"))?;
     let cwd = cwd.display().to_string();
-    let id = hands.start_agent(act, &cwd, prompt, title, labels()).await?;
+    let id = hands
+        .start_agent(act, &cwd, prompt, title, labels())
+        .await?;
     tracing::info!(agent = %id, "act: agent started");
     let started = Instant::now();
     let mut errors = 0u32;

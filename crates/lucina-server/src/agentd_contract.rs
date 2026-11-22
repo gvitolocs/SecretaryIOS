@@ -24,9 +24,9 @@ use std::path::Path;
 fn read_by_agentd(who: &str, body: &Value) -> CreateRequest {
     match serde_json::from_value::<CreateRequest>(body.clone()) {
         Ok(req) => req,
-        Err(e) => panic!(
-            "{who}: agentd's CreateRequest refuses the body Lucina sent ({e})\nbody: {body}"
-        ),
+        Err(e) => {
+            panic!("{who}: agentd's CreateRequest refuses the body Lucina sent ({e})\nbody: {body}")
+        }
     }
 }
 
@@ -81,8 +81,7 @@ fn every_act_body_is_one_agentd_reads() {
             "{what}: the model"
         );
         assert_eq!(
-            req.cwd,
-            "/home/nez/.local/share/lucina/act/job-1",
+            req.cwd, "/home/nez/.local/share/lucina/act/job-1",
             "{what}: the working directory"
         );
         assert_eq!(
@@ -263,8 +262,7 @@ fn every_reach_body_is_one_agentd_reads() {
         let req = read_by_agentd(what, &body);
         same_labels(what, &body, &req);
         assert_eq!(
-            req.labels["reach"],
-            body["labels"]["reach"],
+            req.labels["reach"], body["labels"]["reach"],
             "{what}: the thread label"
         );
         assert_eq!(req.labels["from"], "lucina", "{what}: who started it");

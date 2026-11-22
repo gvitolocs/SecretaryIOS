@@ -976,11 +976,19 @@ pub async fn start_fix(
     let started = async {
         allowed_model(&step.provider, step.model.as_deref()).map_err(|e| (None, e))?;
         let lim = hands.limits();
-        let late = |what: &str| format!("agentd did not answer the {what} within {} s", lim.create.as_secs());
-        let (ws, cwd) = within(lim.create, hands.start_task(&title, &repo, &branch, id, Some(p)))
-            .await
-            .ok_or_else(|| (None, late("worktree create")))?
-            .map_err(|e| (None, e))?;
+        let late = |what: &str| {
+            format!(
+                "agentd did not answer the {what} within {} s",
+                lim.create.as_secs()
+            )
+        };
+        let (ws, cwd) = within(
+            lim.create,
+            hands.start_task(&title, &repo, &branch, id, Some(p)),
+        )
+        .await
+        .ok_or_else(|| (None, late("worktree create")))?
+        .map_err(|e| (None, e))?;
         let prompt = policy.brief(pick_flaw, &claimed, &cwd);
         let labels = fix_labels(id, p, &lane);
         let agent = within(
@@ -4138,8 +4146,14 @@ mod tests {
                 "{l:?}"
             );
         }
-        assert_eq!(labels[0].get("flaw").map(String::as_str), Some(f.id.as_str()));
-        assert_eq!(labels[1].get("flaw").map(String::as_str), Some(g.id.as_str()));
+        assert_eq!(
+            labels[0].get("flaw").map(String::as_str),
+            Some(f.id.as_str())
+        );
+        assert_eq!(
+            labels[1].get("flaw").map(String::as_str),
+            Some(g.id.as_str())
+        );
         assert_eq!(labels[1].get("triage").map(String::as_str), Some("1"));
     }
 
@@ -6870,7 +6884,9 @@ mod tests {
         }
         let labels = h.labels.lock().unwrap().clone();
         assert!(
-            labels.iter().all(|l| l.get("triage").map(String::as_str) != Some("1")),
+            labels
+                .iter()
+                .all(|l| l.get("triage").map(String::as_str) != Some("1")),
             "with it off no triage agent starts: {labels:?}"
         );
         assert!(s.triage_due().unwrap().iter().any(|x| x.id == f.id));
