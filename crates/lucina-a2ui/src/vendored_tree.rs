@@ -28,112 +28,7 @@ fn read(path: &Path) -> String {
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Kind {
-    Regular,
-    Directory,
-    Symlink,
-    Other,
-}
-
-fn kind_of(file_type: &fs::FileType) -> Kind {
-    if file_type.is_symlink() {
-        Kind::Symlink
-    } else if file_type.is_dir() {
-        Kind::Directory
-    } else if file_type.is_file() {
-        Kind::Regular
-    } else {
-        Kind::Other
-    }
-}
-
-/// One entry of the vendored tree: its `./`-relative path, what it is and, for a directory, how
-/// many entries it holds.
-#[derive(Clone, PartialEq, Debug)]
-struct Entry {
-    path: String,
-    kind: Kind,
-    children: usize,
-}
-
-impl Entry {
-    /// Why this entry does not belong in a vendored tree, or `None` when it does.
-    fn offence(&self) -> Option<&'static str> {
-        if self.kind == Kind::Symlink {
-            return Some("a symlink");
-        }
-        if self.kind == Kind::Other {
-            return Some("neither a regular file nor a directory");
-        }
-        if self.kind == Kind::Directory && self.children == 0 {
-            return Some("an empty directory");
-        }
-        if self.path.ends_with(".py") {
-            return Some("Python");
-        }
-        None
-    }
-}
-
-/// Every entry under `dir`, directories included, sorted by path.
-fn walk(dir: &Path) -> Vec<Entry> {
-    let mut entries = Vec::new();
-    collect(dir, ".", &mut entries);
-    entries.sort_by(|one, other| one.path.cmp(&other.path));
-    entries
-}
-
-fn collect(dir: &Path, path: &str, out: &mut Vec<Entry>) {
-    let read =
-        fs::read_dir(dir).unwrap_or_else(|error| panic!("cannot list {}: {error}", dir.display()));
-    let mut children = Vec::new();
-    for entry in read {
-        let entry = entry.unwrap_or_else(|error| panic!("cannot list {path}: {error}"));
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let file_type = entry
-            .file_type()
-            .unwrap_or_else(|error| panic!("cannot stat {path}/{name}: {error}"));
-        children.push((format!("{path}/{name}"), kind_of(&file_type), entry.path()));
-    }
-    if children.is_empty() {
-        if path != "." {
-            out.push(Entry {
-                path: path.to_string(),
-                kind: Kind::Directory,
-                children: 0,
-            });
-        }
-        return;
-    }
-    for (child, kind, child_path) in &children {
-        out.push(Entry {
-            path: child.clone(),
-            kind: *kind,
-            children: children.len(),
-        });
-        if *kind == Kind::Directory {
-            collect(child_path, child, out);
-        }
-    }
-}
-
-/// The entries that are not plain regular files: `path: why`, in the order of the tree.
-fn offences(tree: &[Entry]) -> Vec<String> {
-    tree.iter()
-        .filter_map(|entry| entry.offence().map(|why| format!("{}: {why}", entry.path)))
-        .collect()
-}
-
-fn entry(path: &str, kind: Kind, children: usize) -> Entry {
-    Entry {
-        path: path.to_string(),
-        kind,
-        children,
-    }
-}
-
-/// The five outcomes of one directory entry, as the walker reads it.
+/// The five outcomes of one directory entry.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Shape {
     /// A regular file: what the copy is made of.
@@ -149,7 +44,7 @@ enum Shape {
 }
 
 /// What the file system reports for one name: whether it is a symlink, a directory, a regular
-/// file and, for a directory, how many entries it holds.
+/// file and, for a directory, how many names it holds.
 #[derive(Clone, Debug)]
 struct Found {
     name: String,
@@ -169,7 +64,8 @@ fn found(name: &str, symlink: bool, directory: bool, file: bool, children: usize
     }
 }
 
-/// What one entry is, from what the file system reports and from the number it carries.
+/// What one entry is, from what the file system reports and, for a directory, from the number of
+/// entries it holds itself.
 fn shape_of(symlink: bool, directory: bool, file: bool, children: usize) -> Shape {
     if symlink {
         Shape::Link
@@ -196,27 +92,125 @@ fn why(shape: Shape) -> Option<&'static str> {
     }
 }
 
-/// One listing of `parent`, as the walker records it today: every name gets the shape the
-/// listing's own length gives it, and a directory that holds nothing is recorded again as itself.
-fn listed(parent: &str, listing: &[Found]) -> Vec<(String, Shape)> {
-    let mut out = Vec::new();
-    if listing.is_empty() {
-        if parent != "." {
-            out.push((parent.to_string(), Shape::Empty));
-        }
-        return out;
-    }
-    for item in listing {
-        let shape = shape_of(item.symlink, item.directory, item.file, listing.len());
-        out.push((format!("{parent}/{}", item.name), shape));
-    }
-    out
+/// One entry of the vendored tree: its `./`-relative path and its shape.
+#[derive(Clone, PartialEq, Debug)]
+struct Entry {
+    path: String,
+    shape: Shape,
 }
 
-/// Whether this line is the block's `pin_date = "YYYY-MM-DD"`. The checks do not read it today.
+fn entry(path: &str, shape: Shape) -> Entry {
+    Entry {
+        path: path.to_string(),
+        shape,
+    }
+}
+
+/// Why this entry does not belong in a vendored tree, or `None` when it does: the shape first,
+/// then a name the copy must not carry.
+fn offence(path: &str, shape: Shape) -> Option<&'static str> {
+    why(shape).or_else(|| {
+        if path.ends_with(".py") {
+            Some("Python")
+        } else {
+            None
+        }
+    })
+}
+
+/// The entries of one listing of `parent`: one per name, each judged by what the file system
+/// reports for it and, for a directory, by the entries it holds itself.
+fn listed(parent: &str, listing: &[Found]) -> Vec<Entry> {
+    listing
+        .iter()
+        .map(|item| Entry {
+            path: format!("{parent}/{}", item.name),
+            shape: shape_of(item.symlink, item.directory, item.file, item.children),
+        })
+        .collect()
+}
+
+/// Every entry under `dir`, directories included, sorted by path.
+fn walk(dir: &Path) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    collect(dir, ".", &mut entries);
+    entries.sort_by(|one, other| one.path.cmp(&other.path));
+    entries
+}
+
+/// What the file system reports for the names `dir` holds, with every directory counted.
+fn reported(dir: &Path) -> Vec<Found> {
+    let read =
+        fs::read_dir(dir).unwrap_or_else(|error| panic!("cannot list {}: {error}", dir.display()));
+    let mut found = Vec::new();
+    for entry in read {
+        let entry = entry.unwrap_or_else(|error| panic!("cannot list {}: {error}", dir.display()));
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|error| panic!("cannot stat {name} of {}: {error}", dir.display()));
+        found.push(Found {
+            name: name.clone(),
+            symlink: kind.is_symlink(),
+            directory: kind.is_dir(),
+            file: kind.is_file(),
+            children: if kind.is_dir() {
+                count_of(&dir.join(name))
+            } else {
+                0
+            },
+        });
+    }
+    found
+}
+
+/// How many names a directory holds. An unreadable one is a problem, not an empty listing.
+fn count_of(dir: &Path) -> usize {
+    let read =
+        fs::read_dir(dir).unwrap_or_else(|error| panic!("cannot list {}: {error}", dir.display()));
+    read.fold(0, |count, entry| {
+        entry.unwrap_or_else(|error| panic!("cannot list {}: {error}", dir.display()));
+        count + 1
+    })
+}
+
+/// The tree under `dir` into `out`, down through every directory that holds something.
+fn collect(dir: &Path, path: &str, out: &mut Vec<Entry>) {
+    let found = reported(dir);
+    let entries = listed(path, &found);
+    for (entry, item) in entries.iter().zip(&found) {
+        if entry.shape == Shape::Branch {
+            collect(&dir.join(&item.name), &entry.path, out);
+        }
+    }
+    out.extend(entries);
+}
+
+/// The entries that are not plain regular files: `path: why`, in the order of the tree.
+fn offences(tree: &[Entry]) -> Vec<String> {
+    tree.iter()
+        .filter_map(|entry| {
+            offence(&entry.path, entry.shape).map(|why| format!("{}: {why}", entry.path))
+        })
+        .collect()
+}
+
+/// Whether this line is the block's `pin_date = "YYYY-MM-DD"`: the key, a quoted value, four
+/// digits, two, two. The shape only, not the calendar.
 fn is_pin_date(line: &str) -> bool {
-    let _ = line;
-    false
+    let Some(value) = line
+        .trim()
+        .strip_prefix("pin_date = \"")
+        .and_then(|rest| rest.strip_suffix('"'))
+    else {
+        return false;
+    };
+    let parts = value.split('-').collect::<Vec<_>>();
+    let widths = [4, 2, 2];
+    parts.len() == widths.len()
+        && parts.iter().zip(&widths).all(|(part, width)| {
+            part.len() == *width && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 /// How many files the vendored copy holds. A pin move changes this together with
@@ -243,12 +237,14 @@ struct Manifest {
     hashes: BTreeMap<String, String>,
 }
 
-/// Reads `sha256sum` output: `<64 hex><two spaces>./<path>`, one line per file.
+/// Reads `sha256sum` output: `<64 hex><two spaces>./<path>`, one line per file, the paths in
+/// strictly ascending byte order, the way `LC_ALL=C sort` leaves them.
 fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let mut manifest = Manifest {
         lines: 0,
         hashes: BTreeMap::new(),
     };
+    let mut last: Option<&str> = None;
     for line in text.lines() {
         if line.is_empty() {
             continue;
@@ -265,6 +261,14 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
                 "{path}: the manifest names it twice, first {before} then {hash}"
             ));
         }
+        if let Some(before) = last {
+            if path <= before {
+                return Err(format!(
+                    "{path}: does not follow {before}; the manifest is not in ascending byte order"
+                ));
+            }
+        }
+        last = Some(path);
     }
     Ok(manifest)
 }
@@ -274,9 +278,44 @@ fn manifest() -> Manifest {
     parse_manifest(&read(&path)).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-/// Whether this line opens a table, and so ends the block before it and starts a new one.
-fn opens_table(line: &&str) -> bool {
-    line.trim().starts_with("[[")
+/// Whether this line opens a table: `[name]` or `[[name]]`, where the name is a dotted key of
+/// bare keys. A line that only begins with a bracket, being a value or a closing bracket of a
+/// multi-line array, does not.
+fn opens_table(line: &str) -> bool {
+    let line = line.trim();
+    let name = match line
+        .strip_prefix("[[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+    {
+        Some(name) => name,
+        None => match line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            Some(name) => name,
+            None => return false,
+        },
+    };
+    !name.is_empty()
+        && name.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        })
+}
+
+/// A key a block must state exactly once: none is a hole in the record, two are two claims.
+fn exactly_one(block: &[String], key: &str) -> Result<(), String> {
+    let found = block
+        .iter()
+        .filter(|line| line.trim_start().starts_with(key))
+        .count();
+    match found {
+        1 => Ok(()),
+        0 => Err(format!("no `{key}` line")),
+        many => Err(format!("{many} `{key}` lines, where one is the record")),
+    }
 }
 
 /// The lines of the `[[upstream]]` block whose `id` is `a2ui`: from the table line that opens it,
@@ -305,15 +344,19 @@ fn a2ui_block(text: &str) -> Result<Vec<String>, String> {
         }
     };
     let start = (0..id)
-        .rfind(|number| opens_table(&lines[*number]))
+        .rfind(|number| opens_table(lines[*number]))
         .ok_or_else(|| format!("{A2UI_ID} on line {} has no table line before it", id + 1))?;
     let end = (id + 1..lines.len())
-        .find(|number| opens_table(&lines[*number]))
+        .find(|number| opens_table(lines[*number]))
         .unwrap_or(lines.len());
-    Ok(lines[start..end]
+    let block = lines[start..end]
         .iter()
         .map(|line| (*line).to_string())
-        .collect())
+        .collect::<Vec<_>>();
+    for key in ["pin = ", "licence_upstream = "] {
+        exactly_one(&block, key).map_err(|problem| format!("the a2ui block has {problem}"))?;
+    }
+    Ok(block)
 }
 
 fn registry_block() -> Vec<String> {
@@ -336,7 +379,7 @@ fn vendored_tree_matches_manifest() {
     );
     let files = walk(&dir)
         .into_iter()
-        .filter(|item| item.kind == Kind::Regular)
+        .filter(|item| item.shape == Shape::Regular)
         .map(|item| item.path)
         .collect::<BTreeSet<_>>();
     assert_eq!(
@@ -387,7 +430,7 @@ fn vendored_tree_holds_only_regular_files() {
     );
     let links = tree
         .iter()
-        .filter(|item| item.kind == Kind::Symlink)
+        .filter(|item| item.shape == Shape::Link)
         .map(|item| item.path.clone())
         .collect::<Vec<_>>();
     assert!(
@@ -497,12 +540,12 @@ fn a_manifest_of_two_paths_is_read() {
 #[test]
 fn anything_that_is_not_a_regular_file_is_an_offence() {
     let tree = [
-        entry("./conformance/core/validator_v1_0.yaml", Kind::Regular, 0),
-        entry("./helper.py", Kind::Regular, 0),
-        entry("./link", Kind::Symlink, 0),
-        entry("./pipe", Kind::Other, 0),
-        entry("./empty", Kind::Directory, 0),
-        entry("./specification", Kind::Directory, 2),
+        entry("./conformance/core/validator_v1_0.yaml", Shape::Regular),
+        entry("./helper.py", Shape::Regular),
+        entry("./link", Shape::Link),
+        entry("./pipe", Shape::Strange),
+        entry("./empty", Shape::Empty),
+        entry("./specification", Shape::Branch),
     ];
     assert_eq!(
         offences(&tree),
@@ -523,6 +566,7 @@ pin = "the-pin-of-the-block-before"
 pin = "the-a2ui-pin"
 id = "a2ui"
 rely_on = ["protocol v1.0 messages", "conformance suite"]
+licence_upstream = "Apache-2.0"
 
 [[upstream]]
 id = "after"
@@ -596,9 +640,9 @@ fn a_listing_judges_every_name_by_what_it_holds() {
     assert_eq!(
         listed("./catalogs", &listing),
         vec![
-            ("./catalogs/empty".to_string(), Shape::Empty),
-            ("./catalogs/held".to_string(), Shape::Branch),
-            ("./catalogs/plain.txt".to_string(), Shape::Regular),
+            entry("./catalogs/empty", Shape::Empty),
+            entry("./catalogs/held", Shape::Branch),
+            entry("./catalogs/plain.txt", Shape::Regular),
         ]
     );
 }
