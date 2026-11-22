@@ -511,6 +511,78 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
+// ------------------------------------------------------------ the agentd create bodies
+
+/// `Reach::send_mistral`'s body for agentd's `POST /agents`: every key it sends, from the settings
+/// and the thread. Pure, so the contract test can read it back as agentd's own request type.
+pub fn mistral_agent_body(
+    provider: &str,
+    model: Option<&str>,
+    cwd: &str,
+    prompt: &str,
+    subject: &str,
+    thread: &str,
+) -> Value {
+    let mut body = json!({
+        "provider": provider,
+        "cwd": cwd,
+        "prompt": prompt,
+        "title": clip(&format!("Lucina → Mistral: {subject}"), 80),
+        "labels": {"from": "lucina", "reach": thread},
+    });
+    if let Some(m) = model {
+        body["model"] = json!(m);
+    }
+    body
+}
+
+/// `Reach::start_claude_agent`'s body for agentd's `POST /agents`.
+#[allow(clippy::too_many_arguments)]
+pub fn claude_agent_body(
+    provider: &str,
+    model: &str,
+    effort: &str,
+    mode: &str,
+    cwd: &str,
+    prompt: &str,
+    subject: &str,
+    thread: &str,
+) -> Value {
+    json!({
+        "provider": provider,
+        "model": model,
+        "thinkingOptionId": effort,
+        "modeId": mode,
+        "cwd": cwd,
+        "prompt": prompt,
+        "title": clip(&format!("Lucina → Claude: {subject}"), 80),
+        "labels": {"from": "lucina", "reach": thread},
+    })
+}
+
+/// The `lucina-rs reach agents` run's body for agentd's `POST /agents`: `title` is the arg's when
+/// it has one, else the thread's subject.
+pub fn agents_run_body(
+    provider: &str,
+    model: Option<&str>,
+    cwd: &str,
+    prompt: &str,
+    title: &str,
+    thread: &str,
+) -> Value {
+    let mut body = json!({
+        "provider": provider,
+        "cwd": cwd,
+        "prompt": prompt,
+        "title": clip(title, 80),
+        "labels": {"from": "lucina", "reach": thread},
+    });
+    if let Some(m) = model {
+        body["model"] = json!(m);
+    }
+    body
+}
+
 // ------------------------------------------------------------ redaction
 
 const SECRET_KEYS: &[&str] = &[
@@ -1188,16 +1260,14 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
         allowed_model(&c.provider, c.model.as_deref())?;
         let cwd = c.cwd.join(&t.id);
         std::fs::create_dir_all(&cwd).map_err(|e| format!("no working directory: {e}"))?;
-        let mut body = json!({
-            "provider": c.provider,
-            "cwd": cwd.display().to_string(),
-            "prompt": self.mistral_prompt(&t),
-            "title": clip(&format!("Lucina → Mistral: {}", t.subject), 80),
-            "labels": {"from": "lucina", "reach": t.id},
-        });
-        if let Some(m) = &c.model {
-            body["model"] = json!(m);
-        }
+        let body = mistral_agent_body(
+            &c.provider,
+            c.model.as_deref(),
+            &cwd.display().to_string(),
+            &self.mistral_prompt(&t),
+            &t.subject,
+            &t.id,
+        );
         let v = self.agentd("POST", "/agents", Some(&body)).await?;
         let agent = v["id"]
             .as_str()
@@ -1285,16 +1355,16 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
         allowed_model(&c.provider, Some(&c.model))?;
         let cwd = self.claude_agent_cwd(&c, t).await;
         std::fs::create_dir_all(&cwd).map_err(|e| format!("no working directory: {e}"))?;
-        let body = json!({
-            "provider": c.provider,
-            "model": c.model,
-            "thinkingOptionId": c.effort,
-            "modeId": c.mode,
-            "cwd": cwd.display().to_string(),
-            "prompt": self.claude_agent_prompt(t, &cwd),
-            "title": clip(&format!("Lucina → Claude: {}", t.subject), 80),
-            "labels": {"from": "lucina", "reach": t.id},
-        });
+        let body = claude_agent_body(
+            &c.provider,
+            &c.model,
+            &c.effort,
+            &c.mode,
+            &cwd.display().to_string(),
+            &self.claude_agent_prompt(t, &cwd),
+            &t.subject,
+            &t.id,
+        );
         let v = self.agentd("POST", "/agents", Some(&body)).await?;
         v["id"]
             .as_str()
@@ -2507,16 +2577,14 @@ owner's Claude chats working on a branch: `send` leaves one a message, and its a
                 let result = match (&send_to, a.action) {
                     (None, AgentsAction::Run) => {
                         let _ = std::fs::create_dir_all(&cfg.agents_cwd);
-                        let mut body = json!({
-                            "provider": cfg.agents_provider,
-                            "cwd": cfg.agents_cwd.display().to_string(),
-                            "prompt": prompt,
-                            "title": clip(a.title.as_deref().unwrap_or(&t.subject), 80),
-                            "labels": {"from": "lucina", "reach": t.id},
-                        });
-                        if let Some(m) = &cfg.agents_model {
-                            body["model"] = json!(m);
-                        }
+                        let body = agents_run_body(
+                            &cfg.agents_provider,
+                            cfg.agents_model.as_deref(),
+                            &cfg.agents_cwd.display().to_string(),
+                            &prompt,
+                            a.title.as_deref().unwrap_or(&t.subject),
+                            &t.id,
+                        );
                         reach.agentd("POST", "/agents", Some(&body)).await
                     }
                     (Some(id), _) => {
