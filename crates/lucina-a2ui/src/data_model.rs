@@ -110,6 +110,35 @@ impl DataModel {
         model
     }
 
+    /// The absolute pointer `path` names, hung under `context` when it is relative and the context
+    /// is there: the original's static `DataModel.resolve_path`
+    /// (`python/a2ui_core/src/a2ui/core/state/data_model.py:62-81`,
+    /// `typescript/core/web_core/src/state/data-model.ts:305-315`, which agree line for line).
+    ///
+    /// This is the join a caller hands a path to, and it is *not* the scope resolution of
+    /// [`crate::data_context`]: an empty context is no context rather than the root, a context of
+    /// its own is taken as it stands with exactly one slash added, and `.` and the empty string are
+    /// ordinary text. It answers a plain `String` because both originals do and nothing it says
+    /// touches the data: what it produces is refused by [`DataModel::get`] and [`DataModel::set`]
+    /// if it names more segments than [`MAX_DEPTH`].
+    ///
+    /// The port keeps it because the message processor of step 2b calls it: TypeScript's
+    /// `MessageProcessor.resolvePath` is a public method whose body is this function
+    /// (`typescript/core/web_core/src/processing/message-processor.ts:600-601`), tested at
+    /// `message-processor.test.ts:1681-1687`. Python has no caller of it.
+    pub fn resolve_path(path: &str, context: &str) -> String {
+        if path.starts_with('/') {
+            return path.to_string();
+        }
+        if context.is_empty() {
+            return format!("/{path}");
+        }
+        if context.ends_with('/') {
+            return format!("{context}{path}");
+        }
+        format!("{context}/{path}")
+    }
+
     /// The value at `path`, or `None` when the model holds nothing there.
     ///
     /// A path that names the root (`""`, `"/"`, or any number of empty segments) is the whole
@@ -617,13 +646,16 @@ fn too_high(segment: &str, path: &str) -> Error {
     ))
 }
 
-/// The suite states neither of these: `data_model.yaml` detaches observers only by `dispose`, and
-/// its header says the difference between an absent key and a stored `null` is left out on purpose
-/// because not every language can express it. A port can, and later steps read it, so it is pinned
-/// here.
+/// What the suites cannot say about the model. `data_model.yaml` detaches observers only by
+/// `dispose`, never writes one spelling of a number over another, never states a pointer or a value
+/// deeper than anything it needs, and says nothing about when the host drains; its header leaves
+/// the difference between an absent key and a stored `null` out on purpose, because not every
+/// language can express it. A port can, later steps read it, and both reviews asked for these, so
+/// they are pinned here.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_context::ScopePath;
     use serde_json::json;
 
     #[test]
@@ -865,6 +897,40 @@ mod tests {
             model.take_notifications().is_empty(),
             "a disposed model still had a notification to hand out"
         );
+    }
+
+    /// The four answers the TypeScript test of the only caller pins
+    /// (`message-processor.test.ts:1681-1687`), and the three places where this join and the scope
+    /// resolution of `data_context` part ways.
+    #[test]
+    fn the_model_join_hangs_a_path_under_the_context_it_is_handed() {
+        assert_eq!(
+            DataModel::resolve_path("/absolute/path", "/base"),
+            "/absolute/path",
+            "an absolute path ignores the context"
+        );
+        assert_eq!(
+            DataModel::resolve_path("relative", "/base"),
+            "/base/relative"
+        );
+        assert_eq!(
+            DataModel::resolve_path("relative", "/base/"),
+            "/base/relative"
+        );
+        assert_eq!(DataModel::resolve_path("standalone", ""), "/standalone");
+        assert_eq!(DataModel::resolve_path("", ""), "/");
+
+        // A scope resolution strips the trailing slashes of the scope and answers `.` and `""` with
+        // the scope itself; this one takes the context as written and the path as text.
+        assert_eq!(DataModel::resolve_path("name", "/user//"), "/user//name");
+        assert_eq!(DataModel::resolve_path(".", "/user"), "/user/.");
+        assert_eq!(DataModel::resolve_path("", "/user"), "/user/");
+        assert_eq!(
+            ScopePath::new("/user//").resolve("name").as_deref(),
+            Ok("/user/name")
+        );
+        assert_eq!(ScopePath::new("/user").resolve(".").as_deref(), Ok("/user"));
+        assert_eq!(ScopePath::new("/user").resolve("").as_deref(), Ok("/user"));
     }
 
     /// A pointer of `segments` segments: `/s0/s1/…`.
