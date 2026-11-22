@@ -11,6 +11,8 @@
 //! notifications the host delivers instead of callbacks the store invokes — a callback handed a
 //! borrow of the model would have to borrow the model it is busy changing.
 
+use std::collections::HashMap;
+
 use serde_json::{Map, Number, Value};
 
 use crate::error::Error;
@@ -36,12 +38,18 @@ pub struct Watch {
     pub initial: Option<Value>,
 }
 
-/// One registered observer: its handle, and the path it watches split into unescaped segments, so
-/// that two spellings of one path are one path for the notification routing.
+/// One path under observation and the observers registered on it, oldest first. The original's
+/// value of `_listeners`: a normalized path to its list of callbacks. Keeping the observers
+/// together under the path they watch is what makes a write cost the paths under observation
+/// rather than the square of them.
 #[derive(Clone, Debug)]
-struct Observer {
-    id: WatchId,
+struct Watched {
+    /// The path split into unescaped segments, so that two spellings of one path are one path for
+    /// the notification routing.
     segments: Vec<String>,
+    /// Every observer registered on it, oldest first. An empty list is a path nothing watches
+    /// any more, which costs a write one test and nothing else.
+    ids: Vec<WatchId>,
 }
 
 /// The reactive data model of one surface.
@@ -49,9 +57,14 @@ struct Observer {
 pub struct DataModel {
     /// The whole model: the original's `_data`.
     data: Value,
-    /// Every registered observer, oldest first. The original keeps a dict of normalized path to
-    /// list of callbacks, which is the same order seen from the other side.
-    observers: Vec<Observer>,
+    /// Every path under observation, first-registered first: the original's `_listeners`.
+    watched: Vec<Watched>,
+    /// Which entry of `watched` each path is, so that registering an observer on a path already
+    /// watched finds it without a scan.
+    paths: HashMap<Vec<String>, usize>,
+    /// Which path each live observer is on. An observer detached with `unsubscribe` leaves it, so
+    /// this is also the answer to "is this observer still there".
+    registered: HashMap<WatchId, usize>,
     /// The notifications the writes since the last call produced, oldest first, one entry per
     /// observer that fired.
     pending: Vec<(WatchId, Value)>,
@@ -63,7 +76,9 @@ impl DataModel {
     pub fn new() -> DataModel {
         DataModel {
             data: Value::Object(Map::new()),
-            observers: Vec::new(),
+            watched: Vec::new(),
+            paths: HashMap::new(),
+            registered: HashMap::new(),
             pending: Vec::new(),
             next_id: 0,
         }
@@ -115,7 +130,7 @@ impl DataModel {
         if value.is_null() && find(&self.data, &tokens).is_none() {
             return Ok(());
         }
-        let before = self.snapshot();
+        let before = self.snapshot(&tokens);
 
         if tokens.is_empty() {
             self.data = if value.is_null() {
@@ -123,7 +138,7 @@ impl DataModel {
             } else {
                 value
             };
-            self.cascade(&tokens, &before);
+            self.cascade(&before);
             return Ok(());
         }
 
@@ -146,7 +161,7 @@ impl DataModel {
             cursor = step_into(cursor, token, is_index(next), path)?;
         }
         write_leaf(cursor, last, value, path)?;
-        self.cascade(&tokens, &before);
+        self.cascade(&before);
         Ok(())
     }
 
@@ -169,13 +184,29 @@ impl DataModel {
         let initial = find(&self.data, &segments).cloned();
         let id = WatchId(self.next_id);
         self.next_id += 1;
-        self.observers.push(Observer { id, segments });
+        let at = match self.paths.get(&segments) {
+            Some(at) => *at,
+            None => {
+                let at = self.watched.len();
+                self.paths.insert(segments.clone(), at);
+                self.watched.push(Watched {
+                    segments,
+                    ids: Vec::new(),
+                });
+                at
+            }
+        };
+        self.watched[at].ids.push(id);
+        self.registered.insert(id, at);
         Ok(Watch { id, initial })
     }
 
     /// Detaches one observer. Detaching one that is gone already does nothing.
     pub fn unsubscribe(&mut self, id: WatchId) {
-        self.observers.retain(|observer| observer.id != id);
+        let Some(at) = self.registered.remove(&id) else {
+            return;
+        };
+        self.watched[at].ids.retain(|watcher| *watcher != id);
     }
 
     /// The notifications the writes since the last call produced, oldest first, one entry per
@@ -186,50 +217,46 @@ impl DataModel {
 
     /// Detaches every observer, leaving the data where it is.
     pub fn dispose(&mut self) {
-        self.observers.clear();
+        self.watched.clear();
+        self.paths.clear();
+        self.registered.clear();
         self.pending.clear();
     }
 
-    /// What every path under observation holds, once per path, in the order the paths were first
-    /// registered. The original snapshots the watched values before it mutates, so that a
-    /// notification can be compared against what the observer really saw.
-    fn snapshot(&self) -> Vec<Sighted> {
-        let mut seen: Vec<Sighted> = Vec::new();
-        for observer in &self.observers {
-            if seen
-                .iter()
-                .any(|sighted| sighted.segments == observer.segments)
-            {
-                continue;
-            }
-            seen.push(Sighted {
-                segments: observer.segments.clone(),
-                value: observed(&self.data, &observer.segments),
-            });
-        }
-        seen
+    /// What each path this write concerns holds, before the write, in the order the paths were
+    /// first registered. The original snapshots the watched values before it mutates
+    /// (`state/data_model.py:169`) so that a notification can be compared against what the observer
+    /// really saw, and it walks its key map once per write (`:331-346`) — which is what this costs
+    /// too: the paths under observation, not the observers squared.
+    fn snapshot(&self, written: &[String]) -> Vec<Sighted> {
+        self.watched
+            .iter()
+            .enumerate()
+            .filter(|(_, watched)| {
+                !watched.ids.is_empty() && speaks_for(&watched.segments, written)
+            })
+            .map(|(at, watched)| Sighted {
+                at,
+                value: observed(&self.data, &watched.segments),
+            })
+            .collect()
     }
 
-    /// The observers that have to hear about a write, because they watch the written path or a
-    /// path on either side of it, and the value at their path changed.
-    fn cascade(&mut self, written: &[String], before: &[Sighted]) {
+    /// The observers that have to hear about a write: those on a path the write speaks for, and
+    /// only where the value at that path changed. One entry per observer, in the order the
+    /// observers registered.
+    fn cascade(&mut self, before: &[Sighted]) {
+        let mut handed = std::mem::take(&mut self.pending);
         for sighted in before {
-            if !speaks_for(&sighted.segments, written) {
-                continue;
-            }
-            let now = observed(&self.data, &sighted.segments);
-            if same_value(&now, &sighted.value) {
+            let watched = &self.watched[sighted.at];
+            let now = observed(&self.data, &watched.segments);
+            if same_value(&sighted.value, &now) {
                 continue;
             }
             let value = now.unwrap_or(Value::Null);
-            for observer in self
-                .observers
-                .iter()
-                .filter(|observer| observer.segments == sighted.segments)
-            {
-                self.pending.push((observer.id, value.clone()));
-            }
+            handed.extend(watched.ids.iter().map(|id| (*id, value.clone())));
         }
+        self.pending = handed;
     }
 }
 
@@ -240,9 +267,10 @@ impl Default for DataModel {
     }
 }
 
-/// A watched path and what it held, for the notification routing.
+/// One path the write speaks for and what it held before the write. `at` is the path's place in
+/// `watched`, which is how the routing finds the observers on it without looking for them.
 struct Sighted {
-    segments: Vec<String>,
+    at: usize,
     value: Option<Value>,
 }
 
@@ -338,9 +366,9 @@ fn values_equal(before: &Value, now: &Value) -> bool {
         }
         (Value::Object(before), Value::Object(now)) => {
             before.len() == now.len()
-                && before.iter().all(|(key, value)| {
-                    now.get(key).is_some_and(|held| values_equal(value, held))
-                })
+                && before
+                    .iter()
+                    .all(|(key, value)| now.get(key).is_some_and(|held| values_equal(value, held)))
         }
         (before, now) => before == now,
     }
@@ -640,14 +668,14 @@ mod tests {
         }
 
         let started = std::time::Instant::now();
-        for index in 0..WRITES {
+        for (index, id) in ids.iter().enumerate().take(WRITES) {
             let path = format!("/leaf/{index}");
             model
                 .set(&path, json!(index))
                 .expect("a write to a watched leaf");
             assert_eq!(
                 model.take_notifications(),
-                vec![(ids[index], json!(index))],
+                vec![(*id, json!(index))],
                 "write {index} was not heard by its own observer alone"
             );
         }
@@ -743,7 +771,9 @@ mod tests {
     fn an_observer_gone_before_the_drain_is_not_handed_its_notification() {
         let mut model = DataModel::with_initial(json!({"a": 1}));
         let observer = model.subscribe("/a").expect("a watched path");
-        model.set("/a", json!(2)).expect("a write to a watched path");
+        model
+            .set("/a", json!(2))
+            .expect("a write to a watched path");
         model.unsubscribe(observer.id);
         assert!(
             model.take_notifications().is_empty(),
@@ -757,7 +787,9 @@ mod tests {
     fn disposing_drops_what_was_not_handed_out() {
         let mut model = DataModel::with_initial(json!({"a": 1}));
         model.subscribe("/a").expect("a watched path");
-        model.set("/a", json!(2)).expect("a write to a watched path");
+        model
+            .set("/a", json!(2))
+            .expect("a write to a watched path");
         model.dispose();
         assert!(
             model.take_notifications().is_empty(),
@@ -770,7 +802,7 @@ mod tests {
         let mut path = String::with_capacity(segments * 4);
         for index in 0..segments {
             path.push('/');
-            path.push_str("s");
+            path.push('s');
             path.push_str(&index.to_string());
         }
         path
