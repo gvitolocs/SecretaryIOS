@@ -57,6 +57,12 @@ impl Case {
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.json.get(key)
     }
+
+    /// The case's `key`, or a failure naming the case when it holds no such key.
+    pub fn require(&self, key: &str) -> Result<&Value, String> {
+        self.get(key)
+            .ok_or_else(|| format!("{}: required key '{key}' is absent", self.id))
+    }
 }
 
 /// Loads and converts the suite `conformance/<rel>`, one case per entry of its top-level list.

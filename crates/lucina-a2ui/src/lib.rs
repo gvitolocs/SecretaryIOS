@@ -12,7 +12,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod data_context;
+pub mod data_model;
 pub mod error;
+pub mod expression;
 
 pub use error::{Error, ErrorCategory};
 
