@@ -345,6 +345,21 @@ fn licence_is_recorded() {
     );
 }
 
+/// The merge gate does not read `third_party/` file by file, so the scan of the vendored copy is
+/// done by hand once per pin move and its result is recorded next to the copy.
+#[test]
+fn the_readme_records_a_secret_scan_of_the_pin() {
+    let readme = read(&root().join("third_party/a2ui/README.md"));
+    let scanned = readme.lines().find(|line| {
+        line.contains(lucina_a2ui::UPSTREAM_COMMIT) && line.contains("no leaks found")
+    });
+    assert!(
+        scanned.is_some(),
+        "third_party/a2ui/README.md records no secret scan of pin {}",
+        lucina_a2ui::UPSTREAM_COMMIT
+    );
+}
+
 const ZERO: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const ONE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
