@@ -5,5 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "A2UI v1.0 core for Lucina: messages, validation, data model, functions (port of a2ui-project/a2ui)"
 
+[dependencies]
+serde_json.workspace = true
+unicode-ident = "1.0.27"
+
 [dev-dependencies]
 sha2.workspace = true
+regex = "1.13.1"
+yaml-rust = "0.4.5"

@@ -10,6 +10,12 @@
 //! [`UPSTREAM_COMMIT`]. `crates/lucina-a2ui/tests/vendored_tree.rs` checks that copy against its
 //! manifest; a file under `upstream/` is never edited.
 
+#![forbid(unsafe_code)]
+
+pub mod error;
+
+pub use error::{Error, ErrorCategory};
+
 /// The upstream commit we are based on: the vendored oracle and `docs/upstreams.toml` name the
 /// same one.
 pub const UPSTREAM_COMMIT: &str = "5ff1b05f02d39f969b52a942e78e864ef3ac01fa";
