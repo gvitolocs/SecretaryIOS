@@ -191,7 +191,7 @@ fn the_dispatchers_agent_body_is_one_agentd_reads() {
     let triage = read_by_agentd("a triage", &triage_body);
     assert_eq!(triage.labels["triage"], "1");
     assert!(
-        triage.labels.get("platform").is_none(),
+        !triage.labels.contains_key("platform"),
         "a triage names no platform"
     );
 }
