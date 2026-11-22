@@ -16,7 +16,7 @@ v1.0 specification — vendored. They are the oracle of the port: the behaviour
 `specification/inference_formats/`, `specification/versions.json`, and `LICENSE`.
 
 `MANIFEST.sha256` lists every file as `<sha256>  ./<path>`, the way `sha256sum` prints, sorted.
-`crates/lucina-a2ui/tests/vendored_tree.rs` checks `upstream/` against that manifest, that no
+`crates/lucina-a2ui/src/vendored_tree.rs` checks `upstream/` against that manifest, that no
 Python file and no symlink came in, and that the pin and the licence are recorded.
 
 ## The rule
@@ -33,8 +33,9 @@ the repository root
 `(cd third_party/a2ui/upstream && find . -type f | LC_ALL=C sort | xargs -d '\n' sha256sum) > third_party/a2ui/MANIFEST.sha256`
 
 then change `UPSTREAM_COMMIT` in `crates/lucina-a2ui/src/lib.rs`, the commit id above, and `pin`
-and `pin_date` in the `a2ui` block of `docs/upstreams.toml`. `cargo test -p lucina-a2ui` says
-whether the copy is complete.
+and `pin_date` in the `a2ui` block of `docs/upstreams.toml`. `VENDORED_FILES` in
+`crates/lucina-a2ui/src/vendored_tree.rs` is the number of files the copy holds, so it changes too.
+`cargo test -p lucina-a2ui` says whether the copy is complete.
 
 ## Secret scan
 
