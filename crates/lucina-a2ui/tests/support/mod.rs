@@ -4,7 +4,7 @@
 //! The harness is a thin adapter: it reads a suite of the vendored oracle, calls this crate's
 //! public entry points and compares the answers. Behaviour lives in `src/`, never here, and a case
 //! that fails is fixed in `src/` or reported to the lead — the oracle under
-//! `tests/conformance/a2ui/upstream/` is never edited, reformatted or skipped by editing it.
+//! `third_party/a2ui/upstream/` is never edited, reformatted or skipped by editing it.
 
 // The plumbing is shared by every suite binary of this crate, and no one binary calls all of it:
 // what this suite does not reach, a later one does. Without this, every new suite would have to

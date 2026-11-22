@@ -25,7 +25,7 @@ use super::expect::kind;
 pub fn conformance_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("tests/conformance/a2ui/upstream/conformance")
+        .join("third_party/a2ui/upstream/conformance")
 }
 
 /// One case of a suite: its `<suite>#<name>` id and its JSON.
