@@ -133,6 +133,96 @@ fn entry(path: &str, kind: Kind, children: usize) -> Entry {
     }
 }
 
+/// The five outcomes of one directory entry, as the walker reads it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Shape {
+    /// A regular file: what the copy is made of.
+    Regular,
+    /// A directory holding entries: walked into.
+    Branch,
+    /// A directory holding nothing: it carries no case.
+    Empty,
+    /// A link: it points outside the copy.
+    Link,
+    /// A fifo, a socket, a device: not a file at all.
+    Strange,
+}
+
+/// What the file system reports for one name: whether it is a symlink, a directory, a regular
+/// file and, for a directory, how many entries it holds.
+#[derive(Clone, Debug)]
+struct Found {
+    name: String,
+    symlink: bool,
+    directory: bool,
+    file: bool,
+    children: usize,
+}
+
+fn found(name: &str, symlink: bool, directory: bool, file: bool, children: usize) -> Found {
+    Found {
+        name: name.to_string(),
+        symlink,
+        directory,
+        file,
+        children,
+    }
+}
+
+/// What one entry is, from what the file system reports and from the number it carries.
+fn shape_of(symlink: bool, directory: bool, file: bool, children: usize) -> Shape {
+    if symlink {
+        Shape::Link
+    } else if directory {
+        if children == 0 {
+            Shape::Empty
+        } else {
+            Shape::Branch
+        }
+    } else if file {
+        Shape::Regular
+    } else {
+        Shape::Strange
+    }
+}
+
+/// Why a shape does not belong in a vendored tree, or `None` when it does.
+fn why(shape: Shape) -> Option<&'static str> {
+    match shape {
+        Shape::Regular | Shape::Branch => None,
+        Shape::Link => Some("a symlink"),
+        Shape::Empty => Some("an empty directory"),
+        Shape::Strange => Some("neither a regular file nor a directory"),
+    }
+}
+
+/// One listing of `parent`, as the walker records it today: every name gets the shape the
+/// listing's own length gives it, and a directory that holds nothing is recorded again as itself.
+fn listed(parent: &str, listing: &[Found]) -> Vec<(String, Shape)> {
+    let mut out = Vec::new();
+    if listing.is_empty() {
+        if parent != "." {
+            out.push((parent.to_string(), Shape::Empty));
+        }
+        return out;
+    }
+    for item in listing {
+        let shape = shape_of(item.symlink, item.directory, item.file, listing.len());
+        out.push((format!("{parent}/{}", item.name), shape));
+    }
+    out
+}
+
+/// Whether this line is the block's `pin_date = "YYYY-MM-DD"`. The checks do not read it today.
+fn is_pin_date(line: &str) -> bool {
+    let _ = line;
+    false
+}
+
+/// How many files the vendored copy holds. A pin move changes this together with
+/// `UPSTREAM_COMMIT`.
+const VENDORED_FILES: usize = 415;
+
 fn sha256_of(path: &Path) -> String {
     let mut file =
         File::open(path).unwrap_or_else(|error| panic!("cannot open {}: {error}", path.display()));
@@ -239,9 +329,9 @@ fn has_line(block: &[String], expected: &str) -> bool {
 fn vendored_tree_matches_manifest() {
     let dir = upstream_dir();
     let manifest = manifest();
-    assert!(
-        manifest.lines >= 400,
-        "the manifest has {} lines; the oracle is 400 or more",
+    assert_eq!(
+        manifest.lines, VENDORED_FILES,
+        "the manifest has {} lines; the copy holds {VENDORED_FILES} files",
         manifest.lines
     );
     let files = walk(&dir)
@@ -261,10 +351,10 @@ fn vendored_tree_matches_manifest() {
         match manifest.hashes.get(path) {
             None => problems.push(format!("{path}: on disk, but not in the manifest")),
             Some(wanted) => {
-                let found = sha256_of(&dir.join(path));
-                if found != *wanted {
+                let actual = sha256_of(&dir.join(path));
+                if actual != *wanted {
                     problems.push(format!(
-                        "{path}: the manifest says {wanted}, the file is {found}"
+                        "{path}: the manifest says {wanted}, the file is {actual}"
                     ));
                 }
             }
@@ -322,9 +412,20 @@ fn pin_is_recorded_everywhere() {
         crate::UPSTREAM_COMMIT
     );
     let pin = format!("pin = {:?}", crate::UPSTREAM_COMMIT);
+    let block = registry_block();
     assert!(
-        has_line(&registry_block(), &pin),
+        has_line(&block, &pin),
         "the a2ui block of docs/upstreams.toml has no line {pin}"
+    );
+    let record = read(&root().join("docs/design/a2ui-port.md"));
+    assert!(
+        record.contains(crate::UPSTREAM_COMMIT),
+        "docs/design/a2ui-port.md does not name the upstream commit {}",
+        crate::UPSTREAM_COMMIT
+    );
+    assert!(
+        block.iter().any(|line| is_pin_date(line)),
+        "the a2ui block of docs/upstreams.toml has no pin_date = \"YYYY-MM-DD\" line"
     );
 }
 
@@ -471,4 +572,133 @@ fn two_blocks_with_the_same_id_are_refused() {
 fn a_registry_without_the_a2ui_block_is_refused() {
     let text = String::from("id = \"other\"\npin = \"one\"\n");
     assert!(a2ui_block(&text).is_err());
+}
+
+/// The rule the walker follows, on the five outcomes of one entry and nothing else.
+#[test]
+fn the_five_outcomes_of_one_entry_are_told_apart() {
+    assert_eq!(shape_of(false, false, true, 0), Shape::Regular);
+    assert_eq!(shape_of(false, true, false, 2), Shape::Branch);
+    assert_eq!(shape_of(false, true, false, 0), Shape::Empty);
+    assert_eq!(shape_of(true, false, false, 0), Shape::Link);
+    assert_eq!(shape_of(false, false, false, 0), Shape::Strange);
+}
+
+/// One listing gives one entry per name, and a directory is judged by the entries it holds
+/// itself, not by how many names its parent listing has.
+#[test]
+fn a_listing_judges_every_name_by_what_it_holds() {
+    let listing = [
+        found("empty", false, true, false, 0),
+        found("held", false, true, false, 2),
+        found("plain.txt", false, false, true, 0),
+    ];
+    assert_eq!(
+        listed("./catalogs", &listing),
+        vec![
+            ("./catalogs/empty".to_string(), Shape::Empty),
+            ("./catalogs/held".to_string(), Shape::Branch),
+            ("./catalogs/plain.txt".to_string(), Shape::Regular),
+        ]
+    );
+}
+
+/// A block that says one pin, one date and one licence, as a real one does.
+const WELL_FORMED: &str = r#"[[upstream]]
+pin = "the-a2ui-pin"
+pin_date = "2026-11-20"
+id = "a2ui"
+licence_upstream = "Apache-2.0"
+"#;
+
+/// A line with one pair of brackets opens a table as much as `[[upstream]]` does, and so ends the
+/// block; this registry holds a `[settings]` section.
+#[test]
+fn a_table_line_with_one_bracket_ends_the_block() {
+    let text = format!("{WELL_FORMED}\n[settings]\ndata_dir = \"/var/lib/lucina/watch\"\n");
+    let block = a2ui_block(&text).expect("the fixture has an a2ui block");
+    assert!(
+        !block.iter().any(|line| line.contains("data_dir")),
+        "the block ran past the [settings] line: {block:?}"
+    );
+}
+
+/// A line that begins with a bracket because it is a value inside a multi-line array is not a
+/// table header: the block keeps going to the next real one.
+#[test]
+fn a_value_line_of_an_array_does_not_end_the_block() {
+    let text = "[[upstream]]\npin = \"the-a2ui-pin\"\npin_date = \"2026-11-20\"\nid = \"a2ui\"\nrely_on = [\n[\"protocol v1.0 messages\", \"actions\"]\n]\nlicence_upstream = \"Apache-2.0\"\n\n[[upstream]]\nid = \"after\"\n";
+    let block = a2ui_block(text).expect("the fixture has an a2ui block");
+    assert!(
+        has_line(&block, r#"["protocol v1.0 messages", "actions"]"#),
+        "the block lost a line of the array: {block:?}"
+    );
+    assert!(
+        has_line(&block, "]"),
+        "the block lost the array's closing bracket: {block:?}"
+    );
+    assert!(
+        has_line(&block, r#"licence_upstream = "Apache-2.0""#),
+        "the block ended inside the array: {block:?}"
+    );
+    assert!(
+        !has_line(&block, r#"id = "after""#),
+        "the block reached into the block after it: {block:?}"
+    );
+}
+
+/// Two pins in one block are two claims about where the port stands; the same for two licences.
+#[test]
+fn a_block_with_two_pins_is_refused() {
+    let text = String::from(
+        "[[upstream]]\npin = \"one\"\npin = \"two\"\npin_date = \"2026-11-20\"\nid = \"a2ui\"\nlicence_upstream = \"Apache-2.0\"\n",
+    );
+    let error = a2ui_block(&text).expect_err("two pins must be refused");
+    assert!(
+        error.contains("pin"),
+        "the error does not name the key: {error}"
+    );
+}
+
+#[test]
+fn a_block_with_two_licences_is_refused() {
+    let text = String::from
+        ("[[upstream]]\npin = \"one\"\npin_date = \"2026-11-20\"\nid = \"a2ui\"\nlicence_upstream = \"Apache-2.0\"\nlicence_upstream = \"MIT\"\n");
+    let error = a2ui_block(&text).expect_err("two licences must be refused");
+    assert!(
+        error.contains("licence_upstream"),
+        "the error does not name the key: {error}"
+    );
+}
+
+/// The date of the pin, read by its shape: four digits, two, two, in `pin_date = "..."`.
+#[test]
+fn a_pin_date_line_is_read_by_its_shape() {
+    assert!(is_pin_date(r#"pin_date = "2026-11-20""#));
+    assert!(!is_pin_date(r#"pin_date = "2026-11-2""#));
+    assert!(!is_pin_date(r#"pin = "2026-11-20""#));
+    assert!(!is_pin_date(r#"pin_date = "next tuesday""#));
+    assert!(!is_pin_date("pin_date = 2026-11-20"));
+}
+
+/// `LC_ALL=C sort` is byte order: capital letters before small ones, and `./a` before `./b`. A
+/// manifest that is not in that order is not the one the command makes.
+#[test]
+fn a_manifest_not_in_ascending_order_is_refused() {
+    let text = format!("{ZERO}  ./b.yaml\n{ONE}  ./a.yaml\n");
+    let error = parse_manifest(&text).expect_err("./a.yaml must come first");
+    assert!(
+        error.contains("./b.yaml"),
+        "the error does not name the path out of order: {error}"
+    );
+    let good = format!("{ZERO}  ./a.yaml\n{ONE}  ./b.yaml\n");
+    assert!(
+        parse_manifest(&good).is_ok(),
+        "an ascending manifest refused"
+    );
+    let capitals = format!("{ZERO}  ./B.yaml\n{ONE}  ./a.yaml\n");
+    assert!(
+        parse_manifest(&capitals).is_ok(),
+        "byte order puts ./B.yaml first"
+    );
 }
