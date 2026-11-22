@@ -262,7 +262,8 @@ lagent device release iphone
   a call that acts on a real Lucina repo or worktree: its directory (the session cwd, followed through `cd <literal path>`
   and `git -C <literal path>`, also inside `ssh host '…'`, `bash -c '…'`, `sh -c "…"`, a here-string, `eval`) is inside
   `…/Projects/Lucina/<Repo>` or `…/.worktrees/<Repo>`, or the call's own words name such a path or a repo
-  (`SecretaryIOS`, `lucinaos`, `LucinaAndroidOS`, `lucina-rs`). The bare group folder `…/Projects/Lucina`, where the lead
+  (`SecretaryIOS`, `lucinaos`, `LucinaAndroidOS`, `lucina-rs`, as a whole path component or URL segment, optionally
+  with `.git`: `secretaryios-docs`, `lucina-rs-fork` and `SecretaryIOS2` are no repo). The bare group folder `…/Projects/Lucina`, where the lead
   sessions sit, no longer puts every command in scope, and a mention in another command, an `echo` or a commit message
   does not either. So scratch repos (`git init` then a worktree under `~/scratch`) need no `LAGENT_BYPASS`. A call
   the hook cannot place (`xargs git …`, an unknown wrapper) keeps the old whole-text rule. A call whose directory is
@@ -272,27 +273,31 @@ lagent device release iphone
   name the directory like `-C`. The worktree folders that count are those of the Lucina repos (`.worktrees/SecretaryIOS`,
   `lucina…`, `LucinaAndroidOS`), not every `.worktrees/*`. Accepted fail-opens, ONLY with the session in the group
   folder: a repo path that appears nowhere in the command text (held in the environment, built by a substitution or
-  read from a file); a symlink from scratch to a repo; a script file run by `bash script.sh` (not read for these rules); an alias
-  or a function. A call behind `xargs`, `find -exec` or an
+  read from a file); a symlink from scratch to a repo (a push to `main` from it is still caught by the origin
+  check below, which finds `.git` through the symlinked parent; a worktree add and a call to another branch are not);
+  a script file run by `bash script.sh` (not read for these rules); an alias or a function. A call behind `xargs`, `find -exec` or an
   unknown wrapper is a call with an unknown directory. A call acts on every directory its own options name (`-C`,
   `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`) plus the ones an earlier `export`, `declare -x`,
   `typeset -x` or bare assignment of those two variables set in the same command (an unknown value is an unknown
   directory): one repo among them is enough. What the old whole-text patterns match and the scan cannot place is
   found by byte span, never by count: it is a call of unknown directory. A `--detach` or `-d` exempts only its own
-  `worktree add`. The guarded scan of one verdict reads at most 4 million characters, nested `ssh`, `bash -c` and
+  `worktree add`. The guarded scan of one verdict reads at most 4 million bytes, nested `ssh`, `bash -c` and
   `$( )` levels included, and 8 levels deep (this bounds only that scan, not the rest of the hook); in the unread
   part whatever the old patterns match counts as an unknown call, so a long command without a guarded call is never
   refused, and one with such a call refuses when the text names a repo. A push to `main` is also refused from ANY directory, scratch clones included, when the repository it pushes to has a
-  Lucina origin (LA-C045 round 4): the push names a Lucina URL or path itself; or the remote it pushes to (`origin`
+  Lucina origin (LA-C045 round 4): a push that names `main` (`main`, `+main`, `HEAD:main`, `refs/heads/main`), or names
+  no branch (or `HEAD`) from a checkout whose `.git/HEAD` is `refs/heads/main` (a refspec-less `git push`), the push names a Lucina URL or path itself; or the remote it pushes to (`origin`
   unless the call names another) has a `url` or `pushurl` naming a Lucina repo (`SecretaryIOS`, `lucinaos`,
   `LucinaAndroidOS`, `lucina-rs`, `Projects/Lucina/<Repo>`, `.worktrees/<Repo>`, also as `<owner>/SecretaryIOS.git`),
   read from `.git/config` of the directory the call acts on (or its parents; a worktree through `commondir`) without
   running git; or the command itself made the clone (`git clone <Lucina url> [dir]`, `git remote add|set-url <name>
-  <Lucina url>`) and pushes from that directory. Not covered: a config that is a symlink, a FIFO or over 64 KiB (read
-  to its first 64 KiB only), a symlinked `.git`, a bare repository, `branch.<name>.remote` and `remote.pushDefault`,
-  `includeIf` config files, URLs rewritten by a global `~/.gitconfig` `insteadOf`, a clone or remote made by a script
-  file or an earlier command, and any host where the directory does not exist (the Mac checks only paths it can see).
-  A clone into a directory the hook cannot resolve counts for pushes from any unresolved directory. The iPhone, kill and cargo-target rules are unchanged.
+  <Lucina url>`) and pushes from that directory. A config that is a symlink, a FIFO or not a regular file is ignored; over 64 KiB it is read to its first 64 KiB. A
+  submodule reads its own config (the superproject's only when it has none). `git push --all`, `--mirror`, `--tags`
+  and deletions are not read as pushes to main. DOCUMENTED LIMITS (the guard prevents accidents, not a hostile
+  command): a call hidden in `perl -e`, `python -c`, a `bash -c 'true' "<command>"` argument trick, a script file
+  or an alias or a function; `branch.<name>.remote`, `remote.pushDefault`, `includeIf` files and rewrites from a
+  global `~/.gitconfig`; bare repositories; a clone or remote made by a script or an earlier command; a host where the
+  directory does not exist (the Mac checks only paths it can see). A clone into a directory the hook cannot resolve counts for pushes from any unresolved directory. The iPhone, kill and cargo-target rules are unchanged.
 
 - On the owner's Mac, in every session (Lucina or not), the same hook also denies pattern-based process kills run
   locally: `pkill`, `killall`, `xargs kill` and `kill $(pgrep …)` (also inside `$( )`, backticks, groups and `bash -c`).

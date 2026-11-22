@@ -271,8 +271,9 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
 const REPO_DIR: &str = r"(?i)((^|/)Projects/Lucina/[^/]+(/|$)|(^|/)\.worktrees/(SecretaryIOS|lucina[A-Za-z0-9_.-]*|LucinaAndroidOS)(/|$))";
 
 /// The repo part of `SCOPE`: a literal repo path or name in a shell command's words. The group
-/// folder alone (`Projects/Lucina`) is not here.
-const REPO_NAME: &str = r"(?i)(Projects/Lucina/[A-Za-z0-9_.-]+|\.worktrees/(SecretaryIOS|lucina|LucinaAndroidOS)|SecretaryIOS|\blucinaos\b|LucinaAndroidOS|lucina-rs\b)";
+/// folder alone (`Projects/Lucina`) is not here. A bare name matches as a whole path component or URL path
+/// segment (`SecretaryIOS`, `SecretaryIOS.git`), never as the prefix of a longer name (`secretaryios-docs`).
+const REPO_NAME: &str = r"(?i)(Projects/Lucina/[A-Za-z0-9_.-]+|\.worktrees/(SecretaryIOS|lucina[A-Za-z0-9_.-]*|LucinaAndroidOS)(/|$|[^A-Za-z0-9_.-])|(^|[^A-Za-z0-9_.-])(SecretaryIOS|lucinaos|LucinaAndroidOS|lucina-rs)(\.git)?($|[^A-Za-z0-9_.-]))";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -294,13 +295,20 @@ struct Call {
     hits: bool,
 }
 
-/// The most characters one verdict scans, over every nested `ssh`, `bash -c`, `eval` and `$( )` level: it
+/// The most bytes of text one verdict scans (`str::len`), over every nested `ssh`, `bash -c`, `eval` and `$( )` level: it
 /// bounds the guarded scan of one verdict, nothing else in the hook. A long command is scanned about once per
-/// nesting level; 4 million covers a 600 KB command nested 6 levels and costs well under a second.
+/// nesting level; 4 million bytes cover a 600 KB command nested 6 levels and cost well under a second. Reads of
+/// files (git config, HEAD) and the walk up the parents of a directory are charged to the same count.
 const SCAN_BUDGET: usize = 4_000_000;
 
 /// The most bytes of a repository's git config the origin check reads (a longer one is read to this bound).
 const CONFIG_CAP: usize = 64 * 1024;
+
+/// `O_NONBLOCK` for `OpenOptionsExt::custom_flags` (the libc value on Linux and on macOS).
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(not(target_os = "linux"))]
+const O_NONBLOCK: i32 = 0x4;
 
 /// The regexes of the guarded scan, compiled once per process: the repo patterns, and the patterns the old
 /// whole-text rules used (`old` ones), which still decide what text the scan did not explain.
@@ -408,38 +416,63 @@ impl Guard {
                 .is_some_and(|p| self.repo_dir.is_match(&p))
     }
 
+    /// Takes `n` bytes of the work budget. `Err`: it is gone.
+    fn charge(&self, n: usize) -> Result<(), ()> {
+        let left = self.left.get();
+        if left < n {
+            return Err(());
+        }
+        self.left.set(left - n);
+        Ok(())
+    }
+
     /// Up to `cap` bytes of the regular file at `path` (never a symlink, FIFO or directory), charged to the work
-    /// budget. `Err`: the budget is gone (the caller treats the answer as unknown); `Ok(None)`: not a regular file,
-    /// not readable. Bytes are read lossily, so a broken file cannot panic the parser.
+    /// budget. The type is checked without following a link, the file is opened with `O_NONBLOCK` (a FIFO swapped
+    /// in after the check opens at once instead of blocking), and the open file must still be a regular file with
+    /// the checked (dev, ino). `Err`: the budget is gone (the caller treats the answer as unknown); `Ok(None)`: not
+    /// a regular file, not readable. Bytes are read lossily, so a broken file cannot panic the parser.
     fn read_bounded(&self, path: &std::path::Path, cap: usize) -> Result<Option<String>, ()> {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         if self.left.get() < cap {
             return Err(());
         }
-        if !matches!(slot(path), Slot::Regular(_)) {
-            return Ok(None);
-        }
-        let Ok(f) = std::fs::File::open(path) else {
+        let Slot::Regular(before) = slot(path) else {
             return Ok(None);
         };
+        let Ok(f) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK)
+            .open(path)
+        else {
+            return Ok(None);
+        };
+        let Ok(after) = f.metadata() else {
+            return Ok(None);
+        };
+        if !after.is_file() || (after.dev(), after.ino()) != (before.dev(), before.ino()) {
+            return Ok(None);
+        }
         let mut bytes = Vec::new();
         if f.take(cap as u64).read_to_end(&mut bytes).is_err() {
             return Ok(None);
         }
-        self.left
-            .set(self.left.get().saturating_sub(bytes.len() + 512));
+        self.charge(bytes.len() + 512)?;
         Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
-    /// The `config` of the repository holding `dir` (looked for in `dir` and at most 12 parents): `.git/config`, or,
-    /// when `.git` is a `gitdir:` file (a worktree), the `config` of the common dir. Nothing is run and no symlink
-    /// is followed (a symlinked `.git`, `commondir` or `config` is ignored).
-    fn config_of(&self, dir: &str) -> Result<Option<String>, ()> {
+    /// The git dir and the common dir of the repository holding `dir`, looked for in `dir` and at most 12 parents
+    /// (each step charged): `.git` itself, or, when `.git` is a `gitdir:` file (a worktree or a submodule), the
+    /// directory it names and its `commondir` (the git dir itself when there is none). Nothing is run and no
+    /// symlinked `.git`, `commondir` or `config` is followed; a symlinked PARENT directory is resolved by the
+    /// file system as usual.
+    fn repo_of(&self, dir: &str) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, ()> {
         let mut d = std::path::PathBuf::from(dir);
         for _ in 0..12 {
+            self.charge(256)?;
             let dot = d.join(".git");
             match std::fs::symlink_metadata(&dot) {
                 Ok(m) if m.file_type().is_symlink() => return Ok(None),
-                Ok(m) if m.is_dir() => return self.read_bounded(&dot.join("config"), CONFIG_CAP),
+                Ok(m) if m.is_dir() => return Ok(Some((dot.clone(), dot))),
                 Ok(m) if m.is_file() => {
                     let Some(txt) = self.read_bounded(&dot, 4096)? else {
                         return Ok(None);
@@ -450,9 +483,9 @@ impl Guard {
                     let gitdir = d.join(gd.trim());
                     let common = match self.read_bounded(&gitdir.join("commondir"), 4096)? {
                         Some(c) => gitdir.join(c.trim()),
-                        None => gitdir,
+                        None => gitdir.clone(),
                     };
-                    return self.read_bounded(&common.join("config"), CONFIG_CAP);
+                    return Ok(Some((gitdir, common)));
                 }
                 _ => {}
             }
@@ -461,6 +494,57 @@ impl Guard {
             }
         }
         Ok(None)
+    }
+
+    /// The `config` of the repository holding `dir`: the common dir's; for a submodule (git dir
+    /// `<super>/.git/modules/<name>`) its own, and the superproject's only when it has none.
+    fn config_for(&self, dir: &str) -> Result<Option<String>, ()> {
+        let Some((gitdir, common)) = self.repo_of(dir)? else {
+            return Ok(None);
+        };
+        if let Some(c) = self.read_bounded(&common.join("config"), CONFIG_CAP)? {
+            return Ok(Some(c));
+        }
+        let g = gitdir.to_string_lossy().into_owned();
+        match g.find("/.git/modules/") {
+            Some(i) => self.read_bounded(
+                &std::path::Path::new(&g[..i + 5]).join("config"),
+                CONFIG_CAP,
+            ),
+            None => Ok(None),
+        }
+    }
+
+    /// Whether the repository holding `dir` has `refs/heads/main` checked out (its `HEAD`, 256 bytes at most).
+    fn head_is_main(&self, dir: &str) -> Result<bool, ()> {
+        let Some((gitdir, _)) = self.repo_of(dir)? else {
+            return Ok(false);
+        };
+        Ok(self
+            .read_bounded(&gitdir.join("HEAD"), 256)?
+            .is_some_and(|h| h.trim() == "ref: refs/heads/main"))
+    }
+
+    /// A `git push` that names no branch (or `HEAD`) pushes the current branch: whether, in one of `dirs`,
+    /// that is `main` of a repository whose remote `target` (`origin` by default) is a Lucina repo. `None`: the
+    /// work budget ran out.
+    fn bare_push_on_main_to_lucina(
+        &self,
+        dirs: &[Option<String>],
+        target: Option<&str>,
+    ) -> Option<bool> {
+        for d in dirs.iter().flatten() {
+            match self.head_is_main(d) {
+                Err(()) => return None,
+                Ok(true) => {
+                    if self.push_goes_to_lucina(&[Some(d.clone())], target)? {
+                        return Some(true);
+                    }
+                }
+                Ok(false) => {}
+            }
+        }
+        Some(false)
     }
 
     /// Every URL remote `name` has in git config text (`url` and `pushurl`), and each of them rewritten by the
@@ -543,7 +627,7 @@ impl Guard {
             }
         }
         for d in dirs.iter().flatten() {
-            match self.config_of(d) {
+            match self.config_for(d) {
                 Err(()) => return None,
                 Ok(Some(cfg)) => {
                     if Self::config_remote_urls(&cfg, name)
@@ -743,6 +827,27 @@ fn push_target(rest: &[Word]) -> Option<&str> {
     None
 }
 
+/// The words of a `git push` after `push` that are no option and no option value: the remote, then the refspecs.
+fn push_positionals(rest: &[Word]) -> Vec<&str> {
+    let mut v = Vec::new();
+    let mut i = 0;
+    while let Some(w) = rest.get(i) {
+        let s = w.val.as_str();
+        if matches!(
+            s,
+            "-o" | "--push-option" | "--receive-pack" | "--exec" | "--repo"
+        ) {
+            i += 2;
+        } else if s.starts_with('-') {
+            i += 1;
+        } else {
+            v.push(s);
+            i += 1;
+        }
+    }
+    v
+}
+
 /// A guarded call found as a plain word window in a command whose program is something else (`xargs git …`,
 /// `find -exec git …`, `flock f git …`, an unknown wrapper): its directory is unknown.
 fn window_calls(g: &Guard, words: &[Word], out: &mut Vec<Call>) {
@@ -786,11 +891,49 @@ fn set_gitvar(g: &Guard, word: &str, dir: &Option<String>, env: &mut GitEnv) {
     }
 }
 
-/// Byte spans of the old whole-text pattern matches in `text` that no call explains: a match is explained when
-/// its start lies in the span of a command that holds a call of its kind (a placed call, a window call), or in
-/// the span of a command or `$( )` body whose text was read on its own level. An unexplained match is a call of
-/// unknown directory (`scope: None`); a detached `worktree add` keeps the old exemption. Spans, never counts:
-/// a benign call cannot cancel the match of a hidden one.
+/// `text` with the bytes of its `# …` comments blanked (same length): a comment is no command, so the old
+/// patterns must not match inside it.
+fn blank_comments<'a>(text: &'a str, comments: &[(usize, usize)]) -> std::borrow::Cow<'a, str> {
+    if comments.is_empty() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut b = text.as_bytes().to_vec();
+    for &(s, e) in comments {
+        for x in b.iter_mut().take(e).skip(s) {
+            *x = b' ';
+        }
+    }
+    match String::from_utf8(b) {
+        Ok(t) => std::borrow::Cow::Owned(t),
+        Err(_) => std::borrow::Cow::Borrowed(text),
+    }
+}
+
+/// The union of `v` as sorted, disjoint `[start, end)` ranges.
+fn merge_spans(mut v: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    v.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(v.len());
+    for (s, e) in v {
+        match out.last_mut() {
+            Some(l) if s <= l.1 => l.1 = l.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// Whether `at` lies in one of the sorted, disjoint ranges `v` (binary search).
+fn within(v: &[(usize, usize)], at: usize) -> bool {
+    let i = v.partition_point(|&(s, _)| s <= at);
+    i > 0 && at < v[i - 1].1
+}
+
+/// Byte spans of the old whole-text pattern matches in `text` (comment-free) that no call explains: a match is
+/// explained when its start lies in the span of a command that holds a call of its kind (a placed call, a window
+/// call), or in the span of a command or `$( )` body whose text was read on its own level. An unexplained match
+/// is a call of unknown directory (`scope: None`); a detached `worktree add` keeps the old exemption. Spans,
+/// never counts: a benign call cannot cancel the match of a hidden one. Linear: the spans are merged once and
+/// each match is a binary search.
 fn explain(
     g: &Guard,
     text: &str,
@@ -798,23 +941,38 @@ fn explain(
     deleg: &[(usize, usize)],
     out: &mut Vec<Call>,
 ) {
-    let covered = |kind: Kind, at: usize| {
-        deleg.iter().any(|&(s, e)| s <= at && at < e)
-            || spans
+    let deleg = merge_spans(deleg.to_vec());
+    let of_kind = |k: Kind| {
+        merge_spans(
+            spans
                 .iter()
-                .any(|&(k, s, e)| k == kind && s <= at && at < e)
+                .filter(|s| s.0 == k)
+                .map(|&(_, s, e)| (s, e))
+                .collect(),
+        )
+    };
+    let (start_spans, push_spans) = (of_kind(Kind::Start), of_kind(Kind::Push));
+    let covered = |kind: Kind, at: usize| {
+        within(&deleg, at)
+            || within(
+                if kind == Kind::Start {
+                    &start_spans
+                } else {
+                    &push_spans
+                },
+                at,
+            )
     };
     let unexplained = |kind: Kind| Call {
         kind,
         scope: None,
         hits: true,
     };
+    // Where a `--detach` or `-d` `worktree add` match starts, for the old per-text exemption.
+    let detached: Vec<usize> = g.old.detached.find_iter(text).map(|m| m.start()).collect();
     for m in g.old.worktree.find_iter(text) {
-        let exempt = g
-            .old
-            .detached
-            .find(&text[m.start()..])
-            .is_some_and(|d| d.start() < m.len());
+        let i = detached.partition_point(|&s| s < m.start());
+        let exempt = detached.get(i).is_some_and(|&s| s < m.end());
         if !exempt && !covered(Kind::Start, m.start()) {
             out.push(unexplained(Kind::Start));
         }
@@ -849,7 +1007,9 @@ fn explain(
 ///
 /// Accepted fail-opens (LA-C045, HOST-18): only with the session in the group folder and NO repo literal
 /// anywhere in the command text: a repo path held in the environment or built by a substitution or read from a
-/// file, a symlink from scratch to a repo, a script file run by `bash script.sh` (not read), an alias or a function.
+/// file, a script file run by `bash script.sh` (not read), an alias or a function; a symlink from scratch to a
+/// repo is seen only by the origin check of a push to main (a symlinked parent of the directory is followed by the
+/// walk up to its `.git`), not by the directory rules.
 fn guarded_calls(
     g: &Guard,
     text: &str,
@@ -928,18 +1088,18 @@ fn guarded_calls(
                 }
             }
             "git" => {
-                let (_, _, si, cwd) = git_opts(g, args, &base);
+                let (mut dirs, _, si, cwd) = git_opts(g, args, &base);
                 match args.get(si).map(|w| w.val.as_str()) {
                     Some("clone") => g.note_clone(&args[si + 1..], &cwd),
                     Some("remote") => g.note_remote(&args[si + 1..], &cwd),
                     _ => {}
                 }
-                if let Some((kind, mut dirs, si, hits)) = git_call(g, args, &base) {
-                    dirs.extend(env_dirs);
-                    dirs.extend(genv.iter().map(|(_, d)| d.clone()));
-                    if dirs.is_empty() {
-                        dirs.push(base);
-                    }
+                dirs.extend(env_dirs);
+                dirs.extend(genv.iter().map(|(_, d)| d.clone()));
+                if dirs.is_empty() {
+                    dirs.push(base.clone());
+                }
+                if let Some((kind, _, si, hits)) = git_call(g, args, &base) {
                     let mut scope = g.scope_of(&dirs, named);
                     // A push to main whose repository has a Lucina origin is refused from any directory.
                     if kind == Kind::Push && scope != Some(true) {
@@ -950,6 +1110,33 @@ fn guarded_calls(
                         }
                     }
                     out.push(Call { kind, scope, hits });
+                } else if args.get(si).is_some_and(|w| w.val == "push") {
+                    // A push that names no branch pushes the current one: main, when HEAD is main.
+                    let rest = &args[si + 1..];
+                    let pos = push_positionals(rest);
+                    let plain = !rest.iter().any(|w| {
+                        matches!(
+                            w.val.as_str(),
+                            "--dry-run"
+                                | "-n"
+                                | "--tags"
+                                | "--delete"
+                                | "-d"
+                                | "--all"
+                                | "--mirror"
+                                | "--prune"
+                        )
+                    });
+                    if plain
+                        && pos.iter().skip(1).all(|r| matches!(*r, "HEAD" | "@"))
+                        && g.bare_push_on_main_to_lucina(&dirs, pos.first().copied()) == Some(true)
+                    {
+                        out.push(Call {
+                            kind: Kind::Push,
+                            scope: Some(true),
+                            hits: true,
+                        });
+                    }
                 }
             }
             "wt" => {
@@ -1023,7 +1210,7 @@ fn guarded_calls(
         guarded_calls(g, inner, at, depth + 1, genv.clone(), out);
         deleg.push(sc.nested_span[k]);
     }
-    explain(g, text, &spans, &deleg, out);
+    explain(g, &blank_comments(text, &sc.comments), &spans, &deleg, out);
 }
 
 /// Whether a rule of kind `kind` fires: a call of that kind breaks it when it acts on a repo (`Some(true)`), or
@@ -1227,6 +1414,8 @@ struct Scan {
     /// `spans[k]`: the byte range of command `k` in the scanned text (from the end of the delimiter before it).
     spans: Vec<(usize, usize)>,
     seg_start: usize,
+    /// Byte ranges of the `# …` comments (to the end of the line).
+    comments: Vec<(usize, usize)>,
     cmd: Vec<Word>,
     cur: String,
     in_word: bool,
@@ -1396,9 +1585,11 @@ fn scan(s: &str) -> Scan {
                 i = next;
             }
             '#' if !sc.in_word => {
+                let from = i;
                 while i < n && ch[i] != '\n' {
                     i += 1;
                 }
+                sc.comments.push((pos(from), pos(i)));
             }
             ';' | '&' | '|' | '\n' | '(' | ')' => {
                 // A delimiter that flushed no command (a newline after `|`, `(`, the `&` of `|&`)
@@ -3049,18 +3240,16 @@ mod tests {
         let fifo = origin_repo(root, "f", "");
         std::fs::remove_file(format!("{fifo}/.git/config")).unwrap();
         if mkfifo(&std::path::PathBuf::from(format!("{fifo}/.git/config"))) {
-            let c = cmd(&fifo);
-            assert_eq!(within_5s(move || verdict(&c, group)), Some(None));
+            // the open does not block on a FIFO (O_NONBLOCK, then the file type is checked)
+            assert_eq!(verdict(&cmd(&fifo), group), None);
         }
         // a 1 MB config: read to 64 KiB only
         let pad = "# padding padding padding padding padding\n".repeat(25_000);
         let early = origin_repo(root, "big1", &format!("{LUCINA_ORIGIN}{pad}"));
         let late = origin_repo(root, "big2", &format!("{pad}{LUCINA_ORIGIN}"));
         let c = cmd(&early);
-        let started = std::time::Instant::now();
         assert!(verdict(&c, group).is_some());
         assert_eq!(verdict(&cmd(&late), group), None);
-        assert!(started.elapsed().as_secs() < 5);
         // a broken config (not UTF-8, cut headers) is no panic and no refusal
         let broken = origin_repo(root, "br", "");
         std::fs::write(
@@ -3240,6 +3429,215 @@ mod tests {
                 assert_eq!(verdict(&c, cwd), None, "{cwd}: {c}");
             }
         }
+    }
+
+    // ---- LA-C045 round 6 ----
+
+    #[test]
+    fn repo_names_match_whole_components_only() {
+        let t = tmp("names");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let root = t.0.as_path();
+        // origins that merely START with a repo name are no Lucina repo
+        for (i, url) in [
+            "https://github.com/o/secretaryios-docs.git",
+            "git@github.com:o/lucina-rs-fork.git",
+            "https://x.example/o/SecretaryIOS2",
+            "https://x.example/lucinaos-mirror.git",
+            "/home/nez/archive/LucinaAndroidOS.bak",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let d = origin_repo(
+                root,
+                &format!("n{i}"),
+                &format!("[remote \"origin\"]\n\turl = {url}\n"),
+            );
+            for (c, cwd) in push_shapes(&d, "push origin main") {
+                assert_eq!(verdict(&c, &cwd), None, "{url}: {cwd}: {c}");
+            }
+        }
+        // the real forms stay refused
+        for (i, url) in [
+            "https://github.com/o/SecretaryIOS",
+            "https://github.com/o/SecretaryIOS.git",
+            "git@github.com:owner/SecretaryIOS.git",
+            "ssh://h/home/nez/Projects/Lucina/Anything",
+            "/home/nez/Projects/.worktrees/SecretaryIOS/x",
+            "https://github.com/o/lucina-rs",
+            "git@host:lucinaos.git",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let d = origin_repo(
+                root,
+                &format!("r{i}"),
+                &format!("[remote \"origin\"]\n\turl = {url}\n"),
+            );
+            for (c, cwd) in push_shapes(&d, "push origin main") {
+                assert!(verdict(&c, &cwd).is_some(), "{url}: {cwd}: {c}");
+            }
+        }
+        // clones made in the command
+        for c in [
+            "git clone https://github.com/x/secretaryios-docs.git d && cd d && git push origin main",
+            "git clone https://github.com/x/lucina-rs-fork.git d && cd d && git push origin main",
+            "git clone https://x.example/o/SecretaryIOS2 d && cd d && git push origin main",
+        ] {
+            assert_eq!(verdict(c, "/home/nez/scratch"), None, "{c}");
+        }
+        // the whole-text rule: only a whole name makes an unknown directory a repo call
+        for cwd in GROUPS {
+            assert_eq!(
+                verdict(
+                    "cd $D && git worktree add ../x; echo secretaryios-docs lucina-rs-fork SecretaryIOS2",
+                    cwd
+                ),
+                None,
+                "{cwd}"
+            );
+            assert!(
+                verdict("cd $D && git worktree add ../x; echo SecretaryIOS", cwd).is_some(),
+                "{cwd}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_push_without_a_branch_follows_the_checked_out_head() {
+        let t = tmp("head");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let root = t.0.as_path();
+        let head = |d: &str, h: &str| std::fs::write(format!("{d}/.git/HEAD"), h).unwrap();
+        let on_main = origin_repo(root, "a", LUCINA_ORIGIN);
+        head(&on_main, "ref: refs/heads/main\n");
+        let on_feature = origin_repo(root, "b", LUCINA_ORIGIN);
+        head(&on_feature, "ref: refs/heads/feature\n");
+        let plain = origin_repo(root, "c", OTHER_ORIGIN);
+        head(&plain, "ref: refs/heads/main\n");
+        for push in [
+            "push",
+            "push origin",
+            "push -u origin",
+            "push origin HEAD",
+            "push -q",
+        ] {
+            for (c, cwd) in push_shapes(&on_main, push) {
+                assert!(verdict(&c, &cwd).is_some(), "{cwd}: {c}");
+            }
+            for d in [&on_feature, &plain] {
+                for (c, cwd) in push_shapes(d, push) {
+                    assert_eq!(verdict(&c, &cwd), None, "{cwd}: {c}");
+                }
+            }
+        }
+        for push in [
+            "push origin feature",
+            "push --tags",
+            "push --dry-run origin",
+            "push origin --delete old",
+        ] {
+            for (c, cwd) in push_shapes(&on_main, push) {
+                assert_eq!(verdict(&c, &cwd), None, "{cwd}: {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_submodule_reads_its_own_config() {
+        let t = tmp("submodule");
+        std::fs::create_dir_all(&t.0).unwrap();
+        let root = t.0.as_path();
+        let build = |name: &str, super_cfg: &str, module_cfg: Option<&str>| {
+            let sup = origin_repo(root, name, super_cfg);
+            let module = format!("{sup}/.git/modules/sub");
+            std::fs::create_dir_all(&module).unwrap();
+            if let Some(c) = module_cfg {
+                std::fs::write(format!("{module}/config"), c).unwrap();
+            }
+            std::fs::create_dir_all(format!("{sup}/sub")).unwrap();
+            std::fs::write(format!("{sup}/sub/.git"), "gitdir: ../.git/modules/sub\n").unwrap();
+            format!("{sup}/sub")
+        };
+        let own_lucina = build("a", OTHER_ORIGIN, Some(LUCINA_ORIGIN));
+        let own_plain = build("b", LUCINA_ORIGIN, Some(OTHER_ORIGIN));
+        let fallback = build("c", LUCINA_ORIGIN, None);
+        for (c, cwd) in push_shapes(&own_lucina, "push origin main") {
+            assert!(verdict(&c, &cwd).is_some(), "{cwd}: {c}");
+        }
+        for (c, cwd) in push_shapes(&own_plain, "push origin main") {
+            assert_eq!(verdict(&c, &cwd), None, "{cwd}: {c}");
+        }
+        for (c, cwd) in push_shapes(&fallback, "push origin main") {
+            assert!(verdict(&c, &cwd).is_some(), "{cwd}: {c}");
+        }
+    }
+
+    #[test]
+    fn a_large_command_with_many_matches_is_read_linearly() {
+        // About 3 MB, 65 000 matches of the old patterns, every one explained by its own call.
+        let calls = "git -C /home/nez/scratch/a worktree add ../x; ".repeat(65_000);
+        let g = super::Guard::new().unwrap();
+        let mut out = Vec::new();
+        super::guarded_calls(
+            &g,
+            &calls,
+            Some("/home/nez/Projects/Lucina".to_string()),
+            0,
+            Vec::new(),
+            &mut out,
+        );
+        // the text is charged once, and the matches cost nothing more
+        assert_eq!(super::SCAN_BUDGET - g.left.get(), calls.len());
+        assert_eq!(verdict(&calls, GROUPS[1]), None);
+        // 65 000 pushes: the config reads and the walk up the directory are charged to the same budget
+        let pushes = "git -C /home/nez/scratch/a push origin main; ".repeat(65_000);
+        let g = super::Guard::new().unwrap();
+        let mut out = Vec::new();
+        super::guarded_calls(&g, &pushes, None, 0, Vec::new(), &mut out);
+        assert!(g.left.get() < 256, "the walk was not charged");
+        assert_eq!(verdict(&pushes, GROUPS[1]), None);
+        // 150 000 matches inside ONE quoted word, none explained: still a single pass
+        let word = format!("echo '{}'", "git worktree add x ".repeat(150_000));
+        assert_eq!(verdict(&word, GROUPS[1]), None);
+        assert!(verdict(&word, "/home/nez/Projects/Lucina/SecretaryIOS").is_some());
+    }
+
+    #[test]
+    fn a_comment_is_no_command() {
+        let inside = "/home/nez/Projects/Lucina/SecretaryIOS";
+        for cwd in GROUPS {
+            for c in [
+                "echo hi # git push origin main /home/nez/Projects/Lucina/SecretaryIOS",
+                "ls # git worktree add ../x SecretaryIOS",
+                "cd /home/nez/scratch # wt add x SecretaryIOS\ngit -C . status",
+            ] {
+                assert_eq!(verdict(c, cwd), None, "{cwd}: {c}");
+            }
+        }
+        assert_eq!(verdict("echo hi # git push origin main", inside), None);
+        assert!(verdict(
+            "git -C /home/nez/Projects/Lucina/SecretaryIOS push origin main # note",
+            GROUPS[1]
+        )
+        .is_some());
+        // a `#` inside a word is no comment
+        assert!(verdict("echo a#b; git worktree add ../x", inside).is_some());
+    }
+
+    #[test]
+    fn a_relative_push_target_inside_the_group_folder_is_a_repo() {
+        // No repo name in the text: the early URL/path branch of the origin rule decides.
+        for c in [
+            "git push ./Foo main",
+            "cd /home/nez/Projects/Lucina && git push ./Foo main",
+            "bash -c 'git push ./Foo HEAD:main'",
+        ] {
+            assert!(verdict(c, GROUPS[1]).is_some(), "{c}");
+        }
+        assert_eq!(verdict("git push ./Foo main", "/home/nez/scratch"), None);
     }
 
     #[test]
