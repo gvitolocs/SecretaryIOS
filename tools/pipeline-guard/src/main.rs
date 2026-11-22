@@ -226,9 +226,8 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
     }
     // LA-C045 (HOST-18): a guarded call is in scope when the directory it acts on, or a literal repo path in its own
     // words, is a Lucina repo or worktree: not when the session merely sits in the group folder (`guarded_calls`).
-    // The old whole-text answer stays as the fallback for calls the scan cannot place.
-    let old_scope = Regex::new(SCOPE).ok()?;
-    let old_scope = old_scope.is_match(command) || old_scope.is_match(cwd);
+    // What the old whole-text patterns match and the scan cannot place (matched by byte span, never by count)
+    // is a call with an unknown directory: in scope when the session sits in a repo or the text names one.
     let g = Guard::new()?;
     // The session directory, normalised (`..`, `.`, `//`, a trailing slash).
     let start = (!cwd.is_empty()).then(|| resolve_path(cwd, "/", &g.home));
@@ -236,28 +235,8 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
     let closed =
         start.as_deref().is_some_and(|d| g.repo_dir.is_match(d)) || g.repo_name.is_match(command);
     let mut calls = Vec::new();
-    guarded_calls(&g, command, start, 0, true, &mut calls);
-    // One shell segment at a time (`;`, `&&`, `||`, `|`, newlines, quotes of ssh commands).
-    let worktree = Regex::new(r"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*worktree\s+add\b").ok()?;
-    let wt = Regex::new(r#"(^|[\s;&|('"])(~/\.local/bin/)?wt\s+add\b"#).ok()?;
-    let push = Regex::new(r#"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*push\b([^;&|\n'"]*)"#).ok()?;
-    let to_main = Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)").ok()?;
-    let detached = Regex::new(r#"\bworktree\s+add\b[^;&|\n'"]*\s(--detach|-d)\b"#).ok()?;
-    // One `--detach` anywhere in the text exempts every `worktree add` in it (the old rule, kept as it was).
-    let start_hits = if detached.is_match(command) {
-        0
-    } else {
-        worktree.find_iter(command).count()
-    } + wt.find_iter(command).count();
-    if rule_fires(
-        &calls,
-        Kind::Start,
-        start_hits,
-        old_scope,
-        closed,
-        detached.is_match(command),
-        g.exhausted.get(),
-    ) {
+    guarded_calls(&g, command, start, 0, Vec::new(), &mut calls);
+    if rule_fires(&calls, Kind::Start, closed) {
         return Some(
             "Lucina repos: start work with `lagent task start \"<title>\" [--repo <path>] [--branch <name>]` on nezopt \
              (Mac: ~/.local/bin/lagent forwards). It fetches, makes the worktree from origin/main and registers it with \
@@ -273,22 +252,7 @@ fn verdict_with(command: &str, cwd: &str, bypass: bool) -> Option<String> {
                 .into(),
         );
     }
-    let push_hits = push
-        .captures_iter(command)
-        .filter(|c| {
-            let args = c.get(2).map(|m| m.as_str()).unwrap_or_default();
-            to_main.is_match(args) && !args.contains("--dry-run")
-        })
-        .count();
-    if rule_fires(
-        &calls,
-        Kind::Push,
-        push_hits,
-        old_scope,
-        closed,
-        false,
-        g.exhausted.get(),
-    ) {
+    if rule_fires(&calls, Kind::Push, closed) {
         return Some(
             "Lucina repos: main moves only through the merge queue. Commit in your workspace, then run \
              `lagent merge <workspace id | path>`: it merges into origin/main with a merge commit, runs the repo's gates (cargo test of \
@@ -321,47 +285,76 @@ enum Kind {
 /// One guarded git/`wt` call found in a command. `scope` is `Some(answer)` when the directory the call acts on
 /// was resolved to literal paths (a repo or not) or the call's own words name a repo, and `None` when a
 /// directory is unknown (a variable, a substitution, a `for` variable, `ANSI-C` quoting, a remote home, a call
-/// hidden behind `xargs` or an unknown wrapper, text the work budget did not scan).
+/// hidden behind `xargs` or an unknown wrapper, text the scan did not explain). `hits`: it breaks the rule (a
+/// `worktree add` with its own `--detach` or `-d` does not; such a call is kept only so that it explains the
+/// old pattern match on its text).
 struct Call {
     kind: Kind,
     scope: Option<bool>,
-    /// The old whole-text patterns see a call of this shape (counted against their hits).
-    old_shape: bool,
-    /// A `git worktree add`: the old global `--detach` exemption applies to it.
-    worktree_add: bool,
+    hits: bool,
 }
 
-/// The most characters one verdict scans, over every nested `ssh`, `bash -c`, `eval` and `$( )` level.
-/// A long command is scanned about once per nesting level; 4 million covers a 600 KB command nested 6 levels
-/// and costs well under a second (measured by `a_deeply_nested_ssh_is_cut_by_the_work_budget`).
+/// The most characters one verdict scans, over every nested `ssh`, `bash -c`, `eval` and `$( )` level: it
+/// bounds the guarded scan of one verdict, nothing else in the hook. A long command is scanned about once per
+/// nesting level; 4 million covers a 600 KB command nested 6 levels and costs well under a second.
 const SCAN_BUDGET: usize = 4_000_000;
 
 /// The most bytes of a repository's git config the origin check reads (a longer one is read to this bound).
 const CONFIG_CAP: usize = 64 * 1024;
 
-/// What `guarded_calls` needs besides the text: compiled once per verdict.
-struct Guard {
+/// The regexes of the guarded scan, compiled once per process: the repo patterns, and the patterns the old
+/// whole-text rules used (`old` ones), which still decide what text the scan did not explain.
+struct Res {
     repo_dir: Regex,
     repo_name: Regex,
     to_main: Regex,
+    worktree: Regex,
+    wt: Regex,
+    push: Regex,
+    push_main: Regex,
+    detached: Regex,
+}
+
+fn res() -> Option<&'static Res> {
+    static R: std::sync::OnceLock<Option<Res>> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        Some(Res {
+            repo_dir: Regex::new(REPO_DIR).ok()?,
+            repo_name: Regex::new(REPO_NAME).ok()?,
+            to_main: Regex::new(r"^\+?([^:]*:)?(refs/heads/)?main$").ok()?,
+            worktree: Regex::new(r"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*worktree\s+add\b").ok()?,
+            wt: Regex::new(r#"(^|[\s;&|('"])(~/\.local/bin/)?wt\s+add\b"#).ok()?,
+            push: Regex::new(r#"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*push\b([^;&|\n'"]*)"#).ok()?,
+            push_main: Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)").ok()?,
+            detached: Regex::new(r#"\bworktree\s+add\b[^;&|\n'"]*\s(--detach|-d)\b"#).ok()?,
+        })
+    })
+    .as_ref()
+}
+
+/// What `guarded_calls` needs besides the text: one per verdict.
+struct Guard {
+    repo_dir: &'static Regex,
+    repo_name: &'static Regex,
+    to_main: &'static Regex,
+    old: &'static Res,
     home: String,
     /// Characters of text still to be scanned.
     left: std::cell::Cell<usize>,
-    /// The budget or the nesting cap was hit: the rest was not read.
-    exhausted: std::cell::Cell<bool>,
     /// Lucina clones and remotes the command makes: (directory, remote name); the directory is `None` when unknown.
     clones: std::cell::RefCell<Vec<(Option<String>, String)>>,
 }
 
 impl Guard {
     fn new() -> Option<Guard> {
+        let r = res()?;
         Some(Guard {
-            repo_dir: Regex::new(REPO_DIR).ok()?,
-            repo_name: Regex::new(REPO_NAME).ok()?,
-            to_main: Regex::new(r"^\+?([^:]*:)?(refs/heads/)?main$").ok()?,
+            repo_dir: &r.repo_dir,
+            repo_name: &r.repo_name,
+            to_main: &r.to_main,
+            old: r,
             home: std::env::var("HOME").unwrap_or_default(),
             left: std::cell::Cell::new(SCAN_BUDGET),
-            exhausted: std::cell::Cell::new(false),
             clones: std::cell::RefCell::new(Vec::new()),
         })
     }
@@ -420,7 +413,6 @@ impl Guard {
     /// not readable. Bytes are read lossily, so a broken file cannot panic the parser.
     fn read_bounded(&self, path: &std::path::Path, cap: usize) -> Result<Option<String>, ()> {
         if self.left.get() < cap {
-            self.exhausted.set(true);
             return Err(());
         }
         if !matches!(slot(path), Slot::Regular(_)) {
@@ -707,24 +699,27 @@ fn git_opts(
 }
 
 /// The git call whose arguments (after the `git` word) are `args`, if it is a `worktree add` or a push to main:
-/// the kind, the directories its options name (every one counts), whether the options are only the ones the old
-/// patterns knew, and the index of the subcommand word.
+/// the kind, the directories its options name (every one counts), the index of the subcommand word, and whether
+/// the call breaks the rule (`hits`; a `worktree add` carrying its own `--detach` or `-d` does not).
 fn git_call(
     g: &Guard,
     args: &[Word],
     base: &Option<String>,
-) -> Option<(Kind, Vec<Option<String>>, bool, usize)> {
-    let (flagged, plain, i, _) = git_opts(g, args, base);
+) -> Option<(Kind, Vec<Option<String>>, usize, bool)> {
+    let (flagged, _, i, _) = git_opts(g, args, base);
     let sub = args.get(i)?;
     let rest = args.get(i + 1..).unwrap_or_default();
-    let kind = if sub.val == "worktree" && rest.first().is_some_and(|w| w.val == "add") {
-        Kind::Start
+    let (kind, hits) = if sub.val == "worktree" && rest.first().is_some_and(|w| w.val == "add") {
+        let detached = rest
+            .iter()
+            .any(|w| matches!(w.val.as_str(), "--detach" | "-d"));
+        (Kind::Start, !detached)
     } else if sub.val == "push" && g.pushes_main(rest) {
-        Kind::Push
+        (Kind::Push, true)
     } else {
         return None;
     };
-    Some((kind, flagged, plain, i))
+    Some((kind, flagged, i, hits))
 }
 
 /// The remote (a name or a URL) a `git push` names: its first word that is no option or option value.
@@ -750,16 +745,15 @@ fn push_target(rest: &[Word]) -> Option<&str> {
 
 /// A guarded call found as a plain word window in a command whose program is something else (`xargs git …`,
 /// `find -exec git …`, `flock f git …`, an unknown wrapper): its directory is unknown.
-fn window_calls(g: &Guard, words: &[Word], count: bool, out: &mut Vec<Call>) {
+fn window_calls(g: &Guard, words: &[Word], out: &mut Vec<Call>) {
     for (j, w) in words.iter().enumerate() {
         match basename(&w.val) {
             "git" => {
-                if let Some((kind, _, plain, _)) = git_call(g, &words[j + 1..], &None) {
+                if let Some((kind, _, _, hits)) = git_call(g, &words[j + 1..], &None) {
                     out.push(Call {
                         kind,
                         scope: None,
-                        old_shape: plain && count,
-                        worktree_add: kind == Kind::Start,
+                        hits,
                     });
                 }
             }
@@ -771,8 +765,7 @@ fn window_calls(g: &Guard, words: &[Word], count: bool, out: &mut Vec<Call>) {
                 out.push(Call {
                     kind: Kind::Start,
                     scope: None,
-                    old_shape: count,
-                    worktree_add: false,
+                    hits: true,
                 });
             }
             _ => {}
@@ -780,39 +773,93 @@ fn window_calls(g: &Guard, words: &[Word], count: bool, out: &mut Vec<Call>) {
     }
 }
 
+/// `GIT_DIR` and `GIT_WORK_TREE` as set for the later commands of one text (`export`, `declare -x`, a bare
+/// assignment): name and the directory the value names (`None`: unknown).
+type GitEnv = Vec<(String, Option<String>)>;
+
+fn set_gitvar(g: &Guard, word: &str, dir: &Option<String>, env: &mut GitEnv) {
+    if let Some((name, val)) = word.split_once('=') {
+        if name == "GIT_DIR" || name == "GIT_WORK_TREE" {
+            env.retain(|(n, _)| n != name);
+            env.push((name.to_string(), g.path(val, dir)));
+        }
+    }
+}
+
+/// Byte spans of the old whole-text pattern matches in `text` that no call explains: a match is explained when
+/// its start lies in the span of a command that holds a call of its kind (a placed call, a window call), or in
+/// the span of a command or `$( )` body whose text was read on its own level. An unexplained match is a call of
+/// unknown directory (`scope: None`); a detached `worktree add` keeps the old exemption. Spans, never counts:
+/// a benign call cannot cancel the match of a hidden one.
+fn explain(
+    g: &Guard,
+    text: &str,
+    spans: &[(Kind, usize, usize)],
+    deleg: &[(usize, usize)],
+    out: &mut Vec<Call>,
+) {
+    let covered = |kind: Kind, at: usize| {
+        deleg.iter().any(|&(s, e)| s <= at && at < e)
+            || spans
+                .iter()
+                .any(|&(k, s, e)| k == kind && s <= at && at < e)
+    };
+    let unexplained = |kind: Kind| Call {
+        kind,
+        scope: None,
+        hits: true,
+    };
+    for m in g.old.worktree.find_iter(text) {
+        let exempt = g
+            .old
+            .detached
+            .find(&text[m.start()..])
+            .is_some_and(|d| d.start() < m.len());
+        if !exempt && !covered(Kind::Start, m.start()) {
+            out.push(unexplained(Kind::Start));
+        }
+    }
+    for c in g.old.wt.captures_iter(text) {
+        let at = c.get(1).map_or(0, |m| m.end());
+        if !covered(Kind::Start, at) {
+            out.push(unexplained(Kind::Start));
+        }
+    }
+    for c in g.old.push.captures_iter(text) {
+        let args = c.get(2).map_or("", |m| m.as_str());
+        let at = c.get(0).map_or(0, |m| m.start());
+        if g.old.push_main.is_match(args) && !args.contains("--dry-run") && !covered(Kind::Push, at)
+        {
+            out.push(unexplained(Kind::Push));
+        }
+    }
+}
+
 /// The guarded calls in `text`, one shell command at a time (`scan`: quotes, `ssh host '…'`, `bash -c '…'`, a
 /// here-string, `eval`, `$( )`). The effective directory starts at `start` and follows `cd`/`pushd` to a literal
 /// path; `git -C`, `--git-dir`, `--work-tree`, `env -C`, `GIT_DIR=` and `GIT_WORK_TREE=` name the directory of
-/// their call, and a call acts on ALL the directories its options name. A `cd` inside `( … )` ends with the
-/// group; a `$( … )` body runs at the directory of the command it belongs to. A variable or substitution in a
-/// path, a bare `cd`, `cd -` and `popd` make the directory unknown (`None`), and so does the home of a remote
-/// host. `count` is false in the second reading of an `ssh` command (the same call is not counted twice).
+/// their call, and a call acts on ALL the directories its own options name plus the ones an earlier `export`,
+/// `declare -x`, `typeset -x` or bare assignment of those two variables set in the same text (`genv`; an unknown
+/// value is an unknown directory). A `cd` inside `( … )` ends with the group; a `$( … )` body runs at the
+/// directory of the command it belongs to. A variable or substitution in a path, a bare `cd`, `cd -` and `popd`
+/// make the directory unknown (`None`), and so does the home of a remote host.
 ///
-/// Past `SCAN_BUDGET` characters or 8 nesting levels the rest is not read and counts as an unknown call of
-/// both kinds (fail closed when the text names a repo).
+/// Past `SCAN_BUDGET` characters or 8 nesting levels the rest is not read: what the old patterns match in it
+/// counts as calls of unknown directory (a text without such a match adds nothing).
 ///
 /// Accepted fail-opens (LA-C045, HOST-18): only with the session in the group folder and NO repo literal
 /// anywhere in the command text: a repo path held in the environment or built by a substitution or read from a
-/// file, a symlink from scratch to a repo (and a scratch clone, which carries the repo's `origin`), a script file
-/// run by `bash script.sh` (not read), an alias or a function.
+/// file, a symlink from scratch to a repo, a script file run by `bash script.sh` (not read), an alias or a function.
 fn guarded_calls(
     g: &Guard,
     text: &str,
     start: Option<String>,
     depth: usize,
-    count: bool,
+    mut genv: GitEnv,
     out: &mut Vec<Call>,
 ) {
     if depth > 8 || g.left.get() < text.len() {
-        g.exhausted.set(true);
-        for kind in [Kind::Start, Kind::Push] {
-            out.push(Call {
-                kind,
-                scope: None,
-                old_shape: false,
-                worktree_add: false,
-            });
-        }
+        explain(g, text, &[], &[], out);
         return;
     }
     g.left.set(g.left.get() - text.len());
@@ -820,6 +867,8 @@ fn guarded_calls(
     let mut dir = start;
     let mut stack: Vec<Option<String>> = Vec::new();
     let mut before: Vec<Option<String>> = Vec::with_capacity(sc.cmds.len());
+    let mut spans: Vec<(Kind, usize, usize)> = Vec::new();
+    let mut deleg: Vec<(usize, usize)> = Vec::new();
     for (idx, words) in sc.cmds.iter().enumerate() {
         for _ in 0..sc.closes[idx] {
             if let Some(d) = stack.pop() {
@@ -830,7 +879,16 @@ fn guarded_calls(
             stack.push(dir.clone());
         }
         before.push(dir.clone());
-        let Some(p) = program(words) else { continue };
+        let Some(p) = program(words) else {
+            // A bare assignment statement: `GIT_DIR=<path>` on its own.
+            for w in words {
+                set_gitvar(g, &w.val, &dir, &mut genv);
+            }
+            continue;
+        };
+        let (cmd_start, cmd_end) = sc.spans[idx];
+        let mark = out.len();
+        let mut delegated = false;
         let name = basename(&words[p].val);
         let args = &words[p + 1..];
         let named = words.iter().any(|w| g.repo_name.is_match(&w.val));
@@ -859,6 +917,16 @@ fn guarded_calls(
                     .and_then(|a| g.path(&a.val, &dir));
             }
             "popd" => dir = None,
+            "export" | "declare" | "typeset" | "readonly" | "local" => {
+                for a in args {
+                    set_gitvar(g, &a.val, &dir, &mut genv);
+                }
+            }
+            "unset" => {
+                for a in args {
+                    genv.retain(|(n, _)| *n != a.val);
+                }
+            }
             "git" => {
                 let (_, _, si, cwd) = git_opts(g, args, &base);
                 match args.get(si).map(|w| w.val.as_str()) {
@@ -866,8 +934,9 @@ fn guarded_calls(
                     Some("remote") => g.note_remote(&args[si + 1..], &cwd),
                     _ => {}
                 }
-                if let Some((kind, mut dirs, plain, si)) = git_call(g, args, &base) {
+                if let Some((kind, mut dirs, si, hits)) = git_call(g, args, &base) {
                     dirs.extend(env_dirs);
+                    dirs.extend(genv.iter().map(|(_, d)| d.clone()));
                     if dirs.is_empty() {
                         dirs.push(base);
                     }
@@ -880,12 +949,7 @@ fn guarded_calls(
                             Some(false) => {}
                         }
                     }
-                    out.push(Call {
-                        kind,
-                        scope,
-                        old_shape: plain && count,
-                        worktree_add: kind == Kind::Start,
-                    });
+                    out.push(Call { kind, scope, hits });
                 }
             }
             "wt" => {
@@ -897,8 +961,7 @@ fn guarded_calls(
                     out.push(Call {
                         kind: Kind::Start,
                         scope: g.scope_of(&[base], named),
-                        old_shape: count,
-                        worktree_add: false,
+                        hits: true,
                     });
                 }
             }
@@ -909,12 +972,14 @@ fn guarded_calls(
                     if k == 1 && ts[0] == *t {
                         continue;
                     }
-                    guarded_calls(g, t, None, depth + 1, count && k == 0, out);
+                    delegated = true;
+                    guarded_calls(g, t, None, depth + 1, Vec::new(), out);
                 }
             }
             "bash" | "sh" | "zsh" => {
                 if let Some(s) = shell_script(args) {
-                    guarded_calls(g, s, dir.clone(), depth + 1, count, out);
+                    delegated = true;
+                    guarded_calls(g, s, dir.clone(), depth + 1, genv.clone(), out);
                 } else {
                     // A here-string: `bash <<< '…'`.
                     for (j, w) in args.iter().enumerate() {
@@ -925,7 +990,8 @@ fn guarded_calls(
                                 Some(rest)
                             };
                             if let Some(s) = s {
-                                guarded_calls(g, s, dir.clone(), depth + 1, count, out);
+                                delegated = true;
+                                guarded_calls(g, s, dir.clone(), depth + 1, genv.clone(), out);
                             }
                         }
                     }
@@ -937,9 +1003,16 @@ fn guarded_calls(
                     .map(|w| w.val.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                guarded_calls(g, &s, dir.clone(), depth + 1, count, out);
+                delegated = true;
+                guarded_calls(g, &s, dir.clone(), depth + 1, genv.clone(), out);
             }
-            _ => window_calls(g, &words[p..], count, out),
+            _ => window_calls(g, &words[p..], out),
+        }
+        for c in &out[mark..] {
+            spans.push((c.kind, cmd_start, cmd_end));
+        }
+        if delegated {
+            deleg.push((cmd_start, cmd_end));
         }
     }
     for (k, inner) in sc.nested.iter().enumerate() {
@@ -947,35 +1020,19 @@ fn guarded_calls(
             .get(sc.nested_at[k])
             .cloned()
             .unwrap_or_else(|| dir.clone());
-        guarded_calls(g, inner, at, depth + 1, count, out);
+        guarded_calls(g, inner, at, depth + 1, genv.clone(), out);
+        deleg.push(sc.nested_span[k]);
     }
+    explain(g, text, &spans, &deleg, out);
 }
 
-/// Whether a rule of kind `kind` fires. A call fires when it acts on a repo (`Some(true)`), or when its
-/// directory is unknown and `closed` (the session sits inside a repo, or a repo literal occurs anywhere in the
-/// command): whatever the old whole-text patterns saw. Besides that, `old_hits` calls seen by those patterns that
-/// the scan did not find in the same shape (a mention in a string, text it could not read) fall back to the
-/// old whole-text scope `old_scope`, unless the work budget cut the scan (then `closed` has decided already).
-/// `skip_worktree`: the old rule that one `--detach` anywhere exempts every `worktree add`.
-fn rule_fires(
-    calls: &[Call],
-    kind: Kind,
-    old_hits: usize,
-    old_scope: bool,
-    closed: bool,
-    skip_worktree: bool,
-    exhausted: bool,
-) -> bool {
-    let mine = || {
-        calls
-            .iter()
-            .filter(move |c| c.kind == kind && !(skip_worktree && c.worktree_add))
-    };
-    if mine().any(|c| c.scope.unwrap_or(closed)) {
-        return true;
-    }
-    let seen = mine().filter(|c| c.old_shape).count();
-    !exhausted && old_hits > seen && old_scope
+/// Whether a rule of kind `kind` fires: a call of that kind breaks it when it acts on a repo (`Some(true)`), or
+/// when its directory is unknown and `closed` (the session sits inside a repo, or a repo literal occurs anywhere
+/// in the command).
+fn rule_fires(calls: &[Call], kind: Kind, closed: bool) -> bool {
+    calls
+        .iter()
+        .any(|c| c.kind == kind && c.hits && c.scope.unwrap_or(closed))
 }
 
 /// The owner's iPhone: its ids, and destinations that name it.
@@ -1165,6 +1222,11 @@ struct Scan {
     nested: Vec<String>,
     /// `nested_at[k]`: the index of the command that the body `nested[k]` belongs to.
     nested_at: Vec<usize>,
+    /// `nested_span[k]`: the byte range of the body `nested[k]` in the scanned text.
+    nested_span: Vec<(usize, usize)>,
+    /// `spans[k]`: the byte range of command `k` in the scanned text (from the end of the delimiter before it).
+    spans: Vec<(usize, usize)>,
+    seg_start: usize,
     cmd: Vec<Word>,
     cur: String,
     in_word: bool,
@@ -1172,8 +1234,9 @@ struct Scan {
 }
 
 impl Scan {
-    fn add_nested(&mut self, body: String) {
+    fn add_nested(&mut self, body: String, span: (usize, usize)) {
         self.nested_at.push(self.cmds.len());
+        self.nested_span.push(span);
         self.nested.push(body);
     }
 
@@ -1189,9 +1252,10 @@ impl Scan {
         self.subst = false;
     }
 
-    fn end_cmd(&mut self) {
+    fn end_cmd(&mut self, end: usize) {
         self.end_word();
         if !self.cmd.is_empty() {
+            self.spans.push((self.seg_start, end));
             let cmd = std::mem::take(&mut self.cmd);
             self.piped.push(std::mem::take(&mut self.pipe_next));
             self.opens.push(std::mem::take(&mut self.pend_open));
@@ -1260,6 +1324,16 @@ fn substitution(ch: &[char], open: usize) -> (String, usize) {
 fn scan(s: &str) -> Scan {
     let ch: Vec<char> = s.chars().collect();
     let n = ch.len();
+    // Byte offset of every char (only for texts the guarded scan may read).
+    let bp: Vec<u32> = if s.len() <= SCAN_BUDGET {
+        s.char_indices()
+            .map(|(b, _)| b as u32)
+            .chain(std::iter::once(s.len() as u32))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pos = |k: usize| bp.get(k).map_or(0, |&b| b as usize);
     let mut sc = Scan::default();
     let mut i = 0;
     while i < n {
@@ -1288,7 +1362,7 @@ fn scan(s: &str) -> Scan {
                         let open = if ch[i] == '`' { i } else { i + 1 };
                         let (body, next) = substitution(&ch, open);
                         sc.cur.push_str("$(…)");
-                        sc.add_nested(body);
+                        sc.add_nested(body, (pos(open + 1), pos((next - 1).min(n))));
                         sc.subst = true;
                         i = next;
                     } else {
@@ -1309,7 +1383,7 @@ fn scan(s: &str) -> Scan {
                 let (body, next) = substitution(&ch, i);
                 sc.in_word = true;
                 sc.cur.push_str("$(…)");
-                sc.add_nested(body);
+                sc.add_nested(body, (pos(i + 1), pos((next - 1).min(n))));
                 sc.subst = true;
                 i = next;
             }
@@ -1317,7 +1391,7 @@ fn scan(s: &str) -> Scan {
                 let (body, next) = substitution(&ch, i + 1);
                 sc.in_word = true;
                 sc.cur.push_str("$(…)");
-                sc.add_nested(body);
+                sc.add_nested(body, (pos(i + 2), pos((next - 1).min(n))));
                 sc.subst = true;
                 i = next;
             }
@@ -1330,7 +1404,7 @@ fn scan(s: &str) -> Scan {
                 // A delimiter that flushed no command (a newline after `|`, `(`, the `&` of `|&`)
                 // leaves the pipe flag alone; `||` is no pipe.
                 let had = !sc.cmd.is_empty() || sc.in_word;
-                sc.end_cmd();
+                sc.end_cmd(pos(i));
                 if c == '(' {
                     sc.pend_open += 1;
                 } else if c == ')' {
@@ -1342,6 +1416,7 @@ fn scan(s: &str) -> Scan {
                     sc.pipe_next = false;
                 }
                 i += 1;
+                sc.seg_start = pos(i);
             }
             c if c.is_whitespace() => {
                 sc.end_word();
@@ -1354,7 +1429,7 @@ fn scan(s: &str) -> Scan {
             }
         }
     }
-    sc.end_cmd();
+    sc.end_cmd(s.len());
     sc
 }
 
@@ -1748,6 +1823,18 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
     if depth > 8 {
         return None;
     }
+    // HOST-19 cost: one verdict reads at most `TARGET_BUDGET` characters over all its nested levels.
+    let afforded = TARGET_WORK.with(|w| {
+        let left = w.get();
+        let ok = left >= command.len();
+        if ok {
+            w.set(left - command.len());
+        }
+        ok
+    });
+    if !afforded {
+        return None;
+    }
     let home = std::env::var("HOME").unwrap_or_default();
     let text = if depth == 0 {
         without_heredocs(command)
@@ -1887,7 +1974,9 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
             }
             "ssh" => remote_text(args).and_then(|ts| {
                 ts.iter()
-                    .find_map(|t| target_deletion(t, &home, on_host, depth + 1))
+                    .enumerate()
+                    .filter(|(k, t)| *k == 0 || ts[0] != **t)
+                    .find_map(|(_, t)| target_deletion(t, &home, on_host, depth + 1))
             }),
             _ => None,
         };
@@ -1900,11 +1989,19 @@ fn target_deletion(command: &str, cwd: &str, on_host: bool, depth: usize) -> Opt
         .find_map(|inner| target_deletion(inner, &dir, on_host, depth + 1))
 }
 
+/// The most characters one `target_deletion` verdict reads over all its nested `ssh`/`bash -c` levels.
+const TARGET_BUDGET: usize = 16_000_000;
+
+thread_local! {
+    static TARGET_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(TARGET_BUDGET) };
+}
+
 /// The cargo-target deletion check as wired in: every session, bypassable like the rest.
 fn target_verdict(command: &str, cwd: &str, on_host: bool, bypass: bool) -> Option<String> {
     if bypass {
         return None;
     }
+    TARGET_WORK.with(|w| w.set(TARGET_BUDGET));
     target_deletion(command, cwd, on_host, 0)
 }
 
@@ -2765,7 +2862,9 @@ mod tests {
         ] {
             assert_eq!(verdict(c, inside), None, "{c}");
         }
-        // The accepted boundary: nothing in the text names a repo, the session is in the group folder.
+        // The accepted boundary, session in the group folder: the call's directory is unknown and no repo literal
+        // is in the text (four of the five commands), or it resolved to the group folder itself (the second command
+        // names a repo but passes: `(cd <repo>)` ends with its group).
         for cwd in GROUPS {
             for c in [
                 "for d in $REPOS; do cd $d; git push origin main; done",
@@ -2796,17 +2895,9 @@ mod tests {
                 &format!("echo {pad}; cd /home/nez/Projects/Lucina/SecretaryIOS && git worktree add ../x"),
                 8,
             );
-            let t = std::time::Instant::now();
             assert!(verdict(&named, cwd).is_some(), "{cwd}");
-            let took = t.elapsed();
-            eprintln!("nested ssh with a repo literal: {took:?}");
-            assert!(took.as_secs() < 10, "{took:?}");
             let plain = nested_ssh(&format!("echo {pad}; git worktree add ../x"), 8);
-            let t = std::time::Instant::now();
             assert_eq!(verdict(&plain, cwd), None, "{cwd}");
-            let took = t.elapsed();
-            eprintln!("nested ssh without one: {took:?}");
-            assert!(took.as_secs() < 10, "{took:?}");
             // Nine levels is past the nesting cap; the text still decides.
             assert!(verdict(
                 &nested_ssh(
@@ -3038,6 +3129,115 @@ mod tests {
         for cwd in ["/home/nez/scratch"] {
             for c in allowed {
                 assert_eq!(verdict(c, cwd), None, "{cwd}: {c}");
+            }
+        }
+    }
+
+    // ---- LA-C045 round 5 ----
+
+    #[test]
+    fn a_detach_in_one_call_exempts_only_that_call() {
+        let repo = "/home/nez/Projects/Lucina/SecretaryIOS";
+        for cwd in GROUPS {
+            for c in [
+                format!("git worktree add --detach /tmp/a; wt add /home/nez/scratch/n; git -C {repo} worktree add ../x"),
+                format!("git -C {repo} worktree add -d /tmp/a abc; git -C {repo} worktree add ../x"),
+                format!("git worktree add --detach /tmp/a; git -C {repo} worktree add ../x"),
+            ] {
+                assert!(verdict(&c, cwd).is_some(), "{cwd}: {c}");
+            }
+            for c in [
+                format!("git -C {repo} worktree add --detach /tmp/a origin/main"),
+                format!("git -C {repo} worktree add --detach /tmp/a; git -C {repo} worktree add -d /tmp/b"),
+            ] {
+                assert_eq!(verdict(&c, cwd), None, "{cwd}: {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_command_past_the_budget_is_refused_only_where_it_holds_a_guarded_call() {
+        let pad = "x".repeat(5_000_000);
+        let inside = "/home/nez/Projects/Lucina/SecretaryIOS";
+        for cwd in GROUPS {
+            // no guarded call: nothing to refuse, a repo name in prose included
+            assert_eq!(verdict(&format!("echo {pad}"), cwd), None);
+            assert_eq!(
+                verdict(&format!("echo SecretaryIOS lucinaos {pad}"), cwd),
+                None
+            );
+            // a guarded call in the unread part, with a repo literal
+            assert!(verdict(
+                &format!("echo {pad}; git -C {inside} worktree add ../x"),
+                cwd
+            )
+            .is_some());
+            assert!(verdict(
+                &format!("echo {pad}; git push origin main # SecretaryIOS"),
+                cwd
+            )
+            .is_some());
+            // the same without any literal: an unknown directory, the accepted boundary
+            assert_eq!(
+                verdict(&format!("echo {pad}; git worktree add ../x"), cwd),
+                None
+            );
+        }
+        assert!(verdict(&format!("echo {pad}; git worktree add ../x"), inside).is_some());
+        assert_eq!(verdict(&format!("echo {pad}"), inside), None);
+    }
+
+    #[test]
+    fn a_benign_call_cannot_cancel_the_match_of_a_hidden_one() {
+        let repo = "/home/nez/Projects/Lucina/SecretaryIOS";
+        for cwd in GROUPS {
+            for c in [
+                format!("cd /home/nez/scratch && git -C . push origin \"main\"; perl -e 'system \"git -C {repo} push origin main\"'"),
+                format!("cd /home/nez/scratch && /home/nez/.local/bin/wt add q; perl -e 'system \"git -C {repo} worktree add ../x\"'"),
+                format!("cd /home/nez/scratch && wt --force add q; perl -e 'system \"git -C {repo} worktree add ../x\"'"),
+                format!("git -q push origin main; perl -e 'system \"git -C {repo} push origin main\"'"),
+                format!("git -q worktree add /home/nez/scratch/a; python3 -c 'import os; os.system(\"git -C {repo} worktree add ../x\")'"),
+            ] {
+                assert!(verdict(&c, cwd).is_some(), "{cwd}: {c}");
+            }
+            // the benign halves alone pass
+            for c in [
+                "cd /home/nez/scratch && git -C . push origin \"main\"",
+                "cd /home/nez/scratch && /home/nez/.local/bin/wt add q",
+                "cd /home/nez/scratch && wt --force add q",
+                "git -q worktree add /home/nez/scratch/a",
+            ] {
+                assert_eq!(verdict(c, cwd), None, "{cwd}: {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn exported_or_assigned_git_variables_name_the_directory_of_later_calls() {
+        let repo = "/home/nez/Projects/Lucina/SecretaryIOS";
+        let refused = [
+            format!("export GIT_DIR={repo}/.git; git push origin main"),
+            format!("declare -x GIT_DIR={repo}/.git; git push origin main"),
+            format!("typeset -x GIT_WORK_TREE={repo}; git worktree add ../x"),
+            format!("GIT_DIR={repo}/.git ; git push origin main"),
+            format!("export GIT_WORK_TREE={repo} && git worktree add ../x"),
+            format!("cd /home/nez/scratch/a && export GIT_DIR={repo}/.git && git push origin main"),
+            // an unknown value is an unknown directory: refused when the text names a repo
+            "export GIT_DIR=$R/.git; git push origin main; echo SecretaryIOS".to_string(),
+        ];
+        for cwd in GROUPS {
+            for i in &refused {
+                for c in four_forms(i) {
+                    assert!(verdict(&c, cwd).is_some(), "{cwd}: {c}");
+                }
+            }
+            for c in [
+                "export GIT_DIR=/home/nez/scratch/a/.git; git push origin main".to_string(),
+                format!("export GIT_DIR={repo}/.git; unset GIT_DIR; git -C /home/nez/scratch/a push origin main"),
+                "export GIT_DIR=$R/.git; git push origin main".to_string(),
+                "GIT_DIR=/home/nez/scratch/a/.git; git worktree add ../x".to_string(),
+            ] {
+                assert_eq!(verdict(&c, cwd), None, "{cwd}: {c}");
             }
         }
     }

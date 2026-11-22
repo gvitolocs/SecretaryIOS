@@ -274,10 +274,15 @@ lagent device release iphone
   folder: a repo path that appears nowhere in the command text (held in the environment, built by a substitution or
   read from a file); a symlink from scratch to a repo; a script file run by `bash script.sh` (not read for these rules); an alias
   or a function. A call behind `xargs`, `find -exec` or an
-  unknown wrapper is a call with an unknown directory. A call acts on every directory its options name (`-C`,
-  `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`): one repo among them is enough. The hook reads at most
-  4 million characters per command, nested `ssh`, `bash -c` and `$( )` levels included, and 8 levels deep; the
-  rest counts as an unknown call, so it refuses when the text names a repo. A push to `main` is also refused from ANY directory, scratch clones included, when the repository it pushes to has a
+  unknown wrapper is a call with an unknown directory. A call acts on every directory its own options name (`-C`,
+  `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`) plus the ones an earlier `export`, `declare -x`,
+  `typeset -x` or bare assignment of those two variables set in the same command (an unknown value is an unknown
+  directory): one repo among them is enough. What the old whole-text patterns match and the scan cannot place is
+  found by byte span, never by count: it is a call of unknown directory. A `--detach` or `-d` exempts only its own
+  `worktree add`. The guarded scan of one verdict reads at most 4 million characters, nested `ssh`, `bash -c` and
+  `$( )` levels included, and 8 levels deep (this bounds only that scan, not the rest of the hook); in the unread
+  part whatever the old patterns match counts as an unknown call, so a long command without a guarded call is never
+  refused, and one with such a call refuses when the text names a repo. A push to `main` is also refused from ANY directory, scratch clones included, when the repository it pushes to has a
   Lucina origin (LA-C045 round 4): the push names a Lucina URL or path itself; or the remote it pushes to (`origin`
   unless the call names another) has a `url` or `pushurl` naming a Lucina repo (`SecretaryIOS`, `lucinaos`,
   `LucinaAndroidOS`, `lucina-rs`, `Projects/Lucina/<Repo>`, `.worktrees/<Repo>`, also as `<owner>/SecretaryIOS.git`),
