@@ -3837,6 +3837,8 @@ dependencies = [
  "hyper-util",
  "libc",
  "lopdf 0.38.0",
+ "lucina-agentd",
+ "lucina-agents",
  "lucina-approvals",
  "lucina-computer-use",
  "lucina-deals",

@@ -86,6 +86,10 @@ secretary-core = { path = "../secretary-core" }
 
 [dev-dependencies]
 lucina-approvals = { path = "../lucina-approvals", features = ["testing"] }
+# The contract test (src/agentd_contract.rs, unit tests) reads every body Lucina sends with agentd's
+# OWN request type, and writes agentd's own answers back through the parsing that reads them.
+lucina-agentd = { path = "../lucina-agentd" }
+lucina-agents = { path = "../lucina-agents" }
 secretary-server = { path = "../secretary-server" }
 reqwest = { workspace = true, features = ["stream", "multipart"] }
 wiremock = "0.6"

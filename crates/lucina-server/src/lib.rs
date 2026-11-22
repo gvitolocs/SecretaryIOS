@@ -12,6 +12,8 @@ pub mod about;
 pub mod act;
 pub mod agenda;
 pub mod agentd;
+#[cfg(test)]
+mod agentd_contract;
 pub mod api;
 pub mod au;
 pub mod bot_hospital;
