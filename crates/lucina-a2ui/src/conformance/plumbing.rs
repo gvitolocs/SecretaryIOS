@@ -149,6 +149,15 @@ fn an_empty_error_expectation_is_no_expectation() {
         .is_some(),
         "an expectation that states something stopped being read"
     );
+    // The runner reads the two names with `or`, so an empty first name lets the second answer.
+    let falls_through = json!({"expect_error": "", "expectError": {"category": "DataError"}});
+    assert_eq!(
+        expectation(&falls_through, "core/x.yaml#test_e")
+            .unwrap()
+            .and_then(|found| found.get("category")),
+        Some(&json!("DataError")),
+        "the empty expect_error swallowed the expectation the case states"
+    );
 }
 
 /// The guide, 3: "Map each category to the narrowest class or classes that satisfy it."

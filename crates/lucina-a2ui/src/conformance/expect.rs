@@ -20,12 +20,14 @@ pub const EXPECT_ERROR_KEYS: &[&str] = &["category", "message"];
 /// The failure expectation of a case or step, read from `expect_error` and then `expectError` in
 /// the order the original's harness reads them.
 ///
-/// `None` when neither key is there, which is the same as "must not fail".
+/// `None` when there is nothing to expect, which is the same as "must not fail": neither key is
+/// there, or the one that is there states nothing. The reference runner reads the two keys with
+/// `or` and then tests the answer for truth (`test_conformance.py:2361-2362`), so an empty
+/// `expect_error` lets `expectError` answer, and an expectation written `{}` or `""` is no
+/// expectation.
 pub fn expectation<'a>(holder: &'a Value, id: &str) -> Result<Option<&'a Value>, String> {
-    let Some(expected) = holder
-        .get("expect_error")
-        .or_else(|| holder.get("expectError"))
-    else {
+    let named = |key: &'static str| holder.get(key).filter(|expected| !states_nothing(expected));
+    let Some(expected) = named("expect_error").or_else(|| named("expectError")) else {
         return Ok(None);
     };
     match expected {
@@ -39,6 +41,18 @@ pub fn expectation<'a>(holder: &'a Value, id: &str) -> Result<Option<&'a Value>,
         )),
     }?;
     Ok(Some(expected))
+}
+
+/// Whether an expectation that is there states nothing to check: `null`, `{}`, `""` or `false`,
+/// which is what the reference runner's truth test answers. No case of these suites states one but
+/// the empty object and the empty string.
+fn states_nothing(expected: &Value) -> bool {
+    match expected {
+        Value::Null | Value::Bool(false) => true,
+        Value::Object(object) => object.is_empty(),
+        Value::String(text) => text.is_empty(),
+        _ => false,
+    }
 }
 
 /// Checks a call the case expects to fail: it must fail, in the named category, and with a message
