@@ -10,3 +10,5 @@ crates/ink-obsidian/tests/fixtures/
 crates/lucina-server/tests/fixtures/
 crates/lucina-upstream/tests/fixtures/
 tools/parity/
+third_party/a2ui/upstream/
+third_party/a2ui/MANIFEST.sha256

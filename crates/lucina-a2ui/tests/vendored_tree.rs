@@ -20,7 +20,7 @@ fn root() -> &'static Path {
 }
 
 fn upstream_dir() -> PathBuf {
-    root().join("tests/conformance/a2ui/upstream")
+    root().join("third_party/a2ui/upstream")
 }
 
 fn read(path: &Path) -> String {
@@ -180,7 +180,7 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
 }
 
 fn manifest() -> Manifest {
-    let path = root().join("tests/conformance/a2ui/MANIFEST.sha256");
+    let path = root().join("third_party/a2ui/MANIFEST.sha256");
     parse_manifest(&read(&path)).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
@@ -315,10 +315,10 @@ fn vendored_tree_holds_only_regular_files() {
 
 #[test]
 fn pin_is_recorded_everywhere() {
-    let readme = read(&root().join("tests/conformance/a2ui/README.md"));
+    let readme = read(&root().join("third_party/a2ui/README.md"));
     assert!(
         readme.contains(lucina_a2ui::UPSTREAM_COMMIT),
-        "tests/conformance/a2ui/README.md does not name the upstream commit {}",
+        "third_party/a2ui/README.md does not name the upstream commit {}",
         lucina_a2ui::UPSTREAM_COMMIT
     );
     let pin = format!("pin = {:?}", lucina_a2ui::UPSTREAM_COMMIT);
@@ -342,6 +342,21 @@ fn licence_is_recorded() {
     assert!(
         has_line(&registry_block(), r#"licence_upstream = "Apache-2.0""#),
         "the a2ui block of docs/upstreams.toml does not record licence_upstream = \"Apache-2.0\""
+    );
+}
+
+/// The merge gate does not read `third_party/` file by file, so the scan of the vendored copy is
+/// done by hand once per pin move and its result is recorded next to the copy.
+#[test]
+fn the_readme_records_a_secret_scan_of_the_pin() {
+    let readme = read(&root().join("third_party/a2ui/README.md"));
+    let scanned = readme.lines().find(|line| {
+        line.contains(lucina_a2ui::UPSTREAM_COMMIT) && line.contains("no leaks found")
+    });
+    assert!(
+        scanned.is_some(),
+        "third_party/a2ui/README.md records no secret scan of pin {}",
+        lucina_a2ui::UPSTREAM_COMMIT
     );
 }
 
