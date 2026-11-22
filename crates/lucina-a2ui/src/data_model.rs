@@ -504,4 +504,219 @@ mod tests {
         );
         assert_eq!(observer.initial, Some(Value::Null));
     }
+
+    /// The two reviews both found the change comparison, and neither said the suite covers it:
+    /// `data_model.yaml` never writes one spelling of a number over another. Both originals
+    /// compare by value — Python at `state/data_model.py:341` with one number type, TypeScript the
+    /// same way — so a port with two representations must not tell an observer that its `1` became
+    /// `1.0`. A boolean is not a number, which is the TypeScript answer and not Python's
+    /// `1 == True`.
+    #[test]
+    fn a_number_written_in_another_spelling_changes_nothing() {
+        let mut model = DataModel::with_initial(json!({"one": 1, "list": [1]}));
+        let scalar = model.subscribe("/one").expect("a watched path");
+        let list = model.subscribe("/list").expect("a watched path");
+
+        model
+            .set("/one", json!(1.0))
+            .expect("the same number, written as a float");
+        assert!(
+            model.take_notifications().is_empty(),
+            "an observer of 1 was told its value became 1.0"
+        );
+        model
+            .set("/list", json!([1.0]))
+            .expect("the same list, with a float inside");
+        assert!(
+            model.take_notifications().is_empty(),
+            "an observer of [1] was told its value became [1.0]"
+        );
+
+        model
+            .set("/one", json!(true))
+            .expect("a write of another kind of value");
+        assert_eq!(
+            model.take_notifications(),
+            vec![(scalar.id, json!(true))],
+            "a boolean is not the number it happens to equal in Python"
+        );
+        model
+            .set("/one", json!(2))
+            .expect("a write of another number");
+        assert_eq!(
+            model.take_notifications(),
+            vec![(scalar.id, json!(2))],
+            "a number that differs is still a change"
+        );
+        model
+            .set("/list", json!([2]))
+            .expect("a write of another list");
+        assert_eq!(
+            model.take_notifications(),
+            vec![(list.id, json!([2]))],
+            "the element spelling is what stayed the same, not the list"
+        );
+    }
+
+    /// The square the reviews found: `snapshot` compared every observer against every one it had
+    /// already collected, and the routing then scanned every observer once per watched path. The
+    /// original keys its listeners on the path it watches (`state/data_model.py:169`) and walks
+    /// that key map per write (`:331-346`), so a write costs the paths under observation plus the
+    /// observers it concerns. The bound is generous by design; the quadratic form needs minutes.
+    #[test]
+    fn a_write_costs_the_observers_it_concerns() {
+        const OBSERVERS: usize = 20_000;
+        const WRITES: usize = 200;
+        let mut model = DataModel::new();
+        let mut ids = Vec::with_capacity(OBSERVERS);
+        for index in 0..OBSERVERS {
+            let path = format!("/leaf/{index}");
+            ids.push(model.subscribe(&path).expect("a watched leaf").id);
+        }
+
+        let started = std::time::Instant::now();
+        for index in 0..WRITES {
+            let path = format!("/leaf/{index}");
+            model
+                .set(&path, json!(index))
+                .expect("a write to a watched leaf");
+            assert_eq!(
+                model.take_notifications(),
+                vec![(ids[index], json!(index))],
+                "write {index} was not heard by its own observer alone"
+            );
+        }
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(10),
+            "{WRITES} writes over {OBSERVERS} watched leaves took {took:?}"
+        );
+    }
+
+    /// A pointer the model refuses is a pointer that reaches nothing of it: the cap is the nesting
+    /// limit `serde_json`'s own parser works to, so that no payload can leave behind a tree the
+    /// port cannot clone, read back or drop without running out of stack. 128 is addressable,
+    /// 129 is not, and every entry that takes a pointer says so.
+    #[test]
+    fn a_pointer_of_128_segments_is_addressed_and_129_is_not() {
+        let mut model = DataModel::new();
+        model
+            .set(&pointer(128), json!("leaf"))
+            .expect("the deepest pointer the model addresses");
+        assert_eq!(
+            model.get(&pointer(128)).expect("a read").cloned(),
+            Some(json!("leaf")),
+            "the deepest allowed pointer was not built"
+        );
+
+        for problem in [
+            model.set(&pointer(129), json!("leaf")),
+            model.get(&pointer(129)).map(drop),
+            model.has_path(&pointer(129)).map(drop),
+            model.delete(&pointer(129)),
+            model.subscribe(&pointer(129)).map(drop),
+        ] {
+            assert_eq!(
+                problem.expect_err("a pointer of 129 segments").category(),
+                crate::ErrorCategory::DataError,
+                "an over-deep pointer is a data failure, as a forbidden segment is"
+            );
+        }
+        assert_eq!(
+            model.get(&pointer(127)).expect("a read").cloned(),
+            Some(json!({"s127": "leaf"})),
+            "the refused write left a path behind"
+        );
+    }
+
+    /// The same cap on what is written, checked without walking the value twice: 128 levels of
+    /// arrays are held, 129 are refused before anything is built.
+    #[test]
+    fn a_value_of_128_levels_is_held_and_129_is_not() {
+        let mut model = DataModel::new();
+        model
+            .set("/held", nested(128))
+            .expect("the deepest value the model holds");
+        let problem = model
+            .set("/refused", nested(129))
+            .expect_err("a value 129 levels deep");
+        assert_eq!(problem.category(), crate::ErrorCategory::DataError);
+        assert!(
+            !model.has_path("/refused").expect("a well formed pointer"),
+            "a refused value left a key behind"
+        );
+        assert_eq!(
+            model.get("/held").expect("a read").cloned(),
+            Some(nested(128)),
+            "the deepest allowed value was not written whole"
+        );
+    }
+
+    /// Cloning and dropping are the two recursions a model of the deepest value still has to
+    /// survive, and nothing else in the suite walks them.
+    #[test]
+    fn a_model_holding_the_deepest_value_is_cloned_and_dropped() {
+        let mut model = DataModel::new();
+        model
+            .set("/deep", nested(128))
+            .expect("the deepest value the model holds");
+        let kept = model.clone();
+        drop(model);
+        assert_eq!(
+            kept.get("/deep").expect("a read").cloned(),
+            Some(nested(128)),
+            "the clone lost the depth"
+        );
+        drop(kept);
+    }
+
+    /// The original re-reads its live listener list as each path fires
+    /// (`state/data_model.py:342`), so an observer that is gone by the time the notification is
+    /// handed out never hears the write. Handing out is the host's drain here, which is where the
+    /// check has to be.
+    #[test]
+    fn an_observer_gone_before_the_drain_is_not_handed_its_notification() {
+        let mut model = DataModel::with_initial(json!({"a": 1}));
+        let observer = model.subscribe("/a").expect("a watched path");
+        model.set("/a", json!(2)).expect("a write to a watched path");
+        model.unsubscribe(observer.id);
+        assert!(
+            model.take_notifications().is_empty(),
+            "a detached observer was handed a notification"
+        );
+    }
+
+    /// `dispose` detaches every observer, so what it dropped was not yet handed out goes with
+    /// them.
+    #[test]
+    fn disposing_drops_what_was_not_handed_out() {
+        let mut model = DataModel::with_initial(json!({"a": 1}));
+        model.subscribe("/a").expect("a watched path");
+        model.set("/a", json!(2)).expect("a write to a watched path");
+        model.dispose();
+        assert!(
+            model.take_notifications().is_empty(),
+            "a disposed model still had a notification to hand out"
+        );
+    }
+
+    /// A pointer of `segments` segments: `/s0/s1/…`.
+    fn pointer(segments: usize) -> String {
+        let mut path = String::with_capacity(segments * 4);
+        for index in 0..segments {
+            path.push('/');
+            path.push_str("s");
+            path.push_str(&index.to_string());
+        }
+        path
+    }
+
+    /// A value of `levels` levels: that many arrays, each holding the next, around one leaf.
+    fn nested(levels: usize) -> Value {
+        let mut value = json!("leaf");
+        for _ in 0..levels {
+            value = Value::Array(vec![value]);
+        }
+        value
+    }
 }

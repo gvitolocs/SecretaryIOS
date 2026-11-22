@@ -124,6 +124,33 @@ fn both_error_expectation_key_names_are_read() {
     );
 }
 
+/// The reference runner reads the expectation with `or` and then tests it for truth
+/// (`test_conformance.py:2361-2362`), so an expectation that is present but empty — `{}`, or the
+/// empty string — states nothing to check and is no expectation at all. A case that carries one is
+/// a case that must not fail.
+#[test]
+fn an_empty_error_expectation_is_no_expectation() {
+    for empty in [json!({}), json!("")] {
+        for name in ["expect_error", "expectError"] {
+            let holder = json!({name: empty});
+            assert_eq!(
+                expectation(&holder, "core/x.yaml#test_e").unwrap(),
+                None,
+                "an empty {empty} under {name} was read as an expectation"
+            );
+        }
+    }
+    assert!(
+        expectation(
+            &json!({"expect_error": {"category": "DataError"}}),
+            "core/x.yaml#test_e"
+        )
+        .unwrap()
+        .is_some(),
+        "an expectation that states something stopped being read"
+    );
+}
+
 /// The guide, 3: "Map each category to the narrowest class or classes that satisfy it."
 #[test]
 fn a_category_is_matched_through_the_narrowest_mapping() {
