@@ -63,6 +63,12 @@ impl Entry {
         if self.kind == Kind::Symlink {
             return Some("a symlink");
         }
+        if self.kind == Kind::Other {
+            return Some("neither a regular file nor a directory");
+        }
+        if self.kind == Kind::Directory && self.children == 0 {
+            return Some("an empty directory");
+        }
         if self.path.ends_with(".py") {
             return Some("Python");
         }
@@ -164,7 +170,11 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
         if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(format!("not a sha256 hash: {line}"));
         }
-        manifest.hashes.insert(path.to_string(), hash.to_string());
+        if let Some(before) = manifest.hashes.insert(path.to_string(), hash.to_string()) {
+            return Err(format!(
+                "{path}: the manifest names it twice, first {before} then {hash}"
+            ));
+        }
     }
     Ok(manifest)
 }
@@ -174,17 +184,42 @@ fn manifest() -> Manifest {
     parse_manifest(&read(&path)).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-/// The lines of the `[[upstream]]` block whose `id` is `a2ui`: from that `id` line to the next
-/// line opening a table, or the end of the file.
+/// Whether this line opens a table, and so ends the block before it and starts a new one.
+fn opens_table(line: &&str) -> bool {
+    line.trim().starts_with("[[")
+}
+
+/// The lines of the `[[upstream]]` block whose `id` is `a2ui`: from the table line that opens it,
+/// which is the last one before the `id` line, to the next line opening a table or the end of the
+/// file. Keys are pairs, so one written above the `id` line is as much in the block as one below.
 fn a2ui_block(text: &str) -> Result<Vec<String>, String> {
     let lines = text.lines().collect::<Vec<_>>();
-    let Some(start) = lines.iter().position(|line| line.trim() == A2UI_ID) else {
-        return Err(format!("no block with {A2UI_ID}"));
-    };
-    let end = lines[start + 1..]
+    let ids = lines
         .iter()
-        .position(|line| line.trim().starts_with("[["))
-        .map_or(lines.len(), |offset| start + 1 + offset);
+        .enumerate()
+        .filter(|(_, line)| line.trim() == A2UI_ID)
+        .map(|(number, _)| number)
+        .collect::<Vec<_>>();
+    let id = match ids.as_slice() {
+        [] => return Err(format!("no block with {A2UI_ID}")),
+        [one] => *one,
+        many => {
+            let numbers = many
+                .iter()
+                .map(|number| (number + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "more than one block claims {A2UI_ID}, on lines {numbers}; the pin is ours only when one does"
+            ));
+        }
+    };
+    let start = (0..id)
+        .rfind(|number| opens_table(&lines[*number]))
+        .ok_or_else(|| format!("{A2UI_ID} on line {} has no table line before it", id + 1))?;
+    let end = (id + 1..lines.len())
+        .find(|number| opens_table(&lines[*number]))
+        .unwrap_or(lines.len());
     Ok(lines[start..end]
         .iter()
         .map(|line| (*line).to_string())
